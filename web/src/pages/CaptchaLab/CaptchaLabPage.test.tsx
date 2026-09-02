@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,7 +12,9 @@ vi.mock('react-i18next', () => ({
 vi.mock('../../features/captcha', () => ({
   CAPTCHA_TYPES: ['random', 'slider', 'pow'],
   BehaviorCaptcha: ({ type, onStatusChange }: { type: string; onStatusChange?: (s: string) => void }) => {
-    onStatusChange?.('ready');
+    useEffect(() => {
+      onStatusChange?.('ready');
+    }, [onStatusChange]);
     return <div data-testid="behavior-captcha">captcha:{type}</div>;
   },
 }));

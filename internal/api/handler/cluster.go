@@ -23,11 +23,11 @@ import (
 )
 
 func (h *Handler) ClusterStatus(w http.ResponseWriter, r *http.Request) {
-	writeData(w, cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)))
+	writeData(w, cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r)))
 }
 
 func (h *Handler) ClusterHealth(w http.ResponseWriter, r *http.Request) {
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r))
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r))
 	code := http.StatusOK
 	if status.Enabled && !status.CanReceiveTraffic {
 		code = http.StatusServiceUnavailable
@@ -110,7 +110,7 @@ func (h *Handler) ClusterNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{
 		"ok":        true,
 		"heartbeat": record,
-		"status":    cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
+		"status":    cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r)),
 	})
 }
 
@@ -146,12 +146,14 @@ func (h *Handler) ClusterDeployCheck(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	result, err := deploy.NewSSHRunner(deploy.SSHRunnerOptions{}).Check(r.Context(), req.SSHDeploymentRequest)
+	result, err := h.clusterDeployRunner().Check(r.Context(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_SSH_INVALID", err.Error())
 		return
 	}
-	auth, err := h.clusterDeployAuthorizationStore().Issue("", authorizationTarget(req.SSHDeploymentRequest))
+	target := authorizationTarget(req.SSHDeploymentRequest)
+	target.ResolvedIPs = append([]string(nil), result.ResolvedIPs...)
+	auth, err := h.clusterDeployAuthorizationStore().IssueBound("", target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", err.Error())
 		return
@@ -164,11 +166,11 @@ func (h *Handler) ClusterDeployRun(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := h.consumeClusterDeployAuthorization(req); err != nil {
+	if err := h.consumeClusterDeployAuthorization(&req); err != nil {
 		writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
 		return
 	}
-	result, err := deploy.NewSSHRunner(deploy.SSHRunnerOptions{}).Deploy(r.Context(), req.SSHDeploymentRequest)
+	result, err := h.clusterDeployRunner().Deploy(r.Context(), req.SSHDeploymentRequest)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "CLUSTER_SSH_FAILED", err.Error())
 		return
@@ -182,7 +184,7 @@ func (h *Handler) ClusterStartDeployTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if strings.TrimSpace(req.Action) != "check" {
-		if err := h.consumeClusterDeployAuthorization(req); err != nil {
+		if err := h.consumeClusterDeployAuthorization(&req); err != nil {
 			writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
 			return
 		}
@@ -222,7 +224,12 @@ func (h *Handler) ClusterGetDeployTask(w http.ResponseWriter, r *http.Request) {
 		target, ok := h.clusterDeployPending[id]
 		h.clusterDeployAuthMu.Unlock()
 		if ok {
-			auth, err := h.clusterDeployAuthorizationStore().Issue(id, target)
+			if task.CheckResult == nil {
+				writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", "successful SSH check has no result")
+				return
+			}
+			target.ResolvedIPs = append([]string(nil), task.CheckResult.ResolvedIPs...)
+			auth, err := h.clusterDeployAuthorizationStore().IssueBound(id, target)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "CLUSTER_SSH_AUTHORIZATION_FAILED", err.Error())
 				return
@@ -244,10 +251,34 @@ func (h *Handler) ClusterListDeployTasks(w http.ResponseWriter, r *http.Request)
 }
 
 func authorizationTarget(req deploy.SSHDeploymentRequest) deploy.AuthorizationTarget {
-	return deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256}
+	t := deploy.AuthorizationTarget{Host: req.Host, User: req.User, Port: req.Port, HostKeySHA256: req.HostKeySHA256, ResolvedIPs: append([]string(nil), req.ResolvedIPs...)}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	// Only bind the intended deploy action when the caller explicitly names a
+	// non-check action. A check task authorization must remain usable for the
+	// follow-up deploy, which may legitimately use a different action.
+	if action != "" && action != "check" {
+		t.Action = action
+	}
+	if req.TaskID != "" {
+		t.TaskID = strings.TrimSpace(req.TaskID)
+	}
+	if action == "install" {
+		if digest, err := deploy.InstallBinarySHA256(); err == nil {
+			t.BinarySHA256 = digest
+		}
+	}
+	return t
 }
-func (h *Handler) consumeClusterDeployAuthorization(req clusterDeployRequest) error {
-	return h.clusterDeployAuthorizationStore().Consume(req.Authorization, authorizationTarget(req.SSHDeploymentRequest))
+func (h *Handler) consumeClusterDeployAuthorization(req *clusterDeployRequest) error {
+	if req == nil {
+		return deploy.ErrAuthorizationInvalid
+	}
+	bound, err := h.clusterDeployAuthorizationStore().ConsumeBound(req.Authorization, authorizationTarget(req.SSHDeploymentRequest))
+	if err != nil {
+		return err
+	}
+	req.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+	return nil
 }
 func (h *Handler) clusterDeployAuthorizationStore() *deploy.AuthorizationStore {
 	h.clusterDeployAuthMu.Lock()
@@ -623,6 +654,9 @@ type clusterJoinResponse struct {
 	Role          string                      `json:"role"`
 	AdvertiseAddr string                      `json:"advertise_addr"`
 	Listen        string                      `json:"listen"`
+	HAMode        string                      `json:"ha_mode"`
+	Consensus     config.ConsensusConfig      `json:"consensus"`
+	Nodes         []config.ClusterNodeConfig  `json:"nodes"`
 	Interconnect  configInterconnectBootstrap `json:"interconnect"`
 	Certificates  clusterJoinCertificates     `json:"certificates"`
 	Node          identity.NodeRegistration   `json:"node"`
@@ -657,6 +691,11 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		h.recordClusterJoinAudit(r, req, auditStatus, auditMessage, time.Since(started))
 	}()
+	if h.rejectClusterConfigWriteIfFrozen(w, r) {
+		auditStatus = http.StatusLocked
+		auditMessage = "cluster configuration writes are unavailable"
+		return
+	}
 	if !decode(w, r, &req) {
 		return
 	}
@@ -680,8 +719,8 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		req.Listen = req.AdvertiseAddr
 	}
 	clusterID := "cheesewaf-local"
-	if h.Config != nil && strings.TrimSpace(h.Config.Cluster.ClusterID) != "" {
-		clusterID = h.Config.Cluster.ClusterID
+	if h.currentConfig() != nil && strings.TrimSpace(h.currentConfig().Cluster.ClusterID) != "" {
+		clusterID = h.currentConfig().Cluster.ClusterID
 	}
 	svc, err := h.clusterIdentityService()
 	if err != nil {
@@ -728,12 +767,16 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CLUSTER_JOIN_CONFIG_SAVE_FAILED", err.Error())
 		return
 	}
+	haMode, consensusConfig, clusterNodes := h.clusterJoinTopology()
 	resp := clusterJoinResponse{
 		ClusterID:     clusterID,
 		NodeID:        enrollment.Node.NodeID,
 		Role:          enrollment.Node.Role,
 		AdvertiseAddr: enrollment.Node.AdvertiseAddr,
 		Listen:        req.Listen,
+		HAMode:        haMode,
+		Consensus:     consensusConfig,
+		Nodes:         clusterNodes,
 		Interconnect: configInterconnectBootstrap{
 			Listen:        req.Listen,
 			AdvertiseAddr: enrollment.Node.AdvertiseAddr,
@@ -748,6 +791,18 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	auditStatus = http.StatusOK
 	auditMessage = "node enrolled"
 	writeData(w, resp)
+}
+
+func (h *Handler) clusterJoinTopology() (string, config.ConsensusConfig, []config.ClusterNodeConfig) {
+	if h == nil || h.Config == nil {
+		return "", config.ConsensusConfig{}, nil
+	}
+	h.configMutationMu.Lock()
+	defer h.configMutationMu.Unlock()
+	return h.Config.Cluster.HAMode, config.ConsensusConfig{
+		Provider:      h.Config.Cluster.Consensus.Provider,
+		EtcdEndpoints: append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...),
+	}, append([]config.ClusterNodeConfig(nil), h.Config.Cluster.Nodes...)
 }
 
 func writeClusterJoinRejected(w http.ResponseWriter) {
@@ -859,7 +914,7 @@ func clusterJoinTokenViewFromToken(token identity.JoinToken) clusterJoinTokenVie
 }
 
 func (h *Handler) clusterNodeViews(registrations []identity.NodeRegistration, lang string) []clusterNodeView {
-	runtimeNodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	runtimeNodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	runtimeByID := make(map[string]cluster.RuntimeNodeStatus, len(runtimeNodes))
 	for _, node := range runtimeNodes {
 		runtimeByID[node.NodeID] = node
@@ -875,7 +930,7 @@ func (h *Handler) clusterNodeViews(registrations []identity.NodeRegistration, la
 		registrationByID[node.NodeID] = identity.NodeRegistration{
 			NodeID:        node.NodeID,
 			Role:          node.Role,
-			ClusterID:     clusterIDFromConfig(h.Config),
+			ClusterID:     clusterIDFromConfig(h.currentConfig()),
 			AdvertiseAddr: node.AdvertiseAddr,
 		}
 	}
@@ -963,30 +1018,36 @@ func (h *Handler) ClusterRotateNodeCertificate(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) recordJoinedClusterNode(node identity.NodeRegistration) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
+	h.configPersistMu.Lock()
+	defer h.configPersistMu.Unlock()
 	h.configMutationMu.Lock()
 	defer h.configMutationMu.Unlock()
 	next, err := h.joinedClusterNodeConfig(node)
 	if err != nil {
 		return err
 	}
-	// Preserve process-wide pointer identity: other subsystems hold *h.Config.
-	previous, err := config.Clone(h.Config)
+	previous, err := config.Clone(h.currentConfig())
 	if err != nil {
 		return err
 	}
-	*h.Config = *next
-	if err := h.persistConfigLocked(); err != nil {
-		*h.Config = *previous
+	if err := h.persistConfigCandidateLocked(next); err != nil {
 		return err
+	}
+	if err := h.publishConfig(next); err != nil {
+		if rollbackErr := h.persistConfigCandidateLocked(previous); rollbackErr != nil {
+			h.freezeConfigWritesLocked(fmt.Sprintf("config publish failed: %v; rollback failed: %v", err, rollbackErr))
+			return fmt.Errorf("publish config: %w; rollback config: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("publish config: %w", err)
 	}
 	return nil
 }
 
 func (h *Handler) validateJoinedClusterNodeConfig(node identity.NodeRegistration) error {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
 	_, err := h.joinedClusterNodeConfig(node)
@@ -994,12 +1055,12 @@ func (h *Handler) validateJoinedClusterNodeConfig(node identity.NodeRegistration
 }
 
 func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*config.Config, error) {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil, nil
 	}
 	// Full clone so validation/join never mutates the live config graph
 	// (shallow struct copy + append can write into the live Nodes backing array).
-	cloned, err := config.Clone(h.Config)
+	cloned, err := config.Clone(h.currentConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -1018,6 +1079,9 @@ func (h *Handler) joinedClusterNodeConfig(node identity.NodeRegistration) (*conf
 			continue
 		}
 		return nil, fmt.Errorf("cluster node %q already exists; revoke or rotate it before rejoining", node.NodeID)
+	}
+	if strings.ToLower(strings.TrimSpace(next.Cluster.Consensus.Provider)) != "etcd" {
+		return nil, fmt.Errorf("joining an additional node requires cluster.consensus.provider=etcd; builtin is valid only for a single-node local deployment")
 	}
 	next.Cluster.Nodes = append(append([]config.ClusterNodeConfig(nil), next.Cluster.Nodes...), config.ClusterNodeConfig{
 		ID:            node.NodeID,
@@ -1044,11 +1108,11 @@ func (h *Handler) clusterIdentityService() (*identity.MemoryIdentityService, err
 	}
 	clusterID := "cheesewaf-local"
 	statePath := ""
-	if h.Config != nil && strings.TrimSpace(h.Config.Cluster.ClusterID) != "" {
-		clusterID = h.Config.Cluster.ClusterID
+	if h.currentConfig() != nil && strings.TrimSpace(h.currentConfig().Cluster.ClusterID) != "" {
+		clusterID = h.currentConfig().Cluster.ClusterID
 	}
-	if h.Config != nil && strings.TrimSpace(h.Config.Setup.DataDir) != "" {
-		statePath = filepath.Join(h.Config.Setup.DataDir, "cluster", "identity.json")
+	if h.currentConfig() != nil && strings.TrimSpace(h.currentConfig().Setup.DataDir) != "" {
+		statePath = filepath.Join(h.currentConfig().Setup.DataDir, "cluster", "identity.json")
 	}
 	svc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{ClusterID: clusterID, StatePath: statePath, Clock: clusterIdentityClock(h.nowUTC)})
 	if err != nil {
@@ -1062,9 +1126,20 @@ func (h *Handler) clusterDeployTaskManager() *deploy.TaskManager {
 	h.clusterDeployTasksMu.Lock()
 	defer h.clusterDeployTasksMu.Unlock()
 	if h.ClusterDeployTasks == nil {
-		h.ClusterDeployTasks = deploy.NewTaskManager(deploy.TaskManagerOptions{})
+		h.ClusterDeployTasks = deploy.NewTaskManager(deploy.TaskManagerOptions{Runner: h.clusterDeployRunner()})
 	}
 	return h.ClusterDeployTasks
+}
+
+func (h *Handler) clusterDeployRunner() deploy.TaskRunner {
+	if h != nil && h.ClusterDeployRunner != nil {
+		return h.ClusterDeployRunner
+	}
+	allowPrivateTargets := false
+	if h != nil && h.currentConfig() != nil {
+		allowPrivateTargets = h.currentConfig().Cluster.SSH.AllowPrivateTargets
+	}
+	return deploy.NewSSHRunner(deploy.SSHRunnerOptions{AllowPrivateTargets: allowPrivateTargets})
 }
 
 func (h *Handler) clusterHeartbeatRegistry() *cluster.HeartbeatRegistry {
@@ -1083,27 +1158,27 @@ func (h *Handler) clusterNodeConfigured(nodeID string) bool {
 
 func (h *Handler) clusterNodeConfig(nodeID string) (config.ClusterNodeConfig, bool) {
 	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" || h == nil || h.Config == nil {
+	if nodeID == "" || h == nil || h.currentConfig() == nil {
 		return config.ClusterNodeConfig{}, false
 	}
-	for _, node := range h.Config.Cluster.Nodes {
+	for _, node := range h.currentConfig().Cluster.Nodes {
 		if strings.TrimSpace(node.ID) == nodeID {
 			return node, true
 		}
 	}
-	if strings.TrimSpace(h.Config.Cluster.NodeID) == nodeID {
+	if strings.TrimSpace(h.currentConfig().Cluster.NodeID) == nodeID {
 		return config.ClusterNodeConfig{
 			ID:            nodeID,
 			Role:          "waf",
-			AdvertiseAddr: h.Config.Cluster.Interconnect.AdvertiseAddr,
+			AdvertiseAddr: h.currentConfig().Cluster.Interconnect.AdvertiseAddr,
 		}, true
 	}
 	return config.ClusterNodeConfig{}, false
 }
 
 func (h *Handler) defaultJoinTokenTTL() time.Duration {
-	if h != nil && h.Config != nil && h.Config.Cluster.Join.TokenTTL > 0 {
-		return h.Config.Cluster.Join.TokenTTL
+	if h != nil && h.currentConfig() != nil && h.currentConfig().Cluster.Join.TokenTTL > 0 {
+		return h.currentConfig().Cluster.Join.TokenTTL
 	}
 	return 15 * time.Minute
 }
@@ -1116,10 +1191,10 @@ func clusterIDFromConfig(cfg *config.Config) string {
 }
 
 func (h *Handler) clusterConfigWritable(lang string) (bool, string) {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return true, ""
 	}
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	if !status.Enabled || status.CanWriteConfig {
 		return true, ""
 	}

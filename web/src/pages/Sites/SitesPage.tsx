@@ -1,6 +1,7 @@
 import {
   Badge,
   Button,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -24,13 +25,22 @@ import {
   toast,
 } from '@/components/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, LockKeyhole, Network, Plus, Route, Server, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, FileDown, LockKeyhole, Network, Plus, Route, Server, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { createSite, fetchSites } from '../../api/client';
+import { createSite, fetchSites, importNginx } from '../../api/client';
 import type { Site } from '../../types/api';
-import { defaultSiteAdvanced, splitList } from './siteModel';
+import {
+  NGINX_IMPORT_MAX_BYTES,
+  type NginxImportIssue,
+  type NginxImportRow,
+  countNginxServerBlocks,
+  defaultSiteAdvanced,
+  nginxImportPayload,
+  nginxImportRows,
+  splitList,
+} from './siteModel';
 import './SitesPage.css';
 
 type WizardDraft = {
@@ -102,6 +112,29 @@ const wizardSteps = [
   { key: 'review', icon: CheckCircle2 },
 ] as const;
 
+type NginxPhase = 'input' | 'preview' | 'result';
+
+type NginxOutcome = { name: string; ok: boolean; message: string };
+
+/** Written out in full so the locale dead-key audit can see every key. */
+const nginxIssueKeys: Record<NginxImportIssue, string> = {
+  '': '',
+  name: 'sites.import.issue.name',
+  domain: 'sites.import.issue.domain',
+  upstream: 'sites.import.issue.upstream',
+};
+
+const nginxSample = [
+  'server {',
+  '    listen 80;',
+  '    server_name example.com www.example.com;',
+  '',
+  '    location / {',
+  '        proxy_pass http://127.0.0.1:9000;',
+  '    }',
+  '}',
+].join('\n');
+
 export default function SitesPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -109,6 +142,16 @@ export default function SitesPage() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<WizardDraft>(initialDraft);
+  const [nginxOpen, setNginxOpen] = useState(false);
+  const [nginxPhase, setNginxPhase] = useState<NginxPhase>('input');
+  const [nginxText, setNginxText] = useState('');
+  const [nginxMessage, setNginxMessage] = useState('');
+  const [nginxRows, setNginxRows] = useState<NginxImportRow[]>([]);
+  const [nginxSkipped, setNginxSkipped] = useState(0);
+  const [nginxSelection, setNginxSelection] = useState<number[]>([]);
+  const [nginxResults, setNginxResults] = useState<NginxOutcome[]>([]);
+  const [parsing, setParsing] = useState(false);
+  const [importing, setImporting] = useState(false);
   const { data, error, isError, isLoading, refetch } = useQuery({
     queryKey: ['sites'],
     queryFn: fetchSites,
@@ -126,7 +169,83 @@ export default function SitesPage() {
     },
     onError: (error) => toast.error(error.message),
   });
+
+  const resetNginx = () => {
+    setNginxPhase('input');
+    setNginxText('');
+    setNginxMessage('');
+    setNginxRows([]);
+    setNginxSkipped(0);
+    setNginxSelection([]);
+    setNginxResults([]);
+  };
+  const closeNginx = () => {
+    setNginxOpen(false);
+    resetNginx();
+  };
+  const parseNginxConfig = async () => {
+    if (!nginxText.trim()) {
+      setNginxMessage(t('sites.import.empty'));
+      return;
+    }
+    if (new TextEncoder().encode(nginxText).length > NGINX_IMPORT_MAX_BYTES) {
+      setNginxMessage(t('sites.import.tooLarge'));
+      return;
+    }
+    setParsing(true);
+    setNginxMessage('');
+    try {
+      const parsed = await importNginx(nginxText);
+      const nextRows = nginxImportRows(parsed);
+      setNginxRows(nextRows);
+      setNginxSkipped(Math.max(0, countNginxServerBlocks(nginxText) - nextRows.length));
+      setNginxSelection(
+        nextRows.map((row, index) => (row.issue ? -1 : index)).filter((index) => index >= 0),
+      );
+      if (nextRows.length === 0) {
+        setNginxMessage(t('sites.import.noServerBlock'));
+        return;
+      }
+      setNginxPhase('preview');
+    } catch (error) {
+      setNginxMessage(error instanceof Error && error.message.trim() ? error.message : t('common.loadFailed'));
+    } finally {
+      setParsing(false);
+    }
+  };
+  const confirmNginxImport = async () => {
+    setImporting(true);
+    const outcomes: NginxOutcome[] = [];
+    let created = 0;
+    for (const index of nginxSelection) {
+      const row = nginxRows[index];
+      if (!row) {
+        continue;
+      }
+      try {
+        await createSite(nginxImportPayload(row));
+        outcomes.push({ name: row.name, ok: true, message: '' });
+        created += 1;
+      } catch (error) {
+        outcomes.push({ name: row.name, ok: false, message: error instanceof Error ? error.message : '' });
+      }
+    }
+    setImporting(false);
+    setNginxResults(outcomes);
+    setNginxPhase('result');
+    if (created > 0) {
+      toast.success(t('sites.import.imported', { count: created }));
+      queryClient.invalidateQueries({ queryKey: ['sites'] });
+    } else {
+      toast.error(t('sites.import.noneImported'));
+    }
+  };
+  const toggleNginxRow = (index: number, checked: boolean) => {
+    setNginxSelection((current) => (checked ? [...current, index] : current.filter((item) => item !== index)));
+  };
+
   const rows = data ?? [];
+  const nginxBlockedRows = nginxRows.filter((row) => row.issue).length;
   const basicStepValid = useMemo(
     () => Boolean(draft.name.trim() && splitList(draft.domains).length && splitList(draft.upstreams).length),
     [draft],
@@ -230,10 +349,16 @@ export default function SitesPage() {
           <h1>{t('sites.title')}</h1>
           <p>{t('sites.subtitle')}</p>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus size={16} />
-          {t('sites.create')}
-        </Button>
+        <div className="sites-header-actions">
+          <Button variant="outline" onClick={() => { resetNginx(); setNginxOpen(true); }}>
+            <FileDown size={16} />
+            {t('sites.import.action')}
+          </Button>
+          <Button onClick={() => setOpen(true)}>
+            <Plus size={16} />
+            {t('sites.create')}
+          </Button>
+        </div>
       </header>
 
       <section className="table-panel sites-list-panel">
@@ -573,6 +698,116 @@ export default function SitesPage() {
               <Button disabled={!canCreate} loading={mutation.isPending} onClick={() => mutation.mutate(createPayload())}>
                 {t('common.finish')}
               </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={nginxOpen} onOpenChange={(next) => { if (!next) closeNginx(); else setNginxOpen(true); }}>
+        <DialogContent className="site-wizard-modal max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('sites.import.title')}</DialogTitle>
+          </DialogHeader>
+
+          {nginxPhase === 'input' && (
+            <div className="nginx-import-form">
+              <p className="nginx-import-hint">{t('sites.import.hint')}</p>
+              <label className="wide-field">
+                <span>{t('sites.import.config')}</span>
+                <Textarea
+                  className="nginx-import-text"
+                  rows={12}
+                  value={nginxText}
+                  placeholder={nginxSample}
+                  onChange={(event) => setNginxText(event.target.value)}
+                />
+              </label>
+              {nginxMessage ? (
+                <div className="inline-error nginx-import-message" role="alert">
+                  <span>{nginxMessage}</span>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {nginxPhase === 'preview' && (
+            <div className="nginx-import-preview">
+              <p className="nginx-import-hint">
+                {t('sites.import.summary', { parsed: nginxRows.length, skipped: nginxSkipped })}
+              </p>
+              {nginxBlockedRows > 0 && (
+                <p className="nginx-import-hint">
+                  {t('sites.import.incompatible', { count: nginxBlockedRows })}
+                </p>
+              )}
+              <div className="nginx-import-list">
+                {nginxRows.map((row, index) => (
+                  <label key={`${row.name || 'unnamed'}-${index}`} className="nginx-import-row">
+                    <Checkbox
+                      checked={nginxSelection.includes(index)}
+                      disabled={Boolean(row.issue)}
+                      onCheckedChange={(value) => toggleNginxRow(index, value === true)}
+                    />
+                    <span className="nginx-import-row-body">
+                      <strong>{row.name || t('sites.import.unnamed')}</strong>
+                      <span>{row.domains.join(', ') || '-'}</span>
+                      <span>{row.upstreams.join(', ') || '-'}</span>
+                      <code>{`:${row.listenPort}`}</code>
+                      {row.issue ? <Badge variant="warning">{t(nginxIssueKeys[row.issue])}</Badge> : null}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {nginxPhase === 'result' && (
+            <div className="nginx-import-result">
+              <p className="nginx-import-hint">
+                {t('sites.import.resultSummary', {
+                  success: nginxResults.filter((item) => item.ok).length,
+                  failed: nginxResults.filter((item) => !item.ok).length,
+                })}
+              </p>
+              <ul className="nginx-import-list">
+                {nginxResults.map((item, index) => (
+                  <li key={`${item.name}-${index}`} className="nginx-import-row">
+                    <Badge variant={item.ok ? 'success' : 'destructive'}>
+                      {item.ok ? t('sites.import.success') : t('sites.import.failed')}
+                    </Badge>
+                    <span className="nginx-import-row-body">
+                      <strong>{item.name}</strong>
+                      {item.message ? <span>{item.message}</span> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <DialogFooter className="modal-actions">
+            {nginxPhase === 'input' && (
+              <>
+                <Button variant="outline" onClick={closeNginx}>{t('common.cancel')}</Button>
+                <Button loading={parsing} onClick={() => void parseNginxConfig()}>{t('sites.import.parse')}</Button>
+              </>
+            )}
+            {nginxPhase === 'preview' && (
+              <>
+                <Button variant="outline" disabled={importing} onClick={() => setNginxPhase('input')}>
+                  {t('common.back')}
+                </Button>
+                <Button
+                  loading={importing}
+                  disabled={nginxSelection.length === 0}
+                  onClick={() => void confirmNginxImport()}
+                >
+                  {importing ? t('sites.import.importing') : t('sites.import.confirm')}
+                </Button>
+              </>
+            )}
+            {nginxPhase === 'result' && (
+              <Button onClick={closeNginx}>{t('common.close')}</Button>
             )}
           </DialogFooter>
         </DialogContent>

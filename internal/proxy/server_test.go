@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,12 +17,223 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"nhooyr.io/websocket"
 )
+
+type pipelineErrorStub struct {
+	err error
+}
+
+func (p pipelineErrorStub) Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error) {
+	return nil, p.err
+}
+
+func TestRequestBodyReadErrorStatusDistinguishesOverload(t *testing.T) {
+	wrapped := fmt.Errorf("body read: %w", engine.ErrRequestBodyReadOverload)
+	tests := []struct {
+		name     string
+		err      error
+		fallback int
+		want     int
+	}{
+		{name: "wrapped overload from request path", err: wrapped, fallback: http.StatusBadRequest, want: http.StatusServiceUnavailable},
+		{name: "wrapped overload from pipeline path", err: wrapped, fallback: http.StatusInternalServerError, want: http.StatusServiceUnavailable},
+		{name: "ordinary read failure", err: fmt.Errorf("malformed body"), fallback: http.StatusBadRequest, want: http.StatusBadRequest},
+		{name: "nil error preserves fallback", err: nil, fallback: http.StatusInternalServerError, want: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := requestBodyReadErrorStatus(tc.err, tc.fallback); got != tc.want {
+				t.Fatalf("requestBodyReadErrorStatus()=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServerMapsPipelineBodyLimitToRequestEntityTooLarge(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = nil
+	cfg.Sites[0].WAF.Enabled = true
+	cfg.Sites[0].WAF.Mode = "block"
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelSmart,
+		APISecurity: config.ProtectionLevelOff,
+		BotCC:       config.ProtectionLevelOff,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.APISec.Enabled = false
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.pipelineMu.Lock()
+	server.pipeline = pipelineErrorStub{err: fmt.Errorf("pipeline body read: %w", engine.ErrRequestBodyTooLarge)}
+	server.pipelineMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("x"))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%q, want 413", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 || sink.entries[0].Category != "request_too_large" || sink.entries[0].StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("unexpected request limit event: %#v", sink.entries)
+	}
+}
+
+func TestServerMapsPipelineBodyReadOverloadToServiceUnavailable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = nil
+	cfg.Sites[0].WAF.Enabled = true
+	cfg.Sites[0].WAF.Mode = "block"
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelSmart,
+		APISecurity: config.ProtectionLevelOff,
+		BotCC:       config.ProtectionLevelOff,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.APISec.Enabled = false
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.pipelineMu.Lock()
+	server.pipeline = pipelineErrorStub{err: fmt.Errorf("pipeline body read: %w", engine.ErrRequestBodyReadOverload)}
+	server.pipelineMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("x"))
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q, want 503", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected one overload event, got %d: %#v", len(sink.entries), sink.entries)
+	}
+	entry := sink.entries[0]
+	if entry.StatusCode != http.StatusServiceUnavailable || entry.Metadata["proxy_error"] != "request body inspection temporarily unavailable" {
+		t.Fatalf("unexpected pipeline overload event: %#v", entry)
+	}
+}
+
+func TestServerPreservesEmptyBodyForEdgeAndFailoverEligibility(t *testing.T) {
+	configurations := []struct {
+		name      string
+		configure func(*config.Config)
+	}{
+		{
+			name: "waf disabled",
+			configure: func(cfg *config.Config) {
+				cfg.Sites[0].WAF.Enabled = false
+				cfg.Sites[0].WAF.Mode = "off"
+			},
+		},
+		{
+			name: "web attack off",
+			configure: func(cfg *config.Config) {
+				cfg.Sites[0].WAF.Enabled = true
+				cfg.Sites[0].WAF.Mode = "block"
+				cfg.Protection.Policy.WebAttack = config.ProtectionLevelOff
+			},
+		},
+	}
+
+	for _, configuration := range configurations {
+		t.Run(configuration.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Sites[0].Upstreams = nil
+			cfg.APISec.Enabled = false
+			cfg.Protection.Policy = config.ProtectionPolicyConfig{
+				WebAttack:   config.ProtectionLevelSmart,
+				APISecurity: config.ProtectionLevelOff,
+				BotCC:       config.ProtectionLevelOff,
+				ThreatIntel: config.ProtectionLevelOff,
+			}
+			cfg.Protection.IP.Whitelist = nil
+			cfg.Protection.IP.Blacklist = nil
+			configuration.configure(&cfg)
+
+			server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			edgeRT := server.edgeRuntime.Load()
+			if edgeRT == nil {
+				t.Fatal("missing edge runtime")
+			}
+
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				for _, nilBody := range []bool{false, true} {
+					name := strings.ToLower(method)
+					if nilBody {
+						name += "_nil_body"
+					} else {
+						name += "_no_body_sentinel"
+					}
+					t.Run(name, func(t *testing.T) {
+						req := httptest.NewRequest(method, "http://localhost/assets/app.js", nil)
+						if nilBody {
+							req.Body = nil
+						}
+						req.Header.Set("Accept-Encoding", "gzip")
+						edgeRT.cache.Store(req, edge.CapturedResponse{
+							Status: http.StatusOK,
+							Header: http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+							Body:   []byte(strings.Repeat("a", 2048)),
+						})
+
+						recorder := httptest.NewRecorder()
+						server.Handler().ServeHTTP(recorder, req)
+
+						if recorder.Code != http.StatusOK || recorder.Header().Get("X-CheeseWAF-Cache") != "HIT" {
+							t.Fatalf("status=%d cache=%q body=%q", recorder.Code, recorder.Header().Get("X-CheeseWAF-Cache"), recorder.Body.String())
+						}
+						if recorder.Header().Get("Content-Encoding") != "gzip" {
+							t.Fatalf("content encoding=%q, want gzip", recorder.Header().Get("Content-Encoding"))
+						}
+						if nilBody {
+							if req.Body != nil {
+								t.Fatalf("nil body was replaced with %T", req.Body)
+							}
+						} else if req.Body != http.NoBody {
+							t.Fatalf("http.NoBody was replaced with %T", req.Body)
+						}
+						if !retrySafeRequest(req) {
+							t.Fatal("empty GET/HEAD lost retry eligibility")
+						}
+						if !edgeRT.cache.CaptureCandidate(req) {
+							t.Fatal("empty GET/HEAD lost cache eligibility")
+						}
+						if !edgeRT.compress.MayApplyRequest(req) {
+							t.Fatal("empty GET/HEAD lost compression eligibility")
+						}
+						if !shouldRetryUpstream(&net.DNSError{Err: "temporary lookup failure", Name: "upstream.invalid", IsTemporary: true}, retrySafeRequest(req)) {
+							t.Fatal("empty GET/HEAD lost failover eligibility")
+						}
+					})
+				}
+			}
+		})
+	}
+}
 
 func TestServerRejectsKnownLengthBodyBeforeUpstream(t *testing.T) {
 	assertOversizedRequestRejected(t, false)
@@ -67,11 +280,20 @@ func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
 		bytes int64
 	}
 	reads := make(chan upstreamRead, 2)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Bind explicitly to IPv4 so this test remains runnable in sandboxes that
+	// prohibit IPv6 listeners. The request still passes through the real
+	// reverse-proxy transport below.
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(io.Discard, r.Body)
 		reads <- upstreamRead{bytes: n}
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	upstream.Listener = listener
+	upstream.Start()
 	defer upstream.Close()
 
 	cfg := config.Default()
@@ -118,6 +340,14 @@ func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status=%d body=%q, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
 			}
+			if tc.wantStatus == http.StatusRequestEntityTooLarge {
+				select {
+				case got := <-reads:
+					t.Fatalf("oversized request reached upstream and read %d bytes", got.bytes)
+				default:
+				}
+				return
+			}
 			select {
 			case got := <-reads:
 				if got.bytes > tc.wantBytes {
@@ -127,6 +357,62 @@ func TestServerCapsUninspectedUnknownLengthBodies(t *testing.T) {
 				t.Fatal("upstream did not receive the request")
 			}
 		})
+	}
+}
+
+func TestServerMapsRequestBodyReadOverloadToServiceUnavailable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = nil
+	cfg.Sites[0].WAF.Enabled = false
+	cfg.Sites[0].WAF.Mode = "off"
+	cfg.APISec.Enabled = false
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelOff,
+		APISecurity: config.ProtectionLevelOff,
+		BotCC:       config.ProtectionLevelOff,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Preserve any pre-existing permits, then saturate the bounded preflight
+	// pool so this request exercises the server-side overload path without
+	// starting a body reader or touching an upstream.
+	initial := len(preflightBodySlots)
+	for i := 0; i < initial; i++ {
+		<-preflightBodySlots
+	}
+	for i := 0; i < cap(preflightBodySlots); i++ {
+		preflightBodySlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(preflightBodySlots); i++ {
+			<-preflightBodySlots
+		}
+		for i := 0; i < initial; i++ {
+			preflightBodySlots <- struct{}{}
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/upload", strings.NewReader("body"))
+	req.ContentLength = -1
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%q, want 503", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected one overload event, got %d: %#v", len(sink.entries), sink.entries)
+	}
+	entry := sink.entries[0]
+	if entry.StatusCode != http.StatusServiceUnavailable || entry.Category != "proxy_error" || entry.Metadata["proxy_error"] != "failed to read request" {
+		t.Fatalf("unexpected overload event: %#v", entry)
 	}
 }
 
@@ -502,6 +788,87 @@ func TestServerBlocksSemanticPostBodyPayloads(t *testing.T) {
 	}
 }
 
+// TestBudgetExhaustedPolicyAppliedEndToEnd drives the real budget-exhaustion
+// path (a detector that outlives the detection budget) so the open/observe/closed
+// fail-mode is genuinely exercised, not just the decision helper.
+//
+// This is the guard that catches the original P0 and its level-inversion
+// variant: with `high` mapped to `observe` this test fails, because an
+// un-analysed request is forwarded instead of challenged.
+func TestBudgetExhaustedPolicyAppliedEndToEnd(t *testing.T) {
+	for _, level := range []string{config.ProtectionLevelSmart, config.ProtectionLevelHigh, config.ProtectionLevelStrict} {
+		t.Run(level, func(t *testing.T) {
+			server, sink, cleanup := newPolicyTestServerWithDetectors(t, level, overBudgetDetector{})
+			defer cleanup()
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+
+			if len(sink.entries) != 1 {
+				t.Fatalf("level %s: expected one log entry, got %d", level, len(sink.entries))
+			}
+			// The budget actually ran out, so the fail-mode policy applied.
+			if _, ok := sink.entries[0].Metadata["detection_analysis_incomplete"]; !ok {
+				t.Fatalf("level %s: budget exhaustion was not reached, metadata=%v", level, sink.entries[0].Metadata)
+			}
+			if sink.entries[0].Action != engine.ActionChallenge.String() {
+				t.Fatalf("level %s: un-analysed request was %q instead of challenged — WAF failed open",
+					level, sink.entries[0].Action)
+			}
+		})
+	}
+}
+
+// TestBudgetExhaustedDoesNotFailOpen checks that a detection whose action is
+// "challenge" is actually challenged by the server rather than forwarded.
+//
+// Scope note: this drives a request through the real server, but the stub
+// detector returns immediately, so the pipeline never reaches
+// finalizeBudgetExhausted. This test therefore covers the action switch (the
+// missing "log" branch that caused the original P0), while the budget policy
+// itself is covered by TestBudgetExhaustedPolicyAppliedEndToEnd. Keep both:
+// mutation testing showed this one alone does NOT catch a `high` → `observe`
+// mapping regression.
+func TestBudgetExhaustedDoesNotFailOpen(t *testing.T) {
+	budget := &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "pipeline.budget",
+		Category:   "detection_budget",
+		Severity:   engine.SeverityMedium,
+		Action:     engine.ActionChallenge,
+		Confidence: 0.55,
+		Message:    "detection budget exhausted",
+	}
+
+	for _, level := range []string{config.ProtectionLevelSmart, config.ProtectionLevelHigh, config.ProtectionLevelStrict} {
+		t.Run(level, func(t *testing.T) {
+			server, sink, cleanup := newPolicyTestServer(t, level, budget)
+			defer cleanup()
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+
+			if len(sink.entries) != 1 {
+				t.Fatalf("level %s: expected exactly one log entry, got %d", level, len(sink.entries))
+			}
+			// Judge by the recorded action, not by the response body: the
+			// challenge page is HTML whose PoW token can contain arbitrary
+			// substrings, so string matching on it is unreliable.
+			if sink.entries[0].Action != engine.ActionChallenge.String() {
+				t.Fatalf("level %s: budget-exhausted request was not challenged (action %q, code %d) — WAF failed open",
+					level, sink.entries[0].Action, recorder.Code)
+			}
+			decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+			if !ok {
+				t.Fatalf("level %s: missing policy decision metadata", level)
+			}
+			if decision.DetectorCategory != "detection_budget" {
+				t.Fatalf("level %s: unexpected detector category %q", level, decision.DetectorCategory)
+			}
+		})
+	}
+}
+
 func TestServerWebAttackPolicyLevels(t *testing.T) {
 	result := &engine.DetectionResult{
 		Detected:   true,
@@ -586,7 +953,7 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 			Confidence: 0.55,
 			Message:    "detection budget exhausted",
 		}
-		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, budget, nil)
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, budget, nil, config.DefaultParanoiaLevel)
 		if decision.Action != engine.ActionChallenge.String() {
 			t.Fatalf("budget closed must honor challenge without severity gate, got %#v", decision)
 		}
@@ -697,7 +1064,7 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 		legacy := analyzer
 		legacy.DetectorID = "semantic.sql"
 		legacy.Message = "SQL injection pattern matched"
-		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, &analyzer, []engine.DetectionResult{analyzer, legacy})
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, &analyzer, []engine.DetectionResult{analyzer, legacy}, config.DefaultParanoiaLevel)
 		if decision.EvidenceCount != 1 {
 			t.Fatalf("expected duplicate analyzer/legacy evidence to count once, got %#v", decision)
 		}
@@ -1422,6 +1789,101 @@ func TestServerPhase2Protections(t *testing.T) {
 	}
 }
 
+func TestServerBlocksTamperedUpstreamResponseInline(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		_, _ = w.Write([]byte("changed"))
+	}))
+	defer upstream.Close()
+
+	cfg := tamperServerConfig(t, upstream.URL, "/protected", []byte("clean"))
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/protected", nil))
+	if recorder.Code != http.StatusForbidden || upstreamHits != 1 {
+		t.Fatalf("tampered response code=%d upstreamHits=%d body=%q", recorder.Code, upstreamHits, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 || sink.entries[0].DetectorID != "protection.tamper" || sink.entries[0].Action != "block" {
+		t.Fatalf("tamper event was not logged as a block: %+v", sink.entries)
+	}
+}
+
+func TestServerTamperSnapshotUsesPublicURLAcrossRewrite(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/new/item" {
+			t.Errorf("upstream path = %q, want /new/item", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("changed"))
+	}))
+	defer upstream.Close()
+
+	cfg := tamperServerConfig(t, upstream.URL, "/old/item", []byte("clean"))
+	cfg.Sites[0].WAF.Rewrite = []config.RewriteRuleConfig{{
+		ID: "public-to-upstream", Pattern: "^/old/(.*)$", Replacement: "/new/$1", Enabled: true,
+	}}
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/old/item", nil))
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("rewritten tampered response code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerChecksTamperSnapshotOnCacheHit(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		_, _ = w.Write([]byte("upstream"))
+	}))
+	defer upstream.Close()
+
+	cfg := tamperServerConfig(t, upstream.URL, "/assets/app.js", []byte("clean"))
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRequest := httptest.NewRequest(http.MethodGet, "http://localhost/assets/app.js", nil)
+	server.edgeRuntime.Load().cache.Store(seedRequest, edge.CapturedResponse{
+		Status: http.StatusOK, Header: make(http.Header), Body: []byte("changed"),
+	})
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/assets/app.js", nil))
+	if recorder.Code != http.StatusForbidden || upstreamHits != 0 {
+		t.Fatalf("cached tamper code=%d upstreamHits=%d body=%q", recorder.Code, upstreamHits, recorder.Body.String())
+	}
+}
+
+func tamperServerConfig(t *testing.T, upstreamURL, resourceURL string, cleanBody []byte) config.Config {
+	t.Helper()
+	key := []byte("01234567890123456789012345678901")
+	snapshot, err := tamper.Capture(key, resourceURL, cleanBody, time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstreamURL, Weight: 1}}
+	cfg.Sites[0].WAF.Response.Enabled = true
+	cfg.Sites[0].WAF.Response.MaxBodyBytes = 1 << 20
+	cfg.Sites[0].WAF.Response.SensitivePatterns = []string{"DO-NOT-MATCH"}
+	cfg.Sites[0].WAF.Response.TamperKey = string(key)
+	cfg.Sites[0].WAF.Response.TamperSnapshots = []config.TamperSnapshotConfig{{
+		URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+	}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	return cfg
+}
+
 type noopSink struct{}
 
 func (noopSink) Write(context.Context, *storage.LogEntry) error { return nil }
@@ -1489,6 +1951,18 @@ func TestWriteLogSkipsPlainAccessWhenSiteDisabled(t *testing.T) {
 	}
 }
 
+func TestSiteAccessLogEnabledDefaultsOnForEmptySiteID(t *testing.T) {
+	off := false
+	set := &siteRuntimeSet{byID: map[string]*siteRuntime{
+		"disabled": {site: config.SiteConfig{ID: "disabled", WAF: config.WAFConfig{AccessLogEnabled: &off}}},
+	}}
+	server := &Server{}
+	server.siteRuntimes.Store(set)
+	if !server.siteAccessLogEnabled("") {
+		t.Fatal("empty site id must deterministically default access logging on")
+	}
+}
+
 type captureSink struct {
 	entries []*storage.LogEntry
 }
@@ -1525,6 +1999,27 @@ func (d staticDetector) Detect(context.Context, *engine.RequestContext) (*engine
 func newPolicyTestServer(t *testing.T, level string, result *engine.DetectionResult) (*Server, *captureSink, func()) {
 	t.Helper()
 	return newPolicyTestServerWithDetectors(t, level, staticDetector{result: result})
+}
+
+// overBudgetDetector never finishes before the pipeline's detection budget
+// elapses, which is the only way to reach finalizeBudgetExhausted — the code
+// path that applies the open/observe/closed fail-mode. A stub that simply
+// returns a DetectionResult skips it entirely, so tests built on
+// staticDetector do not actually exercise the budget policy.
+type overBudgetDetector struct{}
+
+func (overBudgetDetector) ID() string   { return "test.over-budget" }
+func (overBudgetDetector) Name() string { return "Over-Budget Detector" }
+func (overBudgetDetector) Priority() int {
+	return 1
+}
+func (overBudgetDetector) Detect(ctx context.Context, _ *engine.RequestContext) (*engine.DetectionResult, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(2 * time.Second):
+		return nil, context.DeadlineExceeded
+	}
 }
 
 func newPolicyTestServerWithDetectors(t *testing.T, level string, detectors ...engine.Detector) (*Server, *captureSink, func()) {

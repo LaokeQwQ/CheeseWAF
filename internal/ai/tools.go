@@ -102,16 +102,15 @@ func (t SystemSummaryTool) Execute(context.Context, map[string]any) (*ToolResult
 		return nil, fmt.Errorf("config is nil")
 	}
 	summary := map[string]any{
-		"sites":          len(t.Config.Sites),
-		"bot_enabled":    t.Config.Protection.Bot.Enabled,
-		"edge_cache":     t.Config.Edge.Cache.Enabled,
-		"scheduler":      t.Config.Scheduler.Enabled,
-		"waf_modes":      map[string]string{},
-		"admin_listener": t.Config.Server.AdminListen,
+		"sites":       len(t.Config.Sites),
+		"bot_enabled": t.Config.Protection.Bot.Enabled,
+		"edge_cache":  t.Config.Edge.Cache.Enabled,
+		"scheduler":   t.Config.Scheduler.Enabled,
+		"waf_modes":   map[string]int{},
 	}
-	modes := summary["waf_modes"].(map[string]string)
+	modes := summary["waf_modes"].(map[string]int)
 	for _, site := range t.Config.Sites {
-		modes[site.ID] = site.WAF.Mode
+		modes[site.WAF.Mode]++
 	}
 	data, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {

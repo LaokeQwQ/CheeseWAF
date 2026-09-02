@@ -68,52 +68,128 @@ import BrandLogo from '../components/BrandLogo';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { usePageVisibility, usePollingVisibility } from '../hooks/usePollingVisibility';
 import type { AuditEntry, LogEntry, Notification, NotificationFilter, User } from '../types/api';
 import { displayAction } from '../utils/display';
 import { preloadRoute } from '../routes/preload';
+import { currentAccount, filterNavigation, hasScope, type AccountProfile } from '../authProfile';
+import { subscribeRealtimeEvents } from '../api/realtime';
 
-type NavItem = { key: string; labelKey: string; icon: LucideIcon };
+type NavItem = { key: string; labelKey: string; icon: LucideIcon; requiredScopes: string[] };
 type NavGroup = { labelKey: string; items: NavItem[] };
 
 const navGroups: NavGroup[] = [
   {
     labelKey: 'navGroup.posture',
     items: [
-      { key: '/', labelKey: 'nav.dashboard', icon: LayoutDashboard },
-      { key: '/monitor', labelKey: 'nav.monitor', icon: LineChart },
-      { key: '/attack-map', labelKey: 'nav.attackMap', icon: Map },
+      { key: '/', labelKey: 'nav.dashboard', icon: LayoutDashboard, requiredScopes: ['read:monitor'] },
+      { key: '/monitor', labelKey: 'nav.monitor', icon: LineChart, requiredScopes: ['read:monitor'] },
+      { key: '/attack-map', labelKey: 'nav.attackMap', icon: Map, requiredScopes: ['read:logs'] },
     ],
   },
   {
     labelKey: 'navGroup.security',
     items: [
-      { key: '/sites', labelKey: 'nav.sites', icon: Globe2 },
-      { key: '/ssl', labelKey: 'nav.ssl', icon: LockKeyhole },
-      { key: '/rules', labelKey: 'nav.rules', icon: ListChecks },
-      { key: '/review', labelKey: 'nav.review', icon: ClipboardList },
-      { key: '/logs', labelKey: 'nav.logs', icon: ListFilter },
-      { key: '/ip', labelKey: 'nav.ip', icon: Shield },
-      { key: '/protection', labelKey: 'nav.protection', icon: ShieldAlert },
-      { key: '/bot-challenge', labelKey: 'nav.botChallenge', icon: Bot },
-      { key: '/apisec', labelKey: 'nav.apisec', icon: Radar },
-      { key: '/ai', labelKey: 'nav.ai', icon: BrainCircuit },
+      { key: '/sites', labelKey: 'nav.sites', icon: Globe2, requiredScopes: ['read:sites'] },
+      { key: '/ssl', labelKey: 'nav.ssl', icon: LockKeyhole, requiredScopes: ['read:system'] },
+      { key: '/rules', labelKey: 'nav.rules', icon: ListChecks, requiredScopes: ['read:rules'] },
+      { key: '/review', labelKey: 'nav.review', icon: ClipboardList, requiredScopes: ['read:logs'] },
+      { key: '/logs', labelKey: 'nav.logs', icon: ListFilter, requiredScopes: ['read:logs'] },
+      { key: '/ip', labelKey: 'nav.ip', icon: Shield, requiredScopes: ['read:protection'] },
+      { key: '/protection', labelKey: 'nav.protection', icon: ShieldAlert, requiredScopes: ['read:protection'] },
+      { key: '/bot-challenge', labelKey: 'nav.botChallenge', icon: Bot, requiredScopes: ['read:protection'] },
+      { key: '/apisec', labelKey: 'nav.apisec', icon: Radar, requiredScopes: ['read:apisec'] },
+      { key: '/ai', labelKey: 'nav.ai', icon: BrainCircuit, requiredScopes: ['read:ai', 'use:ai', 'write:ai', 'approve:ai'] },
     ],
   },
   {
     labelKey: 'navGroup.platform',
     items: [
-      { key: '/edge', labelKey: 'nav.edge', icon: Gauge },
-      { key: '/block-pages', labelKey: 'nav.blockPages', icon: FileCode2 },
-      { key: '/users', labelKey: 'nav.users', icon: UserCog },
-      { key: '/ops', labelKey: 'nav.ops', icon: Radar },
-      { key: '/updates', labelKey: 'nav.updates', icon: CloudDownload },
-      { key: '/cluster', labelKey: 'nav.cluster', icon: Network },
-      { key: '/system', labelKey: 'nav.system', icon: Settings },
+      { key: '/edge', labelKey: 'nav.edge', icon: Gauge, requiredScopes: ['read:edge'] },
+      { key: '/block-pages', labelKey: 'nav.blockPages', icon: FileCode2, requiredScopes: ['read:system'] },
+      { key: '/users', labelKey: 'nav.users', icon: UserCog, requiredScopes: ['read:users'] },
+      { key: '/ops', labelKey: 'nav.ops', icon: Radar, requiredScopes: ['read:ops'] },
+      { key: '/updates', labelKey: 'nav.updates', icon: CloudDownload, requiredScopes: ['read:system'] },
+      { key: '/cluster', labelKey: 'nav.cluster', icon: Network, requiredScopes: ['read:cluster'] },
+      { key: '/system', labelKey: 'nav.system', icon: Settings, requiredScopes: ['read:system'] },
     ],
   },
 ];
 
 const allNavItems = navGroups.flatMap((group) => group.items);
+
+export function navigationForAccount(account: AccountProfile) {
+  return filterNavigation(navGroups, account);
+}
+
+export function shellCapabilities(account: AccountProfile) {
+  return {
+    version: hasScope(account, 'read:system'),
+    recentLogs: hasScope(account, 'read:logs'),
+    audit: hasScope(account, 'read:audit'),
+    users: hasScope(account, 'read:users'),
+    notifications: hasScope(account, 'read:monitor'),
+    realtime: hasScope(account, 'read:realtime'),
+  };
+}
+
+export function realtimeQueryKeys(messageType: string): ReadonlyArray<readonly unknown[]> {
+  switch (messageType) {
+    case 'stats':
+      return [['monitor-summary'], ['monitor'], ['attack-screen-monitor']];
+    case 'alert':
+      return [['notifications']];
+    case 'approval':
+      return [['assistant-approvals']];
+    case 'ai_stream':
+      return [['ai-events'], ['assistant-approvals']];
+    case 'log':
+      return [
+        ['recent-security-logs'],
+        ['dashboard-period-logs'],
+        ['dashboard-live-logs'],
+        ['logs'],
+        ['attack-map-logs'],
+        ['attack-screen-logs'],
+      ];
+    default:
+      return [];
+  }
+}
+
+export function createRealtimeInvalidationScheduler(
+  invalidate: (queryKey: readonly unknown[]) => void,
+  schedule: (callback: () => void, delay: number) => number = (callback, delay) => window.setTimeout(callback, delay),
+  cancel: (handle: number) => void = (handle) => window.clearTimeout(handle),
+) {
+  const pending = new globalThis.Map<string, readonly unknown[]>();
+  let timer: number | null = null;
+  const flush = () => {
+    timer = null;
+    const keys = Array.from(pending.values());
+    pending.clear();
+    for (const queryKey of keys) {
+      invalidate(queryKey);
+    }
+  };
+  return {
+    enqueue(queryKeys: ReadonlyArray<readonly unknown[]>) {
+      for (const queryKey of queryKeys) {
+        pending.set(JSON.stringify(queryKey), queryKey);
+      }
+      if (timer == null && pending.size > 0) {
+        timer = schedule(flush, 1_000);
+      }
+    },
+    close() {
+      if (timer != null) {
+        cancel(timer);
+        timer = null;
+      }
+      pending.clear();
+    },
+  };
+}
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -126,19 +202,25 @@ export default function MainLayout() {
   const setLanguage = useAppStore((state) => state.setLanguage);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const queryClient = useQueryClient();
-  const { data: version } = useQuery({ queryKey: ['version'], queryFn: fetchVersion, staleTime: 5 * 60_000, retry: false });
-  const { data: recentLogs } = useQuery({ queryKey: ['recent-security-logs', 12], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: 30_000, staleTime: 20_000, retry: false });
-  const { data: auditEntries } = useQuery({ queryKey: ['shell-audit'], queryFn: fetchAuditEntries, staleTime: 30_000, refetchInterval: 60_000, retry: false });
-  const { data: users } = useQuery({ queryKey: ['shell-users'], queryFn: fetchUsers, staleTime: 60_000, retry: false });
+  const account = useMemo(() => currentAccount(), []);
+  const shellAccess = useMemo(() => shellCapabilities(account), [account]);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const recentLogsRefetchInterval = usePollingVisibility(realtimeConnected ? 2 * 60_000 : 30_000);
+  const auditEntriesRefetchInterval = usePollingVisibility(60_000);
+  const { data: version } = useQuery({ queryKey: ['version'], queryFn: fetchVersion, staleTime: 5 * 60_000, retry: false, enabled: shellAccess.version });
+  const { data: recentLogs } = useQuery({ queryKey: ['recent-security-logs', 12], queryFn: () => fetchLogs({ limit: 12 }), refetchInterval: recentLogsRefetchInterval, staleTime: 20_000, retry: false, enabled: shellAccess.recentLogs });
+  const { data: auditEntries } = useQuery({ queryKey: ['shell-audit'], queryFn: fetchAuditEntries, staleTime: 30_000, refetchInterval: auditEntriesRefetchInterval, retry: false, enabled: shellAccess.audit });
+  const { data: users } = useQuery({ queryKey: ['shell-users'], queryFn: fetchUsers, staleTime: 60_000, retry: false, enabled: shellAccess.users });
   const [healthFailures, setHealthFailures] = useState(0);
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState(Date.now());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const heartbeatRefetching = useRef(false);
+  const healthRefetchInterval = usePollingVisibility(healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 15_000);
   const healthQuery = useQuery({
     queryKey: ['shell-health'],
     queryFn: fetchHealth,
     // Healthy consoles do not need 1s polling — keep light contact and back off on failures.
-    refetchInterval: healthFailures >= 5 ? false : healthFailures > 0 ? 10_000 : 15_000,
+    refetchInterval: healthRefetchInterval,
     retry: false,
   });
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -152,11 +234,32 @@ export default function MainLayout() {
   const notificationTriggerRef = useRef<HTMLSpanElement | null>(null);
   const searchBlurTimerRef = useRef<number | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const account = currentAccount();
   const shellClassName = [
     sidebarCollapsed ? 'app-shell app-shell-collapsed' : 'app-shell',
     mobileNavOpen ? 'app-mobile-nav-open' : '',
   ].filter(Boolean).join(' ');
+  const allowedNavGroups = useMemo(() => navigationForAccount(account), [account]);
+  const allowedNavItems = useMemo(() => allowedNavGroups.flatMap((group) => group.items), [allowedNavGroups]);
+
+  useEffect(() => {
+    if (!shellAccess.realtime) {
+      setRealtimeConnected(false);
+      return undefined;
+    }
+    const scheduler = createRealtimeInvalidationScheduler((queryKey) => {
+      void queryClient.invalidateQueries({ queryKey });
+    });
+    const subscription = subscribeRealtimeEvents({
+      onConnectionChange: setRealtimeConnected,
+      onEvent: (message) => {
+        scheduler.enqueue(realtimeQueryKeys(message.type));
+      },
+    });
+    return () => {
+      subscription.close();
+      scheduler.close();
+    };
+  }, [queryClient, shellAccess.realtime]);
 
   useEffect(() => {
     setNotificationsOpen(false);
@@ -250,7 +353,11 @@ export default function MainLayout() {
   }, [healthQuery.isError, healthQuery.isSuccess, healthQuery.dataUpdatedAt, healthQuery.errorUpdatedAt]);
 
   const healthRefetch = healthQuery.refetch;
+  const pageVisible = usePageVisibility();
   useEffect(() => {
+    if (!pageVisible) {
+      return undefined;
+    }
     const timer = window.setInterval(() => {
       if (healthFailures >= 5 || heartbeatRefetching.current) {
         return;
@@ -266,9 +373,9 @@ export default function MainLayout() {
       });
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [healthFailures, healthRefetch, lastHeartbeatAt]);
+  }, [healthFailures, healthRefetch, lastHeartbeatAt, pageVisible]);
 
-  const currentKey = allNavItems.find((item) => (
+  const currentKey = allowedNavItems.find((item) => (
     item.key === '/'
       ? location.pathname === '/'
       : location.pathname === item.key || location.pathname.startsWith(`${item.key}/`)
@@ -279,13 +386,15 @@ export default function MainLayout() {
   const auditItems = useMemo(() => safeArray<AuditEntry>(auditEntries), [auditEntries]);
   const userItems = useMemo(() => safeArray<User>(users), [users]);
   const notificationLimit = 8;
+  const notificationsRefreshInterval = usePollingVisibility(realtimeConnected ? 60_000 : 15_000);
   const notificationQuery = useQuery({
     queryKey: ['notifications', notificationFilter, notificationPage],
     queryFn: () => fetchNotifications({ page: notificationPage, limit: notificationLimit, filter: notificationFilter }),
-    refetchInterval: 15_000,
+    refetchInterval: notificationsRefreshInterval,
     staleTime: 10_000,
     retry: false,
     placeholderData: (previous) => previous,
+    enabled: shellAccess.notifications,
   });
   const notificationItems = safeArray<Notification>(notificationQuery.data?.items);
   const unreadNotifications = notificationQuery.data?.unread ?? 0;
@@ -315,8 +424,8 @@ export default function MainLayout() {
     onError: (error) => toast.error(error instanceof Error ? error.message : t('shell.notificationUpdateFailed')),
   });
   const searchResults = useMemo(
-    () => buildSearchResults(searchValue, recentLogItems, auditItems, userItems, t),
-    [auditItems, recentLogItems, searchValue, t, userItems],
+    () => buildSearchResults(searchValue, recentLogItems, auditItems, userItems, t, allowedNavItems),
+    [allowedNavItems, auditItems, recentLogItems, searchValue, t, userItems],
   );
 
   function reconnectHealth() {
@@ -388,7 +497,7 @@ export default function MainLayout() {
         </div>
 
         <nav className="nav-list" aria-label={t('common.primaryNav')}>
-          {navGroups.map((group) => {
+          {allowedNavGroups.map((group) => {
             const collapsed = Boolean(collapsedGroups[group.labelKey]);
             return (
               <section key={group.labelKey} className="nav-group">
@@ -911,13 +1020,13 @@ type SearchResult = {
   to: string;
 };
 
-export function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[], users: User[], t: (key: string, options?: Record<string, unknown>) => string): SearchResult[] {
+export function buildSearchResults(query: string, logs: LogEntry[], audits: AuditEntry[], users: User[], t: (key: string, options?: Record<string, unknown>) => string, navigation: readonly NavItem[] = allNavItems): SearchResult[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
     return [];
   }
   const results: SearchResult[] = [];
-  for (const item of allNavItems) {
+  for (const item of navigation) {
     const label = t(item.labelKey);
     if (matchesSearch(needle, label, item.key)) {
       results.push({ key: `nav:${item.key}`, type: t('shell.searchSection'), title: label, subtitle: item.key, to: item.key });
@@ -1051,22 +1160,4 @@ function versionLabel(version: { version: string; channel: string } | undefined,
 function fallbackText(t: (key: string, options?: Record<string, unknown>) => string, key: string, fallback: string) {
   const value = t(key);
   return value === key ? fallback : value;
-}
-
-function currentAccount() {
-  // Prefer session profile cache; do not decode tokens from localStorage.
-  const fallback = { username: '', role: '' };
-  try {
-    const cached = sessionStorage.getItem('cheesewaf-account');
-    if (cached) {
-      const parsed = JSON.parse(cached) as { username?: string; role?: string };
-      return {
-        username: parsed.username || fallback.username,
-        role: parsed.role || fallback.role,
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return fallback;
 }

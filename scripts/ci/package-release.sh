@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version_prefix="${CHEESEWAF_VERSION_PREFIX:-0.1.0}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+version_prefix="${CHEESEWAF_VERSION_PREFIX:-$(cat "${script_dir}/product-version")}"
 ref_name="${CHEESEWAF_REF_NAME:-${GITHUB_REF_NAME:-}}"
 if [[ -z "$ref_name" ]]; then
   ref_name="$(git branch --show-current 2>/dev/null || true)"
@@ -19,6 +20,17 @@ run_number="${CHEESEWAF_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-0}}"
 build_time="${CHEESEWAF_BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 
 case "$ref_name" in
+  v[0-9]*.[0-9]*.[0-9]*)
+    if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "::error::stable release tag must use vMAJOR.MINOR.PATCH: ${ref_name}" >&2
+      exit 1
+    fi
+    channel="stable"
+    file_suffix="stable"
+    version="${ref_name#v}"
+    release_tag="$ref_name"
+    release_kind="stable"
+    ;;
   master|main)
     channel="stable"
     file_suffix="beta"
@@ -45,7 +57,10 @@ case "$ref_name" in
 esac
 
 artifact_version="${version//+/-}"
-prerelease_tag="Alpha-${artifact_version}"
+if [[ -z "${release_tag:-}" ]]; then
+  release_tag="Alpha-${artifact_version}"
+  release_kind="prerelease"
+fi
 module="$(go list -m)"
 ldflags="-s -w -X ${module}/internal/version.Version=${version} -X ${module}/internal/version.Commit=${commit} -X ${module}/internal/version.BuildTime=${build_time} -X ${module}/internal/version.Channel=${channel}"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -58,6 +73,76 @@ if [[ "$work_dir" != /* ]]; then
   work_dir="${repo_root}/${work_dir}"
 fi
 
+assert_managed_output_dir() {
+  local path="$1"
+  local label="$2"
+  local relative
+  local remaining
+  local component
+  local current
+  case "$path" in
+    "${repo_root}/"*) ;;
+    *)
+      echo "::error::${label} must be a child of the repository: ${path}" >&2
+      exit 1
+      ;;
+  esac
+  relative="${path#"$repo_root"/}"
+  case "/${relative}/" in
+    */../* | */./*)
+      echo "::error::${label} must not contain dot path segments: ${path}" >&2
+      exit 1
+      ;;
+  esac
+  [[ -n "$relative" && "$relative" != *$'\n'* ]] || {
+    echo "::error::${label} has an invalid relative path: ${path}" >&2
+    exit 1
+  }
+
+  remaining="$relative"
+  current="$repo_root"
+  while [[ -n "$remaining" ]]; do
+    component="${remaining%%/*}"
+    if [[ "$remaining" == */* ]]; then
+      remaining="${remaining#*/}"
+    else
+      remaining=""
+    fi
+    [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || {
+      echo "::error::${label} contains an invalid path component: ${path}" >&2
+      exit 1
+    }
+    current="${current}/${component}"
+    if [[ -L "$current" ]]; then
+      echo "::error::${label} must not traverse a symbolic link: ${current}" >&2
+      exit 1
+    fi
+  done
+}
+
+assert_managed_output_dir "$release_dir" CHEESEWAF_RELEASE_DIR
+assert_managed_output_dir "$work_dir" CHEESEWAF_RELEASE_WORK_DIR
+[[ "$release_dir" != "$work_dir" ]] || {
+  echo "::error::release and work directories must be different" >&2
+  exit 1
+}
+case "${release_dir}/" in
+  "${work_dir}/"*)
+    echo "::error::release directory must not be nested inside the work directory" >&2
+    exit 1
+    ;;
+esac
+case "${work_dir}/" in
+  "${release_dir}/"*)
+    echo "::error::work directory must not be nested inside the release directory" >&2
+    exit 1
+    ;;
+esac
+if [[ "${CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY:-0}" == "1" ]]; then
+  echo "Release output directories are safe and disjoint."
+  exit 0
+fi
+
 echo "Packaging CheeseWAF ${version} (${channel}) from ${commit}"
 
 rm -rf "$release_dir" "$work_dir"
@@ -65,7 +150,7 @@ mkdir -p "$release_dir" "$work_dir"
 
 metadata_dir="${work_dir}/release-metadata"
 bash scripts/ci/generate-release-metadata.sh \
-  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time" "$prerelease_tag"
+  "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time" "$release_tag"
 
 bash scripts/ci/build-web.sh
 
@@ -79,11 +164,7 @@ for target in "${targets[@]}"; do
     ext=".exe"
   fi
 
-  if [[ -n "$file_suffix" ]]; then
-    package_name="cheesewaf-${goarch}-${goos}-${version_prefix}-${file_suffix}"
-  else
-    package_name="cheesewaf-${goarch}-${goos}-${version_prefix}"
-  fi
+  package_name="cheesewaf-${goarch}-${goos}-${artifact_version}"
   package_root="${work_dir}/${package_name}"
   mkdir -p "$package_root"
 
@@ -151,12 +232,20 @@ for target in "${targets[@]}"; do
 done
 
 pushd "$release_dir" >/dev/null
-mapfile -t hashed < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt | sed 's#^\./##' | sort)
-sha256sum "${hashed[@]}" >SHA256SUMS
+hashed=()
+while IFS= read -r artifact; do
+  [[ -n "$artifact" ]] || continue
+  hashed+=("$artifact")
+done < <(find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name release-manifest.txt | sed 's#^\./##' | sort)
+[[ "${#hashed[@]}" -gt 0 ]] || {
+  echo "::error::no release artifacts were produced" >&2
+  exit 1
+}
 cat >release-manifest.txt <<EOF
 CheeseWAF release artifacts
 version: ${version}
-prerelease_tag: ${prerelease_tag}
+release_tag: ${release_tag}
+release_kind: ${release_kind}
 channel: ${channel}
 file_suffix: ${file_suffix}
 branch: ${ref_name}
@@ -168,5 +257,7 @@ $(printf '%s\n' "${hashed[@]}" | sed 's/^/- /')
 EOF
 popd >/dev/null
 
+bash "${script_dir}/rewrite-release-checksums.sh" "$release_dir"
+
 echo "Artifacts written to ${release_dir}/"
-echo "Pre-release tag: ${prerelease_tag}"
+echo "Release tag: ${release_tag} (${release_kind})"

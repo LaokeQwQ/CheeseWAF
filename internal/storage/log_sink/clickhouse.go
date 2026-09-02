@@ -112,7 +112,12 @@ func (s *ClickHouseSink) Query(ctx context.Context, filter storage.LogFilter) ([
 	if offset < 0 {
 		offset = 0
 	}
-	itemBody, err := s.doQuery(ctx, fmt.Sprintf("SELECT * FROM %s%s ORDER BY timestamp DESC LIMIT %d OFFSET %d FORMAT JSONEachRow", table, where, limit, offset))
+	order := "DESC"
+	if filter.Ascending {
+		order = "ASC"
+	}
+	orderBy := fmt.Sprintf("timestamp %s, id %s", order, order)
+	itemBody, err := s.doQuery(ctx, fmt.Sprintf("SELECT * FROM %s%s ORDER BY %s LIMIT %d OFFSET %d FORMAT JSONEachRow", table, where, orderBy, limit, offset))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -184,12 +189,48 @@ func clickHouseWhere(filter storage.LogFilter) string {
 	add("category", filter.Category)
 	add("action", filter.Action)
 	add("trace_id", filter.TraceID)
+	add("id", filter.ID)
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		needle := clickHouseStringLiteral(search)
+		clauses = append(clauses, fmt.Sprintf("positionCaseInsensitive(concat(id, ' ', trace_id, ' ', site_id, ' ', client_ip, ' ', method, ' ', uri, ' ', action, ' ', detector_id, ' ', category, ' ', severity, ' ', message, ' ', payload, ' ', user_agent, ' ', country), %s) > 0", needle))
+	}
+	switch strings.ToLower(strings.TrimSpace(filter.Kind)) {
+	case "security":
+		clauses = append(clauses, `(category != '' OR detector_id != '' OR severity != '' OR lower(action) IN ('block','challenge','log','monitor') OR status_code IN (403,429))`)
+	case "access":
+		clauses = append(clauses, `(category = '' AND detector_id = '' AND severity = '' AND lower(action) IN ('','pass','cache_hit','redirect') AND status_code NOT IN (403,429))`)
+	case "", "all":
+	default:
+		clauses = append(clauses, "0")
+	}
 	if !filter.StartTime.IsZero() {
-		clauses = append(clauses, fmt.Sprintf("timestamp >= parseDateTimeBestEffort(%s)", clickHouseStringLiteral(filter.StartTime.UTC().Format(time.RFC3339Nano))))
+		clauses = append(clauses, fmt.Sprintf("timestamp >= %s", clickHouseTimeLiteral(filter.StartTime)))
 	}
 	if !filter.EndTime.IsZero() {
-		clauses = append(clauses, fmt.Sprintf("timestamp <= parseDateTimeBestEffort(%s)", clickHouseStringLiteral(filter.EndTime.UTC().Format(time.RFC3339Nano))))
+		clauses = append(clauses, fmt.Sprintf("timestamp <= %s", clickHouseTimeLiteral(filter.EndTime)))
 	}
+	addCursor := func(timestamp time.Time, id, op string) {
+		if timestamp.IsZero() && id == "" {
+			return
+		}
+		if timestamp.IsZero() {
+			clauses = append(clauses, fmt.Sprintf("id %s %s", op, clickHouseStringLiteral(id)))
+			return
+		}
+		stamp := clickHouseTimeLiteral(timestamp)
+		if id == "" {
+			clauses = append(clauses, fmt.Sprintf("timestamp %s %s", op, stamp))
+			return
+		}
+		clauses = append(clauses, fmt.Sprintf("(timestamp %s %s OR (timestamp = %s AND id %s %s))", op, stamp, stamp, op, clickHouseStringLiteral(id)))
+	}
+	if filter.Ascending {
+		addCursor(filter.WatermarkTime, filter.WatermarkID, ">")
+	} else {
+		addCursor(filter.WatermarkTime, filter.WatermarkID, "<")
+	}
+	addCursor(filter.BeforeTime, filter.BeforeID, "<")
+	addCursor(filter.AfterTime, filter.AfterID, ">")
 	for _, tag := range filter.Tags {
 		if tag != "" {
 			clauses = append(clauses, fmt.Sprintf("has(tags, %s)", clickHouseStringLiteral(tag)))
@@ -199,6 +240,10 @@ func clickHouseWhere(filter storage.LogFilter) string {
 		return ""
 	}
 	return " WHERE " + strings.Join(clauses, " AND ")
+}
+
+func clickHouseTimeLiteral(value time.Time) string {
+	return fmt.Sprintf("parseDateTime64BestEffort(%s, 9)", clickHouseStringLiteral(value.UTC().Format(time.RFC3339Nano)))
 }
 
 func clickHouseStringLiteral(value string) string {

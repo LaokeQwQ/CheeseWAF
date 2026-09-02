@@ -29,6 +29,21 @@ func normalize(raw string) string {
 	}, normalized)
 }
 
+// normalizePreserveControls applies the same compatibility folding and
+// lower-casing as normalize but keeps control characters such as newlines.
+// Detectors that model line-oriented command chains need both views: stripping
+// a newline before NFKC folding would erase the boundary that separates two
+// executable commands in an obfuscated value.
+func normalizePreserveControls(raw string) string {
+	if isSimpleASCII(raw) {
+		if isAlreadyLowerASCII(raw) {
+			return raw
+		}
+		return strings.ToLower(raw)
+	}
+	return strings.ToLower(norm.NFKC.String(raw))
+}
+
 func isSimpleASCII(raw string) bool {
 	for i := 0; i < len(raw); i++ {
 		c := raw[i]
@@ -56,9 +71,4 @@ func tokens(raw string) []string {
 	return strings.FieldsFunc(normalize(raw), func(r rune) bool {
 		return !(unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_' || r == '-')
 	})
-}
-
-// NFKCNormalize is the public version used by external packages.
-func NFKCNormalize(raw string) string {
-	return normalize(raw)
 }

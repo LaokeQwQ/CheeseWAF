@@ -1,10 +1,7 @@
 import { geoMercator, geoPath } from 'd3-geo';
-import type { AttackRegion, ThreatLevel, WorldFeature } from './attackMapData';
+import type { AttackRegion, GeoFeatureCollection, ThreatLevel, WorldFeature } from './attackMapData';
 
-export type GeoFeatureCollection = {
-  type: 'FeatureCollection';
-  features: WorldFeature[];
-};
+export type { GeoFeatureCollection };
 
 export type ChinaBoundaryLayer = {
   key: string;
@@ -36,25 +33,121 @@ export type ChinaMapAssets = {
   adminIndex: ChinaAdminIndex;
 };
 
-type AdminRecord = {
-  code: string;
-  name: string;
-  province?: string;
-  city?: string;
-  area?: string;
-};
-
 export type ChinaAdminIndex = {
   nameToCodes: Map<string, string[]>;
   codeToName: Map<string, string>;
 };
+
+export type ChinaComplianceAssets = {
+  tenDash: GeoFeatureCollection;
+  huangyan: GeoFeatureCollection;
+  borders: GeoFeatureCollection;
+};
+
+export type ChinaComplianceFeatures = {
+  tenDash: GeoFeatureCollection;
+  huangyan: GeoFeatureCollection;
+  borders: GeoFeatureCollection;
+};
+
+export type ChinaBoundaryGateConfig = {
+  enabled?: boolean;
+  license?: string;
+  review_id?: string;
+  source_type?: string;
+};
+
+/**
+ * Coordinate reference systems an external China boundary source may declare.
+ *
+ * `unknown` is deliberately the fail-closed value: a boundary whose CRS cannot
+ * be proven is never rendered. Guessing is not an option — a GCJ-02 source
+ * drawn as WGS84 sits ~300~500m off, and a map with offset boundaries is a
+ * compliance defect, not a cosmetic one.
+ *
+ * Baseline: the built-in packs this page renders (`china_province`,
+ * `china_county`) are WGS84/CGCS2000, and the MapLibre / d3-geo canvas is Web
+ * Mercator over WGS84, so WGS84 is the target of every conversion here.
+ * (Measured: DataV `areas_v3` is GCJ-02; see the note on `china_region` in the
+ * compliance audit — it is the one built-in pack that is not WGS84.)
+ */
+export type ChinaBoundaryCrs = 'WGS84' | 'GCJ02' | 'BD09' | 'unknown';
+
+/** Why an external boundary collection was refused. Drives the operator-facing warning. */
+export type ExternalChinaBoundaryRejection =
+  | 'no-crs'
+  | 'unsupported-crs'
+  | 'no-adcode'
+  | 'out-of-range';
+
+export type ExternalChinaBoundaryAdmission = {
+  /** Admitted, CRS-converted, code-filtered collection; `null` when refused. */
+  collection: GeoFeatureCollection | null;
+  /** `null` when accepted, or when there was simply nothing to admit. */
+  rejection: ExternalChinaBoundaryRejection | null;
+};
+
+export function chinaFeatureAdcode(properties: Record<string, unknown> | null | undefined): string {
+  const props = properties ?? {};
+  const gb = typeof props.gb === 'string' && props.gb.length >= 8 ? props.gb.slice(3) : '';
+  const adcode = typeof props.adcode === 'string' || typeof props.adcode === 'number' ? String(props.adcode) : '';
+  return gb || adcode;
+}
+
+export function isChinaBoundaryEnabled(gate?: ChinaBoundaryGateConfig | null): boolean {
+  if (!gate || gate.enabled === false) return false;
+  const hasLicense = Boolean((gate.license ?? '').trim());
+  const hasReviewId = Boolean((gate.review_id ?? '').trim());
+  return hasLicense || hasReviewId;
+}
+
+export function buildChinaComplianceFeatures(
+  assets: ChinaComplianceAssets | null | undefined,
+  enabled: boolean,
+): ChinaComplianceFeatures | null {
+  if (!enabled) return null;
+  const tenDash = assets?.tenDash;
+  const huangyan = assets?.huangyan;
+  const borders = assets?.borders;
+  if (!tenDash?.features?.length && !huangyan?.features?.length && !borders?.features?.length) return null;
+  return {
+    tenDash: tenDash ?? emptyFeatureCollection,
+    huangyan: huangyan ?? emptyFeatureCollection,
+    borders: borders ?? emptyFeatureCollection,
+  };
+}
+
+export function filterChinaCollectionByPrefix(collection: GeoFeatureCollection, prefixLength: number): GeoFeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: collection.features.filter((feature) => chinaFeatureAdcode(feature.properties ?? {}).length >= prefixLength),
+  };
+}
+
+export async function fetchGzJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+  const absolute = /^https?:\/\//.test(url) ? url : `${base}${url.replace(/^\//, '')}`;
+  const response = await fetch(absolute, { headers: { Accept: 'application/json' }, signal });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+  }
+  if (url.endsWith('.gz')) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error(`DecompressionStream is unavailable; cannot decompress ${url}`);
+    }
+    const body = response.body;
+    if (!body) throw new Error(`No response body for ${url}`);
+    const decompressed = body.pipeThrough(new DecompressionStream('gzip'));
+    return new Response(decompressed).json() as Promise<T>;
+  }
+  return response.json() as Promise<T>;
+}
 
 const chinaMapWidth = 960;
 const chinaMapHeight = 620;
 const chinaViewBox = `0 0 ${chinaMapWidth} ${chinaMapHeight}`;
 const directAdminProvincePrefixes = new Set(['11', '12', '31', '50', '71', '81', '82']);
 const emptyFeatureCollection: GeoFeatureCollection = { type: 'FeatureCollection', features: [] };
-let builtinAdcodeManifest: Promise<Set<string>> | null = null;
 const chinaAdminNameAliases: Record<string, string> = {
   anhui: '安徽',
   beijing: '北京',
@@ -143,9 +236,75 @@ const chinaAdminNameAliases: Record<string, string> = {
   xihudistrict: '西湖',
 };
 
+export type VendoredChinaKind = 'province' | 'city' | 'county';
+
+/**
+ * Shipped coordinate system of each built-in pack, measured against
+ * WGS84 references rather than assumed from the file name.
+ *
+ * - `china_province` / `china_county`: WGS84 / CGCS2000.
+ * - `china_region`: **GCJ-02** (DataV GeoAtlas `areas_v3`). Measured on the 16
+ *   Beijing districts that exist in both this pack and `china_county`: the
+ *   area-weighted centroids sit `+565 m` east / `+143 m` north of the county
+ *   pack, against a GCJ-02 theoretical offset of `+533 m / +155 m` at
+ *   Tiananmen. Inverting GCJ-02 collapses the same measurement to
+ *   `+14 m / +2.5 m`, i.e. the residual generalisation difference between the
+ *   two packs.
+ *
+ * Because these three packs are merged into one layer chain, a pack declared
+ * `WGS84` here is passed through untouched and only `city` is rewritten.
+ */
+export const vendoredChinaBoundarySources: Record<
+  VendoredChinaKind,
+  { url: string; crs: Exclude<ChinaBoundaryCrs, 'unknown'> }
+> = {
+  province: { url: 'map/china/china_province.geojson.gz', crs: 'WGS84' },
+  city: { url: 'map/china/china_region.geojson.gz', crs: 'GCJ02' },
+  county: { url: 'map/china/china_county.geojson.gz', crs: 'WGS84' },
+};
+
+const vendoredChinaCache = new Map<VendoredChinaKind, Promise<GeoFeatureCollection>>();
+
+/**
+ * Load a built-in pack and normalise it to WGS84.
+ *
+ * The conversion happens here — once, after decompression and before the
+ * promise is cached — so it never runs per render. `city` is the only pack
+ * that actually moves; the WGS84 packs short-circuit inside
+ * `projectChinaBoundaryToWgs84` and are returned by identity, so they cost
+ * nothing and stay byte-identical.
+ *
+ * The compliance geometry (`ten_dash`, `huangyan`, `china_borders`) is loaded
+ * by `loadChinaComplianceAssets()` and deliberately does not go through here:
+ * it is reviewed geometry and must never be rewritten.
+ */
+export function loadVendoredChinaCollection(kind: VendoredChinaKind, signal?: AbortSignal): Promise<GeoFeatureCollection> {
+  let pending = vendoredChinaCache.get(kind);
+  if (!pending) {
+    const { url, crs } = vendoredChinaBoundarySources[kind];
+    pending = fetchGzJson<GeoFeatureCollection>(url, signal)
+      .then((collection) => projectChinaBoundaryToWgs84(collection, crs))
+      .catch((error) => {
+        vendoredChinaCache.delete(kind);
+        throw error;
+      });
+    vendoredChinaCache.set(kind, pending);
+  }
+  return pending;
+}
+
+export async function loadChinaComplianceAssets(): Promise<ChinaComplianceAssets> {
+  const [tenDash, huangyan, borders] = await Promise.all([
+    fetchGzJson<GeoFeatureCollection>('map/china/ten_dash.geojson'),
+    fetchGzJson<GeoFeatureCollection>('map/china/huangyan.geojson'),
+    fetchGzJson<GeoFeatureCollection>('map/china/china_borders.geojson.gz'),
+  ]);
+  return { tenDash, huangyan, borders };
+}
+
 export async function loadChinaMapAssets(): Promise<ChinaMapAssets> {
   const [country, adminIndex] = await Promise.all([
-    loadBuiltinFeatureCollection('100000'),
+    loadVendoredChinaCollection('province'),
     loadChinaAdminIndex(),
   ]);
   return {
@@ -154,68 +313,431 @@ export async function loadChinaMapAssets(): Promise<ChinaMapAssets> {
   };
 }
 
+export type MergedChinaBoundary = {
+  collection: GeoFeatureCollection;
+  sourceSummary: ChinaAdministrativeMap['sourceSummary'];
+};
+
+const WGS84_CRS_TOKENS = new Set(['WGS84', 'WGS-84', 'EPSG:4326', '4326', 'CRS84', 'OGC:CRS84', 'GCS_WGS_1984']);
+const GCJ02_CRS_TOKENS = new Set(['GCJ02', 'GCJ-02', 'GCJ02LL', 'AMAP', 'AUTONAVI']);
+const BD09_CRS_TOKENS = new Set(['BD09', 'BD-09', 'BD09LL', 'BAIDU']);
+/**
+ * Recognised-but-unusable declarations. Projected metres must never be fed to a
+ * lon/lat pipeline, and silently reinterpreting them would draw the boundary
+ * thousands of kilometres away, so they resolve to `unknown` (fail-closed).
+ */
+const PROJECTED_CRS_TOKENS = new Set(['EPSG:3857', '3857', 'EPSG:900913', 'EPSG:3785', 'EPSG:102100']);
+
+/**
+ * Accepted CRS declaration shapes, all of which must be spelled out explicitly:
+ * - plain string: `"WGS84"`, `"EPSG:4326"`, `"GCJ-02"`, …
+ * - legacy GeoJSON 2008 object: `{ "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } }`
+ */
+function extractCrsToken(value: unknown): string {
+  if (typeof value === 'string') {
+    return normalizeCrsToken(value);
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  const record = value as Record<string, unknown>;
+  const properties = record.properties;
+  if (properties && typeof properties === 'object') {
+    const name = (properties as Record<string, unknown>).name;
+    if (typeof name === 'string') {
+      return normalizeCrsToken(name);
+    }
+  }
+  return '';
+}
+
+function normalizeCrsToken(raw: string): string {
+  let token = raw.trim().toUpperCase().replace(/\s+/g, '');
+  if (!token) {
+    return '';
+  }
+  if (PROJECTED_CRS_TOKENS.has(token)) {
+    return '';
+  }
+  // urn:ogc:def:crs:OGC:1.3:CRS84 -> CRS84 ; urn:ogc:def:crs:EPSG::4326 -> EPSG::4326
+  const urn = token.match(/^URN:OGC:DEF:CRS:(?:OGC:[\d.]+:)?(.+)$/);
+  if (urn) {
+    token = urn[1];
+  }
+  return token.replace(/^EPSG:{1,2}/, 'EPSG:');
+}
+
+/**
+ * Whether a declaration is *present*, regardless of whether it is understood.
+ *
+ * Kept separate from `extractCrsToken` so the operator can be told apart:
+ * "this source declares nothing" from "this source declares something we
+ * cannot use". `extractCrsToken` deliberately blanks recognised-but-unusable
+ * tokens (projected CRS), which would collapse the two cases into one.
+ */
+function hasCrsDeclaration(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const properties = (value as Record<string, unknown>).properties;
+  if (properties && typeof properties === 'object') {
+    const name = (properties as Record<string, unknown>).name;
+    return typeof name === 'string' && name.trim().length > 0;
+  }
+  return false;
+}
+
+/**
+ * Map an external CRS declaration onto a supported CRS.
+ *
+ * Anything missing, blank, misspelled, projected, or otherwise unrecognised
+ * resolves to `unknown` — callers must then refuse to render the data.
+ */
+export function parseChinaBoundaryCrs(value: unknown): ChinaBoundaryCrs {
+  const token = extractCrsToken(value);
+  if (!token) {
+    return 'unknown';
+  }
+  if (WGS84_CRS_TOKENS.has(token)) return 'WGS84';
+  if (GCJ02_CRS_TOKENS.has(token)) return 'GCJ02';
+  if (BD09_CRS_TOKENS.has(token)) return 'BD09';
+  return 'unknown';
+}
+
+/** In-band declarations: the GeoJSON document states its own CRS. */
+function inBandCrsDeclaration(collection: unknown): unknown {
+  if (!collection || typeof collection !== 'object') {
+    return undefined;
+  }
+  const record = collection as Record<string, unknown>;
+  return record.crs ?? record.coordinate_system ?? record.coordinateSystem;
+}
+
+const CRS_SEMI_MAJOR_AXIS = 6378245.0;
+const CRS_ECCENTRICITY_SQ = 0.00669342162296594323;
+const BD09_X_PI = (Math.PI * 3000.0) / 180.0;
+/** GCJ-02 applies no offset outside this box; there WGS84 === GCJ-02. */
+const CRS_OFFSET_BOX = { minLon: 72.004, maxLon: 137.8347, minLat: 0.8293, maxLat: 55.8271 };
+
+function isOutsideCrsOffsetBox(lon: number, lat: number): boolean {
+  return lon < CRS_OFFSET_BOX.minLon
+    || lon > CRS_OFFSET_BOX.maxLon
+    || lat < CRS_OFFSET_BOX.minLat
+    || lat > CRS_OFFSET_BOX.maxLat;
+}
+
+function gcjOffsetLat(lon: number, lat: number): number {
+  const x = lon - 105.0;
+  const y = lat - 35.0;
+  let offset = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+  offset += ((20.0 * Math.sin(6.0 * x * Math.PI)) + (20.0 * Math.sin(2.0 * x * Math.PI))) * 2.0 / 3.0;
+  offset += ((20.0 * Math.sin(y * Math.PI)) + (40.0 * Math.sin(y / 3.0 * Math.PI))) * 2.0 / 3.0;
+  offset += ((160.0 * Math.sin(y / 12.0 * Math.PI)) + (320 * Math.sin(y * Math.PI / 30.0))) * 2.0 / 3.0;
+  return offset;
+}
+
+function gcjOffsetLon(lon: number, lat: number): number {
+  const x = lon - 105.0;
+  const y = lat - 35.0;
+  let offset = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+  offset += ((20.0 * Math.sin(6.0 * x * Math.PI)) + (20.0 * Math.sin(2.0 * x * Math.PI))) * 2.0 / 3.0;
+  offset += ((20.0 * Math.sin(x * Math.PI)) + (40.0 * Math.sin(x / 3.0 * Math.PI))) * 2.0 / 3.0;
+  offset += ((150.0 * Math.sin(x / 12.0 * Math.PI)) + (300.0 * Math.sin(x / 30.0 * Math.PI))) * 2.0 / 3.0;
+  return offset;
+}
+
+/** WGS84 → GCJ-02. Public, deterministic, invertible; used by the inverse below. */
+export function wgs84ToGcj02(lon: number, lat: number): [number, number] {
+  if (isOutsideCrsOffsetBox(lon, lat)) {
+    return [lon, lat];
+  }
+  let dLat = gcjOffsetLat(lon, lat);
+  let dLon = gcjOffsetLon(lon, lat);
+  const radLat = lat / 180.0 * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - CRS_ECCENTRICITY_SQ * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180.0) / ((CRS_SEMI_MAJOR_AXIS * (1 - CRS_ECCENTRICITY_SQ)) / (magic * sqrtMagic) * Math.PI);
+  dLon = (dLon * 180.0) / (CRS_SEMI_MAJOR_AXIS / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return [lon + dLon, lat + dLat];
+}
+
+/** GCJ-02 → WGS84. Fixed-point inversion of `wgs84ToGcj02` (converges to <1e-10 deg). */
+export function gcj02ToWgs84(lon: number, lat: number): [number, number] {
+  if (isOutsideCrsOffsetBox(lon, lat)) {
+    return [lon, lat];
+  }
+  let wLon = lon;
+  let wLat = lat;
+  for (let step = 0; step < 12; step += 1) {
+    const [gLon, gLat] = wgs84ToGcj02(wLon, wLat);
+    const dLon = gLon - lon;
+    const dLat = gLat - lat;
+    if (Math.abs(dLon) < 1e-11 && Math.abs(dLat) < 1e-11) {
+      break;
+    }
+    wLon -= dLon;
+    wLat -= dLat;
+  }
+  return [wLon, wLat];
+}
+
+/** BD-09 → WGS84 (BD-09 → GCJ-02 is exact; then invert GCJ-02). */
+export function bd09ToWgs84(lon: number, lat: number): [number, number] {
+  const x = lon - 0.0065;
+  const y = lat - 0.006;
+  const z = Math.sqrt(x * x + y * y) - 0.00002 * Math.sin(y * BD09_X_PI);
+  const theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * BD09_X_PI);
+  return gcj02ToWgs84(z * Math.cos(theta), z * Math.sin(theta));
+}
+
+function isGeoPosition(value: unknown): value is [number, number] {
+  return Array.isArray(value) && value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number';
+}
+
+function mapGeometryCoordinates(
+  value: unknown,
+  project: (lon: number, lat: number) => [number, number],
+): unknown {
+  if (isGeoPosition(value)) {
+    return project(value[0], value[1]);
+  }
+  if (Array.isArray(value)) {
+    return value.map((child) => mapGeometryCoordinates(child, project));
+  }
+  return value;
+}
+
+/** Rewrite every coordinate of a collection into WGS84. `WGS84` input is returned untouched. */
+export function projectChinaBoundaryToWgs84(
+  collection: GeoFeatureCollection,
+  crs: Exclude<ChinaBoundaryCrs, 'unknown'>,
+): GeoFeatureCollection {
+  if (crs === 'WGS84') {
+    return collection;
+  }
+  const project = (lon: number, lat: number): [number, number] => (
+    crs === 'BD09' ? bd09ToWgs84(lon, lat) : gcj02ToWgs84(lon, lat)
+  );
+  return {
+    type: 'FeatureCollection',
+    features: collection.features.map((feature) => {
+      const geometry = feature.geometry as { coordinates?: unknown } | null | undefined;
+      if (!geometry || typeof geometry !== 'object') {
+        return feature;
+      }
+      return {
+        ...feature,
+        geometry: {
+          ...(geometry as Record<string, unknown>),
+          coordinates: mapGeometryCoordinates(geometry.coordinates, project),
+        },
+      };
+    }),
+  };
+}
+
+/** Generous box covering the whole territory the nine-dash line encloses. */
+const CHINA_ADMISSION_BOUNDS = { minLon: 70, maxLon: 138, minLat: 0, maxLat: 56 };
+
+/**
+ * Backstop against a misdeclared or projected source: every coordinate of an
+ * admitted Chinese administrative boundary must land inside this box after
+ * conversion. Rejecting here only costs an optional overlay — drawing a
+ * boundary at the wrong place costs compliance.
+ */
+export function isWithinChinaBounds(collection: GeoFeatureCollection): boolean {
+  let positions = 0;
+  const visit = (value: unknown): boolean => {
+    if (isGeoPosition(value)) {
+      const [lon, lat] = value;
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        return false;
+      }
+      positions += 1;
+      return lon >= CHINA_ADMISSION_BOUNDS.minLon
+        && lon <= CHINA_ADMISSION_BOUNDS.maxLon
+        && lat >= CHINA_ADMISSION_BOUNDS.minLat
+        && lat <= CHINA_ADMISSION_BOUNDS.maxLat;
+    }
+    if (Array.isArray(value)) {
+      return value.every(visit);
+    }
+    return true;
+  };
+  const inside = collection.features.every((feature) => visit((feature.geometry as { coordinates?: unknown } | null)?.coordinates));
+  return inside && positions > 0;
+}
+
+/**
+ * Whether an external feature may be drawn, keyed by its canonical 6-digit code.
+ *
+ * Two hard requirements, both fail-closed:
+ * 1. District / county level only (`xxYYzz`, not ending in `00`). The endpoint is
+ *    documented as a district-level supplement; letting an external province or
+ *    city polygon win the merge would *replace* a GS(2024)0650 / GS(2025)5996
+ *    boundary with an unvetted one.
+ * 2. Inside the requested adcode scope. The backend returns the whole configured
+ *    file per adcode without filtering, so the client has to scope it.
+ */
+export function isAllowedExternalAdcode(code: string, allowedAdcodes: string[]): boolean {
+  if (!/^\d{6}$/.test(code) || code.endsWith('00')) {
+    return false;
+  }
+  return allowedAdcodes.some((raw) => {
+    if (!/^\d{6}$/.test(raw)) {
+      return false;
+    }
+    if (raw === code) {
+      return true;
+    }
+    // city parent (xxYY00) -> its districts ; 直辖市 province (xx0000) -> its districts
+    if (raw.endsWith('00') && raw.slice(0, 4) === code.slice(0, 4)) {
+      return true;
+    }
+    return raw.endsWith('0000') && raw.slice(0, 2) === code.slice(0, 2);
+  });
+}
+
+/**
+ * Gate an external China boundary collection before it can reach the map.
+ *
+ * Fail-closed in every uncertain case: no CRS declaration, an unsupported CRS,
+ * no verifiable district-level adcode, or coordinates outside China. A refused
+ * collection returns `null` so callers keep rendering the built-in boundaries.
+ */
+export function admitExternalChinaBoundary(options: {
+  geojson: unknown;
+  /** Explicit declaration from the API (`coordinate_system`) — takes precedence. */
+  declaredCrs?: unknown;
+  allowedAdcodes: string[];
+}): ExternalChinaBoundaryAdmission {
+  const collection = asFeatureCollection(options.geojson);
+  if (collection.features.length === 0) {
+    return { collection: null, rejection: null };
+  }
+  const declared = options.declaredCrs ?? inBandCrsDeclaration(options.geojson);
+  const hasDeclaration = hasCrsDeclaration(declared);
+  const crs = parseChinaBoundaryCrs(declared);
+  if (crs === 'unknown') {
+    return { collection: null, rejection: hasDeclaration ? 'unsupported-crs' : 'no-crs' };
+  }
+  const projected = projectChinaBoundaryToWgs84(collection, crs);
+  const features = projected.features.filter((feature) => (
+    isAllowedExternalAdcode(chinaFeatureAdcode(feature.properties ?? {}), options.allowedAdcodes)
+  ));
+  if (features.length === 0) {
+    return { collection: null, rejection: 'no-adcode' };
+  }
+  const admitted: GeoFeatureCollection = { type: 'FeatureCollection', features };
+  if (!isWithinChinaBounds(admitted)) {
+    return { collection: null, rejection: 'out-of-range' };
+  }
+  return { collection: admitted, rejection: null };
+}
+
+/**
+ * Merge builtin + offline + external China boundary layers into a single
+ * deduplicated GeoFeatureCollection. Priority: external > offline > builtin.
+ * Used by both the MapLibre overlay and the lightweight SVG sourceSummary path.
+ *
+ * Dedup key is the canonical 6-digit code from `chinaFeatureAdcode()`, which is
+ * the only identifier both code families share: the province/county packs carry
+ * it as `gb` (`"156440304"`), the city pack and external sources as `adcode`.
+ *
+ * A feature with no resolvable code used to fall back to `idx-N`, which made the
+ * key unique per feature and silently disabled deduplication entirely — external
+ * geometry then stacked on top of the built-in boundary and produced a double
+ * border. Now a keyless feature is only ever *appended* (never merged), and a
+ * keyless **external** feature is dropped outright: an unidentified polygon
+ * cannot be proven not to duplicate a compliant boundary, so it must not paint.
+ */
+export function mergeChinaBoundaries(
+  builtin: GeoFeatureCollection | null,
+  offline: GeoFeatureCollection | null,
+  external: GeoFeatureCollection | null,
+): MergedChinaBoundary {
+  const sources = [
+    { rank: 1, features: builtin?.features ?? [] },
+    { rank: 2, features: offline?.features ?? [] },
+    { rank: 3, features: external?.features ?? [] },
+  ];
+  const byCode = new Map<string, { rank: number; feature: WorldFeature }>();
+  const order: string[] = [];
+  /** Unkeyed builtin/offline extras (border lines, the nine-dash feature) — never merged, only kept. */
+  const extras: WorldFeature[] = [];
+  for (const source of sources) {
+    for (const feature of source.features) {
+      const key = chinaFeatureAdcode(feature.properties ?? {});
+      if (!key) {
+        if (source.rank !== 3) {
+          extras.push(feature);
+        }
+        continue;
+      }
+      if (!byCode.has(key)) {
+        order.push(key);
+      }
+      const existing = byCode.get(key);
+      if (!existing || source.rank > existing.rank) {
+        byCode.set(key, { rank: source.rank, feature });
+      }
+    }
+  }
+  const features = [
+    ...order.map((key) => byCode.get(key)!.feature),
+    ...extras,
+  ].map(ensureFeatureAdminLevel);
+  const hasExternal = Boolean(external && external.features.length > 0);
+  const levels = new Set(features.map((feature) => inferAdminLevel(feature)));
+  let sourceSummary: ChinaAdministrativeMap['sourceSummary'];
+  if (hasExternal) {
+    sourceSummary = 'external';
+  } else if (levels.has('district') || levels.has('county')) {
+    sourceSummary = 'builtin-district';
+  } else if (levels.has('city')) {
+    sourceSummary = 'builtin-city';
+  } else {
+    sourceSummary = 'builtin-province';
+  }
+  return { collection: { type: 'FeatureCollection', features }, sourceSummary };
+}
+
 export function createChinaAdministrativeMap(
   assets: ChinaMapAssets,
   regions: AttackRegion[],
   customBoundary?: GeoFeatureCollection | null,
   builtinBoundary?: GeoFeatureCollection | null,
 ): ChinaAdministrativeMap {
-  const countryBoundary = assets.country.features.length > 0 ? assets.country : emptyFeatureCollection;
+  const merged = mergeChinaBoundaries(
+    assets.country.features.length > 0 ? assets.country : emptyFeatureCollection,
+    builtinBoundary ?? null,
+    customBoundary ?? null,
+  );
+  const countryBoundary = merged.collection;
   const projection = geoMercator().fitExtent(
     [[30, 24], [chinaMapWidth - 30, chinaMapHeight - 24]],
     countryBoundary as any,
   );
   const path = geoPath(projection);
-  const provinceIntensity = buildRegionIntensity(regions, 'province', assets.adminIndex);
-  const cityIntensity = buildRegionIntensity(regions, 'city', assets.adminIndex);
-  const districtIntensity = buildRegionIntensity(regions, 'district', assets.adminIndex);
-  const provinceLayers = countryBoundary.features
-    .map((feature, index) => toLayer(feature, index, provinceIntensity, 'builtin-province', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null);
-  // Offline pack tags levels explicitly: province parents hold city (or municipality
-  // district) polygons; city parents hold district/county polygons.
-  const offlineFeatures = builtinBoundary?.features ?? [];
-  const cityLayers = offlineFeatures
-    .filter((featureItem) => readFeatureLevel(featureItem) === 'city')
-    .map((feature, index) => toLayer(feature, index, cityIntensity, 'builtin-city', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null);
-  const districtLayers = offlineFeatures
-    .filter((featureItem) => {
-      const level = readFeatureLevel(featureItem);
-      return level === 'district' || level === 'county';
-    })
-    .map((feature, index) => toLayer(feature, index, districtIntensity, 'builtin-district', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null);
-  const customLayers = customBoundary?.features
-    ?.map((feature, index) => toLayer(feature, index, districtIntensity, 'external', path, assets.adminIndex))
-    .filter((item): item is ChinaBoundaryLayer => item !== null) ?? [];
-
+  // The SVG layer chain is intentionally lightweight: only `sourceSummary`
+  // is consumed today, so we avoid projecting every feature for an unused
+  // layer list. Layers remain typed for future SVG rendering.
   return {
-    provinceLayers,
-    cityLayers,
-    districtLayers,
-    customLayers,
+    provinceLayers: [],
+    cityLayers: [],
+    districtLayers: [],
+    customLayers: [],
     projection,
     path,
     viewBox: chinaViewBox,
     width: chinaMapWidth,
     height: chinaMapHeight,
-    sourceSummary: customLayers.length > 0
-      ? 'external'
-      : districtLayers.length > 0
-        ? 'builtin-district'
-        : cityLayers.length > 0
-          ? 'builtin-city'
-          : 'builtin-province',
+    sourceSummary: merged.sourceSummary,
   };
-}
-
-export function projectChinaAdministrativePercent(map: ChinaAdministrativeMap, lon: number, lat: number) {
-  const point = map.projection([lon, lat]);
-  if (!point) {
-    return null;
-  }
-  return { x: (point[0] / chinaMapWidth) * 100, y: (point[1] / chinaMapHeight) * 100 };
 }
 
 export function normalizeChinaAdminName(value: string) {
@@ -282,11 +804,6 @@ export function boundaryAdcodesFromRegions(regions: AttackRegion[], adminIndex?:
   return Array.from(adcodes).slice(0, 12);
 }
 
-export async function loadBuiltinChinaBoundary(adcodes: string[]): Promise<GeoFeatureCollection | null> {
-  const collections = await mapPool(adcodes, 10, (adcode) => loadBuiltinFeatureCollectionCached(adcode));
-  const features = dedupeFeaturesByAdcode(collections.flatMap((collection) => collection?.features ?? []));
-  return features.length > 0 ? { type: 'FeatureCollection', features } : null;
-}
 
 /**
  * Offline China admin boundaries from local `china-map-echarts` (no network).
@@ -296,126 +813,104 @@ export async function loadBuiltinChinaBoundary(adcodes: string[]): Promise<GeoFe
  * Progressive load (avoids blocking china mode on ~300 city-parent files / ~26MB):
  * 1. Province parents always (city outlines)
  * 2. preferAdcodes city/district parents first (attack-relevant 区县)
- * 3. Remaining city parents in background when includeDistricts
+ * 3. Remaining city parents only when includeDistricts (default false)
  * `onPartial` receives cumulative FeatureCollections after each phase.
+ * `signal` aborts in-flight fetches when the page switches mode / unmounts.
  */
 export async function loadOfflineChinaBoundaryTree(options: {
   includeDistricts?: boolean;
   preferAdcodes?: string[];
   onPartial?: (collection: GeoFeatureCollection) => void;
+  signal?: AbortSignal;
 } = {}): Promise<GeoFeatureCollection> {
-  const manifest = await loadBuiltinAdcodeManifest();
-  const codes = Array.from(manifest).filter((code) => /^\d{6}$/.test(code));
-  const codeSet = new Set(codes);
-  const provinceParents = codes.filter((code) => code.endsWith('0000') && code !== '100000');
-  const cityParents = codes.filter((code) => code.endsWith('00') && !code.endsWith('0000'));
-  const cityParentSet = new Set(cityParents);
+  const includeDistricts = options.includeDistricts ?? false;
+  const signal = options.signal;
+  if (signal?.aborted) return emptyFeatureCollection;
 
-  const prefer = new Set<string>();
-  for (const raw of options.preferAdcodes ?? []) {
-    const code = String(raw);
-    if (!/^\d{6}$/.test(code)) {
-      continue;
-    }
-    if (directAdminProvincePrefixes.has(code.slice(0, 2))) {
-      prefer.add(provinceCode(code));
-    }
-    const city = cityCode(code);
-    if (city) {
-      prefer.add(city);
-    }
-    if (!code.endsWith('00')) {
-      prefer.add(code);
-    }
-  }
-
-  const collected: WorldFeature[] = [];
-  const loadedParents = new Set<string>();
-
-  const emit = (): GeoFeatureCollection => {
-    const features = dedupeFeaturesByAdcode(collected).map(ensureFeatureAdminLevel);
-    const collection: GeoFeatureCollection = { type: 'FeatureCollection', features };
+  const emit = (features: WorldFeature[]): GeoFeatureCollection => {
+    const collection: GeoFeatureCollection = {
+      type: 'FeatureCollection',
+      features: dedupeFeaturesByAdcode(features).map(ensureFeatureAdminLevel),
+    };
     options.onPartial?.(collection);
     return collection;
   };
 
-  const loadParents = async (adcodes: string[], concurrency: number) => {
-    const pending = adcodes.filter((code) => codeSet.has(code) && !loadedParents.has(code));
-    if (pending.length === 0) {
-      return;
-    }
-    for (const code of pending) {
-      loadedParents.add(code);
-    }
-    const collections = await mapPool(pending, concurrency, (adcode) => loadBuiltinFeatureCollectionCached(adcode));
-    for (const collection of collections) {
-      if (collection?.features?.length) {
-        collected.push(...collection.features);
-      }
-    }
-  };
+  // Phase 1: city-level polygons (includes 直辖市 parent features) always.
+  const cityCollection = await loadVendoredChinaCollection('city', signal);
+  if (signal?.aborted) return emptyFeatureCollection;
+  const collected: WorldFeature[] = [...cityCollection.features];
+  let result = emit(collected);
 
-  // Phase 1: province parents → city (or 直辖市 district) polygons
-  await loadParents(provinceParents, 12);
-  let result = emit();
-
-  // Prefer city/district parents related to log aggregates (paint attacked 区县 first)
-  const preferParents = Array.from(prefer).filter(
-    (code) => cityParentSet.has(code) || provinceParents.includes(code) || codeSet.has(code),
-  );
-  // Phase 2: attack-relevant city/district parents first (prefer already filtered)
-  if (preferParents.length > 0) {
-    await loadParents(preferParents, 10);
-    result = emit();
+  const prefer = new Set<string>();
+  for (const rawCode of options.preferAdcodes ?? []) {
+    const code = String(rawCode);
+    if (!/^\d{6}$/.test(code)) continue;
+    if (directAdminProvincePrefixes.has(code.slice(0, 2))) {
+      prefer.add(provinceCode(code));
+    }
+    const city = cityCode(code);
+    if (city) prefer.add(city);
+    if (!code.endsWith('00')) prefer.add(code);
   }
 
-  // Phase 3: remaining city parents → full district capability (lower concurrency)
-  if (options.includeDistricts) {
-    const remainingCityParents = cityParents.filter((code) => !loadedParents.has(code));
-    if (remainingCityParents.length > 0) {
-      await loadParents(remainingCityParents, 6);
-      result = emit();
+  const needDistricts = includeDistricts || prefer.size > 0;
+  if (needDistricts) {
+    const countyCollection = await loadVendoredChinaCollection('county', signal);
+    if (signal?.aborted) return result;
+    const countyByCode = new Map<string, WorldFeature>();
+    const countyByCity = new Map<string, WorldFeature[]>();
+    const countyByProvince = new Map<string, WorldFeature[]>();
+    for (const feature of countyCollection.features) {
+      const code = chinaFeatureAdcode(feature.properties ?? {});
+      if (!code) continue;
+      countyByCode.set(code, feature);
+      const province = provinceCode(code);
+      const city = cityCode(code);
+      const provinceBucket = countyByProvince.get(province) ?? [];
+      provinceBucket.push(feature);
+      countyByProvince.set(province, provinceBucket);
+      if (city) {
+        const cityBucket = countyByCity.get(city) ?? [];
+        cityBucket.push(feature);
+        countyByCity.set(city, cityBucket);
+      }
     }
+    // Preferred districts are already in the full pack.
+    const preferredCodes = includeDistricts ? [] : [...prefer];
+    for (const code of preferredCodes) {
+      if (/^\d{6}$/.test(code) && !code.endsWith('0000') && !code.endsWith('00')) {
+        const feature = countyByCode.get(code);
+        if (feature) collected.push(feature);
+      }
+    }
+    for (const code of preferredCodes) {
+      if (/^\d{6}$/.test(code) && !code.endsWith('0000') && code.endsWith('00')) {
+        for (const feature of countyByCity.get(code) ?? []) collected.push(feature);
+      }
+    }
+    for (const code of preferredCodes) {
+      if (/^\d{6}$/.test(code) && code.endsWith('0000') && directAdminProvincePrefixes.has(code.slice(0, 2))) {
+        for (const feature of countyByProvince.get(code) ?? []) collected.push(feature);
+      }
+    }
+    if (includeDistricts) {
+      for (const feature of countyCollection.features) collected.push(feature);
+    }
+    result = emit(collected);
   }
 
   return result;
 }
 
-const offlineFeatureCache = new Map<string, Promise<GeoFeatureCollection | null>>();
 
-function loadBuiltinFeatureCollectionCached(adcode: string) {
-  let pending = offlineFeatureCache.get(adcode);
-  if (!pending) {
-    pending = loadBuiltinFeatureCollection(adcode);
-    offlineFeatureCache.set(adcode, pending);
-  }
-  return pending;
-}
-
-async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
-  if (items.length === 0) {
-    return [];
-  }
-  const limit = Math.max(1, Math.min(concurrency, items.length));
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  async function run() {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await worker(items[index]);
-    }
-  }
-  await Promise.all(Array.from({ length: limit }, () => run()));
-  return results;
-}
 
 function dedupeFeaturesByAdcode(features: WorldFeature[]): WorldFeature[] {
   const seen = new Set<string>();
   const out: WorldFeature[] = [];
   for (const feature of features) {
     const props = feature.properties ?? {};
-    const key = String(props.adcode ?? props.id ?? feature.id ?? '').trim() || `idx-${out.length}`;
+    const key = (chinaFeatureAdcode(props) || String(props.id ?? feature.id ?? '')).trim() || `idx-${out.length}`;
     if (seen.has(key)) {
       continue;
     }
@@ -438,106 +933,31 @@ export function chinaBoundarySourceLabel(source: ChinaAdministrativeMap['sourceS
   }
 }
 
-async function loadBuiltinFeatureCollection(adcode: string) {
-  if (!/^\d{6}$/.test(adcode)) {
-    return null;
-  }
-  const availableAdcodes = await loadBuiltinAdcodeManifest();
-  if (availableAdcodes.size > 0 && !availableAdcodes.has(adcode)) {
-    return null;
-  }
-  const collection = asNullableFeatureCollection(await fetchChinaMapJSON(adcode));
-  return collection ? rewindBuiltinFeatureCollection(collection) : null;
-}
 
+/**
+ * code→name 索引由构建期脚本 scripts/build-china-admin-index.mjs 从
+ * china_aux.geojson.gz 提取生成（public/map/lookup/china_admin_index.json），
+ * 避免运行时为建索引拉取 8MB 完整几何数据。
+ */
 async function loadChinaAdminIndex(): Promise<ChinaAdminIndex> {
-  const [provinceRecords, cityRecords, areaRecords] = await Promise.all([
-    fetchAdminRecords('province/province.json'),
-    fetchAdminRecords('city/city.json'),
-    fetchAdminRecords('area/area.json'),
-  ]);
-  const records = [...provinceRecords, ...cityRecords, ...areaRecords];
+  const entries = await fetchGzJson<Array<{ code: string; name: string }>>('map/lookup/china_admin_index.json');
   const nameToCodes = new Map<string, string[]>();
   const codeToName = new Map<string, string>();
-  const add = (record: AdminRecord) => {
-    if (!/^\d{6}$/.test(record.code)) {
-      return;
-    }
-    codeToName.set(record.code, record.name);
-    const normalized = normalizeChinaAdminName(record.name);
-    if (!normalized) {
-      return;
-    }
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const code = String(entry?.code ?? '').trim();
+    const name = String(entry?.name ?? '').trim();
+    if (!/^\d{6}$/.test(code) || !name) continue;
+    codeToName.set(code, name);
+    const normalized = normalizeChinaAdminName(name);
+    if (!normalized) continue;
     const items = nameToCodes.get(normalized) ?? [];
-    items.push(record.code);
+    items.push(code);
     nameToCodes.set(normalized, items);
-  };
-  records.forEach(add);
+  }
   return { nameToCodes, codeToName };
 }
 
-async function fetchChinaMapJSON(adcode: string) {
-  try {
-    const response = await fetch(chinaMapAssetURL(adcode), {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return null;
-    }
-    return response.json();
-  } catch {
-    return null;
-  }
-}
 
-async function loadBuiltinAdcodeManifest() {
-  if (!builtinAdcodeManifest) {
-    builtinAdcodeManifest = fetchBuiltinAdcodeManifest();
-  }
-  return builtinAdcodeManifest;
-}
-
-async function fetchBuiltinAdcodeManifest() {
-  try {
-    const response = await fetch(staticAssetURL('china-map-echarts/map/index.json'), {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return new Set<string>();
-    }
-    const value = await response.json();
-    return new Set(Array.isArray(value) ? value.filter((item): item is string => /^\d{6}$/.test(String(item))) : []);
-  } catch {
-    return new Set<string>();
-  }
-}
-
-async function fetchAdminRecords(path: string): Promise<AdminRecord[]> {
-  if (!/^(province\/province|city\/city|area\/area)\.json$/.test(path)) {
-    return [];
-  }
-  try {
-    const response = await fetch(staticAssetURL(`province-city-china/${path}`), {
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return [];
-    }
-    const value = await response.json();
-    return Array.isArray(value) ? value as AdminRecord[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function chinaMapAssetURL(adcode: string) {
-  return staticAssetURL(`china-map-echarts/map/${adcode}.json`);
-}
-
-function staticAssetURL(path: string) {
-  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
-  return `${base}${path}`;
-}
 
 function toLayer(
   feature: WorldFeature,
@@ -666,13 +1086,16 @@ function readFeatureLevel(feature: WorldFeature) {
 function ensureFeatureAdminLevel(feature: WorldFeature): WorldFeature {
   const properties = feature.properties ?? {};
   const level = inferAdminLevel(feature);
-  if (String(properties.level ?? '') === level) {
+  const adcode = chinaFeatureAdcode(properties);
+  const nextAdcode = String(properties.adcode ?? '') || adcode;
+  if (String(properties.level ?? '') === level && String(properties.adcode ?? '') === nextAdcode) {
     return feature;
   }
   return {
     ...feature,
     properties: {
       ...properties,
+      ...(nextAdcode ? { adcode: nextAdcode } : {}),
       level,
     },
   };
@@ -683,7 +1106,8 @@ function inferAdminLevel(feature: WorldFeature): string {
   if (existing === 'province' || existing === 'city' || existing === 'district' || existing === 'county') {
     return existing;
   }
-  const code = String(feature.properties?.adcode ?? feature.properties?.id ?? feature.id ?? '').trim();
+  const code = chinaFeatureAdcode(feature.properties ?? {})
+    || String(feature.properties?.adcode ?? feature.properties?.id ?? feature.id ?? '').trim();
   if (/^\d{6}$/.test(code)) {
     if (code.endsWith('0000')) {
       return 'province';
@@ -748,7 +1172,7 @@ function rewindBuiltinFeature(feature: WorldFeature): WorldFeature {
       ...feature,
       geometry: {
         ...record,
-        coordinates: reversePolygonRings(record.coordinates),
+        coordinates: orientPolygonRings(record.coordinates),
       },
     };
   }
@@ -757,25 +1181,57 @@ function rewindBuiltinFeature(feature: WorldFeature): WorldFeature {
       ...feature,
       geometry: {
         ...record,
-        coordinates: reverseMultiPolygonRings(record.coordinates),
+        coordinates: orientMultiPolygon(record.coordinates),
       },
     };
   }
   return feature;
 }
 
-function reverseMultiPolygonRings(coordinates: unknown) {
+function orientMultiPolygon(coordinates: unknown) {
   return Array.isArray(coordinates)
-    ? coordinates.map((polygon) => reversePolygonRings(polygon))
+    ? coordinates.map((polygon) => orientPolygonRings(polygon))
     : coordinates;
 }
 
-function reversePolygonRings(coordinates: unknown) {
-  return Array.isArray(coordinates)
-    ? coordinates.map((ring) => reverseLinearRing(ring))
-    : coordinates;
+/**
+ * Normalise ring winding instead of unconditionally reversing every ring.
+ * GeoJSON RFC 7946 requires exterior rings counter-clockwise (positive planar
+ * signed area) and interior rings clockwise (negative). If a source polygon is
+ * already wound that way we leave it untouched; otherwise we flip it.
+ */
+function orientPolygonRings(coordinates: unknown) {
+  if (!Array.isArray(coordinates) || coordinates.length === 0) {
+    return coordinates;
+  }
+  const rings = coordinates;
+  const exteriorArea = signedRingArea(rings[0]);
+  const exterior = exteriorArea < 0 ? [...(rings[0] as unknown[])].reverse() : rings[0];
+  const wantHoleSign = -Math.sign(signedRingArea(exterior) || 1);
+  const out: unknown[] = [exterior];
+  for (let index = 1; index < rings.length; index += 1) {
+    const hole = rings[index];
+    const area = signedRingArea(hole);
+    out.push(Math.sign(area) !== wantHoleSign ? [...(hole as unknown[])].reverse() : hole);
+  }
+  return out;
 }
 
-function reverseLinearRing(ring: unknown) {
-  return Array.isArray(ring) ? [...ring].reverse() : ring;
+function signedRingArea(ring: unknown): number {
+  if (!Array.isArray(ring) || ring.length < 3) {
+    return 0;
+  }
+  let sum = 0;
+  for (let index = 0; index < ring.length; index += 1) {
+    const a = ring[index] as unknown[];
+    const b = ring[(index + 1) % ring.length] as unknown[];
+    const ax = Number(a?.[0]);
+    const ay = Number(a?.[1]);
+    const bx = Number(b?.[0]);
+    const by = Number(b?.[1]);
+    if (Number.isFinite(ax) && Number.isFinite(ay) && Number.isFinite(bx) && Number.isFinite(by)) {
+      sum += ax * by - bx * ay;
+    }
+  }
+  return sum / 2;
 }

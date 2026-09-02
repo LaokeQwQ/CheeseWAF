@@ -19,6 +19,8 @@ workflow_files=(
 
 for workflow in "${workflow_files[@]}"; do
   [[ -r "$workflow" ]] || fail "missing workflow: ${workflow}"
+  grep -A1 -Fx 'permissions:' "$workflow" | grep -Eq '^[[:space:]]+contents:[[:space:]]+read([[:space:]]*(#.*)?)?$' ||
+    fail "${workflow} must set default permissions.contents to read"
   grep -Fq 'PR_BASE_REF: ${{ github.base_ref }}' "$workflow" ||
     fail "${workflow} must pass the PR base ref through env"
   grep -Fq 'PR_HEAD_REF: ${{ github.head_ref }}' "$workflow" ||
@@ -44,7 +46,7 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not enforce go vet"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh coverage' "$workflow" ||
     fail "${workflow} does not enforce Go coverage"
-  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.10' "$workflow" ||
+  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11' "$workflow" ||
     fail "${workflow} does not pin the Vitest coverage provider"
   grep -Fq 'npm test -- --coverage' "$workflow" ||
     fail "${workflow} does not execute project tests with coverage"
@@ -54,7 +56,57 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not typecheck the dashboard"
   grep -Fq 'npm run build' "$workflow" ||
     fail "${workflow} does not build the dashboard"
+  grep -Fq 'bash scripts/ci/run-corpus-governance.sh' "$workflow" ||
+    fail "${workflow} does not run the corpus governance gate"
+  grep -Fq 'bash scripts/ci/run-semantic-benchmark.sh' "$workflow" ||
+    fail "${workflow} does not capture the semantic performance baseline"
+  grep -Fq 'bash scripts/ci/lock-evaluation-artifact_test.sh' "$workflow" ||
+    fail "${workflow} does not run the evaluation artifact lock smoke test"
+  grep -Fq 'bash scripts/ci/run-authorized-blind-lab_test.sh' "$workflow" ||
+    fail "${workflow} does not run the authorized blind-lab wiring smoke test"
+  grep -Fq 'bash scripts/ci/run-governed-semantic-gate.sh' "$workflow" ||
+    fail "${workflow} does not run the governed semantic gate"
+  for governance_var in \
+    CORPUS_GOVERNANCE_MAX_PARSE_ERRORS \
+    CORPUS_GOVERNANCE_MAX_INVALID_UTF8 \
+    CORPUS_GOVERNANCE_MAX_OVERLONG \
+    CORPUS_GOVERNANCE_MAX_LABEL_CONFLICTS \
+    CORPUS_GOVERNANCE_MAX_REPAIRS; do
+    grep -Fq "${governance_var}:" "$workflow" ||
+      fail "${workflow} does not pin ${governance_var}"
+  done
+  grep -Fq 'FPR_MIN_BENIGN:' "$workflow" ||
+    fail "${workflow} does not pin the benign minimum for the semantic gate"
+  grep -Fq 'TPR_MIN_ATTACK:' "$workflow" ||
+    fail "${workflow} does not pin the attack minimum for the semantic gate"
 done
+
+# Keep the local structured benchmark target behavior aligned with the script:
+# command-line Make overrides must reach the runner instead of silently falling
+# back to its defaults.
+makefile_bench_line="$(make -n semantic-bench-report SEMANTIC_BENCH_TIME=17ms SEMANTIC_BENCH_COUNT=2 SEMANTIC_BENCH_CPU=3 SEMANTIC_BENCH_OUTPUT=/tmp/semantic-bench-check.json 2>/dev/null)" ||
+  fail "Makefile semantic-bench-report dry run failed"
+grep -Fq 'SEMANTIC_BENCH_TIME="17ms"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_TIME"
+grep -Fq 'SEMANTIC_BENCH_COUNT="2"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_COUNT"
+grep -Fq 'SEMANTIC_BENCH_CPU="3"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_CPU"
+grep -Fq 'SEMANTIC_BENCH_OUTPUT="/tmp/semantic-bench-check.json"' <<<"$makefile_bench_line" ||
+  fail "Makefile semantic-bench-report does not pass SEMANTIC_BENCH_OUTPUT"
+
+[[ -x scripts/ci/lock-evaluation-artifact.sh ]] ||
+  fail "evaluation artifact lock helper must be executable"
+[[ -x scripts/ci/lock-evaluation-artifact_test.sh ]] ||
+  fail "evaluation artifact lock smoke test must be executable"
+[[ -x scripts/ci/run-authorized-blind-lab.sh ]] ||
+  fail "authorized blind-lab runner must be executable"
+[[ -x scripts/ci/run-authorized-blind-lab_test.sh ]] ||
+  fail "authorized blind-lab smoke test must be executable"
+[[ -x scripts/ci/run-semantic-benchmark.sh ]] ||
+  fail "semantic benchmark runner must be executable"
+bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh ||
+  fail "evaluation, benchmark, and blind-lab scripts must pass bash syntax validation"
 
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
   fail "GitHub Actions must pin Node ${NODE_VERSION}"
@@ -120,7 +172,17 @@ grep -Fq -- '--outbound-tls' scripts/ci/docker-build.sh ||
 grep -Fq 'healthcheck --outbound-tls' scripts/ci/docker-build.sh ||
   fail "container smoke must invoke healthcheck --outbound-tls inside the container"
 grep -Fq 'CHEESEWAF_SETUP_TOKEN' scripts/ci/docker-build.sh ||
-  fail "container smoke must pin CHEESEWAF_SETUP_TOKEN"
+  fail "container smoke must inject CHEESEWAF_SETUP_TOKEN"
+grep -Fq 'secrets.token_urlsafe' scripts/ci/docker-build.sh ||
+  fail "container smoke must generate one-run setup credentials"
+grep -Fq -- '--env-file "$secret_env_file"' scripts/ci/docker-build.sh ||
+  fail "container smoke must keep its setup token out of argv"
+grep -Fq -- '--header "@${setup_header}"' scripts/ci/docker-build.sh ||
+  fail "container smoke must keep its setup header out of argv"
+if grep -Fq 'CheeseWAF-CI-Setup-Token' scripts/ci/docker-build.sh ||
+  grep -Fq 'CheeseWAF-CI-Smoke-Only' scripts/ci/docker-build.sh; then
+  fail "container smoke must not hard-code setup credentials"
+fi
 grep -Fq 'X-CheeseWAF-Setup-Token' scripts/ci/docker-build.sh ||
   fail "container smoke must send the setup token header"
 
@@ -145,8 +207,8 @@ grep -Fq 'zip -qr' scripts/ci/package-release.sh ||
   fail "Windows channel packages must be zip archives"
 grep -Fq '${package_name}.exe' scripts/ci/package-release.sh ||
   fail "Windows channel packages must include a single-file CLI exe"
-grep -Fq 'cheesewaf-${goarch}-${goos}-${version_prefix}' scripts/ci/package-release.sh ||
-  fail "branch packages must use cheesewaf-{arch}-{os}-{version}-{suffix} names"
+grep -Fq 'cheesewaf-${goarch}-${goos}-${artifact_version}' scripts/ci/package-release.sh ||
+  fail "branch packages must use cheesewaf-{arch}-{os}-{version} names"
 grep -Fq 'hdiutil create' scripts/ci/package-macos-dmg.sh ||
   fail "macOS packaging must create UDZO disk images"
 grep -Fq 'CheeseWAF.app' scripts/ci/package-macos-dmg.sh ||
@@ -164,7 +226,7 @@ grep -Fq 'scripts/ci/sign-windows.sh' scripts/ci/package-release.sh ||
 grep -Fq 'APP_BUNDLE_VERSION' deploy/macos/Info.plist ||
   fail "macOS Info.plist must keep a numeric CFBundleVersion placeholder"
 got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version '0.1.0-PreTest')"
-[[ "$got_ver" == "0.1.0" ]] ||
+[[ "$got_ver" == "$(cat scripts/ci/product-version)" ]] ||
   fail "macOS CFBundleVersion must strip PreTest labels (got ${got_ver})"
 grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
   fail "CI must build macOS DMG images on a macOS runner"
@@ -172,6 +234,10 @@ grep -Fq 'Alpha-' scripts/ci/package-release.sh ||
   fail "pre-release tags must use the Alpha- prefix"
 grep -Fq 'scripts/ci/publish-prerelease.sh' .github/workflows/ci.yml ||
   fail "CI must publish Alpha- GitHub pre-releases"
+grep -Fq 'scripts/ci/publish-release.sh' .github/workflows/ci.yml ||
+  fail "CI must publish stable vMAJOR.MINOR.PATCH releases"
+grep -Fq -- "- 'v*'" .github/workflows/ci.yml ||
+  fail "CI must run on stable version tags"
 grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
@@ -225,8 +291,11 @@ grep -Fq 'middleware.WriteCookie(w, r' internal/cli/service.go ||
 if grep -Fq 'ExecReload=' deploy/systemd/cheesewaf.service; then
   fail "systemd must not advertise SIGHUP reload; the process ignores hangup"
 fi
-grep -Fq 'rewrite_checksums' scripts/ci/publish-prerelease.sh ||
+grep -Fq 'rewrite-release-checksums.sh' scripts/ci/publish-prerelease.sh ||
   fail "publish must rebuild SHA256SUMS after macOS DMG files land"
+if grep -Fq -- '--clobber' scripts/ci/publish-prerelease.sh; then
+  fail "published release assets must be immutable"
+fi
 grep -Fq 'github.ref_name == '\''canary'\''' .github/workflows/ci.yml ||
   fail "publish-prerelease must stay limited to canary and master"
 grep -Fq 'id-token: write' .github/workflows/ci.yml ||
@@ -269,6 +338,8 @@ if grep -nE 'http\.SetCookie' internal/api/middleware/session_cookie.go internal
 fi
 grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
   fail "Makefile CHANNEL must not embed a case statement with closing parens"
+grep -A1 'canary)' scripts/ci/channel-from-git.sh | grep -Fq 'echo PreTest' ||
+  fail "local canary channel must match package-release PreTest metadata"
 grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
   fail "make web-build must skip agent-eyes postinstall"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
@@ -295,8 +366,12 @@ fi
 if grep -E '^[[:space:]]*version_template:.*incpatch' .goreleaser.yaml; then
   fail "GoReleaser snapshot version must not use incpatch; Alpha- tags are not semver"
 fi
-grep -Fq 'version_template: "0.1.0-PreTest"' .goreleaser.yaml ||
-  fail "GoReleaser snapshot version must be a valid semver PreTest label"
+grep -Fq '{{ .Env.CHEESEWAF_VERSION_PREFIX }}-PreTest' .goreleaser.yaml ||
+  fail "GoReleaser snapshot version must read the product-version env"
+grep -Fq 'export CHEESEWAF_VERSION_PREFIX="$(cat scripts/ci/product-version)"' .github/workflows/ci.yml ||
+  fail "GitHub Actions must export the product version before goreleaser"
+grep -Fq 'export CHEESEWAF_VERSION_PREFIX="$(cat scripts/ci/product-version)"' .forgejo/workflows/ci.yml ||
+  fail "Forgejo must export the product version before goreleaser"
 
 if grep -Fq '*SNAPSHOT*' scripts/ci/verify-release.sh; then
   fail "GoReleaser GUI skip must not depend on SNAPSHOT in the archive name"
@@ -306,7 +381,224 @@ grep -Fq 'branch=goreleaser' scripts/ci/verify-release.sh ||
 grep -Fq 'artifact_matches_host' scripts/ci/verify-release.sh ||
   fail "release smoke must match cheesewaf-{arch}-{os}- names without depending on field order"
 
+# Single source of truth for the product version.
+product_version_file="scripts/ci/product-version"
+[[ -r "$product_version_file" ]] || fail "missing ${product_version_file}"
+product_version="$(cat "$product_version_file")"
+[[ "$product_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+  fail "product-version must be plain semver (got: ${product_version})"
+grep -Fq 'cat "${script_dir}/product-version"' scripts/ci/package-release.sh ||
+  fail "package-release.sh must read the single version source"
+grep -Fq 'CHEESEWAF_VERSION_PREFIX' scripts/ci/package-release.sh ||
+  fail "package-release.sh must preserve the CHEESEWAF_VERSION_PREFIX override"
+grep -Fq 'CHEESEWAF_VERSION_PREFIX' .goreleaser.yaml ||
+  fail "GoReleaser must use the CHEESEWAF_VERSION_PREFIX env override"
+
+# Local build naming/ldflags must match the release naming contract and inject
+# the same version/commit/build-time/channel metadata as package-release.sh.
+grep -Fq 'cheesewaf-${goarch}-${goos}-${FILENAME_VERSION}' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must use cheesewaf-{arch}-{os}-{version} names"
+grep -Fq 'internal/version.Version=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the Version ldflag"
+grep -Fq 'internal/version.Commit=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the Commit ldflag"
+grep -Fq 'internal/version.BuildTime=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the BuildTime ldflag"
+grep -Fq 'internal/version.Channel=' scripts/build-all.sh ||
+  fail "scripts/build-all.sh must inject the Channel ldflag"
+grep -Fq 'bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext' Makefile ||
+  fail "Makefile build-all must use cheesewaf-{arch}-{os}-{version} names"
+
+# Forgejo alignment: shared npm audit gate. actionlint only lints GitHub YAML;
+# Forgejo uses https://data.forgejo.org/... action URLs that actionlint cannot
+# parse, so Forgejo workflow correctness stays covered by the static checks above.
+grep -Fq 'node scripts/npm-audit-gate.mjs' .forgejo/workflows/ci.yml ||
+  fail "Forgejo web-audit must use the shared npm-audit-gate"
+
+# Coverage gates must stay aligned with actual observed coverage so CI is not
+# guaranteed to fail.
+#
+# The thresholds now live in web/vitest.config.ts as the single source of truth.
+# CI must NOT pass --coverage.thresholds.* on the CLI: doing so silently
+# overrides the config file, which is how the gate ended up pinned at 20% while
+# only measuring 4 files. Check the intent (no CLI override + a real config
+# threshold + full-src measurement) rather than a hardcoded number.
+for workflow in .github/workflows/ci.yml .forgejo/workflows/ci.yml; do
+  if grep -Fq -- '--coverage.thresholds.' "$workflow"; then
+    fail "$workflow must not override coverage thresholds on the CLI (they belong in web/vitest.config.ts)"
+  fi
+  grep -Fq -- 'npm test -- --coverage' "$workflow" ||
+    fail "$workflow web-build must run the dashboard suite with coverage"
+done
+grep -Fq "include: ['src/**/*.{ts,tsx}']" web/vitest.config.ts ||
+  fail "vitest coverage must measure the whole src tree, not a hardcoded file list"
+for key in lines functions statements branches; do
+  grep -Fq "$key:" web/vitest.config.ts ||
+    fail "vitest.config.ts must define a $key coverage threshold"
+done
+grep -Fq 'coverage_floor="${GO_COVERAGE_FLOOR:-50.0}"' scripts/ci/verify-go-quality.sh ||
+  fail "Go coverage floor must default to 50%"
+
+# Publish gating: GitHub environment, tag-to-commit, idempotent create, and
+# product-level SBOM.
+grep -Fq 'environment: publish-prerelease' .github/workflows/ci.yml ||
+  fail "publish-prerelease must run in the publish-prerelease environment"
+grep -Fq -- '--target "$commit"' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must create the release at the manifest commit"
+grep -Fq 'gh release view "$tag"' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must skip create when the release already exists"
+grep -Fq 'cheesewaf-artifacts.cdx.json' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must generate a product-level SBOM"
+grep -Fq 'artifacts.manifest.json' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must provide a minimal artifact manifest fallback"
+grep -Fq 'sign_blob "$product_sbom"' scripts/ci/publish-prerelease.sh ||
+  fail "publish-prerelease must sign the product-level SBOM"
+
+# Platform signing gate: ordinary branch builds remain available, but signing
+# inputs may only resolve for a tag-triggered package.
+grep -Fq -- "- 'Alpha-*'" .github/workflows/ci.yml ||
+  fail "GitHub CI must trigger tagged release packaging for signed artifacts"
+for signing_secret in \
+  WINDOWS_CERT_P12 \
+  WINDOWS_CERT_PASSWORD \
+  MACOS_P12_BASE64 \
+  MACOS_P12_PASSWORD \
+  MACOS_CODESIGN_IDENTITY \
+  APPLE_API_KEY \
+  APPLE_API_KEY_ID \
+  APPLE_API_ISSUER; do
+  grep -Fq "github.ref_type == 'tag' && secrets.${signing_secret}" .github/workflows/ci.yml ||
+    fail "${signing_secret} must only be resolved for tag-triggered signing"
+done
+grep -Fq "github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'" .github/workflows/ci.yml ||
+  fail "ordinary branch release artifacts must remain enabled"
+grep -Fq 'Upload branch release artifacts' .github/workflows/ci.yml ||
+  fail "ordinary branch release artifacts must still be uploaded"
+
+# Deployment exposure and macOS release guidance.
+grep -Fq '"127.0.0.1:9443:9443"' deploy/docker/docker-compose.yml ||
+  fail "Docker admin TLS must bind to host loopback only"
+if grep -Fq '"9443:9443"' deploy/docker/docker-compose.yml; then
+  fail "Docker admin TLS must not bind to all host interfaces"
+fi
+grep -Fq 'ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
+	fail "systemd must allow CheeseWAF to update its own configuration directory"
+if [[ -e deploy/macos/fix-gatekeeper.command ]]; then
+  fail "signed macOS release media must not ship a Gatekeeper quarantine helper"
+fi
+if grep -Fq 'fix-gatekeeper.command' scripts/ci/package-macos-dmg.sh; then
+  fail "macOS packaging must not include a Gatekeeper quarantine helper"
+fi
+for macos_guidance in README.md README_CN.md deploy/macos/first-open.txt; do
+  if grep -Fq 'xattr -dr com.apple.quarantine' "$macos_guidance"; then
+    fail "${macos_guidance} must not tell release users to recursively clear quarantine"
+  fi
+done
+
+# Optional release signing gate.
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING' scripts/ci/verify-release.sh ||
+  fail "verify-release.sh must support the optional signing gate"
+grep -Fq 'osslsigncode verify' scripts/ci/verify-release.sh ||
+  fail "optional signing gate must verify Windows Authenticode"
+grep -Fq 'codesign --verify' scripts/ci/verify-release.sh ||
+  fail "optional signing gate must verify macOS codesign"
+grep -Fq 'signing_mode=1' .github/workflows/ci.yml ||
+  fail "GitHub release CI must explicitly force signing when credentials exist"
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING="$signing_mode"' .github/workflows/ci.yml ||
+  fail "GitHub release CI must pass its explicit signing mode"
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING="$signing_mode"' .forgejo/workflows/ci.yml ||
+  fail "Forgejo release CI must pass its explicit signing mode"
+grep -Fq 'CHEESEWAF_SIGNING_SCOPE=windows' .github/workflows/ci.yml ||
+  fail "GitHub Windows release verification must use the Windows signing scope"
+grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
+  fail "GitHub macOS release verification must use the macOS signing scope"
+grep -Fq 'WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}' .forgejo/workflows/ci.yml ||
+  fail "Forgejo packaging must receive the Windows signing secret"
+grep -Fq 'apt-get install -y --no-install-recommends nsis zip osslsigncode' .forgejo/workflows/ci.yml ||
+  fail "Forgejo release packaging must install its signing and archive tools"
+grep -Fq 'run_with_timeout 900 xcrun notarytool' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS notarization must have a bounded wait"
+grep -Fq 'security delete-keychain "$signing_keychain"' scripts/ci/package-macos-dmg.sh ||
+  fail "macOS packaging must remove its temporary signing keychain"
+grep -Fq -- '-readpass "$pass_file"' scripts/ci/sign-windows.sh ||
+  fail "Windows certificate password must be read from a protected file"
+if grep -Fq -- '-pass "$WINDOWS_CERT_PASSWORD"' scripts/ci/sign-windows.sh ||
+  grep -Fq -- '-P "${MACOS_P12_PASSWORD' scripts/ci/package-macos-dmg.sh; then
+  fail "code-signing passwords must not be exposed in argv"
+fi
+for ci_script in scripts/ci/*.sh; do
+  [[ "$ci_script" == scripts/ci/verify-ci-static.sh ]] && continue
+  if grep -nE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)' "$ci_script"; then
+    fail "${ci_script} must run on stock macOS Bash 3.2"
+  fi
+done
+if grep -Fq 'seq ' scripts/ci/verify-release.sh; then
+  fail "release verification must not depend on non-stock macOS seq"
+fi
+if grep -n -- '-l=4' Makefile scripts/build-all.sh scripts/build-pgo.sh; then
+  fail "release builds must not disable compiler inlining with -l=4"
+fi
+if grep -Fi 'aggressive inlining' PERFORMANCE_DELIVERY.md docs/performance-optimization.md; then
+  fail "performance docs must not misdescribe -l=4 as aggressive inlining"
+fi
+if grep -Fq '/nonfatal' deploy/windows/nsis/cheesewaf.nsi; then
+  fail "NSIS must fail when a required payload file is missing"
+fi
+grep -Fq 'test -s web/dist/index.html' Makefile ||
+  fail "Windows packaging must assert the built UI exists"
+grep -Fq 'assert_managed_output_dir' scripts/ci/package-release.sh ||
+  fail "package-release must guard recursive cleanup targets"
+grep -Fq 'must not traverse a symbolic link' scripts/ci/package-release.sh ||
+  fail "package-release must reject symlinked cleanup paths"
+grep -Fq 'must not be nested inside' scripts/ci/package-release.sh ||
+  fail "package-release must keep release and work outputs disjoint"
+CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
+  bash scripts/ci/package-release.sh >/dev/null
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-release/work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted a work directory nested inside release output"
+fi
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-work/release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted release output nested inside its work directory"
+fi
+grep -Fq 'unsafe archive path' scripts/ci/verify-release.sh ||
+  fail "release verification must reject path-traversal archive members"
+for release_script in package-release.sh package-macos-dmg.sh publish-prerelease.sh; do
+  grep -Fq 'rewrite-release-checksums.sh' "scripts/ci/${release_script}" ||
+    fail "${release_script} must use the shared atomic checksum rewrite"
+done
+for replacement in \
+  'runtime_dir: "/var/lib/cheesewaf/run"' \
+  'path: "/var/lib/cheesewaf/cheesewaf.db"' \
+  'path: "/var/log/cheesewaf/access.log"' \
+  'target: "/var/log/cheesewaf"' \
+  'path: "/var/log/cheesewaf/audit.log"'; do
+  [[ "$(grep -Fc "$replacement" deploy/docker/Dockerfile)" -ge 2 ]] ||
+    fail "Dockerfile must assert config rewrite: ${replacement}"
+done
+grep -Fq ',/^[[:space:]]*read_timeout:/' deploy/docker/Dockerfile ||
+  fail "Dockerfile admin TLS rewrite must stop at the read_timeout key"
+if grep -Fq ',/^[[:space:]]*read_timeout:[[:space:]]*$/' deploy/docker/Dockerfile; then
+  fail "Dockerfile admin TLS rewrite must allow a read_timeout value"
+fi
+grep -Fq "before 06:00 on tuesday" renovate.json ||
+  fail "Renovate must not overlap Dependabot's Monday maintenance window"
+grep -A2 '"enabledManagers"' renovate.json | grep -Fq '"dockerfile"' ||
+  fail "Renovate must leave Go, npm, and GitHub Actions updates to Dependabot"
+if grep -E 'rate_limit:|requests_per_second:|ip_block:' README.md README_CN.md; then
+  fail "README configuration examples contain obsolete keys"
+fi
+
 bash scripts/ci/generate-release-metadata_test.sh
+bash scripts/ci/rewrite-release-checksums_test.sh
+bash scripts/ci/publish-prerelease_test.sh
 bash scripts/ci/verify-release_test.sh
 
 echo "CI static regression checks passed."

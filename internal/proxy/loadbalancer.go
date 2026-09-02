@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"hash/fnv"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -9,15 +11,20 @@ import (
 )
 
 type LoadBalancer struct {
-	mu     sync.RWMutex
-	next   map[string]uint64
-	sites  []config.SiteConfig
-	byHost map[string]config.SiteConfig
-	health *HealthRegistry
+	mu       sync.RWMutex
+	next     map[string]uint64
+	inflight map[string]int
+	sites    []config.SiteConfig
+	byHost   map[string]config.SiteConfig
+	health   *HealthRegistry
 }
 
 func NewLoadBalancer(sites []config.SiteConfig) *LoadBalancer {
-	lb := &LoadBalancer{next: map[string]uint64{}, sites: sites}
+	lb := &LoadBalancer{
+		next:     map[string]uint64{},
+		inflight: map[string]int{},
+		sites:    sites,
+	}
 	lb.rebuildHostIndexLocked()
 	return lb
 }
@@ -35,6 +42,7 @@ func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthReg
 	lb.sites = append([]config.SiteConfig(nil), sites...)
 	lb.health = health
 	lb.next = map[string]uint64{}
+	lb.inflight = map[string]int{}
 	lb.rebuildHostIndexLocked()
 	lb.mu.Unlock()
 }
@@ -43,7 +51,7 @@ func (lb *LoadBalancer) UpdateSites(sites []config.SiteConfig, health *HealthReg
 // When no site matches, it returns an empty SiteConfig (ID == "") so callers can
 // reject the request instead of falling back to another tenant's site.
 func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
-	host = strings.Split(strings.ToLower(host), ":")[0]
+	host = normalizeRequestHost(host)
 	if lb == nil {
 		return config.SiteConfig{}
 	}
@@ -56,6 +64,17 @@ func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	return config.SiteConfig{}
 }
 
+func normalizeRequestHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		return strings.TrimSpace(parsed)
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return strings.TrimSpace(host[1 : len(host)-1])
+	}
+	return host
+}
+
 func (lb *LoadBalancer) rebuildHostIndexLocked() {
 	index := make(map[string]config.SiteConfig, len(lb.sites)*2)
 	for _, site := range lb.sites {
@@ -63,7 +82,7 @@ func (lb *LoadBalancer) rebuildHostIndexLocked() {
 			continue
 		}
 		for _, domain := range site.Domains {
-			key := strings.ToLower(strings.TrimSpace(domain))
+			key := normalizeRequestHost(domain)
 			if key == "" {
 				continue
 			}
@@ -77,7 +96,21 @@ func (lb *LoadBalancer) rebuildHostIndexLocked() {
 }
 
 func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL, error) {
+	return lb.nextExcluding(site, clientIP, nil)
+}
+
+func (lb *LoadBalancer) nextExcluding(site config.SiteConfig, clientIP string, skip map[string]struct{}) (*url.URL, error) {
 	candidates := lb.healthyUpstreams(site)
+	if len(skip) > 0 {
+		filtered := make([]config.UpstreamConfig, 0, len(candidates))
+		for _, candidate := range candidates {
+			if _, skipped := skip[normalizeUpstream(candidate.Address)]; skipped {
+				continue
+			}
+			filtered = append(filtered, candidate)
+		}
+		candidates = filtered
+	}
 	if len(candidates) == 0 {
 		return nil, ErrNoUpstream
 	}
@@ -106,25 +139,15 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 		}
 	case "ip_hash":
 		if clientIP != "" {
-			for _, r := range clientIP {
-				index += int(r)
-			}
-			index %= len(candidates)
+			index = ipHashIndex(clientIP, candidates)
+		} else {
+			lb.mu.Lock()
+			index = int(lb.next[site.ID] % uint64(len(candidates)))
+			lb.next[site.ID] = uint64(index + 1)
+			lb.mu.Unlock()
 		}
 	case "least_conn":
-		// Approximate least-connections via rotating preference weighted by inverse of recent picks.
-		lb.mu.Lock()
-		index = int(lb.next[site.ID] % uint64(len(candidates)))
-		// Prefer lower slot under a simple expanding window.
-		if len(candidates) > 1 {
-			second := (index + 1) % len(candidates)
-			if lb.next[site.ID+":slot:"+candidates[second].Address] < lb.next[site.ID+":slot:"+candidates[index].Address] {
-				index = second
-			}
-		}
-		lb.next[site.ID+":slot:"+candidates[index].Address]++
-		lb.next[site.ID] = uint64(index + 1)
-		lb.mu.Unlock()
+		index = lb.leastConnIndex(candidates)
 	default:
 		lb.mu.Lock()
 		index = int(lb.next[site.ID] % uint64(len(candidates)))
@@ -136,6 +159,97 @@ func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL,
 		target = "http://" + target
 	}
 	return url.Parse(target)
+}
+
+// Track records one in-flight request for least_conn. The returned function
+// must be called exactly once when the attempt finishes.
+func (lb *LoadBalancer) Track(target *url.URL) func() {
+	if lb == nil || target == nil {
+		return func() {}
+	}
+	key := upstreamKeyFromURL(target)
+	if key == "" {
+		return func() {}
+	}
+	lb.mu.Lock()
+	if lb.inflight == nil {
+		lb.inflight = map[string]int{}
+	}
+	lb.inflight[key]++
+	lb.mu.Unlock()
+	return func() {
+		lb.mu.Lock()
+		if n := lb.inflight[key]; n > 1 {
+			lb.inflight[key] = n - 1
+		} else {
+			delete(lb.inflight, key)
+		}
+		lb.mu.Unlock()
+	}
+}
+
+func (lb *LoadBalancer) leastConnIndex(candidates []config.UpstreamConfig) int {
+	if len(candidates) == 0 {
+		return 0
+	}
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	best := 0
+	bestLoad := lb.inflightLocked(candidates[0].Address)
+	for i := 1; i < len(candidates); i++ {
+		load := lb.inflightLocked(candidates[i].Address)
+		if load < bestLoad {
+			best = i
+			bestLoad = load
+		}
+	}
+	return best
+}
+
+func (lb *LoadBalancer) inflightLocked(address string) int {
+	if lb.inflight == nil {
+		return 0
+	}
+	return lb.inflight[normalizeUpstream(address)]
+}
+
+func ipHashIndex(clientIP string, candidates []config.UpstreamConfig) int {
+	if len(candidates) == 0 {
+		return 0
+	}
+	best := 0
+	bestScore := rendezvousScore(clientIP, candidates[0].Address)
+	for i := 1; i < len(candidates); i++ {
+		score := rendezvousScore(clientIP, candidates[i].Address)
+		if score > bestScore {
+			best = i
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func rendezvousScore(clientIP, address string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(clientIP))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(normalizeUpstream(address)))
+	return h.Sum64()
+}
+
+func upstreamKeyFromURL(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	host := strings.TrimSpace(target.Host)
+	if host == "" {
+		return ""
+	}
+	scheme := strings.TrimSpace(target.Scheme)
+	if scheme == "" {
+		scheme = "http"
+	}
+	return normalizeUpstream(scheme + "://" + host)
 }
 
 func (lb *LoadBalancer) healthyUpstreams(site config.SiteConfig) []config.UpstreamConfig {

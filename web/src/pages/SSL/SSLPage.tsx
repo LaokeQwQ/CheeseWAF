@@ -20,33 +20,74 @@ import type { SystemConfig } from '../../types/api';
 import { fallbackSystem, normalizeSystem } from '../System/systemModel';
 
 type DNSProvider = SystemConfig['acme']['dns_providers'][number];
+type DNSProviderDraft = DNSProvider & { uiId: string };
+type SSLSystemDraft = Omit<SystemConfig, 'acme'> & {
+  acme: Omit<SystemConfig['acme'], 'dns_providers'> & { dns_providers: DNSProviderDraft[] };
+};
+
+const SYSTEMD_RESTART_PROFILE = 'systemd-restart';
+const SYSTEMD_RESTART_COMMAND = '/usr/bin/systemctl restart cheesewaf.service';
+let providerDraftSequence = 0;
+
+function nextProviderUIId() {
+  providerDraftSequence += 1;
+  return `acme-provider-${providerDraftSequence}`;
+}
+
+function withProviderUIIds(system: SystemConfig, current?: DNSProviderDraft[]): SSLSystemDraft {
+  const currentIDs = new Map((current ?? []).map((provider) => [provider.id, provider.uiId]));
+  return {
+    ...system,
+    acme: {
+      ...system.acme,
+      dns_providers: system.acme.dns_providers.map((provider) => ({
+        ...provider,
+        uiId: currentIDs.get(provider.id) ?? nextProviderUIId(),
+      })),
+    },
+  };
+}
+
+function stripProviderUIIds(acme: SSLSystemDraft['acme']): SystemConfig['acme'] {
+  return {
+    ...acme,
+    dns_providers: acme.dns_providers.map(({ uiId: _uiId, ...provider }) => provider),
+  };
+}
+
+function reloadProfile(value: string) {
+  return value === SYSTEMD_RESTART_PROFILE || value === SYSTEMD_RESTART_COMMAND
+    ? SYSTEMD_RESTART_PROFILE
+    : 'disabled';
+}
 
 export default function SSLPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const { data, isError, isFetching, isSuccess, isLoading, error, refetch } = systemQuery;
-  const serverSystem = useMemo(() => (data ? normalizeSystem(data) : undefined), [data]);
+  const serverSystem = useMemo<SSLSystemDraft | undefined>(() => (data ? withProviderUIIds(normalizeSystem(data)) : undefined), [data]);
+  const fallbackDraft = useMemo(() => withProviderUIIds(fallbackSystem), []);
   const { draft, setDraft, markClean } = useServerDraft(serverSystem);
-  const system = draft ?? fallbackSystem;
+  const system = draft ?? fallbackDraft;
 
   const saveMutation = useMutation({
     mutationFn: updateSystemConfig,
     onSuccess: (saved) => {
-      markClean(normalizeSystem(saved));
+      markClean(withProviderUIIds(normalizeSystem(saved), system.acme.dns_providers));
       queryClient.invalidateQueries({ queryKey: ['system'] });
       toast.success(t('system.saved'));
     },
     onError: (mutationError) => toast.error(mutationError.message),
   });
 
-  const patchACME = (patch: Partial<SystemConfig['acme']>) => {
+  const patchACME = (patch: Partial<SSLSystemDraft['acme']>) => {
     setDraft((current) => {
-      const base = current ?? fallbackSystem;
-      return normalizeSystem({ ...base, acme: { ...base.acme, ...patch } });
+      const base = current ?? fallbackDraft;
+      return withProviderUIIds(normalizeSystem({ ...base, acme: { ...base.acme, ...patch } }), base.acme.dns_providers);
     });
   };
-  const updateProvider = (index: number, patch: Partial<DNSProvider>) => {
+  const updateProvider = (index: number, patch: Partial<DNSProviderDraft>) => {
     const providers = system.acme.dns_providers.map((provider, providerIndex) => (
       providerIndex === index ? { ...provider, ...patch } : provider
     ));
@@ -59,7 +100,7 @@ export default function SSLPage() {
     patchACME({
       dns_providers: [
         ...system.acme.dns_providers,
-        { id: `dns-${Date.now()}-${Math.random().toString(16).slice(2)}`, name: '', api: 'dns_cf', enabled: true, env: {} },
+        { id: `dns-${Date.now()}-${Math.random().toString(16).slice(2)}`, uiId: nextProviderUIId(), name: '', api: 'dns_cf', enabled: true, env: {} },
       ],
     });
   };
@@ -180,8 +221,18 @@ export default function SSLPage() {
               <Input value={system.acme.cert_dir} placeholder="./data/certs" onChange={(e) => patchACME({ cert_dir: e.target.value })} disabled={!isSuccess} />
             </label>
             <label className="wide-field">
-              <span>{t('system.acmeReloadCommand')}</span>
-              <Input value={system.acme.reload_command} placeholder="systemctl reload cheesewaf" onChange={(e) => patchACME({ reload_command: e.target.value })} disabled={!isSuccess} />
+              <span>{t('system.acmeReloadProfile')}</span>
+              <Select
+                value={reloadProfile(system.acme.reload_command)}
+                onValueChange={(profile) => patchACME({ reload_command: profile === 'disabled' ? '' : profile })}
+                disabled={!isSuccess}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="disabled">{t('system.acmeReloadDisabled')}</SelectItem>
+                  <SelectItem value={SYSTEMD_RESTART_PROFILE}>{t('system.acmeReloadSystemdRestart')}</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
           </div>
         </section>
@@ -199,7 +250,7 @@ export default function SSLPage() {
           </header>
           <div className="acme-provider-list">
             {system.acme.dns_providers.map((provider, index) => (
-              <section className="acme-provider-card" key={index}>
+              <section className="acme-provider-card" key={provider.uiId}>
                 <div className="acme-provider-head">
                   <Switch checked={provider.enabled} onCheckedChange={(enabled) => updateProvider(index, { enabled })} disabled={!isSuccess} />
                   <Input

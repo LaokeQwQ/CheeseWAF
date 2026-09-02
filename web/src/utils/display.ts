@@ -84,6 +84,7 @@ const countryKeys: Record<string, string> = {
   MA: 'geo.countries.MA',
   MX: 'geo.countries.MX',
   LOCAL: 'geo.local',
+  MO: 'geo.countries.MO',
   MY: 'geo.countries.MY',
   NG: 'geo.countries.NG',
   NL: 'geo.countries.NL',

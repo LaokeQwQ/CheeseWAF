@@ -51,7 +51,7 @@ func (s *Server) HTTP3Server() (*http3.Server, string, error) {
 	}
 	return &http3.Server{
 		Addr:      addr,
-		Handler:   s.Handler(),
+		Handler:   withQUICReplayGuard(s.Handler()),
 		TLSConfig: http3.ConfigureTLSConfig(tlsConfig),
 		QUICConfig: &quic.Config{
 			Allow0RTT:      s.config.Server.HTTP3.ZeroRTT,
@@ -59,6 +59,9 @@ func (s *Server) HTTP3Server() (*http3.Server, string, error) {
 		},
 		IdleTimeout:    s.config.Server.IdleTimeout,
 		MaxHeaderBytes: maxHeaderBytes(s.config),
+		ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
+			return context.WithValue(ctx, quicReplayConnectionKey{}, quicReplayConnection(conn))
+		},
 	}, altSvc, nil
 }
 
@@ -111,14 +114,62 @@ func withAltSvc(next http.Handler, value string) http.Handler {
 }
 
 func maxHeaderBytes(cfg *config.Config) int {
-	maxHeaderBytes := 0
+	limit := http.DefaultMaxHeaderBytes
+	if cfg == nil {
+		return limit
+	}
 	for _, site := range cfg.Sites {
-		if site.WAF.Performance.MaxHeaderBytes > maxHeaderBytes {
-			maxHeaderBytes = site.WAF.Performance.MaxHeaderBytes
+		if !site.Enabled {
+			continue
+		}
+		configured := site.WAF.Performance.MaxHeaderBytes
+		if configured > 0 && configured < limit {
+			limit = configured
 		}
 	}
-	if maxHeaderBytes <= 0 {
-		return 1 << 20
+	return limit
+}
+
+func withQUICReplayGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, ok := r.Context().Value(quicReplayConnectionKey{}).(quicReplayConnection)
+		// Used0RTT is connection-scoped and remains true after the handshake. The
+		// handshake channel is the request-time discriminator: only a stream handled
+		// before completion can contain unauthenticated early data. Later ordinary
+		// requests on the same resumed connection must remain usable.
+		if ok && conn != nil && conn.ConnectionState().Used0RTT && !isQUICHandshakeComplete(conn) && !isReplaySafeMethod(r.Method) {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, http.StatusText(http.StatusTooEarly), http.StatusTooEarly)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type quicReplayConnection interface {
+	ConnectionState() quic.ConnectionState
+	HandshakeComplete() <-chan struct{}
+}
+
+type quicReplayConnectionKey struct{}
+
+func isQUICHandshakeComplete(conn quicReplayConnection) bool {
+	if conn == nil || conn.HandshakeComplete() == nil {
+		return false
 	}
-	return maxHeaderBytes
+	select {
+	case <-conn.HandshakeComplete():
+		return true
+	default:
+		return false
+	}
+}
+
+func isReplaySafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
 }

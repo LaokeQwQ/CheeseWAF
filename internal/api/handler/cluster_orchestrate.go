@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -47,6 +48,39 @@ type handlerDeployStarter struct {
 	h *Handler
 }
 
+func (s *handlerDeployStarter) Precheck(ctx context.Context, target orchestrate.RollingTarget) (orchestrate.RollingTarget, error) {
+	if s == nil || s.h == nil {
+		return orchestrate.RollingTarget{}, fmt.Errorf("handler unavailable")
+	}
+	request := deploy.SSHDeploymentRequest{
+		Host:          target.Host,
+		User:          target.User,
+		Port:          target.Port,
+		Password:      target.Password,
+		PrivateKey:    target.PrivateKey,
+		HostKeySHA256: target.HostKeySHA256,
+	}
+	result, err := s.h.clusterDeployRunner().Check(ctx, request)
+	if err != nil {
+		return orchestrate.RollingTarget{}, err
+	}
+	if !result.OK {
+		return orchestrate.RollingTarget{}, fmt.Errorf("ssh precheck did not succeed")
+	}
+	authTarget := authorizationTarget(request)
+	authTarget.ResolvedIPs = append([]string(nil), result.ResolvedIPs...)
+	auth, err := s.h.clusterDeployAuthorizationStore().IssueBound("", authTarget)
+	if err != nil {
+		return orchestrate.RollingTarget{}, err
+	}
+	bound, err := s.h.clusterDeployAuthorizationStore().ConsumeBound(auth.Handle, authTarget)
+	if err != nil {
+		return orchestrate.RollingTarget{}, err
+	}
+	target.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+	return target, nil
+}
+
 func (s *handlerDeployStarter) StartInstall(ctx context.Context, target orchestrate.RollingTarget) (string, error) {
 	return s.start(ctx, target, "install")
 }
@@ -71,6 +105,7 @@ func (s *handlerDeployStarter) start(_ context.Context, target orchestrate.Rolli
 		PrivateKey:    target.PrivateKey,
 		HostKeySHA256: target.HostKeySHA256,
 		Action:        action,
+		ResolvedIPs:   append([]string(nil), target.ResolvedIPs...),
 	}
 	task, err := s.h.clusterDeployTaskManager().Start(context.Background(), req)
 	if err != nil {
@@ -169,6 +204,14 @@ func (h *Handler) ClusterStartRollingUpgrade(w http.ResponseWriter, r *http.Requ
 	// Extract initiator from session/token for audit and rollback authorization
 	initiator := h.extractInitiator(r)
 	req.InitiatedBy = initiator
+	if err := h.precheckRollingTargets(r.Context(), &req); err != nil {
+		if errors.Is(err, deploy.ErrAuthorizationInvalid) {
+			writeError(w, http.StatusForbidden, "CLUSTER_SSH_PRECHECK_REQUIRED", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "CLUSTER_ROLLING_PRECHECK_FAILED", err.Error())
+		return
+	}
 	job, err := h.clusterRollingManager().Start(r.Context(), req.RollingUpgradeRequest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_ROLLING_INVALID", err.Error())
@@ -177,6 +220,48 @@ func (h *Handler) ClusterStartRollingUpgrade(w http.ResponseWriter, r *http.Requ
 	// Never echo SSH secrets in the response.
 	sanitized := *job
 	writeData(w, sanitized)
+}
+
+func (h *Handler) precheckRollingTargets(ctx context.Context, req *clusterRollingUpgradeHTTPRequest) error {
+	if req == nil {
+		return fmt.Errorf("rolling upgrade request is required")
+	}
+	for i := range req.Targets {
+		target := &req.Targets[i]
+		sshRequest := deploy.SSHDeploymentRequest{
+			Host:          target.Host,
+			User:          target.User,
+			Port:          target.Port,
+			Password:      target.Password,
+			PrivateKey:    target.PrivateKey,
+			HostKeySHA256: target.HostKeySHA256,
+		}
+		if len(req.Targets) == 1 && strings.TrimSpace(req.Authorization) != "" {
+			bound, err := h.clusterDeployAuthorizationStore().ConsumeBound(req.Authorization, authorizationTarget(sshRequest))
+			if err != nil {
+				return fmt.Errorf("target %d authorization: %w", i, err)
+			}
+			target.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+			continue
+		}
+
+		result, err := h.clusterDeployRunner().Check(ctx, sshRequest)
+		if err != nil {
+			return fmt.Errorf("target %d SSH precheck failed: %w", i, err)
+		}
+		authorizationTarget := authorizationTarget(sshRequest)
+		authorizationTarget.ResolvedIPs = append([]string(nil), result.ResolvedIPs...)
+		auth, err := h.clusterDeployAuthorizationStore().IssueBound("", authorizationTarget)
+		if err != nil {
+			return fmt.Errorf("target %d SSH precheck authorization failed: %w", i, err)
+		}
+		bound, err := h.clusterDeployAuthorizationStore().ConsumeBound(auth.Handle, authorizationTarget)
+		if err != nil {
+			return fmt.Errorf("target %d SSH precheck authorization: %w", i, err)
+		}
+		target.ResolvedIPs = append([]string(nil), bound.ResolvedIPs...)
+	}
+	return nil
 }
 
 func (h *Handler) ClusterGetRollingUpgrade(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +281,7 @@ func (h *Handler) ClusterListRollingUpgrades(w http.ResponseWriter, r *http.Requ
 
 // ClusterTrafficPeers returns mesh peers eligible for M4 traffic scheduling.
 func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
-	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r))
+	nodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r))
 	peers := traffic.EligiblePeers(nodes)
 	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
 	if mode == "" {
@@ -216,7 +301,7 @@ func (h *Handler) ClusterTrafficPeers(w http.ResponseWriter, r *http.Request) {
 		"healthy":  healthy,
 		"selected": selected,
 		"ok":       ok,
-		"status":   cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), requestLanguage(r)),
+		"status":   cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), requestLanguage(r)),
 	})
 }
 
@@ -263,11 +348,11 @@ func (h *Handler) isRegisteredNode(ctx context.Context, nodeID string) bool {
 	return exists
 }
 
-// ClusterConsensusStatus returns the built-in coordinator view (leader, role, freeze).
+// ClusterConsensusStatus returns the configured coordinator view (leader, role, freeze).
 func (h *Handler) ClusterConsensusStatus(w http.ResponseWriter, r *http.Request) {
 	lang := requestLanguage(r)
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
-	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
+	nodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	snap := h.clusterConsensusCoordinator().Evaluate(status, nodes)
 	writeData(w, snap)
 }
@@ -287,8 +372,8 @@ func (h *Handler) ClusterProposeConfigVersion(w http.ResponseWriter, r *http.Req
 		return
 	}
 	lang := requestLanguage(r)
-	status := cluster.FromConfigWithRuntime(h.Config, h.clusterHeartbeatRegistry(), lang)
-	nodes := cluster.RuntimeNodes(h.Config, h.clusterHeartbeatRegistry(), lang)
+	status := cluster.FromConfigWithRuntime(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
+	nodes := cluster.RuntimeNodes(h.currentConfig(), h.clusterHeartbeatRegistry(), lang)
 	rec, err := h.clusterConsensusCoordinator().ProposeConfigVersion(req.Version, req.Message, status, nodes)
 	if err != nil {
 		writeError(w, http.StatusConflict, "CLUSTER_CONSENSUS_REJECTED", err.Error())
@@ -339,21 +424,23 @@ func (h *Handler) clusterTrafficScheduler() *traffic.Scheduler {
 func (h *Handler) clusterConsensusCoordinator() *consensus.Coordinator {
 	h.clusterConsensusMu.Lock()
 	defer h.clusterConsensusMu.Unlock()
+	provider := "builtin"
+	var etcd []string
+	localID := ""
+	if current := h.currentConfig(); current != nil {
+		provider = strings.TrimSpace(current.Cluster.Consensus.Provider)
+		etcd = append([]string(nil), current.Cluster.Consensus.EtcdEndpoints...)
+		localID = strings.TrimSpace(current.Cluster.NodeID)
+	}
 	if h.clusterConsensus == nil {
-		provider := "builtin"
-		var etcd []string
-		localID := ""
-		if h.Config != nil {
-			provider = strings.TrimSpace(h.Config.Cluster.Consensus.Provider)
-			etcd = append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...)
-			localID = strings.TrimSpace(h.Config.Cluster.NodeID)
-		}
 		h.clusterConsensus = consensus.NewCoordinator(consensus.Options{
 			Provider:      provider,
 			LocalNodeID:   localID,
 			EtcdEndpoints: etcd,
 			Now:           h.nowUTC,
 		})
+	} else {
+		h.clusterConsensus.SetProvider(provider, etcd)
 	}
 	return h.clusterConsensus
 }

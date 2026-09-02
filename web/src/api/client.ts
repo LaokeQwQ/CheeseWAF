@@ -1,8 +1,9 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
-import type { TimeSyncStatus } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ScheduledTaskHistoryEntry, TimeSyncStatus } from '../types/api';
+import { cacheAccount, clearAccount } from '../authProfile';
 
 export const apiClient = axios.create({
   baseURL: '/api',
@@ -19,18 +20,21 @@ const tokenStorageKey = 'cheesewaf-token';
 const authFlagKey = 'cheesewaf-authed';
 const csrfCookieName = 'cheesewaf_csrf';
 const csrfHeaderName = 'X-CSRF-Token';
-const setupTokenStorageKey = 'cheesewaf-setup-token';
+const legacySetupTokenStorageKey = 'cheesewaf-setup-token';
+const sessionRefreshThrottleKey = 'cheesewaf-last-refresh';
+const sessionRefreshThrottleMs = 10 * 60_000;
 const setupTokenHeaderName = 'X-CheeseWAF-Setup-Token';
 let refreshPromise: Promise<void> | null = null;
 let authRedirectScheduled = false;
 let authRedirectLocationForTest: AuthRedirectLocation | null = null;
 let cachedCSRF = '';
+let setupTokenValue = '';
 
 type AuthResponse = {
   token?: string;
   csrf?: string;
   session_cookie?: boolean;
-  user: { username: string; role: string };
+  user: { id?: string; subject?: string; username: string; role: string; scopes?: string[] };
 };
 type AuthRedirectLocation = Pick<Location, 'pathname' | 'assign'> & Partial<Pick<Location, 'search' | 'hash'>>;
 
@@ -78,6 +82,7 @@ type SetupHistory = Pick<History, 'replaceState' | 'state'>;
 export async function hydrateSetupTokenFromStatus(
   fetcher: typeof fetch = fetch,
 ): Promise<string> {
+  clearLegacySetupTokenStorage();
   const existing = setupToken() || captureSetupTokenFromFragment();
   if (existing) {
     return existing;
@@ -97,11 +102,7 @@ export async function hydrateSetupTokenFromStatus(
     if (!token) {
       return '';
     }
-    try {
-      sessionStorage.setItem(setupTokenStorageKey, token);
-    } catch {
-      return token;
-    }
+    setupTokenValue = token;
     return token;
   } catch {
     return '';
@@ -112,17 +113,14 @@ export function captureSetupTokenFromFragment(
   locationRef: SetupLocation = window.location,
   historyRef: SetupHistory = window.history,
 ): string {
+  clearLegacySetupTokenStorage();
   const rawFragment = locationRef.hash.startsWith('#') ? locationRef.hash.slice(1) : locationRef.hash;
   const params = new URLSearchParams(rawFragment);
   const token = (params.get('setup_token') ?? '').trim();
   if (!token) {
     return '';
   }
-  try {
-    sessionStorage.setItem(setupTokenStorageKey, token);
-  } catch {
-    return '';
-  }
+  setupTokenValue = token;
   params.delete('setup_token');
   const remaining = params.toString();
   historyRef.replaceState(historyRef.state, '', `${locationRef.pathname}${locationRef.search}${remaining ? `#${remaining}` : ''}`);
@@ -130,28 +128,28 @@ export function captureSetupTokenFromFragment(
 }
 
 function setupToken(): string {
-  try {
-    return sessionStorage.getItem(setupTokenStorageKey)?.trim() ?? '';
-  } catch {
-    return '';
-  }
+  return setupTokenValue;
 }
 
 function clearSetupToken() {
+  setupTokenValue = '';
+  clearLegacySetupTokenStorage();
+}
+
+export function resetSetupTokenForTest() {
+  clearSetupToken();
+}
+
+function clearLegacySetupTokenStorage() {
   try {
-    sessionStorage.removeItem(setupTokenStorageKey);
+    sessionStorage.removeItem(legacySetupTokenStorageKey);
   } catch {
-    /* ignore */
+    // Browser storage may be unavailable; the active token remains memory-only.
   }
 }
 
 function isSetupMutation(method: string, requestURL: string): boolean {
-  let path: string;
-  try {
-    path = new URL(requestURL, 'https://cheesewaf.invalid').pathname.replace(/^\/api/, '');
-  } catch {
-    return false;
-  }
+  const path = requestPath(requestURL);
   return (method === 'post' && (path === '/setup' || path === '/setup/probe'))
     || (method === 'patch' && path === '/setup/draft');
 }
@@ -165,24 +163,25 @@ function clearLegacyTokenStorage() {
 }
 
 apiClient.interceptors.request.use(async (config) => {
-	const url = String(config.url ?? '');
-	const method = String(config.method ?? 'get').toLowerCase();
-	if (isSetupMutation(method, url)) {
-		await hydrateSetupTokenFromStatus();
-		const token = setupToken();
-		if (token) {
-			config.headers[setupTokenHeaderName] = token;
-		}
-	}
+  const url = String(config.url ?? '');
+  const method = String(config.method ?? 'get').toLowerCase();
+  if (isSetupMutation(method, url)) {
+    await hydrateSetupTokenFromStatus();
+    const token = setupToken();
+    if (token) {
+      config.headers[setupTokenHeaderName] = token;
+    }
+  }
   // Cookie session: credentials already include HttpOnly JWT. Attach CSRF on mutations.
-  if (['post', 'put', 'patch', 'delete'].includes(method) && !url.includes('/auth/login') && !url.includes('/setup') && !url.includes('/auth/captcha')) {
+  const path = requestPath(url);
+  if (['post', 'put', 'patch', 'delete'].includes(method) && !isCSRFExemptPath(path)) {
     const csrf = getCSRFToken();
     if (csrf) {
       config.headers[csrfHeaderName] = csrf;
     }
   }
   // Soft refresh via cookie when SPA is authed (no JWT in localStorage).
-  if (isAuthenticatedFlag() && !url.includes('/auth/login') && !url.includes('/auth/refresh') && !url.includes('/auth/logout') && !url.includes('/setup') && !url.includes('/auth/session')) {
+  if (isAuthenticatedFlag() && !isRefreshExemptPath(path)) {
     await refreshSessionIfNeeded();
   }
   return config;
@@ -201,6 +200,7 @@ apiClient.interceptors.response.use(
 export function handleUnauthorizedAuthFailure(locationRef: AuthRedirectLocation = authRedirectLocationForTest ?? window.location) {
   clearLegacyTokenStorage();
   markAuthenticated(false);
+  clearAccount();
   setCSRFToken('');
   queryClient.clear();
   const path = locationRef.pathname;
@@ -236,9 +236,32 @@ export function resetAuthRedirectStateForTest() {
   authRedirectLocationForTest = null;
 }
 
+function isSessionRefreshDue(): boolean {
+  try {
+    const raw = sessionStorage.getItem(sessionRefreshThrottleKey);
+    if (!raw) {
+      return true;
+    }
+    const at = Number(raw);
+    return Number.isFinite(at) && (Date.now() - at) > sessionRefreshThrottleMs;
+  } catch {
+    return true;
+  }
+}
+
+function markSessionRefresh() {
+  try {
+    sessionStorage.setItem(sessionRefreshThrottleKey, String(Date.now()));
+  } catch {
+    /* ignore */
+  }
+}
+
 async function refreshSessionIfNeeded() {
-  // Cookie sessions are refreshed on demand via /auth/refresh (HttpOnly cookie).
-  // Avoid hammering: only one in-flight refresh.
+  // Cookie sessions are refreshed at most every 10 minutes via /auth/refresh
+  // (HttpOnly cookie). Avoid hammering: only one in-flight refresh, and skip
+  // entirely when a recent refresh already ran. Refresh failures are soft: the
+  // originating request still proceeds so the response interceptor can handle 401.
   if (refreshPromise) {
     try {
       await refreshPromise;
@@ -246,6 +269,14 @@ async function refreshSessionIfNeeded() {
       /* handled by caller path */
     }
     return;
+  }
+  if (!isSessionRefreshDue()) {
+    return;
+  }
+  try {
+    await refreshSession();
+  } catch {
+    // Best-effort: let the actual request run its course.
   }
 }
 
@@ -266,7 +297,9 @@ export async function refreshSession() {
           setCSRFToken(response.data.data.csrf);
         }
         markAuthenticated(true);
+        markSessionRefresh();
         clearLegacyTokenStorage();
+        cacheAccount(response.data.data.user);
       })
       .finally(() => {
         refreshPromise = null;
@@ -435,13 +468,7 @@ export async function login(username: string, password: string, totpCode?: strin
   }
   markAuthenticated(true);
   clearLegacyTokenStorage();
-  try {
-    if (result.user) {
-      sessionStorage.setItem('cheesewaf-account', JSON.stringify({ username: result.user.username, role: result.user.role }));
-    }
-  } catch {
-    /* ignore */
-  }
+  cacheAccount(result.user);
   return result;
 }
 
@@ -451,11 +478,7 @@ export async function logout() {
   markAuthenticated(false);
   setCSRFToken('');
   clearLegacyTokenStorage();
-  try {
-    sessionStorage.removeItem('cheesewaf-account');
-  } catch {
-    /* ignore */
-  }
+  clearAccount();
   return result;
 }
 
@@ -466,6 +489,7 @@ export async function fetchSession() {
   }
   markAuthenticated(true);
   clearLegacyTokenStorage();
+  cacheAccount(result.user);
   return result;
 }
 
@@ -489,6 +513,7 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
       setCSRFToken(response.data.data.csrf);
     }
     markAuthenticated(true);
+    cacheAccount(response.data.data.user);
     clearLegacyTokenStorage();
     return true;
   } catch {
@@ -498,17 +523,17 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
 }
 
 export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
-	const result = await unwrap<{ user: { username: string; role: string } }>(
-		apiClient.post('/setup', {
+  const result = await unwrap<{ user: { username: string; role: string } }>(
+    apiClient.post('/setup', {
       username,
       password,
       admin_listen: adminListen,
       admin_strategy: adminStrategy,
       admin_public: adminStrategy === 'public_tls',
-		}),
-	);
-	clearSetupToken();
-	return result;
+    }),
+  );
+  clearSetupToken();
+  return result;
 }
 
 export function fetchSites() {
@@ -516,7 +541,7 @@ export function fetchSites() {
 }
 
 export function fetchSite(id: string) {
-  return unwrap<Site>(apiClient.get(`/sites/${id}`));
+  return unwrap<Site>(apiClient.get(`/sites/${encodeURIComponent(id)}`));
 }
 
 export function createSite(site: Partial<Site>) {
@@ -524,11 +549,11 @@ export function createSite(site: Partial<Site>) {
 }
 
 export function updateSite(id: string, site: Partial<Site>) {
-  return unwrap<Site>(apiClient.put(`/sites/${id}`, site));
+  return unwrap<Site>(apiClient.put(`/sites/${encodeURIComponent(id)}`, site));
 }
 
 export function deleteSite(id: string) {
-  return unwrap<{ deleted: boolean }>(apiClient.delete(`/sites/${id}`));
+  return unwrap<{ deleted: boolean }>(apiClient.delete(`/sites/${encodeURIComponent(id)}`));
 }
 
 export function fetchACMEProviders() {
@@ -536,11 +561,25 @@ export function fetchACMEProviders() {
 }
 
 export function issueSiteACMECertificate(siteId: string, payload: ACMEIssueRequest) {
-  return unwrap<ACMEIssueResponse>(apiClient.post(`/sites/${siteId}/acme/issue`, payload, { timeout: 180_000 }));
+  return unwrap<ACMEIssueResponse>(apiClient.post(`/sites/${encodeURIComponent(siteId)}/acme/issue`, payload, { timeout: 180_000 }));
 }
 
+/**
+ * 进程运行时快照。后端路由：GET /stats（router.go:167，权限 read:monitor）。
+ *
+ * **已核实：刻意不接 UI，这不是待接线项。**
+ * 该端点返回的是 `GET /monitor`（`fetchMonitorSummary`）快照的**子集**：
+ * uptime_seconds / goroutines / process_count / memory_alloc / sites 五个字段与
+ * `MonitorSnapshot` 同名同义，第六个 `status` 是 handler 里写死的常量 "running"。
+ * 而 /monitor 的数据前端已经在用 —— Dashboard 与 MonitorPage 都持有 `['monitor-summary']`
+ * 缓存，再为 /stats 加一块面板等于把同一批数字换个接口重画一遍，并且多一路轮询。
+ *
+ * 保留 wrapper 的理由（与 outputs/dead-code-frontend-2026-08-29.md 的判定一致）：
+ * 后端路由还活着，3 行 wrapper 省不下什么，删掉却会让"这个功能到底有没有"变成
+ * 只有读后端代码才知道的事。返回类型已收窄为 `RuntimeStats`，字段含义见该类型定义。
+ */
 export function fetchStats() {
-  return unwrap<Record<string, unknown>>(apiClient.get('/stats'));
+  return unwrap<RuntimeStats>(apiClient.get('/stats'));
 }
 
 export async function fetchHealth(): Promise<HealthStatus> {
@@ -554,6 +593,10 @@ export async function fetchHealth(): Promise<HealthStatus> {
 
 export function fetchLogs(params: LogQuery = {}) {
   return unwrap<LogResponse>(apiClient.get('/logs', { params }));
+}
+
+export function fetchAttackMapAggregate(params: AttackMapAggregateQuery = {}) {
+  return unwrap<AttackMapAggregateResponse>(apiClient.get('/attack-map/aggregate', { params }));
 }
 
 export function fetchReviewItems(params: ReviewQuery = {}) {
@@ -570,8 +613,8 @@ export async function fetchLogEvent(reference: string) {
   if (direct) {
     return direct;
   }
-  const recent = await fetchLogs({ limit: 250 });
-  const fallback = recent.items.find((entry) => entry.trace_id === reference || entry.id === reference);
+  const byID = await fetchLogs({ limit: 1, id: reference });
+  const fallback = byID.items.find((entry) => entry.id === reference || entry.trace_id === reference) ?? byID.items[0];
   if (!fallback) {
     throw new APIRequestError('Log event not found', 'LOG_NOT_FOUND', 404);
   }
@@ -610,13 +653,32 @@ export function generateClusterAnsiblePackage(payload: ClusterAnsiblePlan) {
   return unwrap<ClusterAnsiblePackage>(apiClient.post('/cluster/deploy/ansible', payload));
 }
 
+/**
+ * 集群部署预检（SSH 连通性），同步执行。
+ *
+ * 后端路由：POST /cluster/deploy/check（router.go:189，write:cluster）
+ * 前端入口：ClusterPage 部署向导 SSH 分支的「快速预检（同步）」按钮。
+ *
+ * 与 `startClusterDeploymentTask({action:'check'})` 的区别：这个是同步的，不建任务、
+ * 不进任务列表，成功时直接把预检结果和授权一起返回。
+ *
+ * 失败语义：SSH 不通时后端只回 400 CLUSTER_SSH_INVALID，CheckResult 被丢弃，
+ * 因此这里拿到的 result 一定是 ok=true 的。
+ *
+ * 注意方向：这个接口不是「要先授权才能调」，而是「调成功才签发授权」——
+ * 返回的 authorization.handle 可喂给 startClusterDeploymentTask 的固定动作，
+ * 绑定 host/user/port/host_key_sha256，一次性、5 分钟有效。
+ */
 export function checkClusterDeployment(payload: ClusterDeploymentRequest) {
   return unwrap<ClusterDeploymentCheckResponse>(apiClient.post('/cluster/deploy/check', payload, { timeout: 60_000 }));
 }
 
-export function runClusterDeployment(payload: ClusterDeploymentRequest) {
-  return unwrap<ClusterDeploymentRunResult>(apiClient.post('/cluster/deploy/run', payload, { timeout: 180_000 }));
-}
+// Note: there used to be a runClusterDeployment() wrapper pointing at
+// POST /cluster/deploy/run. That route was never registered on the backend —
+// synchronous deploys were migrated to the asynchronous task API below
+// (startClusterDeploymentTask + fetchClusterDeploymentTask, wired into
+// ClusterPage). It was removed rather than left to mislead; the backend
+// ClusterDeployRun handler stays, unused, for the time being.
 
 export function startClusterDeploymentTask(payload: ClusterDeploymentRequest) {
   return unwrap<ClusterDeploymentTask>(apiClient.post('/cluster/deploy/tasks', payload, { timeout: 15_000 }));
@@ -646,6 +708,15 @@ export function fetchClusterRollingUpgrade(id: string) {
   return unwrap<ClusterRollingJob>(apiClient.get(`/cluster/orchestrate/rolling-upgrade/${encodeURIComponent(id)}`));
 }
 
+/**
+ * 集群滚动升级任务列表。
+ *
+ * 后端路由：GET /cluster/orchestrate/rolling-upgrade（router.go:200，read:cluster）
+ * 前端入口：ClusterPage「滚动升级」卡片里的任务列表表格。
+ *
+ * 注意：后端 RollingManager.List() 遍历 map，返回顺序是随机的，
+ * 前端必须自己排序后再展示，否则表格行会无规律跳动。
+ */
 export function fetchClusterRollingUpgrades() {
   return unwrap<{ items: ClusterRollingJob[]; total: number }>(apiClient.get('/cluster/orchestrate/rolling-upgrade'));
 }
@@ -663,6 +734,17 @@ export function fetchClusterConsensus() {
   return unwrap<ClusterConsensusSnapshot>(apiClient.get('/cluster/consensus'));
 }
 
+/**
+ * 向集群提议新配置版本，写进一致性日志。
+ *
+ * 后端路由：POST /cluster/consensus/config-version（router.go:206，write:cluster）
+ * 前端入口：ClusterPage「配置版本提议」卡片。
+ *
+ * 失败语义：整体失败，没有部分成功。非 Leader、配置写被冻结、未拿到本地 node id
+ * 都会返回 409 CLUSTER_CONSENSUS_REJECTED；保护模式下还会先被
+ * rejectClusterConfigWriteIfFrozen 拦成 423。错误信息要原样透给用户，
+ * 里面带了 leader/role，用户才知道为什么被拒。
+ */
 export function proposeClusterConfigVersion(payload: { version: string; message?: string }) {
   return unwrap<ClusterConfigVersionRecord>(apiClient.post('/cluster/consensus/config-version', payload));
 }
@@ -671,6 +753,21 @@ export function startClusterRollingRollback(id: string) {
   return unwrap<ClusterRollingJob>(apiClient.post(`/cluster/orchestrate/rolling-upgrade/${encodeURIComponent(id)}/rollback`, {}));
 }
 
+/**
+ * 上报节点流量探测结果（success/failure），驱动调度器的熔断器。
+ *
+ * 后端路由：POST /cluster/traffic/peers/report（router.go:204，write:cluster）
+ * 前端入口：ClusterPage 节点表格 / 移动端卡片每行的「上报成功」「上报失败」，
+ * 两个方向都过 ConfirmDialog 二次确认。
+ *
+ * 关键约束（和 /cluster/nodes 的返回不是一回事）：后端只认心跳注册表里的 node_id，
+ * 而 /cluster/nodes 是「join 注册 ∪ 运行时节点」的并集。从未心跳过的节点会拿到
+ * 400 CLUSTER_TRAFFIC_INVALID「must be a registered cluster node」，
+ * 这个错误要原样展示，别自己翻译成含糊的提示。
+ *
+ * 副作用：连续 3 次 failure 会打开熔断器，节点从健康调度里被摘掉 30 秒；
+ * success 直接清空计数。所以这不是无害的探针上报。
+ */
 export function reportClusterTrafficPeer(nodeId: string, report: 'failure' | 'success') {
   return unwrap<{ ok: boolean; node_id: string; report: string }>(
     apiClient.post('/cluster/traffic/peers/report', { node_id: nodeId, report }),
@@ -714,23 +811,23 @@ export function createUser(user: Partial<User> & { password?: string }) {
 }
 
 export function updateUser(id: string, user: Partial<User> & { password?: string }) {
-  return unwrap<User>(apiClient.put(`/users/${id}`, user));
+  return unwrap<User>(apiClient.put(`/users/${encodeURIComponent(id)}`, user));
 }
 
 export function setupUser2FA(id: string) {
-  return unwrap<TOTPSetup>(apiClient.post(`/users/${id}/2fa/setup`));
+  return unwrap<TOTPSetup>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/setup`));
 }
 
 export function enableUser2FA(id: string, secret: string, code: string) {
-  return unwrap<User>(apiClient.post(`/users/${id}/2fa/enable`, { secret, code }));
+  return unwrap<User>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/enable`, { secret, code }));
 }
 
 export function disableUser2FA(id: string, password: string, code: string) {
-	return unwrap<User>(apiClient.post(`/users/${id}/2fa/disable`, { password, code }));
+  return unwrap<User>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/disable`, { password, code }));
 }
 
 export function recoverUser2FA(id: string, password: string, confirmUsername: string) {
-	return unwrap<User>(apiClient.post(`/users/${id}/2fa/recover`, { password, confirm_username: confirmUsername }));
+  return unwrap<User>(apiClient.post(`/users/${encodeURIComponent(id)}/2fa/recover`, { password, confirm_username: confirmUsername }));
 }
 
 export function fetchSystemConfig() {
@@ -753,6 +850,48 @@ export function fetchVersion() {
   return unwrap<VersionInfo>(apiClient.get('/version'));
 }
 
+/**
+ * 外部地图边界数据（**全国/省级轮廓**，非区县）。后端已注册（router.go:207）。
+ *
+ * 后端路由：GET /system/map/china-boundary
+ *
+ * ## 状态：已评估 —— 因地图合规考虑**不接入**。不是待接线项，请勿顺手补上接线。
+ *
+ * 返回体：`{ enabled, source_type, source, license, review_id, attribution, geojson }`。
+ * `geojson` 是运维在「系统设置 → 地图数据」里配的**任意** file/URL 源原样透传，
+ * 后端只校验它是「至少含 1 个 feature 的 FeatureCollection」。
+ *
+ * 不接入的四个理由（详见调研结论）：
+ *
+ * 1. **审图号错配（决定性理由）。** 端点里的 `review_id` 只是把配置里的字符串回显出来，
+ *    validator.go:1778 只要求 `license` 或 `review_id` **非空**，既不校验格式，也无法验证
+ *    被分发的 GeoJSON 是否真的对应那个审图号。而地图页角标 `attackMap.chinaApproval` 是
+ *    **硬编码字面量** GS(2024)0650 / GS(2025)5996，只随 `chinaBoundaryEnabled` 开关，
+ *    不随实际数据源变化。一旦把本端点接进国界轮廓，就会出现「挂 GS(2024)0650 审图号、
+ *    画来源不明的界线」—— 审图号是核发给**特定数据**的，这属于违规使用。
+ * 2. **本端点只能落在国界轮廓这一格，而那正是最不能换的几何。** 内置省界包
+ *    （china_province.geojson.gz，审图号 GS(2024)0650）已经离线内置、无需网络。
+ *    「想用外部数据」的诉求已由 `/{adcode}` 端点在**区县**粒度满足（见下），
+ *    且该路径在界面上如实标注为「外部区县级边界」。国界轮廓没有任何增量收益。
+ * 3. **接口不声明坐标系，代码库也没有任何 GCJ-02/WGS84 转换。** 国内地图数据大量是
+ *    GCJ-02，接入后若运维喂的是 GCJ-02，国界会整体偏移 300~500m，同样是违规画法。
+ * 4. **默认配置 `enabled:false`**，接进来对绝大多数部署只是多一个必然返回空的请求。
+ *
+ * ## 十段线 / 黄岩岛 / 审图号并不依赖本接口（这点已核实，改别的不用担心）
+ *
+ * 合规几何只来自内置静态资源 `public/map/china/ten_dash.geojson`、`huangyan.geojson`、
+ * `china_borders.geojson.gz`，由 `loadChinaComplianceAssets()` 加载，**与任何后端接口无关**。
+ * 渲染三重 fail-closed：`isChinaBoundaryEnabled()`（enabled 且 license/review_id 非空）
+ * → `buildChinaComplianceFeatures()`（!enabled 直接返回 null）
+ * → `OsmAttackMap.syncChina()`（`complianceVisible = mode==='china' && chinaBoundaryEnabled`）。
+ * 因此外部源既补不了也删不掉十段线/黄岩岛——这条链路是安全的。
+ *
+ * ## 同族的 `/{adcode}` 端点（fetchChinaMapBoundaryByCode）**已接线**
+ *
+ * 见 AttackMapPage.tsx:125-138，作为 `mergeChinaBoundaries()` 里 rank 最高的 external 层，
+ * 仅用于**区县**级补充。若将来要收紧，优先复查那里：它同样存在「角标写死审图号、
+ * 区县却来自外部源」的错配（图例 `boundaryExternalDistrict` 有披露，角标没有）。
+ */
 export function fetchChinaMapBoundary() {
   return unwrap<MapBoundaryResponse>(apiClient.get('/system/map/china-boundary'));
 }
@@ -785,16 +924,35 @@ export function fetchRules(siteId?: string) {
   return unwrap<Rule[]>(apiClient.get('/rules', { params: { site_id: siteId } }));
 }
 
+export function fetchRulesExample(format = 'yaml') {
+  return apiClient.get<Blob>('/rules/example', { params: { format }, responseType: 'blob' }).then((response) => response.data);
+}
+
+export function exportCustomRules(siteId: string, format = 'yaml') {
+  return apiClient.get<Blob>('/rules/export', {
+    params: { site_id: siteId, format },
+    responseType: 'blob',
+  }).then((response) => response.data);
+}
+
+export function importCustomRules(siteId: string, body: string, contentType: string) {
+  return unwrap<{ site_id: string; count: number }>(apiClient.post('/rules/import', body, {
+    params: { site_id: siteId },
+    headers: { 'Content-Type': contentType },
+    transformRequest: [(data) => data],
+  }));
+}
+
 export function createRule(rule: Partial<Rule>) {
   return unwrap<Rule>(apiClient.post('/rules', rule));
 }
 
 export function updateRule(id: string, rule: Partial<Rule>) {
-  return unwrap<Rule>(apiClient.put(`/rules/${id}`, rule));
+  return unwrap<Rule>(apiClient.put(`/rules/${encodeURIComponent(id)}`, rule));
 }
 
 export function deleteRule(id: string) {
-  return unwrap<{ deleted: boolean }>(apiClient.delete(`/rules/${id}`));
+  return unwrap<{ deleted: boolean }>(apiClient.delete(`/rules/${encodeURIComponent(id)}`));
 }
 
 export function fetchProtection() {
@@ -859,6 +1017,12 @@ export function testThreatIntelProvider(provider: ThreatIntelProvider) {
 export function lookupThreatIntel(providerId: string, ip: string) {
   return unwrap<{ ip: string; imported: number; items: Array<Record<string, unknown>> }>(
     apiClient.post('/ip/threat-intel/lookup', { provider_id: providerId, ip }),
+  );
+}
+
+export function adoptThreatIntel(items: Array<Record<string, unknown>>) {
+  return unwrap<{ imported: number; total: number; items: Array<Record<string, unknown>> }>(
+    apiClient.post('/ip/threat-intel/lookup/adopt', { items }),
   );
 }
 
@@ -1003,8 +1167,15 @@ export function updateTasks(tasks: ScheduledTask[]) {
   return unwrap<ScheduledTask[]>(apiClient.put('/scheduler/tasks', tasks));
 }
 
+/**
+ * 定时任务执行历史。后端已注册（router.go:273）。
+ *
+ * 后端路由：GET /scheduler/history
+ * 前端入口：运维任务页的「执行历史」面板（pages/Operations/OperationsPage.tsx），
+ * 由 React Query 的 `['taskHistory']` 查询驱动。调度器未激活时后端返回空数组。
+ */
 export function fetchTaskHistory() {
-  return unwrap<Array<Record<string, unknown>>>(apiClient.get('/scheduler/history'));
+  return unwrap<ScheduledTaskHistoryEntry[]>(apiClient.get('/scheduler/history'));
 }
 
 export function fetchStorageStats() {
@@ -1025,6 +1196,12 @@ export function exportBackup() {
   return unwrap<Record<string, unknown>>(apiClient.post('/backup/export'));
 }
 
+/**
+ * 备份恢复。后端已注册（router.go:299），但 handler 目前返回 501（未实现）。
+ *
+ * 后端路由：POST /backup/restore
+ * 状态：后端能力可用，前端暂无 UI 入口 —— 这是待接线项，不是死代码。
+ */
 export function restoreBackup(payload: unknown) {
   return unwrap<Record<string, unknown>>(apiClient.post('/backup/restore', payload));
 }
@@ -1060,8 +1237,22 @@ export function deleteCustomBlockPage() {
   return unwrap<BlockPageConfig>(apiClient.delete('/block-pages/custom'));
 }
 
+/**
+ * 把 nginx 配置原文交给后端解析出站点候选（后端路由：POST /nginx/import）。
+ *
+ * 注意后端语义（见 internal/api/handler/ops.go:ImportNginx）：
+ * - 这个接口只做**解析**，不落库。它返回解析出的 server 块，不会创建任何站点；
+ *   真正建站要走 createSite。
+ * - 请求体是纯文本，超过 1 MiB 会被拒（NGINX_IMPORT_TOO_LARGE）；
+ *   只有读取请求体失败、超大、或单行超过 4 MiB 才会报错，其余情况一律返回
+ *   解析结果——包括一个空数组，不会因为"没解析到东西"而报错。
+ * - 能解析多少返回多少：既没有 server_name 也没有 proxy_pass 的 server 块会被
+ *   静默丢弃，不会体现在返回值里。
+ *
+ * 前端入口：站点管理页的「从 Nginx 导入」对话框（web/src/pages/Sites/SitesPage.tsx）。
+ */
 export function importNginx(contents: string) {
-  return unwrap<Site[]>(apiClient.post('/nginx/import', contents, {
+  return unwrap<NginxImportSite[]>(apiClient.post('/nginx/import', contents, {
     headers: { 'Content-Type': 'text/plain' },
   }));
 }
@@ -1475,6 +1666,54 @@ export function fetchAITools() {
   return unwrap<AIToolDefinition[]>(apiClient.get('/ai/tools'));
 }
 
+/**
+ * 已评估（2026-08-29）：**不接 UI**。修改本函数前请先读完这段，别直接当"待接线项"接出去。
+ *
+ * ## 结论一：这不是绕过审批流的后门（已逐行核实后端链路）
+ *
+ * handler 链路：internal/api/handler/ai_tools.go:36 ExecuteAITool
+ *   -> ai_tools.go:272 executeAssistantTool -> internal/ai/assistant.go:28 Assistant.ExecuteTool。
+ *
+ * - 对 Modify/Destructive 工具（当前注册表只注册了 set_bot_challenge / set_protection_level
+ *   两个 Modify，无 Destructive），assistant.go:41 强制要求 approval_id；为空时只走
+ *   CreateForWithPreview 建一张 pending 审批单就返回，**根本不会调用 tool.Execute** ——
+ *   internal/api/handler/ai_test.go:1182 用 "policy changed before approval" 断言了这点。
+ * - 带 approval_id 时，internal/ai/approval.go:317 BeginExecutionForWithPreview 做 7 项校验：
+ *   存在 / 未过期 / status == approved / 请求者 subject+session 一致 / 工具名一致 /
+ *   参数摘要(sha256+salt)一致 / preview 摘要一致，任一不过即拒绝。
+ * - 双人在环不受影响：pending -> approved 只能走 POST /ai/tools/approvals/{id}/approve，
+ *   其 canDecideAIApproval（ai_tools.go:77）对 sensitivity >= Modify 禁止自批准
+ *   （含换 session 重新登录）。请求者永远无法独自执行自己发起的写操作。
+ * - 一次性：执行后 status -> executing -> executed，同一 approval_id 复用返回 400
+ *   （ai_test.go:1225）。
+ *
+ * ## 结论二：仍然不接，三条理由
+ *
+ * 1. **历史理由，现已修复（2026-08-29）。** 曾经本端点对 ReadOnly 工具跳过审批校验直接
+ *    tool.Execute（assistant.go:41 分支），随后对非空 approval_id 调 MarkExecuted，
+ *    而 finishExecution 不校验请求者，可污染他人 in-flight 审批单终态。
+ *    现已两层修复：① assistant.go 给该分支补 else，只读工具直接忽略 approval_id（入口锁）；
+ *    ② approval.go:387 finishExecution 加 requesterMatches 校验，MarkExecuted /
+ *    MarkExecutionFailed 签名改为带 actor（store 锁，编译期强制）。两层独立互补，
+ *    均有变异测试验证。此条理由不再成立。
+ *
+ *    **仍需注意**：只读工具误传 approval_id 时会"先执行、后返回 400"，UI 易踩。
+ *    （执行本身无害，但调用方会拿到 400。）
+ * 2. **功能上零增量。** 正常流程已完整接线：askAIAssistantStream 建单 -> approveAIApproval
+ *    -> continueAIApprovalStream 执行并出 AI 总结（AIAssistant.tsx）。本端点只是把"执行"
+ *    这一刀单独暴露出来，没有任何 continue/stream 覆盖不到的场景。
+ * 3. **可观测性更弱。** 本端点不产出 trace、不做 AI 总结，只有 HTTP 层 auditor 中间件与
+ *    审批单据落盘（两条路共有）；continue/stream 额外回传逐事件 trace。
+ *
+ * ## 附：关于"ai_tools.go 测试覆盖率 0%"的记忆——已核实为不实
+ * 全量 go test ./internal/api/handler/ 实测（covermode=count）该文件 54 个函数平均 77.3%：
+ * ExecuteAITool 87.5%、executeAssistantTool 89.5%、canDecideAIApproval 75.0%。
+ * 真正接近 0% 的反而是**前端正在用的** ContinueAIApprovalStream(0%) / canContinueAIApproval(0%)
+ * / continueAIApproval(16%)。
+ *
+ * 后端路由：POST /ai/tools/execute（internal/api/router.go:289，require("use:ai") + aiUseLimit）
+ * 前端现状：无任何调用方。保留此函数仅供 e2e / 排障手工调用，勿在 UI 中接线。
+ */
 export function executeAITool(name: string, args: Record<string, unknown> = {}, approvalID = '') {
   return unwrap<AIToolExecution>(apiClient.post('/ai/tools/execute', { name, args, approval_id: approvalID }));
 }
@@ -1521,7 +1760,7 @@ async function authenticatedFetch(input: RequestInfo | URL, requestURL: string, 
   return response;
 }
 
-function parseSSEBlock(block: string) {
+export function parseSSEBlock(block: string) {
   const lines = block.split(/\r?\n/);
   let event = 'message';
   const data: string[] = [];
@@ -1535,7 +1774,30 @@ function parseSSEBlock(block: string) {
   if (data.length === 0) {
     return null;
   }
-  return { event, data: JSON.parse(data.join('\n')) as unknown };
+  try {
+    return { event, data: JSON.parse(data.join('\n')) as unknown };
+  } catch {
+    return null;
+  }
+}
+
+function requestPath(requestURL: string): string {
+  try {
+    return new URL(requestURL, 'https://cheesewaf.invalid').pathname.replace(/^\/api(?=\/|$)/, '') || '/';
+  } catch {
+    return '';
+  }
+}
+
+function isCSRFExemptPath(path: string): boolean {
+  return path === '/auth/login' || path === '/auth/captcha' || path === '/auth/captcha/verify'
+    || path === '/setup' || path === '/setup/probe' || path === '/setup/draft';
+}
+
+function isRefreshExemptPath(path: string): boolean {
+  return path === '/auth/login' || path === '/auth/refresh' || path === '/auth/logout'
+    || path === '/auth/session' || path === '/setup' || path === '/setup/status'
+    || path === '/setup/probe' || path === '/setup/draft';
 }
 
 async function reconcileApprovalStreamFailure(approvalID: string, response: Response, traceID: string | undefined, cause: unknown) {

@@ -3,6 +3,8 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -10,13 +12,19 @@ import (
 
 // Browser session cookie names (HttpOnly JWT + readable CSRF double-submit).
 const (
-	SessionCookieName = "cheesewaf_session"
-	CSRFCookieName    = "cheesewaf_csrf"
-	CSRFHeaderName    = "X-CSRF-Token"
+	SessionCookieName       = "cheesewaf_session"
+	CSRFCookieName          = "cheesewaf_csrf"
+	SecureSessionCookieName = "__Host-cheesewaf_session"
+	SecureCSRFCookieName    = "__Host-cheesewaf_csrf"
+	CSRFHeaderName          = "X-CSRF-Token"
 )
 
 // SessionCookieMaxAge mirrors default admin session TTL (24h) when unset.
 const SessionCookieMaxAge = 24 * time.Hour
+
+// CSRF form compatibility is intentionally much smaller than endpoint upload
+// limits. Multipart clients must use the header fast path.
+const maxCSRFFormBytes int64 = 64 << 10
 
 // SessionToken extracts the browser session JWT from the HttpOnly cookie, or
 // falls back to Authorization Bearer (management API / migration bootstrap).
@@ -24,9 +32,11 @@ func SessionToken(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if c, err := r.Cookie(SessionCookieName); err == nil {
-		if v := strings.TrimSpace(c.Value); v != "" {
-			return v
+	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
+		if c, err := r.Cookie(name); err == nil {
+			if v := strings.TrimSpace(c.Value); v != "" {
+				return v
+			}
 		}
 	}
 	return bearerToken(r)
@@ -38,11 +48,16 @@ func SessionFromCookie(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	c, err := r.Cookie(SessionCookieName)
-	return err == nil && strings.TrimSpace(c.Value) != ""
+	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
+		if c, err := r.Cookie(name); err == nil && strings.TrimSpace(c.Value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
-// CSRFTokenFromRequest returns the CSRF token from the double-submit header or form.
+// CSRFTokenFromRequest returns the CSRF token from the double-submit header or
+// a bounded URL-encoded form. Multipart bodies are never parsed here.
 func CSRFTokenFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
@@ -50,8 +65,19 @@ func CSRFTokenFromRequest(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get(CSRFHeaderName)); v != "" {
 		return v
 	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/x-www-form-urlencoded" || r.Body == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(r.PostForm.Get("csrf_token")); v != "" {
+		return v
+	}
+	if r.ContentLength > maxCSRFFormBytes {
+		return ""
+	}
+	r.Body = http.MaxBytesReader(nil, r.Body, maxCSRFFormBytes)
 	if err := r.ParseForm(); err == nil {
-		if v := strings.TrimSpace(r.Form.Get("csrf_token")); v != "" {
+		if v := strings.TrimSpace(r.PostForm.Get("csrf_token")); v != "" {
 			return v
 		}
 	}
@@ -63,11 +89,14 @@ func CSRFTokenFromCookie(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	c, err := r.Cookie(CSRFCookieName)
-	if err != nil {
-		return ""
+	for _, name := range []string{SecureCSRFCookieName, CSRFCookieName} {
+		if c, err := r.Cookie(name); err == nil {
+			if value := strings.TrimSpace(c.Value); value != "" {
+				return value
+			}
+		}
 	}
-	return strings.TrimSpace(c.Value)
+	return ""
 }
 
 // ValidCSRFDoubleSubmit checks cookie CSRF matches header/form CSRF.
@@ -97,15 +126,19 @@ func NewCSRFToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// CookieSecure is true for TLS requests or HTTPS reverse proxies.
-// Plain HTTP loopback (the default admin listener) must keep Secure=false
-// or browsers drop the session cookie.
+// CookieSecure is true for TLS requests, or for HTTPS declared by a trusted
+// reverse proxy. X-Forwarded-Proto is only trusted when the socket peer is
+// loopback or a private network (RFC1918 / IPv6 ULA); public peers must not
+// be able to flip Secure on by supplying a header.
 func CookieSecure(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
 	if r.TLS != nil {
 		return true
+	}
+	if !peerIsLoopbackOrPrivate(r) {
+		return false
 	}
 	proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
 	if i := strings.IndexByte(proto, ','); i >= 0 {
@@ -114,13 +147,25 @@ func CookieSecure(r *http.Request) bool {
 	return proto == "https"
 }
 
-// WriteCookie applies CookieSecure then writes Set-Cookie.
-// Callers must not set Secure themselves; plain HTTP loopback has to omit it.
+func peerIsLoopbackOrPrivate(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+// WriteCookie applies the request security policy then writes Set-Cookie.
+// Host-prefixed cookies always retain Secure because browsers reject them otherwise.
 func WriteCookie(w http.ResponseWriter, r *http.Request, cookie *http.Cookie) {
 	if w == nil || cookie == nil {
 		return
 	}
-	cookie.Secure = CookieSecure(r)
+	cookie.Secure = CookieSecure(r) || strings.HasPrefix(cookie.Name, "__Host-")
 	if v := cookie.String(); v != "" {
 		w.Header().Add("Set-Cookie", v)
 	}
@@ -134,8 +179,9 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 	if maxAge <= 0 {
 		maxAge = SessionCookieMaxAge
 	}
+	sessionName, csrfName := browserSessionCookieNames(r)
 	WriteCookie(w, r, &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     sessionName,
 		Value:    sessionJWT,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
@@ -143,7 +189,7 @@ func WriteSessionCookies(w http.ResponseWriter, r *http.Request, sessionJWT, csr
 		SameSite: http.SameSiteStrictMode,
 	})
 	WriteCookie(w, r, &http.Cookie{
-		Name:     CSRFCookieName,
+		Name:     csrfName,
 		Value:    csrf,
 		Path:     "/",
 		MaxAge:   int(maxAge / time.Second),
@@ -157,16 +203,25 @@ func ClearSessionCookies(w http.ResponseWriter, r *http.Request) {
 	if w == nil {
 		return
 	}
-	for _, name := range []string{SessionCookieName, CSRFCookieName} {
+	names := []string{SessionCookieName, CSRFCookieName, SecureSessionCookieName, SecureCSRFCookieName}
+	for _, name := range names {
 		WriteCookie(w, r, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
-			HttpOnly: name == SessionCookieName,
+			Expires:  time.Unix(1, 0).UTC(),
+			HttpOnly: name == SessionCookieName || name == SecureSessionCookieName,
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
+}
+
+func browserSessionCookieNames(r *http.Request) (string, string) {
+	if CookieSecure(r) {
+		return SecureSessionCookieName, SecureCSRFCookieName
+	}
+	return SessionCookieName, CSRFCookieName
 }
 
 // RequiresCSRF reports whether the method mutates state and needs CSRF for cookie sessions.

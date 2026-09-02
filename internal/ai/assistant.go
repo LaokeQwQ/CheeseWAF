@@ -35,7 +35,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 	}
 	// R3: role-based tool whitelist (does not weaken dual-control approvals).
 	actor := ApprovalActorFromContext(ctx)
-	if err := GuardToolAccess(actor.Role, tool, DefaultRoleToolPolicy()); err != nil {
+	if err := GuardToolAccessForActor(actor, tool, DefaultRoleToolPolicy()); err != nil {
 		return nil, err
 	}
 	if tool.Sensitivity() != ReadOnly {
@@ -45,33 +45,52 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		actor := ApprovalActorFromContext(ctx)
 		if approvalID == "" {
 			diff := ""
+			preview := ""
 			if previewer, ok := tool.(ToolPreviewer); ok {
 				var err error
 				diff, err = previewer.Preview(ctx, args)
 				if err != nil {
 					return nil, err
 				}
+				preview = diff
 			}
-			request, err := a.approvals.CreateFor(tool, args, diff, actor)
+			request, err := a.approvals.CreateForWithPreview(tool, args, diff, preview, actor)
 			if err != nil {
 				return nil, err
 			}
 			return &ToolExecution{Approval: &request}, nil
 		}
-		if _, err := a.approvals.BeginExecutionFor(approvalID, name, args, actor); err != nil {
+		preview := ""
+		if previewer, ok := tool.(ToolPreviewer); ok {
+			var err error
+			preview, err = previewer.Preview(ctx, args)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if _, err := a.approvals.BeginExecutionForWithPreview(approvalID, name, args, preview, actor); err != nil {
 			return nil, fmt.Errorf("tool %q requires approved request", name)
 		}
+	} else {
+		// Read-only tools never create approval requests, so an approval id
+		// carried on a read-only call can only belong to another request.
+		// Drop it: honouring the id would let any caller finalize (and thereby
+		// destroy) somebody else's in-flight modification out from under its
+		// owner. MarkExecuted/MarkExecutionFailed now reject a foreign
+		// requester too, but that is the backstop, not the licence to pass
+		// ids around.
+		approvalID = ""
 	}
 	result, err := tool.Execute(ctx, args)
 	if err != nil {
 		if approvalID != "" {
-			_, _ = a.approvals.MarkExecutionFailed(approvalID)
+			_, _ = a.approvals.MarkExecutionFailed(approvalID, actor)
 		}
 		return nil, err
 	}
 	execution := &ToolExecution{Result: result}
 	if approvalID != "" {
-		if approval, err := a.approvals.MarkExecuted(approvalID); err == nil {
+		if approval, err := a.approvals.MarkExecuted(approvalID, actor); err == nil {
 			execution.Approval = &approval
 		} else {
 			return nil, err

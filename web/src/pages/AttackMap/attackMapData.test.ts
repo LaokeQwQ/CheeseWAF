@@ -5,6 +5,7 @@ import {
   projectMapPoint,
   severityRank,
   threatLevelFor,
+  worldFillCountryCode,
   worldMapPaths,
 } from './attackMapData';
 
@@ -62,6 +63,13 @@ describe('attackMapData business aggregation', () => {
     expect(projected).not.toBeNull();
     expect(projected!.x).toBeGreaterThan(0);
     expect(projected!.x).toBeLessThan(100);
+  });
+
+  it('fills Hong Kong, Macao and Taiwan as China on the world layer', () => {
+    expect(worldFillCountryCode('HK')).toBe('CN');
+    expect(worldFillCountryCode('MO')).toBe('CN');
+    expect(worldFillCountryCode('TW')).toBe('CN');
+    expect(worldFillCountryCode('US')).toBe('US');
   });
 
   it('computes threat levels from volume and severity', () => {

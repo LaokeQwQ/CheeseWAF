@@ -27,10 +27,24 @@ func TestCanonicalPrefixConvertsIPv4MappedIPv6Range(t *testing.T) {
 }
 
 func TestCanonicalPrefixRejectsMappedPrefixBroaderThanMappedRange(t *testing.T) {
-	if _, err := canonicalPrefix(netip.MustParsePrefix("::ffff:192.0.2.0/95")); err == nil {
-		t.Fatal("canonicalPrefix accepted a mapped prefix broader than ::ffff:0:0/96")
+	for _, raw := range []string{"::ffff:0:0/96", "::ffff:192.0.2.0/95"} {
+		if _, err := canonicalPrefix(netip.MustParsePrefix(raw)); err == nil {
+			t.Fatalf("canonicalPrefix accepted unsafe mapped prefix %s", raw)
+		}
+		if _, err := NewMatcher([]string{raw}); err == nil {
+			t.Fatalf("NewMatcher accepted unsafe mapped prefix %s", raw)
+		}
 	}
-	if _, err := NewMatcher([]string{"::ffff:192.0.2.0/95"}); err == nil {
-		t.Fatal("NewMatcher accepted a mapped prefix broader than ::ffff:0:0/96")
+}
+
+func TestNewMatcherRejectsInvalidExactAddress(t *testing.T) {
+	if _, err := NewMatcher([]string{"203.0.113.10", "203.0.113.999"}); err == nil {
+		t.Fatal("NewMatcher accepted an invalid exact address")
+	}
+}
+
+func TestNewMatcherRejectsEmptyEntry(t *testing.T) {
+	if _, err := NewMatcher([]string{"203.0.113.10", " "}); err == nil {
+		t.Fatal("NewMatcher accepted an empty entry")
 	}
 }

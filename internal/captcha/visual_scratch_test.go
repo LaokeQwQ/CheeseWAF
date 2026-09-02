@@ -8,6 +8,7 @@ import (
 )
 
 func TestVisualScratchTargetSubsetDistributionAcrossSeeds(t *testing.T) {
+	t.Parallel()
 	const samples = 64
 	targeted := make([]int, selectionCount)
 	omitted := make([]int, selectionCount)

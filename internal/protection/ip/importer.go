@@ -58,40 +58,82 @@ func ParseThreatIntel(format string, contents []byte, opts ImportOptions) ([]con
 	return dedupeThreatIntel(items), nil
 }
 
+func intelDedupeKey(item config.ThreatIntelConfig) string {
+	typ := strings.ToLower(strings.TrimSpace(item.Type))
+	if typ == "" {
+		typ = "ip"
+	}
+	return typ + ":" + strings.ToLower(strings.TrimSpace(item.Value))
+}
+
 func MergeThreatIntel(existing, imported []config.ThreatIntelConfig) []config.ThreatIntelConfig {
 	merged := append([]config.ThreatIntelConfig(nil), existing...)
 	seen := map[string]int{}
 	for idx, item := range merged {
-		seen[strings.TrimSpace(item.Value)] = idx
-	}
-	for _, item := range imported {
-		value := strings.TrimSpace(item.Value)
-		if value == "" {
+		key := intelDedupeKey(item)
+		if key == "ip::" {
 			continue
 		}
-		if idx, ok := seen[value]; ok {
+		seen[key] = idx
+	}
+	for _, item := range imported {
+		key := intelDedupeKey(item)
+		if strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		if idx, ok := seen[key]; ok {
 			merged[idx] = item
 			continue
 		}
-		seen[value] = len(merged)
+		seen[key] = len(merged)
 		merged = append(merged, item)
 	}
 	return merged
+}
+
+func AdoptableIndicators(items []config.ThreatIntelConfig) []config.ThreatIntelConfig {
+	out := make([]config.ThreatIntelConfig, 0, len(items))
+	for _, item := range items {
+		indicator, ok := indicatorFromValue(item.Value, ImportOptions{
+			Source:     emptyFallback(item.Source, "lookup"),
+			Severity:   item.Severity,
+			Action:     item.Action,
+			Confidence: item.Confidence,
+			Labels:     item.Labels,
+			ExpiresAt:  item.ExpiresAt,
+			Enabled:    true,
+		})
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(item.ID) != "" {
+			indicator.ID = item.ID
+		}
+		out = append(out, indicator)
+	}
+	return dedupeThreatIntel(out)
+}
+
+func emptyFallback(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func dedupeThreatIntel(items []config.ThreatIntelConfig) []config.ThreatIntelConfig {
 	out := make([]config.ThreatIntelConfig, 0, len(items))
 	seen := map[string]int{}
 	for _, item := range items {
-		value := strings.TrimSpace(item.Value)
-		if value == "" {
+		key := intelDedupeKey(item)
+		if strings.TrimSpace(item.Value) == "" {
 			continue
 		}
-		if idx, ok := seen[value]; ok {
+		if idx, ok := seen[key]; ok {
 			out[idx] = item
 			continue
 		}
-		seen[value] = len(out)
+		seen[key] = len(out)
 		out = append(out, item)
 	}
 	return out
@@ -162,13 +204,15 @@ func parseCSV(contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, 
 	return out, nil
 }
 
+const maxJSONWalkDepth = 64
+
 func parseJSON(contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, error) {
 	var raw any
 	if err := json.Unmarshal(contents, &raw); err != nil {
 		return nil, err
 	}
 	var out []config.ThreatIntelConfig
-	walkJSON(raw, opts, &out)
+	walkJSON(raw, opts, &out, 0)
 	return out, nil
 }
 
@@ -183,11 +227,14 @@ func parseSTIX(contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig,
 	return parseSTIXPatterns(string(contents), opts), nil
 }
 
-func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig) {
+func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig, depth int) {
+	if depth > maxJSONWalkDepth {
+		return
+	}
 	switch value := raw.(type) {
 	case []any:
 		for _, item := range value {
-			walkJSON(item, opts, out)
+			walkJSON(item, opts, out, depth+1)
 		}
 	case map[string]any:
 		rowOpts := optionsFromMap(value, opts)
@@ -212,7 +259,7 @@ func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig) {
 		}
 		for _, key := range []string{"objects", "Objects", "object", "Object", "indicators", "Indicators", "items", "Items", "data", "Data", "response", "Response", "threat_intel", "threatIntel", "attributes", "Attributes", "attribute", "Attribute", "Event", "event", "observable", "observables", "Observable", "Observables", "pulse_info", "pulseInfo", "pulses", "Pulses", "Tag", "tags"} {
 			if child, ok := value[key]; ok {
-				walkJSON(child, rowOpts, out)
+				walkJSON(child, rowOpts, out, depth+1)
 			}
 		}
 	case string:
@@ -222,10 +269,11 @@ func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig) {
 	}
 }
 
+var stixAddrPattern = regexp.MustCompile(`(?i)(ipv4-addr|ipv6-addr):value\s+(?:=|ISSUBSET|ISSUPERSET)\s+'([^']+)'`)
+
 func parseSTIXPatterns(raw string, opts ImportOptions) []config.ThreatIntelConfig {
-	pattern := regexp.MustCompile(`(?i)(ipv4-addr|ipv6-addr):value\s+(?:=|ISSUBSET|ISSUPERSET)\s+'([^']+)'`)
 	var out []config.ThreatIntelConfig
-	for _, match := range pattern.FindAllStringSubmatch(raw, -1) {
+	for _, match := range stixAddrPattern.FindAllStringSubmatch(raw, -1) {
 		if len(match) < 3 {
 			continue
 		}

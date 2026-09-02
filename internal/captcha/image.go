@@ -107,6 +107,10 @@ func NewImageChallenge(opts ImageOptions) (ImageChallenge, error) {
 }
 
 func RenderImageAudio(opts ImageOptions, token string) ([]byte, bool, error) {
+	// Audio is an accessibility fallback, not an independent anti-automation
+	// channel: the same sealed, context-bound challenge token and caller-side
+	// rate/replay controls still gate it. The deliberately simple tone format
+	// is an explicit usability/security tradeoff documented in the R2 report.
 	opts = normalizeImageOptions(opts)
 	if strings.TrimSpace(opts.Secret) == "" {
 		return nil, false, nil
@@ -244,11 +248,6 @@ func openImageToken(opts ImageOptions, raw string) (imageTokenPayload, bool) {
 }
 
 func imageKey(secret string) []byte {
-	if secret == "" {
-		// Never fall back to a hard-coded secret — callers must supply one.
-		sum := sha256.Sum256([]byte("cheesewaf-image-v1\ninvalid-empty-secret"))
-		return sum[:]
-	}
 	sum := sha256.Sum256([]byte("cheesewaf-image-v1\n" + secret))
 	return sum[:]
 }

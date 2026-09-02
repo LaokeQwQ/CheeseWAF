@@ -1,13 +1,29 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
+
+var (
+	cliBinaryOnce sync.Once
+	cliBinaryPath string
+	cliBinaryErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if cliBinaryPath != "" {
+		_ = os.RemoveAll(filepath.Dir(cliBinaryPath))
+	}
+	os.Exit(code)
+}
 
 func TestExecutableNameBusyBox(t *testing.T) {
 	cases := map[string]string{
@@ -92,17 +108,26 @@ func TestBusyBoxWafCLIHelp(t *testing.T) {
 
 func buildPackageBinary(t *testing.T, name string) string {
 	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, name)
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+	cliBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "cheesewaf-cli-test-")
+		if err != nil {
+			cliBinaryErr = err
+			return
+		}
+		cliBinaryPath = filepath.Join(dir, name)
+		if runtime.GOOS == "windows" {
+			cliBinaryPath += ".exe"
+		}
+		cmd := exec.Command("go", "build", "-o", cliBinaryPath, ".")
+		cmd.Dir = "."
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			cliBinaryErr = fmt.Errorf("go build ./%s: %w\n%s", name, err, out)
+		}
+	})
+	if cliBinaryErr != nil {
+		t.Fatal(cliBinaryErr)
 	}
-	cmd := exec.Command("go", "build", "-o", bin, ".")
-	cmd.Dir = "."
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build ./%s: %v\n%s", name, err, out)
-	}
-	return bin
+	return cliBinaryPath
 }

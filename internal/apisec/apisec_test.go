@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,38 @@ func TestDiscoverNormalizesVariablePaths(t *testing.T) {
 	}, config.APIDiscoveryConfig{Window: time.Hour}, time.Now())
 	if len(endpoints) != 1 || endpoints[0].Path != "/api/users/{id}" || endpoints[0].Blocked != 1 {
 		t.Fatalf("unexpected endpoints: %+v", endpoints)
+	}
+}
+
+func TestDiscoverPreservesStableLongAndMixedIdentifierSegments(t *testing.T) {
+	now := time.Now()
+	endpoints := Discover([]storage.LogEntry{
+		{Timestamp: now, Method: "GET", URI: "/articles/introducing-cheesewaf", StatusCode: 200},
+		{Timestamp: now, Method: "GET", URI: "/products/AB12-CD34-EF56", StatusCode: 200},
+	}, config.APIDiscoveryConfig{Window: time.Hour}, now)
+	if len(endpoints) != 2 {
+		t.Fatalf("stable paths collapsed: %+v", endpoints)
+	}
+	paths := map[string]bool{}
+	for _, endpoint := range endpoints {
+		paths[endpoint.Path] = true
+	}
+	if !paths["/articles/introducing-cheesewaf"] || !paths["/products/AB12-CD34-EF56"] {
+		t.Fatalf("unexpected normalized paths: %+v", paths)
+	}
+}
+
+func TestDiscoverNormalizesUUIDAndRejectsInvalidStatusFamilies(t *testing.T) {
+	now := time.Now()
+	endpoints := Discover([]storage.LogEntry{
+		{Timestamp: now, Method: "GET", URI: "/users/550e8400-e29b-41d4-a716-446655440000", StatusCode: 1200},
+		{Timestamp: now, Method: "GET", URI: "/users/550e8400-e29b-41d4-a716-446655440001", StatusCode: 99},
+	}, config.APIDiscoveryConfig{Window: time.Hour}, now)
+	if len(endpoints) != 1 || endpoints[0].Path != "/users/{id}" {
+		t.Fatalf("UUID paths did not normalize: %+v", endpoints)
+	}
+	if endpoints[0].StatusFamily["unknown"] != 2 || len(endpoints[0].StatusFamily) != 1 {
+		t.Fatalf("invalid status codes produced a family: %+v", endpoints[0].StatusFamily)
 	}
 }
 
@@ -453,10 +486,11 @@ func TestValidateWithBodySizeUsesActualBytesWhenContentLengthUnknown(t *testing.
 		t.Fatalf("expected exceeds message, got %+v", findings[0])
 	}
 
-	// Unknown actual size: ContentLength unknown and bodyBytes < 0 → no finding.
+	// Unknown ContentLength is measured through a bounded body peek.
+	req.Body = io.NopCloser(strings.NewReader(strings.Repeat("x", 64)))
 	findings = validator.ValidateWithBodySize(req, -1)
-	if len(findings) != 0 {
-		t.Fatalf("expected no finding when body size is unknown, got %+v", findings)
+	if len(findings) != 1 || findings[0].Field != "body" {
+		t.Fatalf("expected chunked body finding, got %+v", findings)
 	}
 
 	// ContentLength still consulted when bodyBytes is unknown.

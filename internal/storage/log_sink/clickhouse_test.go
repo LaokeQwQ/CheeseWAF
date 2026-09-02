@@ -26,7 +26,7 @@ func TestClickHouseQueryFetchesCountAndRows(t *testing.T) {
 		switch {
 		case strings.Contains(query, "count() AS total"):
 			w.Write([]byte(`{"total":2}` + "\n"))
-		case strings.Contains(query, "ORDER BY timestamp DESC LIMIT 25 OFFSET 5"):
+		case strings.Contains(query, "ORDER BY timestamp DESC, id DESC LIMIT 25 OFFSET 5"):
 			if !strings.Contains(query, "`cheesewaf_logs`") || !strings.Contains(query, "client_ip = '203.0.113.10'") {
 				t.Fatalf("unexpected item query %q", query)
 			}
@@ -70,6 +70,25 @@ func TestClickHouseQueryFetchesCountAndRows(t *testing.T) {
 func TestClickHouseRejectsUnsafeTableName(t *testing.T) {
 	if _, err := NewClickHouseSink(config.ClickHouseConfig{Endpoint: "http://127.0.0.1:8123", Table: "logs;drop"}, nil); err == nil {
 		t.Fatal("expected unsafe table to be rejected")
+	}
+}
+
+func TestClickHouseWhereBuildsLiteralSearchAndStableKeyset(t *testing.T) {
+	stamp := time.Date(2026, 8, 22, 8, 0, 0, 123, time.UTC)
+	where := clickHouseWhere(storage.LogFilter{
+		Search:    `trace'needle`,
+		Kind:      "security",
+		AfterTime: stamp,
+		AfterID:   "event-10",
+		Ascending: true,
+	})
+	for _, want := range []string{
+		`positionCaseInsensitive`, `trace\'needle`, `detector_id != ''`, `severity != ''`,
+		`lower(action) IN ('block','challenge','log','monitor')`, `timestamp > parseDateTime64BestEffort`, `, 9)`, `id > 'event-10'`,
+	} {
+		if !strings.Contains(where, want) {
+			t.Fatalf("where clause %q missing %q", where, want)
+		}
 	}
 }
 

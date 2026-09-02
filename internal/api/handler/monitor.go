@@ -35,20 +35,20 @@ func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) MonitorSummary(w http.ResponseWriter, r *http.Request) {
 	snapshot := h.monitorSnapshot(r)
-	alerter := monitor.NewAlerter(h.Config.Monitor.Alerts)
+	alerter := monitor.NewAlerter(h.currentConfig().Monitor.Alerts)
 	writeData(w, map[string]any{
 		"snapshot": snapshot,
 		"metrics":  monitor.Values(snapshot),
 		"alerts":   alerter.Evaluate(snapshot),
-		"config":   monitorConfigView(h.Config.Monitor),
+		"config":   monitorConfigView(h.currentConfig().Monitor),
 	})
 }
 
 func (h *Handler) APIEndpoints(w http.ResponseWriter, r *http.Request) {
 	logs := h.recentLogs(r, 1000)
 	writeData(w, map[string]any{
-		"endpoints": apisec.Discover(logs, h.Config.APISec.Discovery, h.nowUTC()),
-		"config":    apiSecConfigView(h.Config.APISec),
+		"endpoints": apisec.Discover(logs, h.currentConfig().APISec.Discovery, h.nowUTC()),
+		"config":    apiSecConfigView(h.currentConfig().APISec),
 	})
 }
 
@@ -73,7 +73,7 @@ func (h *Handler) ValidateAPIRequest(w http.ResponseWriter, r *http.Request) {
 	for key, value := range req.Headers {
 		sample.Header.Set(key, value)
 	}
-	validator, err := apisec.NewValidator(h.Config.APISec.Validation)
+	validator, err := apisec.NewValidator(h.currentConfig().APISec.Validation)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "API_SCHEMA_ERROR", err.Error())
 		return
@@ -87,9 +87,9 @@ func (h *Handler) monitorSnapshot(r *http.Request) monitor.Snapshot {
 
 func (h *Handler) monitorSnapshotFromContext(ctx context.Context) monitor.Snapshot {
 	logs, total, ok := h.queryLogsWithTotalContext(ctx, storage.LogFilter{Limit: 1000})
-	snapshot := monitor.Collect(h.StartedAt, len(h.Config.Sites), logs, map[string]int64{
-		"data": h.cachedDirSize(h.Config.Setup.DataDir),
-		"logs": h.cachedDirSize(logDir(h.Config.Logging.Output.File.Path)),
+	snapshot := monitor.Collect(h.StartedAt, len(h.currentConfig().Sites), logs, map[string]int64{
+		"data": h.cachedDirSize(h.currentConfig().Setup.DataDir),
+		"logs": h.cachedDirSize(logDir(h.currentConfig().Logging.Output.File.Path)),
 	})
 	if ok {
 		snapshot.Requests = intFromTotal(total)

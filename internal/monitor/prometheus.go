@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
@@ -75,6 +76,12 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	writeMetric(&buf, "cheesewaf_requests_total", "Observed access log events.", float64(snapshot.Requests), nil)
 	writeMetric(&buf, "cheesewaf_blocked_total", "Blocked access log events.", float64(snapshot.Blocked), nil)
 	writeMetric(&buf, "cheesewaf_challenges_total", "Challenge access log events.", float64(snapshot.Challenges), nil)
+	// P0-2: without this counter, access-log events that the sink failed to
+	// persist disappear silently — the WAF looks healthy while losing data.
+	writeMetric(&buf, "cheesewaf_logs_dropped_total", "Access-log events the configured sink could not persist.", float64(storage.ProcessLogWriteFailures()), nil)
+	// Detection-budget fail-open counter. Alert on this: a sustained non-zero
+	// rate means the WAF is forwarding traffic it never finished analysing.
+	writeMetric(&buf, "cheesewaf_waf_budget_exhausted_pass_total", "Requests forwarded upstream after the detection budget ran out (alert when non-zero).", float64(engine.ProcessBudgetExhaustedPass()), nil)
 	for _, code := range sortedIntKeys(snapshot.StatusCodes) {
 		writeMetric(&buf, "cheesewaf_status_total", "Events by status code.", float64(snapshot.StatusCodes[code]), map[string]string{"code": fmt.Sprint(code)})
 	}
@@ -110,17 +117,19 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 
 func Values(snapshot Snapshot) map[string]float64 {
 	values := map[string]float64{
-		"cheesewaf_uptime_seconds":      float64(snapshot.UptimeSeconds),
-		"cheesewaf_goroutines":          float64(snapshot.Goroutines),
-		"cheesewaf_process_count":       float64(snapshot.ProcessCount),
-		"cheesewaf_memory_alloc_bytes":  float64(snapshot.MemoryAlloc),
-		"cheesewaf_host_cpu_percent":    snapshot.Host.CPUPercent,
-		"cheesewaf_host_memory_percent": snapshot.Host.MemoryPercent,
-		"cheesewaf_host_disk_percent":   snapshot.Host.DiskPercent,
-		"cheesewaf_sites":               float64(snapshot.Sites),
-		"cheesewaf_requests_total":      float64(snapshot.Requests),
-		"cheesewaf_blocked_total":       float64(snapshot.Blocked),
-		"cheesewaf_challenges_total":    float64(snapshot.Challenges),
+		"cheesewaf_uptime_seconds":                  float64(snapshot.UptimeSeconds),
+		"cheesewaf_goroutines":                      float64(snapshot.Goroutines),
+		"cheesewaf_process_count":                   float64(snapshot.ProcessCount),
+		"cheesewaf_memory_alloc_bytes":              float64(snapshot.MemoryAlloc),
+		"cheesewaf_host_cpu_percent":                snapshot.Host.CPUPercent,
+		"cheesewaf_host_memory_percent":             snapshot.Host.MemoryPercent,
+		"cheesewaf_host_disk_percent":               snapshot.Host.DiskPercent,
+		"cheesewaf_sites":                           float64(snapshot.Sites),
+		"cheesewaf_requests_total":                  float64(snapshot.Requests),
+		"cheesewaf_blocked_total":                   float64(snapshot.Blocked),
+		"cheesewaf_challenges_total":                float64(snapshot.Challenges),
+		"cheesewaf_logs_dropped_total":              float64(storage.ProcessLogWriteFailures()),
+		"cheesewaf_waf_budget_exhausted_pass_total": float64(engine.ProcessBudgetExhaustedPass()),
 	}
 	for area, usage := range snapshot.DiskUsage {
 		values["cheesewaf_disk_usage_bytes:"+area] = float64(usage)

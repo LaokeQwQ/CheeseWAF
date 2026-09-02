@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,14 +18,36 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
 
+var ErrBotRedisBackendUnavailable = errors.New("bot Redis challenge backend is not wired into the runtime; use challenge_backend=memory")
+
+// ValidateBotChallengeBackend keeps the public configuration contract honest:
+// Policy currently owns an in-process challenge lifecycle only.
+func ValidateBotChallengeBackend(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "memory":
+		return nil
+	case "redis":
+		return ErrBotRedisBackendUnavailable
+	default:
+		return fmt.Errorf("protection.bot.challenge_backend must be memory (got %q)", value)
+	}
+}
+
 const (
-	maxTrustedProxyCIDRs  = 1024
-	minFileLogSizeBytes   = 1 << 10
-	maxFileLogSizeBytes   = 1 << 40
-	maxFileLogBackupCount = 100
+	maxTrustedProxyCIDRs      = 1024
+	minFileLogSizeBytes       = 1 << 10
+	maxFileLogSizeBytes       = 1 << 40
+	maxFileLogBackupCount     = 100
+	maxRewriteRulesPerSite    = 128
+	maxRewritePatternBytes    = 4096
+	maxRewriteReplaceBytes    = 4096
+	maxRewriteProgramInsts    = 4096
+	maxCustomRulesPerSite     = 256
+	maxCustomRuleProgramInsts = 4096
 )
 
 func Validate(cfg *Config) error {
@@ -43,8 +67,8 @@ func Validate(cfg *Config) error {
 	if adminPublic && !cfg.Server.AdminPublic {
 		return fmt.Errorf("server.admin_listen %q is public; bind admin to localhost/private access or set server.admin_public with server.admin_tls enabled", cfg.Server.AdminListen)
 	}
-	if cfg.Server.AdminPublic && adminPublic && !cfg.Server.AdminTLS.Enabled {
-		return fmt.Errorf("server.admin_tls.enabled is required when admin listener is public")
+	if (cfg.Server.AdminPublic || adminPublic) && !cfg.Server.AdminTLS.Enabled {
+		return fmt.Errorf("server.admin_tls.enabled is required when admin_listen is not loopback or admin_public is set")
 	}
 	if cfg.Server.AdminTLS.Enabled && (strings.TrimSpace(cfg.Server.AdminTLS.CertFile) == "" || strings.TrimSpace(cfg.Server.AdminTLS.KeyFile) == "") {
 		return fmt.Errorf("server.admin_tls.cert_file and server.admin_tls.key_file are required when admin TLS is enabled")
@@ -62,6 +86,20 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		return fmt.Errorf("storage.sqlite.path is required")
+	}
+	if cfg.Storage.Redis.Enabled {
+		address := strings.TrimSpace(cfg.Storage.Redis.Address)
+		if address == "" {
+			return fmt.Errorf("storage.redis.address is required when Redis storage is enabled")
+		}
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("storage.redis.address must be host:port")
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return fmt.Errorf("storage.redis.address port must be between 1 and 65535")
+		}
 	}
 	if err := validateTimeSync(cfg.TimeSync); err != nil {
 		return err
@@ -231,6 +269,12 @@ func Validate(cfg *Config) error {
 		if site.WAF.Performance.MaxBodyBytes > maxBodyCeiling {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 1GiB ceiling", site.Name)
 		}
+		if err := validateResponseInspection(site.Name, site.WAF.Response); err != nil {
+			return err
+		}
+		if site.WAF.Performance.MaxHeaderBytes < 0 || site.WAF.Performance.MaxHeaderBytes > http.DefaultMaxHeaderBytes {
+			return fmt.Errorf("site %q waf.performance.max_header_bytes must be between 0 and %d", site.Name, http.DefaultMaxHeaderBytes)
+		}
 		if err := validateSiteCertificate(site); err != nil {
 			return err
 		}
@@ -239,6 +283,9 @@ func Validate(cfg *Config) error {
 		}
 		if !IsBudgetExhaustedPolicy(site.WAF.SemanticPolicy.BudgetExhaustedPolicy) {
 			return fmt.Errorf("site %q has invalid waf.semantic_policy.budget_exhausted_policy %q", site.Name, site.WAF.SemanticPolicy.BudgetExhaustedPolicy)
+		}
+		if depth := site.WAF.SemanticPolicy.DecodeDepth; depth < 0 || depth > MaxDecodeDepth {
+			return fmt.Errorf("site %q waf.semantic_policy.decode_depth must be between 1 and %d, or 0 for default", site.Name, MaxDecodeDepth)
 		}
 		if site.WAF.SemanticPolicy.PromoteSeconds < 0 {
 			return fmt.Errorf("site %q waf.semantic_policy.promote_seconds must be >= 0", site.Name)
@@ -256,20 +303,40 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("site %q path_allowlist entry %q must start with /", site.Name, rule)
 			}
 		}
+		if len(site.WAF.CustomRules) > maxCustomRulesPerSite {
+			return fmt.Errorf("site %q has too many custom rules: got %d, maximum is %d", site.Name, len(site.WAF.CustomRules), maxCustomRulesPerSite)
+		}
 		for _, rule := range site.WAF.CustomRules {
-			if strings.TrimSpace(rule.Pattern) == "" {
-				return fmt.Errorf("site %q has custom rule %q with empty pattern", site.Name, rule.Name)
-			}
-			if _, err := regexp.Compile(rule.Pattern); err != nil {
+			if err := ValidateCustomRule(rule); err != nil {
 				return fmt.Errorf("site %q has invalid custom rule %q: %w", site.Name, rule.Name, err)
 			}
 		}
+		if len(site.WAF.Rewrite) > maxRewriteRulesPerSite {
+			return fmt.Errorf("site %q has %d rewrite rules; maximum is %d", site.Name, len(site.WAF.Rewrite), maxRewriteRulesPerSite)
+		}
 		for _, rewrite := range site.WAF.Rewrite {
+			if len(rewrite.Pattern) > maxRewritePatternBytes {
+				return fmt.Errorf("site %q rewrite rule %q pattern exceeds %d bytes", site.Name, rewrite.ID, maxRewritePatternBytes)
+			}
+			if len(rewrite.Replacement) > maxRewriteReplaceBytes {
+				return fmt.Errorf("site %q rewrite rule %q replacement exceeds %d bytes", site.Name, rewrite.ID, maxRewriteReplaceBytes)
+			}
 			if !rewrite.Enabled {
 				continue
 			}
 			if _, err := regexp.Compile(rewrite.Pattern); err != nil {
 				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
+			}
+			parsed, err := syntax.Parse(rewrite.Pattern, syntax.Perl)
+			if err != nil {
+				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
+			}
+			program, err := syntax.Compile(parsed.Simplify())
+			if err != nil {
+				return fmt.Errorf("site %q has invalid rewrite rule %q: %w", site.Name, rewrite.ID, err)
+			}
+			if len(program.Inst) > maxRewriteProgramInsts {
+				return fmt.Errorf("site %q rewrite rule %q compiled program exceeds %d instructions", site.Name, rewrite.ID, maxRewriteProgramInsts)
 			}
 		}
 		trustedProxyCount := len(site.WAF.AccessControl.TrustedCIDRs)
@@ -365,8 +432,15 @@ func Validate(cfg *Config) error {
 		if !rule.Enabled {
 			continue
 		}
-		if rule.PathPrefix == "" && rule.Method == "" && rule.Header == "" {
+		method := strings.TrimSpace(rule.Method)
+		pathPrefix := strings.TrimSpace(rule.PathPrefix)
+		header := strings.TrimSpace(rule.Header)
+		headerValue := strings.TrimSpace(rule.HeaderValue)
+		if pathPrefix == "" && method == "" && header == "" {
 			return fmt.Errorf("acl rule %q must define a method, path_prefix, or header", rule.ID)
+		}
+		if header == "" && headerValue != "" {
+			return fmt.Errorf("acl rule %q defines header_value without header", rule.ID)
 		}
 		if rule.Action != "" && rule.Action != "block" && rule.Action != "log" && rule.Action != "challenge" {
 			return fmt.Errorf("acl rule %q has invalid action %q", rule.ID, rule.Action)
@@ -473,6 +547,12 @@ func Validate(cfg *Config) error {
 		case ">", ">=", "<", "<=", "==", "!=":
 		default:
 			return fmt.Errorf("alert rule %q has invalid operator %q", rule.ID, rule.Operator)
+		}
+		if rule.For < 0 || rule.For > 30*24*time.Hour {
+			return fmt.Errorf("alert rule %q has invalid for duration", rule.ID)
+		}
+		if rule.Cooldown < 0 || rule.Cooldown > 30*24*time.Hour {
+			return fmt.Errorf("alert rule %q has invalid cooldown duration", rule.ID)
 		}
 	}
 	for _, notifier := range cfg.Monitor.Notifiers {
@@ -1008,8 +1088,8 @@ func validateCluster(cfg *Config) error {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Deployment.Mode))
 	if mode == "" {
 		mode = "standalone"
-		cfg.Deployment.Mode = mode
 	}
+	cfg.Deployment.Mode = mode
 	switch mode {
 	case "standalone", "cluster":
 	default:
@@ -1023,17 +1103,6 @@ func validateCluster(cfg *Config) error {
 	}
 	if !cfg.Cluster.Enabled {
 		return fmt.Errorf("deployment.mode=cluster requires cluster.enabled=true")
-	}
-	if cfg.Cluster.Consensus.Provider == "" {
-		cfg.Cluster.Consensus.Provider = "builtin"
-	}
-	switch cfg.Cluster.Consensus.Provider {
-	case "builtin", "etcd":
-	default:
-		return fmt.Errorf("cluster.consensus.provider must be builtin or etcd")
-	}
-	if cfg.Cluster.Consensus.Provider == "etcd" && len(cfg.Cluster.Consensus.EtcdEndpoints) == 0 {
-		return fmt.Errorf("cluster.consensus.etcd_endpoints is required when provider is etcd")
 	}
 	if cfg.Cluster.Join.TokenTTL <= 0 || cfg.Cluster.Join.TokenTTL > 24*time.Hour {
 		return fmt.Errorf("cluster.join.token_ttl must be between 1s and 24h")
@@ -1084,7 +1153,6 @@ func validateCluster(cfg *Config) error {
 	}
 	switch strings.TrimSpace(cfg.Cluster.HAMode) {
 	case "", "single-node":
-		return nil
 	case "dual-node-load-balancing":
 		if wafNodes < 2 {
 			return fmt.Errorf("dual-node-load-balancing requires at least two WAF nodes")
@@ -1099,6 +1167,60 @@ func validateCluster(cfg *Config) error {
 		}
 	default:
 		return fmt.Errorf("unknown cluster.ha_mode %q", cfg.Cluster.HAMode)
+	}
+	return ValidateClusterConsensus(cfg)
+}
+
+// ValidateClusterConsensus enforces the consensus boundary independently of
+// full config validation so startup paths cannot bypass it with a constructed config.
+func ValidateClusterConsensus(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if !cfg.Cluster.Enabled || strings.ToLower(strings.TrimSpace(cfg.Deployment.Mode)) != "cluster" {
+		return nil
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.Cluster.Consensus.Provider))
+	if provider == "" {
+		provider = "builtin"
+	}
+	cfg.Cluster.Consensus.Provider = provider
+	switch provider {
+	case "builtin", "etcd":
+	default:
+		return fmt.Errorf("cluster.consensus.provider must be builtin or etcd")
+	}
+
+	for index, endpoint := range cfg.Cluster.Consensus.EtcdEndpoints {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			return fmt.Errorf("cluster.consensus.etcd_endpoints must not contain blank values")
+		}
+		cfg.Cluster.Consensus.EtcdEndpoints[index] = endpoint
+	}
+	if provider == "etcd" && len(cfg.Cluster.Consensus.EtcdEndpoints) == 0 {
+		return fmt.Errorf("cluster.consensus.etcd_endpoints is required when provider is etcd")
+	}
+
+	haMode := strings.TrimSpace(cfg.Cluster.HAMode)
+	configuredNodeCount := len(cfg.Cluster.Nodes)
+	localNodeID := strings.TrimSpace(cfg.Cluster.NodeID)
+	if localNodeID != "" {
+		localNodeConfigured := false
+		for _, node := range cfg.Cluster.Nodes {
+			if strings.TrimSpace(node.ID) == localNodeID {
+				localNodeConfigured = true
+				break
+			}
+		}
+		if !localNodeConfigured {
+			configuredNodeCount++
+		}
+	}
+	sharedConfiguration := (haMode != "" && haMode != "single-node") || configuredNodeCount > 1
+	if sharedConfiguration && provider != "etcd" {
+		return fmt.Errorf("multi-node or shared-configuration cluster requires cluster.consensus.provider=etcd; builtin is valid only for a single-node local deployment")
 	}
 	return nil
 }
@@ -1128,9 +1250,9 @@ func validateAIAPIBaseHost(raw string, allowPrivate bool) error {
 		}
 		return nil
 	}
-	ips, err := net.LookupIP(host)
+	ips, err := lookupAIAPIBaseIP(host)
 	if err != nil {
-		return nil
+		return fmt.Errorf("ai.api_base host lookup failed: %w", err)
 	}
 	for _, ip := range ips {
 		if isUnsafeAIAPIBaseIP(ip) {
@@ -1141,6 +1263,9 @@ func validateAIAPIBaseHost(raw string, allowPrivate bool) error {
 }
 
 func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) error {
+	if model.MaxTokens < 0 || model.MaxTokens > 200000 {
+		return fmt.Errorf("%s.max_tokens must be between 1 and 200000 when set", prefix)
+	}
 	switch strings.ToLower(strings.TrimSpace(model.Provider)) {
 	case "", "openai", "anthropic":
 	default:
@@ -1160,6 +1285,54 @@ func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) err
 	}
 	if strings.TrimSpace(model.Model) == "" {
 		return fmt.Errorf("%s.model is required when ai is enabled", prefix)
+	}
+	return nil
+}
+
+var lookupAIAPIBaseIP = net.LookupIP
+
+const maxCustomRulePatternBytes = 16 << 10
+
+// ValidateCustomRule is the single validation contract for configured and API-created rules.
+func ValidateCustomRule(rule CustomRuleConfig) error {
+	pattern := strings.TrimSpace(rule.Pattern)
+	if pattern == "" {
+		return fmt.Errorf("pattern is required")
+	}
+	if len(pattern) > maxCustomRulePatternBytes {
+		return fmt.Errorf("pattern exceeds %d bytes", maxCustomRulePatternBytes)
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("pattern is invalid: %w", err)
+	}
+	parsed, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return fmt.Errorf("pattern is invalid: %w", err)
+	}
+	program, err := syntax.Compile(parsed.Simplify())
+	if err != nil {
+		return fmt.Errorf("pattern is invalid: %w", err)
+	}
+	if len(program.Inst) > maxCustomRuleProgramInsts {
+		return fmt.Errorf("pattern compiled program exceeds %d instructions", maxCustomRuleProgramInsts)
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Location)) {
+	case "uri", "query", "header", "body", "cookie":
+	default:
+		return fmt.Errorf("location must be uri, query, header, body, or cookie")
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Action)) {
+	case "block", "log", "challenge":
+	default:
+		return fmt.Errorf("action must be block, log, or challenge")
+	}
+	switch strings.ToLower(strings.TrimSpace(rule.Severity)) {
+	case "", "low", "medium", "high", "critical":
+	default:
+		return fmt.Errorf("severity must be low, medium, high, or critical")
+	}
+	if rule.Priority < -1_000_000 || rule.Priority > 1_000_000 {
+		return fmt.Errorf("priority must be between -1000000 and 1000000")
 	}
 	return nil
 }
@@ -1372,7 +1545,11 @@ func validateBlockPage(page BlockPageConfig) error {
 	if strings.TrimSpace(page.CustomHTML) == "" {
 		return nil
 	}
-	if _, err := template.New("block_page").Parse(page.CustomHTML); err != nil {
+	clean, err := SanitizeBlockPageHTML(page.CustomHTML)
+	if err != nil {
+		return fmt.Errorf("block_page.custom_html cannot be sanitized: %w", err)
+	}
+	if _, err := template.New("block_page").Parse(clean); err != nil {
 		return fmt.Errorf("block_page.custom_html has invalid template syntax: %w", err)
 	}
 	return nil
@@ -1407,6 +1584,9 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {
+	if err := ValidateBotChallengeBackend(bot.ChallengeBackend); err != nil {
+		return err
+	}
 	if bot.RiskLevel < 1 || bot.RiskLevel > 5 {
 		return fmt.Errorf("protection.bot.risk_level must be between 1 and 5")
 	}
@@ -1614,7 +1794,7 @@ func validateMapBoundary(prefix string, boundary MapBoundaryConfig) error {
 func validateIPEntry(entry string) error {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
-		return nil
+		return fmt.Errorf("IP entry is empty")
 	}
 	if strings.Contains(entry, "/") {
 		if _, _, err := net.ParseCIDR(entry); err != nil {
@@ -1624,6 +1804,40 @@ func validateIPEntry(entry string) error {
 	}
 	if net.ParseIP(entry) == nil {
 		return fmt.Errorf("not an IP or CIDR")
+	}
+	return nil
+}
+
+func validateResponseInspection(siteName string, cfg ResponseInspectionConfig) error {
+	if cfg.MaxBodyBytes < 0 || cfg.MaxBodyBytes > 1<<30 {
+		return fmt.Errorf("site %q waf.response.max_body_bytes must be between 0 and 1 GiB", siteName)
+	}
+	for _, pattern := range cfg.SensitivePatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("site %q has invalid response inspection pattern %q: %w", siteName, pattern, err)
+		}
+	}
+	if len(cfg.TamperSnapshots) == 0 {
+		return nil
+	}
+	if !cfg.Enabled {
+		return fmt.Errorf("site %q must enable waf.response when tamper snapshots are configured", siteName)
+	}
+	snapshots := make([]tamper.Snapshot, 0, len(cfg.TamperSnapshots))
+	limit := cfg.MaxBodyBytes
+	if limit <= 0 {
+		limit = 1 << 20
+	}
+	for _, snapshot := range cfg.TamperSnapshots {
+		if int64(snapshot.Size) > limit {
+			return fmt.Errorf("site %q tamper snapshot %q size exceeds response inspection limit", siteName, snapshot.URL)
+		}
+		snapshots = append(snapshots, tamper.Snapshot{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
+	}
+	if _, err := tamper.NewVerifier([]byte(cfg.TamperKey), snapshots); err != nil {
+		return fmt.Errorf("site %q has invalid tamper snapshots: %w", siteName, err)
 	}
 	return nil
 }
@@ -1812,6 +2026,9 @@ func hasAnyTLSCertificate(cfg *Config) bool {
 }
 
 func validateACME(cfg ACMEConfig) error {
+	if _, err := ResolveACMEReloadCommand(cfg.ReloadCommand); err != nil {
+		return fmt.Errorf("acme.reload_command is invalid: %w", err)
+	}
 	if !cfg.Enabled {
 		return nil
 	}
@@ -1826,9 +2043,6 @@ func validateACME(cfg ACMEConfig) error {
 	}
 	if err := validateACMEServer(cfg.Server); err != nil {
 		return fmt.Errorf("acme.server is invalid: %w", err)
-	}
-	if err := validateACMEReloadCommand(cfg.ReloadCommand); err != nil {
-		return fmt.Errorf("acme.reload_command is invalid: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.KeyType)) {
 	case "", "ec-256", "ec-384", "2048", "3072", "4096":
@@ -1869,31 +2083,6 @@ func validateACMEServer(value string) error {
 		AllowedSchemes: []string{"https"},
 	})
 	return err
-}
-
-func validateACMEReloadCommand(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("must not contain control characters")
-	}
-	// Reject shell metacharacters and require an absolute executable path.
-	// acme.sh executes --reloadcmd through a shell, so free-form strings are RCE.
-	if strings.ContainsAny(value, ";|&<>$`\\!*?\n\r") {
-		return fmt.Errorf("must not contain shell metacharacters")
-	}
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return fmt.Errorf("must not be empty")
-	}
-	exe := fields[0]
-	// Accept Unix absolute paths even when validating on Windows.
-	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
-		return fmt.Errorf("executable must be an absolute path")
-	}
-	return nil
 }
 
 func validateSiteCertificate(site SiteConfig) error {

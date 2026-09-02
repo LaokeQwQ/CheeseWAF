@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
+	"github.com/quic-go/quic-go"
 )
 
 func TestHTTP3ListenAddrFallbacks(t *testing.T) {
@@ -64,6 +66,7 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	cfg.TLS.CertFile = certFile
 	cfg.TLS.KeyFile = keyFile
 	cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 2048
+	t.Logf("h3 cfg enabled=%v max=%d", cfg.Sites[0].Enabled, cfg.Sites[0].WAF.Performance.MaxHeaderBytes)
 	certs, err := NewSiteCertificateStore(&cfg)
 	if err != nil {
 		t.Fatalf("build certificate store: %v", err)
@@ -85,6 +88,72 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	}
 	if h3.MaxHeaderBytes != 2048 {
 		t.Fatalf("unexpected max header bytes %d", h3.MaxHeaderBytes)
+	}
+	if h3.ConnContext == nil {
+		t.Fatal("expected HTTP/3 connection context when 0-RTT is enabled")
+	}
+}
+
+func TestMaxHeaderBytesUsesSmallestEnabledSiteLimit(t *testing.T) {
+	cfg := config.Default()
+	t.Logf("default enabled=%v max=%d sites=%d", cfg.Sites[0].Enabled, cfg.Sites[0].WAF.Performance.MaxHeaderBytes, len(cfg.Sites))
+	cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 8192
+	cfg.Sites = append(cfg.Sites, config.SiteConfig{
+		Enabled: true,
+		WAF:     config.WAFConfig{Performance: config.PerformanceTuningConfig{MaxHeaderBytes: 2048}},
+	})
+	if got := maxHeaderBytes(&cfg); got != 2048 {
+		t.Fatalf("maxHeaderBytes=%d, want 2048", got)
+	}
+	cfg.Sites[1].Enabled = false
+	if got := maxHeaderBytes(&cfg); got != 8192 {
+		t.Fatalf("disabled site limit affected maxHeaderBytes=%d, want 8192", got)
+	}
+}
+
+type replayTestConnection struct {
+	state     quic.ConnectionState
+	handshake <-chan struct{}
+}
+
+func (c replayTestConnection) ConnectionState() quic.ConnectionState { return c.state }
+func (c replayTestConnection) HandshakeComplete() <-chan struct{}    { return c.handshake }
+
+func TestWithQUICReplayGuardRejectsUnsafe0RTTMethods(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := withQUICReplayGuard(next)
+	openHandshake := make(chan struct{})
+	ctx := context.WithValue(context.Background(), quicReplayConnectionKey{}, replayTestConnection{
+		state: quic.ConnectionState{Used0RTT: true}, handshake: openHandshake,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/write", nil).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooEarly || called {
+		t.Fatalf("unsafe 0-RTT request code=%d called=%v", recorder.Code, called)
+	}
+
+	called = false
+	request = httptest.NewRequest(http.MethodGet, "/read", nil).WithContext(ctx)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || !called {
+		t.Fatalf("safe 0-RTT request code=%d called=%v", recorder.Code, called)
+	}
+
+	// Once the handshake completes, a normal unsafe method on the same resumed
+	// connection is ordinary 1-RTT traffic and must not be rejected forever.
+	close(openHandshake)
+	called = false
+	request = httptest.NewRequest(http.MethodPost, "/write-after-handshake", nil).WithContext(ctx)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || !called {
+		t.Fatalf("post-handshake request code=%d called=%v", recorder.Code, called)
 	}
 }
 

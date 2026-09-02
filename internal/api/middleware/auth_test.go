@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,42 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
+
+func signTestJWT(t *testing.T, manager *TokenManager, header map[string]string, claims Claims) string {
+	t.Helper()
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString(headerJSON) + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
+	return unsigned + "." + manager.sign(unsigned)
+}
+
+func TestTokenManagerRejectsUnexpectedHeaderAndFutureClaims(t *testing.T) {
+	now := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	clock := &middlewareFakeClock{now: now}
+	manager := NewTokenManagerWithClock("configured-secret", time.Hour, clock)
+	base := Claims{Subject: "user-1", ID: "session-1", Username: "admin", Role: "admin", IssuedAt: now.Unix(), Expires: now.Add(time.Hour).Unix()}
+
+	wrongAlg := signTestJWT(t, manager, map[string]string{"alg": "HS512", "typ": "JWT"}, base)
+	if _, err := manager.Verify(wrongAlg); err == nil {
+		t.Fatal("token with unexpected alg header was accepted")
+	}
+	futureIssued := base
+	futureIssued.IssuedAt = now.Add(10 * time.Minute).Unix()
+	if _, err := manager.Verify(signTestJWT(t, manager, map[string]string{"alg": "HS256", "typ": "JWT"}, futureIssued)); err == nil {
+		t.Fatal("token issued in the future was accepted")
+	}
+	notYetValid := base
+	notYetValid.NotBefore = now.Add(10 * time.Minute).Unix()
+	if _, err := manager.Verify(signTestJWT(t, manager, map[string]string{"alg": "HS256", "typ": "JWT"}, notYetValid)); err == nil {
+		t.Fatal("token before nbf was accepted")
+	}
+}
 
 type middlewareFakeClock struct {
 	now time.Time
@@ -155,15 +193,19 @@ func TestManagementAPIOrSessionMiddlewareWithClockSharesInjectedUTCClock(t *test
 	}
 }
 
-func TestManagementAPIAuthCleanupRunsBeforeBusinessHandler(t *testing.T) {
-	released := false
+func TestManagementAPIAuthCallbackRunsAfterBusinessHandler(t *testing.T) {
+	callbackRan := false
+	handlerRan := false
 	authenticate := func(string, time.Time) (*Claims, func(), bool) {
-		return &Claims{Subject: "api-token:fixture", ID: "fixture"}, func() { released = true }, true
+		return &Claims{Subject: "api-token:fixture", ID: "fixture"}, func() {
+			if !handlerRan {
+				t.Fatal("authentication callback ran before business handler")
+			}
+			callbackRan = true
+		}, true
 	}
 	handler := ManagementAPIOrSessionMiddleware(nil, nil, authenticate)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if !released {
-			t.Fatal("authentication cleanup had not run before business handler")
-		}
+		handlerRan = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/api/system", nil)
@@ -172,6 +214,9 @@ func TestManagementAPIAuthCleanupRunsBeforeBusinessHandler(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+	if !callbackRan {
+		t.Fatal("authentication callback did not run after business handler")
 	}
 }
 

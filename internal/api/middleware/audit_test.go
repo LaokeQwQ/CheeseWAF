@@ -306,9 +306,8 @@ func TestAuditorMiddlewareWritesDeniedRequests(t *testing.T) {
 	}
 }
 
-func TestAuditorMiddlewareRateLimitsDeniedRequests(t *testing.T) {
+func TestAuditorMiddlewareRetainsAllDeniedRequests(t *testing.T) {
 	auditor := NewAuditor(filepath.Join(t.TempDir(), "audit.jsonl"))
-	auditor.deniedLimit = 2
 	handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -320,8 +319,8 @@ func TestAuditorMiddlewareRateLimitsDeniedRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query audit entries: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("denied audit entries = %d, want 2", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("denied audit entries = %d, want 3", len(entries))
 	}
 }
 

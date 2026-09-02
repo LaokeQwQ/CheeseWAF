@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +37,12 @@ var harnessScenarios = []harnessScenario{
 	{"text_click", BehaviorTextClick, 3},
 	{"icon_click", BehaviorIconClick, 3},
 }
+
+var (
+	harnessOnce    sync.Once
+	harnessResults []harnessResult
+	harnessErr     error
+)
 
 func TestBehaviorFixedHarness(t *testing.T) {
 	results, err := runBehaviorHarness()
@@ -97,21 +104,26 @@ func TestBehaviorFixedHarnessReportHasOnlyPublicBooleanFields(t *testing.T) {
 }
 
 func runBehaviorHarness() ([]harnessResult, error) {
-	secretBytes := make([]byte, 32)
-	if _, err := rand.Read(secretBytes); err != nil {
-		return nil, err
-	}
-	secret := base64.RawURLEncoding.EncodeToString(secretBytes)
-	now := time.Now().UTC()
-	results := make([]harnessResult, 0, len(harnessScenarios))
-	for index, scenario := range harnessScenarios {
-		result, err := runHarnessScenario(secret, now, scenario, uint64(index+1))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", scenario.name, err)
+	harnessOnce.Do(func() {
+		secretBytes := make([]byte, 32)
+		if _, err := rand.Read(secretBytes); err != nil {
+			harnessErr = err
+			return
 		}
-		results = append(results, result)
-	}
-	return results, nil
+		secret := base64.RawURLEncoding.EncodeToString(secretBytes)
+		now := time.Now().UTC()
+		harnessResults = make([]harnessResult, 0, len(harnessScenarios))
+		for index, scenario := range harnessScenarios {
+			result, err := runHarnessScenario(secret, now, scenario, uint64(index+1))
+			if err != nil {
+				harnessErr = fmt.Errorf("%s: %w", scenario.name, err)
+				harnessResults = nil
+				return
+			}
+			harnessResults = append(harnessResults, result)
+		}
+	})
+	return harnessResults, harnessErr
 }
 
 func runHarnessScenario(secret string, now time.Time, scenario harnessScenario, sequence uint64) (harnessResult, error) {

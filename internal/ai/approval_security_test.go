@@ -136,7 +136,7 @@ func TestApprovalStoreCapacityEvictsOldestCompletedRequest(t *testing.T) {
 	if _, err = store.BeginExecution(first.ID, "fake_modify", map[string]any{"id": 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.MarkExecuted(first.ID); err != nil {
+	if _, err = store.MarkExecuted(first.ID, ApprovalActor{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.CreateFor(fakeTool{sensitivity: Modify}, map[string]any{"id": 2}, "", ApprovalActor{}); err != nil {
@@ -198,7 +198,7 @@ func TestAssistantFailsClosedForModificationWhenPersistenceUnavailable(t *testin
 	registry.Register(fakeTool{sensitivity: Modify})
 	registry.Register(approvalReadOnlyTool{})
 	assistant := NewAssistant(registry, store)
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, ""); err == nil || !strings.Contains(err.Error(), "persistence is unavailable") {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, ""); err == nil || !strings.Contains(err.Error(), "persistence is unavailable") {
 		t.Fatalf("modification tool did not fail closed: %v", err)
 	}
 	result, err := assistant.ExecuteTool(context.Background(), "approval_read", nil, "")
@@ -207,6 +207,128 @@ func TestAssistantFailsClosedForModificationWhenPersistenceUnavailable(t *testin
 	}
 	if result == nil || result.Result == nil || !result.Result.Success {
 		t.Fatalf("unexpected read-only result: %#v", result)
+	}
+}
+
+// finishExecution is the last gate of the dual-control chain. Entry points
+// (Assistant.ExecuteTool) already refuse to start an execution they do not own,
+// but MarkExecuted/MarkExecutionFailed are exported and reachable from any new
+// call site, so the store has to refuse to finish somebody else's request on
+// its own. Without this check, holding an approval id is enough to flip an
+// in-flight change to executed/failed and strand its owner.
+func TestApprovalFinishExecutionRejectsForeignRequester(t *testing.T) {
+	owner := ApprovalActor{Subject: "owner", SessionID: "owner-session"}
+	foreigners := map[string]ApprovalActor{
+		"a different user":       {Subject: "approver", SessionID: "approver-session"},
+		"same user, new session": {Subject: "owner", SessionID: "owner-session-2"},
+		"same user, no session":  {Subject: "owner"},
+		"no actor at all":        {},
+	}
+	finishers := map[string]func(*ApprovalStore, string, ApprovalActor) (ApprovalRequest, error){
+		"MarkExecuted":        (*ApprovalStore).MarkExecuted,
+		"MarkExecutionFailed": (*ApprovalStore).MarkExecutionFailed,
+	}
+	for finishName, finish := range finishers {
+		for name, foreign := range foreigners {
+			store := NewApprovalStore()
+			request, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", owner)
+			if err != nil {
+				t.Fatalf("create approval: %v", err)
+			}
+			if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err != nil {
+				t.Fatalf("approve: %v", err)
+			}
+			executing, err := store.BeginExecutionFor(request.ID, "fake_modify", nil, owner)
+			if err != nil {
+				t.Fatalf("begin execution: %v", err)
+			}
+			if _, err := finish(store, executing.ID, foreign); err == nil {
+				t.Fatalf("%s let %s finalize the request", finishName, name)
+			}
+			stored, ok := store.Get(executing.ID)
+			if !ok {
+				t.Fatalf("%s dropped the request from the store", name)
+			}
+			if stored.Status != ApprovalExecuting {
+				t.Fatalf("%s moved the request to %s", name, stored.Status)
+			}
+			if !stored.DecidedAt.Equal(executing.DecidedAt) {
+				t.Fatalf("%s rewrote the decision timestamp: %s", name, stored.DecidedAt)
+			}
+			// A refused attempt must not burn the owner's request either.
+			if _, err := store.MarkExecuted(executing.ID, owner); err != nil {
+				t.Fatalf("%s left the owner unable to finish: %v", name, err)
+			}
+		}
+	}
+}
+
+// The check added above must not break the normal path: the requester that
+// started the execution still finishes it, in both outcomes.
+func TestApprovalFinishExecutionAllowsOriginalRequester(t *testing.T) {
+	owner := ApprovalActor{Subject: "owner", SessionID: "owner-session"}
+	finishers := map[string]struct {
+		finish func(*ApprovalStore, string, ApprovalActor) (ApprovalRequest, error)
+		want   ApprovalStatus
+	}{
+		"MarkExecuted":        {(*ApprovalStore).MarkExecuted, ApprovalExecuted},
+		"MarkExecutionFailed": {(*ApprovalStore).MarkExecutionFailed, ApprovalFailed},
+	}
+	for name, testCase := range finishers {
+		store := NewApprovalStore()
+		request, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", owner)
+		if err != nil {
+			t.Fatalf("create approval: %v", err)
+		}
+		if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err != nil {
+			t.Fatalf("approve: %v", err)
+		}
+		if _, err := store.BeginExecutionFor(request.ID, "fake_modify", nil, owner); err != nil {
+			t.Fatalf("begin execution: %v", err)
+		}
+		finished, err := testCase.finish(store, request.ID, owner)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if finished.Status != testCase.want {
+			t.Fatalf("%s: status = %s, want %s", name, finished.Status, testCase.want)
+		}
+		if stored, _ := store.Get(request.ID); stored.Status != testCase.want {
+			t.Fatalf("%s: persisted status = %s, want %s", name, stored.Status, testCase.want)
+		}
+		// The owner cannot finalize twice; the status gate, not the actor
+		// gate, is what stops the replay.
+		if _, err := testCase.finish(store, request.ID, owner); err == nil {
+			t.Fatalf("%s: request was finalized twice", name)
+		}
+	}
+}
+
+// A request created without an actor (internal callers, or records written
+// before requesters were recorded) stays finalizable by whoever reaches it, so
+// the added check is a requester binding, not a blanket lockout.
+func TestApprovalFinishExecutionAllowsRequestWithoutRequester(t *testing.T) {
+	for name, finisher := range map[string]ApprovalActor{
+		"no actor":    {},
+		"named actor": {Subject: "operator", SessionID: "operator-session"},
+	} {
+		store := NewApprovalStore()
+		request, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", ApprovalActor{})
+		if err != nil {
+			t.Fatalf("create approval: %v", err)
+		}
+		if request.RequesterSubject != "" {
+			t.Fatalf("expected an unbound request, got subject %q", request.RequesterSubject)
+		}
+		if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err != nil {
+			t.Fatalf("approve: %v", err)
+		}
+		if _, err := store.BeginExecutionFor(request.ID, "fake_modify", nil, ApprovalActor{}); err != nil {
+			t.Fatalf("begin execution: %v", err)
+		}
+		if _, err := store.MarkExecuted(request.ID, finisher); err != nil {
+			t.Fatalf("unbound request is no longer finalizable by %s: %v", name, err)
+		}
 	}
 }
 

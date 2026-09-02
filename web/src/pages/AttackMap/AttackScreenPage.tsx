@@ -3,14 +3,17 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Activity, ArrowLeft, Gauge, Globe2, ListFilter, RefreshCcw, Shield } from 'lucide-react';
-import { fetchLogs, fetchMonitorSummary } from '../../api/client';
+import { fetchMonitorSummary } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import QueryErrorState from '../../components/QueryErrorState';
 import { useAppStore } from '../../stores';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
-import { aggregateRegions, buildCountryLevelMap, worldFeatures, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
+import { aggregateRegions, buildCountryLevelMap, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
+import { loadGaodeWorldCollection } from './worldBoundaries';
 import '../../styles/attack-map.css';
+import { useAttackMapFeed } from './useAttackMapFeed';
+import { regionsFromAttackMapAggregates } from './attackMapFeed';
 
 const GlobeMap = lazy(() => import('./GlobeMap'));
 
@@ -29,14 +32,7 @@ export default function AttackScreenPage() {
   const timelinePointerActive = useRef(false);
   const timelinePaused = timelineInteracting || timelinePercent < 100;
   const refetchInterval = timelinePaused ? false : screenRefreshMs;
-  const { data: logs, isFetching, isError: logsError, refetch } = useQuery({
-    queryKey: ['attack-screen-logs'],
-    queryFn: () => fetchLogs({ limit: 1000 }),
-    refetchInterval,
-    enabled: !timelinePaused,
-    retry: false,
-    placeholderData: (previous) => previous,
-  });
+  const { entries, aggregates, isFetching, isError: logsError, refetch } = useAttackMapFeed('attack-screen-feed', refetchInterval);
   const { data: monitor, isError: monitorError, isFetching: monitorFetching, refetch: refetchMonitor } = useQuery({
     queryKey: ['attack-screen-monitor'],
     queryFn: fetchMonitorSummary,
@@ -45,14 +41,23 @@ export default function AttackScreenPage() {
     retry: false,
     placeholderData: (previous) => previous,
   });
-  const entries = logs?.items ?? [];
-  const initialLoading = !logs && isFetching;
-  const loadFailed = logsError && !logs;
+  const initialLoading = entries.length === 0 && isFetching;
+  const loadFailed = logsError && entries.length === 0;
   const attackEntries = useMemo(() => entries.filter(isAttackEntry), [entries]);
   const visibleAttackEntries = useMemo(() => filterEntriesByTimeline(attackEntries, timelinePercent), [attackEntries, timelinePercent]);
-  const regions = useMemo(() => aggregateRegions(visibleAttackEntries), [visibleAttackEntries]);
+  const liveRegions = useMemo(() => regionsFromAttackMapAggregates(aggregates), [aggregates]);
+  const regions = useMemo(
+    () => timelinePercent < 100 ? aggregateRegions(visibleAttackEntries) : liveRegions,
+    [liveRegions, timelinePercent, visibleAttackEntries],
+  );
   const mappedRegions = useMemo(() => regions.filter((region) => region.mappable), [regions]);
   const globeRegions = useMemo(() => mappedRegions.slice(0, maxGlobeRegions), [mappedRegions]);
+  const { data: gaodeWorld } = useQuery({
+    queryKey: ['attack-map-gaode-world'],
+    queryFn: () => loadGaodeWorldCollection(),
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   const countryLevels = useMemo(() => buildCountryLevelMap(mappedRegions), [mappedRegions]);
   const attackTypes = useMemo(() => buildAttackTypes(visibleAttackEntries, t), [visibleAttackEntries, t]);
   const sourceCountries = useMemo(() => buildSourceCountries(mappedRegions), [mappedRegions]);
@@ -208,7 +213,7 @@ export default function AttackScreenPage() {
                 regions={globeRegions}
                 zoom={1}
                 countryLevels={countryLevels}
-                worldFeatures={worldFeatures}
+                worldFeatures={gaodeWorld?.features ?? []}
                 target={protectedTarget}
                 visualTheme={visualTheme}
                 fallback={<div className="attack-screen-globe-empty">{t('attackMap.attacks')}: 0</div>}

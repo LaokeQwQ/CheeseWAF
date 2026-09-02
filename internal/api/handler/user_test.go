@@ -134,6 +134,10 @@ func TestUpdateUserRejectsDemotingLastAdmin(t *testing.T) {
 	}
 }
 
+// This exercises the handler-level account-owner authorization for 2FA
+// enrollment: even a role holding write:users must NOT be able to bind the
+// two-factor secret of another user. Remove it only if authorizeUser2FA is
+// also removed.
 func TestWriteUsersRoleCannotModifyAdminAccount(t *testing.T) {
 	handler, store := newUserTestHandler(t)
 	handler.Config.APISec.Permissions["operator"] = []string{"write:users"}

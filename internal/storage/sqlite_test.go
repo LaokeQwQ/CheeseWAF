@@ -30,6 +30,83 @@ func TestSQLiteStoreSiteLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteConnectionPragmasAndSessionLifecycle(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	var busyTimeout, foreignKeys int
+	if err := store.db.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if busyTimeout != 5000 || foreignKeys != 1 {
+		t.Fatalf("unexpected SQLite pragmas: busy_timeout=%d foreign_keys=%d", busyTimeout, foreignKeys)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	user := &User{ID: "pragma-user", Username: "pragma-admin", PasswordHash: "hash", Role: "admin"}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{ID: "pragma-session", UserID: user.ID, Username: user.Username, Role: user.Role, ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	if err := store.CreateSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.IsSessionActive(ctx, session.ID, user.ID, time.Now().UTC())
+	if err != nil || !active {
+		t.Fatalf("session behavior regressed: active=%v err=%v", active, err)
+	}
+}
+
+func TestDeleteSiteRemovesAllDirectSQLiteSiteData(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{ID: "delete-site", Name: "example", Domains: []string{"example.test"}, Upstreams: []string{"127.0.0.1:9000"}, Enabled: true}
+	if err := store.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRule(ctx, &Rule{ID: "delete-rule", SiteID: site.ID, Name: "rule", Pattern: "blocked"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateReviewItem(ctx, &ReviewItem{ID: "delete-review", SiteID: site.ID, Status: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSitePromote(ctx, site.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteSite(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := store.ListRules(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, total, err := store.ListReviewItems(ctx, ReviewFilter{SiteID: site.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotes, err := store.ListSitePromotes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 0 || total != 0 || len(items) != 0 || len(promotes) != 0 {
+		t.Fatalf("site-linked data remained: rules=%+v reviews=%+v total=%d promotes=%+v", rules, items, total, promotes)
+	}
+}
+
 func TestSQLiteStoreSessionLifecycle(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
 	if err != nil {

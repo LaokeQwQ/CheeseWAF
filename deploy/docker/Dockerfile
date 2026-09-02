@@ -61,7 +61,7 @@ RUN sed -i \
   -e 's#listen: "127.0.0.1:8080"#listen: "0.0.0.0:8080"#' \
   -e 's#admin_listen: "127.0.0.1:9443"#admin_listen: "0.0.0.0:9443"#' \
   -e 's#admin_public: false#admin_public: true#' \
-  -e '/admin_tls:/,/read_timeout:/ s#enabled: false#enabled: true#' \
+  -e '/^[[:space:]]*admin_tls:[[:space:]]*$/,/^[[:space:]]*read_timeout:/ s#^\([[:space:]]*enabled:[[:space:]]*\)false$#\1true#' \
   -e 's#cert_file: "./data/certs/admin.crt"#cert_file: "/var/lib/cheesewaf/certs/admin.crt"#' \
   -e 's#key_file: "./data/certs/admin.key"#key_file: "/var/lib/cheesewaf/certs/admin.key"#' \
   -e 's#data_dir: "./data"#data_dir: "/var/lib/cheesewaf"#' \
@@ -71,6 +71,18 @@ RUN sed -i \
   -e 's#target: "./logs"#target: "/var/log/cheesewaf"#' \
   -e 's#path: "./logs/audit.log"#path: "/var/log/cheesewaf/audit.log"#' \
   /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'listen: "0.0.0.0:8080"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'admin_listen: "0.0.0.0:9443"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'admin_public: true' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && sed -n '/^[[:space:]]*admin_tls:[[:space:]]*$/,/^[[:space:]]*read_timeout:/p' /usr/share/cheesewaf/config/cheesewaf.yaml | grep -Eq '^[[:space:]]+enabled:[[:space:]]+true[[:space:]]*$' \
+  && [ "$(grep -Fc 'cert_file: "/var/lib/cheesewaf/certs/admin.crt"' /usr/share/cheesewaf/config/cheesewaf.yaml)" -eq 2 ] \
+  && [ "$(grep -Fc 'key_file: "/var/lib/cheesewaf/certs/admin.key"' /usr/share/cheesewaf/config/cheesewaf.yaml)" -eq 2 ] \
+  && grep -Fq 'data_dir: "/var/lib/cheesewaf"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'runtime_dir: "/var/lib/cheesewaf/run"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'path: "/var/lib/cheesewaf/cheesewaf.db"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'path: "/var/log/cheesewaf/access.log"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'target: "/var/log/cheesewaf"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && grep -Fq 'path: "/var/log/cheesewaf/audit.log"' /usr/share/cheesewaf/config/cheesewaf.yaml \
   && chmod 0555 /usr/local/bin/cheesewaf-entrypoint
 ENV CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
 ENV CHEESEWAF_CONFIG=/var/lib/cheesewaf/config/cheesewaf.yaml

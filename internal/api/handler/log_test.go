@@ -155,8 +155,35 @@ func TestListLogsDoesNotInventGeoForDocumentationIP(t *testing.T) {
 	}
 }
 
+func TestListLogsParsesServerSearchAndKeysetParameters(t *testing.T) {
+	after := time.Date(2026, 8, 22, 8, 0, 0, 123, time.UTC)
+	before := after.Add(time.Minute)
+	watermark := before.Add(time.Minute)
+	sink := &listLogsSink{}
+	handler := New(Options{Sink: sink})
+	target := "/api/logs?limit=8&search=trace%3Aneedle&kind=security&after=" + after.Format(time.RFC3339Nano) +
+		"&after_id=a&before=" + before.Format(time.RFC3339Nano) + "&before_id=b&watermark=" +
+		watermark.Format(time.RFC3339Nano) + "&watermark_id=z&ascending=true&id=event-1&tag=scanner"
+	recorder := httptest.NewRecorder()
+	handler.ListLogs(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	filter := sink.filter
+	if filter.Limit != 8 || filter.Search != "trace:needle" || filter.Kind != "security" || filter.ID != "event-1" || !filter.Ascending {
+		t.Fatalf("unexpected scalar filters: %+v", filter)
+	}
+	if !filter.AfterTime.Equal(after) || filter.AfterID != "a" || !filter.BeforeTime.Equal(before) || filter.BeforeID != "b" || !filter.WatermarkTime.Equal(watermark) || filter.WatermarkID != "z" {
+		t.Fatalf("unexpected keyset filters: %+v", filter)
+	}
+	if len(filter.Tags) != 1 || filter.Tags[0] != "scanner" {
+		t.Fatalf("unexpected tags: %+v", filter.Tags)
+	}
+}
+
 type listLogsSink struct {
-	items []storage.LogEntry
+	items  []storage.LogEntry
+	filter storage.LogFilter
 }
 
 func (s *listLogsSink) Write(context.Context, *storage.LogEntry) error {
@@ -164,6 +191,7 @@ func (s *listLogsSink) Write(context.Context, *storage.LogEntry) error {
 }
 
 func (s *listLogsSink) Query(_ context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	s.filter = filter
 	out := append([]storage.LogEntry(nil), s.items...)
 	if filter.Limit > 0 && len(out) > filter.Limit {
 		out = out[:filter.Limit]

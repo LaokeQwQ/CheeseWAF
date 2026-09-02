@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 )
 
 type trackingReadCloser struct {
@@ -21,6 +23,42 @@ type failingReadCloser struct{}
 
 func (failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 func (failingReadCloser) Close() error             { return nil }
+
+// Sensitive patterns come from config and are compiled once at construction.
+// Config validation (validateResponseInspection) only checks that they compile,
+// so CompileSafe is the only complexity bound on them.
+func TestNewRejectsSensitivePatternOverComplexityBudget(t *testing.T) {
+	if _, err := New(config.ResponseInspectionConfig{
+		Enabled:           true,
+		SensitivePatterns: []string{strings.Repeat(`[\s\S]*`, 11)},
+	}); err == nil {
+		t.Fatal("New accepted a sensitive pattern over the complexity budget")
+	}
+}
+
+// The gate must not reject the shipped defaults or a realistic alternation-heavy
+// pattern, otherwise installing it would wedge response inspection at startup.
+func TestNewAcceptsDefaultAndRealisticSensitivePatterns(t *testing.T) {
+	inspector, err := New(config.ResponseInspectionConfig{Enabled: true, SensitivePatterns: []string{
+		`AKIA[0-9A-Z]{16}`,
+		`(?i)password\s*[=:]\s*['"]?[^'"\s]+`,
+		`(?i)BEGIN\s+(?:RSA|EC|OPENSSH)\s+PRIVATE\s+KEY`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`aws_key = AKIAIOSFODNN7EXAMPLE`)
+	finding := inspector.Inspect(body)
+	if finding == nil || finding.DetectorID != "response.inspector" {
+		t.Fatalf("expected finding, got %+v", finding)
+	}
+}
+
+func TestDefaultSensitivePatternsPassComplexityGate(t *testing.T) {
+	if _, err := New(config.ResponseInspectionConfig{Enabled: true}); err != nil {
+		t.Fatalf("default sensitive patterns must pass the gate: %v", err)
+	}
+}
 
 func TestInspectHTTPChecksCapturedPrefixWhenResponseExceedsLimit(t *testing.T) {
 	inspector, err := New(config.ResponseInspectionConfig{Enabled: true, MaxBodyBytes: 32, SensitivePatterns: []string{`SECRET-PREFIX`}})
@@ -46,6 +84,16 @@ func TestNewRejectsInvalidPattern(t *testing.T) {
 	inspector, err := New(config.ResponseInspectionConfig{Enabled: true, SensitivePatterns: []string{"["}})
 	if err == nil || inspector != nil {
 		t.Fatalf("got %#v, %v", inspector, err)
+	}
+}
+
+func TestNewRejectsDisabledTamperConfiguration(t *testing.T) {
+	inspector, err := New(config.ResponseInspectionConfig{
+		TamperKey:       "01234567890123456789012345678901",
+		TamperSnapshots: []config.TamperSnapshotConfig{{URL: "/", MAC: strings.Repeat("0", 64)}},
+	})
+	if err == nil || inspector != nil {
+		t.Fatalf("disabled tamper config got %#v, %v", inspector, err)
 	}
 }
 
@@ -119,4 +167,121 @@ func TestOversizedReplayClosesOriginalBody(t *testing.T) {
 	if !original.closed {
 		t.Fatal("original body not closed")
 	}
+}
+
+func TestInspectHTTPForRequestVerifiesURLBoundTamperSnapshot(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	snapshot, err := tamper.Capture(key, "/assets/app.js?v=1", []byte("clean"), time.Unix(100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspector, err := New(config.ResponseInspectionConfig{
+		Enabled: true, MaxBodyBytes: 64, TamperKey: string(key),
+		TamperSnapshots: []config.TamperSnapshotConfig{{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		url        string
+		body       string
+		wantTamper bool
+	}{
+		{name: "matching body", url: "https://example.test/assets/app.js?v=1", body: "clean"},
+		{name: "changed body", url: "https://example.test/assets/app.js?v=1", body: "evil!", wantTamper: true},
+		{name: "different query has no baseline", url: "https://example.test/assets/app.js?v=2", body: "evil!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, requestErr := http.NewRequest(http.MethodGet, tc.url, nil)
+			if requestErr != nil {
+				t.Fatal(requestErr)
+			}
+			resp := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}
+			finding, inspectErr := inspector.InspectHTTPForRequest(resp, req)
+			if inspectErr != nil {
+				t.Fatal(inspectErr)
+			}
+			if got := finding != nil && finding.DetectorID == "protection.tamper"; got != tc.wantTamper {
+				t.Fatalf("finding=%+v wantTamper=%v", finding, tc.wantTamper)
+			}
+			replayed, readErr := io.ReadAll(resp.Body)
+			if readErr != nil || string(replayed) != tc.body {
+				t.Fatalf("replayed=%q err=%v", replayed, readErr)
+			}
+		})
+	}
+}
+
+func TestTamperSnapshotReportsUnverifiableTargetWithoutTruncationPass(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	snapshot, err := tamper.Capture(key, "/index.html", []byte("good"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspector, err := New(config.ResponseInspectionConfig{
+		Enabled: true, MaxBodyBytes: 4, TamperKey: string(key),
+		TamperSnapshots: []config.TamperSnapshotConfig{{URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := mustResponseRequest(t, http.MethodGet, "https://example.test/index.html")
+	resp := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader("good-extra"))}
+	finding, err := inspector.InspectHTTPForRequest(resp, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding == nil || finding.DetectorID != "protection.tamper" || finding.Reason != "size_limit" {
+		t.Fatalf("oversized target finding = %+v", finding)
+	}
+}
+
+func TestTamperSnapshotSkipsHEADAndFlagsStreamingGET(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	snapshot, err := tamper.Capture(key, "/events", []byte("clean"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspector, err := New(config.ResponseInspectionConfig{
+		Enabled: true, MaxBodyBytes: 64, TamperKey: string(key),
+		TamperSnapshots: []config.TamperSnapshotConfig{{URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method     string
+		wantReason string
+	}{
+		{method: http.MethodHead},
+		{method: http.MethodGet, wantReason: "streaming_response"},
+	} {
+		resp := &http.Response{
+			Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:   io.NopCloser(strings.NewReader("changed")),
+		}
+		finding, inspectErr := inspector.InspectHTTPForRequest(resp, mustResponseRequest(t, tc.method, "https://example.test/events"))
+		if inspectErr != nil {
+			t.Fatal(inspectErr)
+		}
+		if tc.wantReason == "" && finding != nil {
+			t.Fatalf("HEAD response produced finding: %+v", finding)
+		}
+		if tc.wantReason != "" && (finding == nil || finding.Reason != tc.wantReason) {
+			t.Fatalf("streaming finding = %+v", finding)
+		}
+	}
+}
+
+func mustResponseRequest(t *testing.T, method, rawURL string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, rawURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
 }

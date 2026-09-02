@@ -70,14 +70,6 @@ func Validate(password, username string) error {
 	return nil
 }
 
-// ValidateMessage returns a stable English message for API/CLI errors.
-func ValidateMessage(password, username string) string {
-	if err := Validate(password, username); err != nil {
-		return err.Error()
-	}
-	return ""
-}
-
 // Classify returns which of the four classes the password satisfies.
 func Classify(password string) ClassFlags {
 	var flags ClassFlags

@@ -1,13 +1,14 @@
 package cluster
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
-func TestRuntimeHeartbeatUnlocksMinimumHAWhenMajorityIsOnline(t *testing.T) {
+func TestRuntimeHeartbeatTracksMinimumHAVotersWhileEtcdIsUnavailable(t *testing.T) {
 	now := time.Unix(1000, 0).UTC()
 	registry := NewHeartbeatRegistry(HeartbeatRegistryOptions{
 		TTL: 30 * time.Second,
@@ -32,11 +33,14 @@ func TestRuntimeHeartbeatUnlocksMinimumHAWhenMajorityIsOnline(t *testing.T) {
 		t.Fatal(err)
 	}
 	status = FromConfigWithRuntime(&cfg, registry, "zh-CN")
-	if !status.MajorityConfirmed || !status.CanWriteConfig {
-		t.Fatalf("monitor heartbeat should confirm 2/3 majority and allow writes: %+v", status)
+	if status.MajorityConfirmed || status.CanWriteConfig {
+		t.Fatalf("heartbeat majority must not replace the unavailable etcd coordinator: %+v", status)
 	}
 	if status.OnlineVotingCount != 2 {
 		t.Fatalf("online voters=%d, want 2", status.OnlineVotingCount)
+	}
+	if !strings.Contains(status.ProtectionModeReason, "etcd") {
+		t.Fatalf("protection reason=%q, want unavailable etcd coordinator", status.ProtectionModeReason)
 	}
 }
 
@@ -113,24 +117,73 @@ func TestRuntimeHeartbeatCannotConfirmMajorityWhenNodeCannotWriteConfig(t *testi
 	}
 }
 
-func TestRuntimeDualNodeLoadBalancingDoesNotRequireMajority(t *testing.T) {
+func TestRuntimeDualNodeLoadBalancingKeepsTrafficWhileEtcdIsUnavailable(t *testing.T) {
 	cfg := config.Default()
 	cfg.Deployment.Mode = "cluster"
 	cfg.Cluster.Enabled = true
 	cfg.Cluster.ClusterID = "cw-test"
 	cfg.Cluster.NodeID = "waf-a"
 	cfg.Cluster.HAMode = "dual-node-load-balancing"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
 		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
 		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
 	}
 
 	status := FromConfigWithRuntime(&cfg, NewHeartbeatRegistry(HeartbeatRegistryOptions{}), "zh-CN")
-	if !status.MajorityConfirmed || !status.CanWriteConfig || !status.CanReceiveTraffic {
-		t.Fatalf("dual-node load balancing should stay operable without HA majority: %+v", status)
+	if status.MajorityConfirmed || status.CanWriteConfig || !status.CanReceiveTraffic {
+		t.Fatalf("dual-node load balancing must freeze config writes but keep traffic available: %+v", status)
 	}
 	if status.OnlineVotingCount != 1 || status.VotingNodeCount != 2 {
 		t.Fatalf("unexpected voting counts: %+v", status)
+	}
+}
+
+func TestClusterStatusDoesNotDefaultMissingConsensusToBuiltin(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.Consensus.Provider = ""
+	status := FromConfig(&cfg, "en-US")
+	if status.ConsensusProvider != "unconfigured" {
+		t.Fatalf("consensus provider=%q, want unconfigured", status.ConsensusProvider)
+	}
+	if status.CanWriteConfig || status.MajorityConfirmed {
+		t.Fatalf("unconfigured cluster consensus must fail closed: %+v", status)
+	}
+}
+
+func TestClusterStatusFailsClosedForBuiltinSharedCluster(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.HAMode = "single-node"
+	cfg.Cluster.Consensus.Provider = "builtin"
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+	}
+	status := FromConfig(&cfg, "en-US")
+	if status.CanWriteConfig || status.MajorityConfirmed || !strings.Contains(status.ProtectionModeReason, "require etcd") {
+		t.Fatalf("builtin shared-cluster status did not fail closed: %+v", status)
+	}
+}
+
+func TestClusterStatusFailsClosedForConfiguredEtcdWithoutBackend(t *testing.T) {
+	cfg := config.Default()
+	cfg.Deployment.Mode = "cluster"
+	cfg.Cluster.Enabled = true
+	cfg.Cluster.NodeID = "waf-a"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	cfg.Cluster.Nodes = []config.ClusterNodeConfig{
+		{ID: "waf-a", Role: "waf", AdvertiseAddr: "10.0.0.1:9444"},
+		{ID: "waf-b", Role: "waf", AdvertiseAddr: "10.0.0.2:9444"},
+	}
+	status := FromConfig(&cfg, "en-US")
+	if status.CanWriteConfig || status.MajorityConfirmed || !strings.Contains(status.ProtectionModeReason, "etcd-backed coordinator") {
+		t.Fatalf("configured etcd without a backend did not fail closed: %+v", status)
 	}
 }
 
@@ -141,6 +194,8 @@ func minimumHATestConfig() config.Config {
 	cfg.Cluster.ClusterID = "cw-test"
 	cfg.Cluster.NodeID = "waf-a"
 	cfg.Cluster.HAMode = "minimum-ha"
+	cfg.Cluster.Consensus.Provider = "etcd"
+	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
 	cfg.Cluster.Protection.FreezeWritesWithoutMajority = true
 	cfg.Cluster.Protection.AllowTrafficInProtectionMode = true
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{

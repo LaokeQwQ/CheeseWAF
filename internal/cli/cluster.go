@@ -414,7 +414,8 @@ func runClusterInit(cmd *cobra.Command, opts clusterInitOptions) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "已初始化为单节点集群: %s / %s\n", clusterID, nodeID)
-	fmt.Fprintln(cmd.OutOrStdout(), "下一步：签发加入令牌、SSH install、在新节点执行 cluster join；监控节点运行 cluster monitor-node。")
+	fmt.Fprintln(cmd.OutOrStdout(), "扩容前：先配置 cluster.consensus.provider=etcd 和 cluster.consensus.etcd_endpoints。")
+	fmt.Fprintln(cmd.OutOrStdout(), "然后签发加入令牌、SSH install、在新节点执行 cluster join；监控节点运行 cluster monitor-node。")
 	return nil
 }
 
@@ -456,7 +457,7 @@ func clusterObjectsFromConfig(cfg *config.Config) ([]any, error) {
 		},
 		Spec: clusterobject.ClusterPolicySpec{
 			HAMode:             valueOrDefault(cfg.Cluster.HAMode, "single-node"),
-			ConsensusProvider:  valueOrDefault(cfg.Cluster.Consensus.Provider, "builtin"),
+			ConsensusProvider:  status.ConsensusProvider,
 			AutoApprovalPolicy: "manual",
 		},
 		Status: clusterobject.ClusterPolicyStatus{

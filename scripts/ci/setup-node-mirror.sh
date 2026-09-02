@@ -59,6 +59,14 @@ else
   install_dir="${cache_root}/node/${NODE_VERSION}/${nodearch}"
   checksum_marker="${install_dir}/.archive.sha256"
 
+  mkdir -p "$(dirname "$install_dir")"
+  command -v flock >/dev/null 2>&1 || {
+    echo "::error::flock is required to protect the shared Node tool cache"
+    exit 1
+  }
+  exec 9>"${install_dir}.lock"
+  flock 9
+
   if [[ ! -x "${install_dir}/bin/node" ]] ||
     [[ ! -r "$checksum_marker" ]] ||
     [[ "$(<"$checksum_marker")" != "$expected_sha" ]] ||

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -518,6 +519,29 @@ func TestLoginCAPTCHAProofCapacityIsBounded(t *testing.T) {
 	}
 }
 
+func TestLoginCAPTCHAReceiptEvictsOldestForOwner(t *testing.T) {
+	state := newLoginCAPTCHAState()
+	now := time.Date(2026, time.August, 22, 10, 0, 0, 0, time.UTC)
+	owner, peer := "owner", "peer"
+	for i := 0; i < loginCAPTCHAReceiptPerClient; i++ {
+		at := now.Add(time.Duration(i) * time.Second)
+		if !state.storeReceiptForClient(owner, peer, "receipt-"+strconv.Itoa(i), at.Add(time.Hour), at) {
+			t.Fatalf("store receipt %d", i)
+		}
+	}
+	if !state.storeReceiptForClient(owner, peer, "replacement", now.Add(time.Hour), now.Add(time.Minute)) {
+		t.Fatal("store replacement receipt")
+	}
+	if state.consumeReceiptForClient(owner, peer, "receipt-0", now.Add(2*time.Minute)) {
+		t.Fatal("oldest receipt was not evicted")
+	}
+	for i := 1; i < loginCAPTCHAReceiptPerClient; i++ {
+		if !state.consumeReceiptForClient(owner, peer, "receipt-"+strconv.Itoa(i), now.Add(2*time.Minute)) {
+			t.Fatalf("newer receipt %d was evicted", i)
+		}
+	}
+}
+
 func TestLoginCAPTCHARefreshReplacesPendingProofsForClient(t *testing.T) {
 	state := newLoginCAPTCHAState()
 	now := time.Now().UTC()
@@ -692,8 +716,10 @@ func TestLoginCAPTCHAAnonymousClientCookieIsSignedAndHardened(t *testing.T) {
 func TestLoginCAPTCHAClientCookieSecureBehindForwardedProto(t *testing.T) {
 	h := &Handler{Secret: "test-secret", loginCAPTCHASecret: "test-secret"}
 	// Plain HTTP request terminated by TLS proxy: no r.TLS, but X-Forwarded-Proto: https.
+	// Plain HTTP request terminated by a loopback TLS proxy: no r.TLS, but
+	// X-Forwarded-Proto: https is trusted because the socket peer is loopback.
 	req := httptest.NewRequest(http.MethodPost, "http://console.example/api/auth/captcha", nil)
-	req.RemoteAddr = "192.0.2.41:41234"
+	req.RemoteAddr = "127.0.0.1:41234"
 	req.Header.Set("X-Forwarded-Proto", "https")
 	recorder := httptest.NewRecorder()
 	if _, _, ok := h.loginCaptchaQuotaIdentity(recorder, req); !ok {

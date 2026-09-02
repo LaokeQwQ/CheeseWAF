@@ -28,6 +28,7 @@ type aiConfigPayload struct {
 	APIKey              string                    `json:"api_key,omitempty"`
 	APIKeySet           bool                      `json:"api_key_set"`
 	Model               string                    `json:"model"`
+	MaxTokens           int                       `json:"max_tokens"`
 	Async               bool                      `json:"async"`
 	AllowPrivateAPIBase bool                      `json:"allow_private_api_base"`
 	Assistant           *aiModelConfigPayload     `json:"assistant,omitempty"`
@@ -42,6 +43,7 @@ type aiModelConfigPayload struct {
 	APIKey              string `json:"api_key,omitempty"`
 	APIKeySet           bool   `json:"api_key_set"`
 	Model               string `json:"model"`
+	MaxTokens           int    `json:"max_tokens"`
 	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
 }
 
@@ -113,7 +115,7 @@ type aiSelfLearningConfigView struct {
 }
 
 func (h *Handler) AIConfig(w http.ResponseWriter, _ *http.Request) {
-	writeData(w, aiConfigView(h.Config.AI))
+	writeData(w, aiConfigView(h.currentConfig().AI))
 }
 
 func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +132,9 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		next.Provider = firstNonEmpty(req.Provider, next.Provider)
 		next.APIBase = firstNonEmpty(req.APIBase, next.APIBase)
 		next.Model = firstNonEmpty(req.Model, next.Model)
+		if req.MaxTokens != 0 {
+			next.MaxTokens = req.MaxTokens
+		}
 		next.Async = req.Async
 		next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
 		if req.APIKey != "" {
@@ -147,9 +152,20 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		next.Assistant = mergeAIModelPayload(next.Assistant, legacyAIModelPayload(next))
 		next.Reasoning = mergeAIModelPayload(next.Reasoning, aiModelPayloadFromConfig(next.Assistant))
 		if req.SelfLearning != nil {
+			previousAutoApply := next.SelfLearning.AutoApply
 			selfLearning, parseErr := parseAISelfLearningConfig(req.SelfLearning, next.SelfLearning)
 			if parseErr != nil {
 				return parseErr
+			}
+			if selfLearning.AutoApply && !previousAutoApply {
+				claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+				permissions := config.Default().APISec.Permissions
+				if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+					permissions = h.currentConfig().APISec.Permissions
+				}
+				if !callerHasPermission(claims, permissions, "write:system") {
+					return fmt.Errorf("setting self_learning.auto_apply=true requires write:system or admin permission")
+				}
 			}
 			next.SelfLearning = selfLearning
 		}
@@ -163,6 +179,10 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}, nil)
 	if err != nil {
+		if strings.Contains(err.Error(), "auto_apply") {
+			writeError(w, http.StatusForbidden, "AI_AUTO_APPLY_FORBIDDEN", err.Error())
+			return
+		}
 		code := "CONFIG_SAVE_ERROR"
 		status := http.StatusInternalServerError
 		if isAIAPIBaseValidationError(err) {
@@ -255,7 +275,7 @@ func (h *Handler) AIModels(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Request) *config.AIConfig {
 	target := ""
-	cfg := h.Config.AI.AssistantRuntimeConfig()
+	cfg := h.currentConfig().AI.AssistantRuntimeConfig()
 	cfg.Enabled = true
 	if r.Method == http.MethodGet {
 		return &cfg
@@ -298,31 +318,37 @@ func validateAIAPIBase(raw string, allowPrivate bool) error {
 	if strings.TrimSpace(host) == "" {
 		return fmt.Errorf("ai api base host is required")
 	}
-	if isPrivateAIAPIBaseHost(host) {
+	private, err := isPrivateAIAPIBaseHost(host)
+	if err != nil {
+		return fmt.Errorf("ai api base host lookup failed: %w", err)
+	}
+	if private {
 		return fmt.Errorf("ai api base points to a private, loopback, link-local, or unspecified host; enable allow_private_api_base only for trusted local model gateways")
 	}
 	return nil
 }
 
-func isPrivateAIAPIBaseHost(host string) bool {
+var lookupAIAPIBaseIP = net.LookupIP
+
+func isPrivateAIAPIBaseHost(host string) (bool, error) {
 	normalized := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
 	switch normalized {
 	case "", "localhost", "localhost.localdomain":
-		return true
+		return true, nil
 	}
 	if ip := net.ParseIP(normalized); ip != nil {
-		return isPrivateAIAPIBaseIP(ip)
+		return isPrivateAIAPIBaseIP(ip), nil
 	}
-	ips, err := net.LookupIP(normalized)
+	ips, err := lookupAIAPIBaseIP(normalized)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, ip := range ips {
 		if isPrivateAIAPIBaseIP(ip) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func isPrivateAIAPIBaseIP(ip net.IP) bool {
@@ -691,13 +717,15 @@ func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if h.Config == nil {
+	if h.currentConfig() == nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_ERROR", "config is nil")
 		return
 	}
-	cfg := h.Config.AI.SelfLearning
-	if req.DryRun != nil {
-		cfg.DryRun = *req.DryRun
+	cfg := h.currentConfig().AI.SelfLearning
+	// A request may only make self-learning more conservative: it can force
+	// dry_run=true but can never turn off a configured dry-run.
+	if req.DryRun != nil && *req.DryRun {
+		cfg.DryRun = true
 	}
 	// Self-learning may CreateRule when AutoApply && !DryRun. Reuse the same
 	// freeze / cluster-writable guards as CreateRule; on freeze, force dry-run
@@ -705,11 +733,12 @@ func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
 	defer cancel()
 	report, err := ai.RunSelfLearning(ctx, ai.SelfLearningOptions{
-		Config:   cfg,
-		Client:   h.aiReasoningClient(),
-		Sink:     h.Sink,
-		Rules:    h.Store,
-		Language: req.Language,
+		Config:          cfg,
+		Client:          h.aiReasoningClient(),
+		Sink:            h.Sink,
+		ListCustomRules: h.ListCustomRules,
+		ApplyCustomRule: h.ApplyGeneratedCustomRule,
+		Language:        req.Language,
 		CanWriteRules: func() error {
 			return h.selfLearningRuleWriteAllowed(r)
 		},
@@ -735,6 +764,12 @@ func (h *Handler) selfLearningRuleWriteAllowed(r *http.Request) error {
 			freezeReason = "configuration state could not be restored"
 		}
 		return fmt.Errorf("configuration writes are frozen: %s", freezeReason)
+	}
+	if r != nil {
+		claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+		if !h.callerHasPermission(claims, "write:rules") {
+			return fmt.Errorf("automatic rule creation requires write:rules permission")
+		}
 	}
 	if ok, reason := h.clusterConfigWritable(requestLanguage(r)); !ok {
 		return fmt.Errorf("cluster protection mode: %s", reason)
@@ -806,8 +841,8 @@ func (h *Handler) aiApprovalRecoveryAccess(r *http.Request) (ai.ApprovalActor, b
 	actor := h.aiApprovalActor(r)
 	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
 	permissions := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		permissions = h.Config.APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		permissions = h.currentConfig().APISec.Permissions
 	}
 	return actor, callerHasPermission(claims, permissions, "approve:ai")
 }
@@ -1099,7 +1134,8 @@ func (h *Handler) assistantToolIntents(message string) []assistantToolIntent {
 	if containsAny(normalized, "最近事件", "安全事件", "攻击事件", "拦截事件", "recent events", "security events") {
 		intents = append(intents, assistantToolIntent{Name: "recent_security_events", Args: map[string]any{"limit": 10}})
 	}
-	if containsAny(normalized, "js challenge", "js挑战", "bot验证", "bot 验证", "验证码", "captcha", "滑块") &&
+	explicitMutation := isExplicitAssistantMutationCommand(normalized)
+	if explicitMutation && containsAny(normalized, "js challenge", "js挑战", "bot验证", "bot 验证", "验证码", "captcha", "滑块") &&
 		containsAny(normalized, "开启", "打开", "启用", "关闭", "停用", "改成", "设置", "set", "enable", "disable") {
 		args := map[string]any{}
 		if containsAny(normalized, "开启", "打开", "启用", "enable") {
@@ -1125,8 +1161,10 @@ func (h *Handler) assistantToolIntents(message string) []assistantToolIntent {
 			intents = append(intents, assistantToolIntent{Name: "set_bot_challenge", Args: args})
 		}
 	}
-	if area, level, ok := parseProtectionLevelIntent(normalized); ok {
-		intents = append(intents, assistantToolIntent{Name: "set_protection_level", Args: map[string]any{"area": area, "level": level}})
+	if explicitMutation {
+		if area, level, ok := parseProtectionLevelIntent(normalized); ok {
+			intents = append(intents, assistantToolIntent{Name: "set_protection_level", Args: map[string]any{"area": area, "level": level}})
+		}
 	}
 	if len(intents) == 0 && containsAny(normalized,
 		"knowledge", "docs", "how", "why", "rule", "policy", "config", "certificate", "acme", "false positive", "false negative", "cache", "compression",
@@ -1134,6 +1172,29 @@ func (h *Handler) assistantToolIntents(message string) []assistantToolIntent {
 		intents = append(intents, assistantToolIntent{Name: "knowledge_base", Args: map[string]any{"query": normalized, "limit": 5}})
 	}
 	return intents
+}
+
+func isExplicitAssistantMutationCommand(message string) bool {
+	message = strings.TrimSpace(message)
+	if message == "" || len(message) > 240 {
+		return false
+	}
+	if containsAny(message,
+		"?", "？", " how ", "how ", "why ", "what if", "would ", "should ", "can ",
+		"为什么", "如何", "如果", "是否", "会不会", "能否", "文档", "提到", "说明",
+	) {
+		return false
+	}
+	for _, prefix := range []string{
+		"please enable ", "please disable ", "please set ", "please turn on ", "please turn off ",
+		"enable ", "disable ", "set ", "turn on ", "turn off ",
+		"请", "开启", "打开", "启用", "关闭", "停用", "设置", "把", "将",
+	} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseProtectionLevelIntent(message string) (string, string, bool) {
@@ -1366,10 +1427,10 @@ func (h *Handler) aiClient() *ai.Client {
 }
 
 func (h *Handler) aiAssistantClient() *ai.Client {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
-	cfg := h.Config.AI.AssistantRuntimeConfig()
+	cfg := h.currentConfig().AI.AssistantRuntimeConfig()
 	if cfg.Enabled && cfg.APIKey != "" {
 		return ai.NewClient(cfg, nil)
 	}
@@ -1377,10 +1438,10 @@ func (h *Handler) aiAssistantClient() *ai.Client {
 }
 
 func (h *Handler) aiReasoningClient() *ai.Client {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
-	cfg := h.Config.AI.ReasoningRuntimeConfig()
+	cfg := h.currentConfig().AI.ReasoningRuntimeConfig()
 	if cfg.Enabled && cfg.APIKey != "" {
 		return ai.NewClient(cfg, nil)
 	}
@@ -1397,16 +1458,16 @@ func (h *Handler) aiClientForAssistant(deepThink bool) *ai.Client {
 }
 
 func (h *Handler) aiRuntimeConfig(target string) config.AIConfig {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		cfg := config.Default().AI
 		cfg.Enabled = false
 		return cfg
 	}
 	switch normalizeAITarget(target) {
 	case "reasoning":
-		return h.Config.AI.ReasoningRuntimeConfig()
+		return h.currentConfig().AI.ReasoningRuntimeConfig()
 	default:
-		return h.Config.AI.AssistantRuntimeConfig()
+		return h.currentConfig().AI.AssistantRuntimeConfig()
 	}
 }
 
@@ -1430,6 +1491,7 @@ func aiConfigView(cfg config.AIConfig) aiConfigPayload {
 		APIBase:             assistant.APIBase,
 		APIKeySet:           assistant.APIKey != "",
 		Model:               assistant.Model,
+		MaxTokens:           assistant.MaxTokens,
 		Async:               cfg.Async,
 		AllowPrivateAPIBase: assistant.AllowPrivateAPIBase,
 		Assistant:           aiModelConfigView(assistant.RuntimeModelConfig()),
@@ -1581,6 +1643,7 @@ func aiModelConfigView(cfg config.AIModelConfig) *aiModelConfigPayload {
 		APIBase:             cfg.APIBase,
 		APIKeySet:           cfg.APIKey != "",
 		Model:               cfg.Model,
+		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
 	}
 }
@@ -1599,6 +1662,9 @@ func mergeAIModelPayload(current config.AIModelConfig, req aiModelConfigPayload)
 	if strings.TrimSpace(req.Model) != "" {
 		next.Model = strings.TrimSpace(req.Model)
 	}
+	if req.MaxTokens != 0 {
+		next.MaxTokens = req.MaxTokens
+	}
 	next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
 	if strings.TrimSpace(next.APIKeyHeader) == "" {
 		next.APIKeyHeader = "authorization"
@@ -1612,6 +1678,7 @@ func aiModelPayloadFromConfig(model config.AIModelConfig) aiModelConfigPayload {
 		APIBase:             model.APIBase,
 		APIKey:              model.APIKey,
 		Model:               model.Model,
+		MaxTokens:           model.MaxTokens,
 		AllowPrivateAPIBase: model.AllowPrivateAPIBase,
 	}
 }
@@ -1622,6 +1689,7 @@ func legacyAIModelPayload(cfg config.AIConfig) aiModelConfigPayload {
 		APIBase:             cfg.APIBase,
 		APIKey:              cfg.APIKey,
 		Model:               cfg.Model,
+		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
 	}
 }
@@ -1653,6 +1721,9 @@ func validateRuntimeAIConfig(target string, cfg config.AIConfig) error {
 	}
 	if strings.TrimSpace(cfg.Model) == "" {
 		return fmt.Errorf("%s model is required", target)
+	}
+	if cfg.MaxTokens < 1 || cfg.MaxTokens > 200000 {
+		return fmt.Errorf("%s max_tokens must be between 1 and 200000", target)
 	}
 	return nil
 }

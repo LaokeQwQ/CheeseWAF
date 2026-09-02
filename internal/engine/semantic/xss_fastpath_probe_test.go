@@ -64,3 +64,18 @@ func TestExecutableXSSContextKeepsFullPatternCoverage(t *testing.T) {
 		})
 	}
 }
+
+func TestXSSBareEventHandlerNoiseRequiresExecutableMarkupContext(t *testing.T) {
+	for _, text := range []string{"style/onload=prompt", "body/onload=<!--"} {
+		candidate := semanticCandidate{input: InputPoint{Source: "query", Name: "p"}, text: text}
+		if _, detected := analyzeXSS(candidate); detected {
+			t.Fatalf("bare event-handler noise was classified as XSS: %q", text)
+		}
+	}
+	for _, text := range []string{"<body onload=alert(1)>", `x" onerror="alert(1)">`} {
+		candidate := semanticCandidate{input: InputPoint{Source: "query", Name: "p"}, text: text}
+		if _, detected := analyzeXSS(candidate); !detected {
+			t.Fatalf("executable event-handler payload was suppressed: %q", text)
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,12 +56,43 @@ func ValidateURL(raw string, policy URLPolicy) (*url.URL, error) {
 	if host == "" {
 		return nil, fmt.Errorf("host is required")
 	}
+	if isNonCanonicalNumericIPHost(host) {
+		return nil, fmt.Errorf("non-canonical numeric IP host is not allowed")
+	}
 	if !policy.AllowPrivate {
 		if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && !IsPublicIP(ip) {
 			return nil, fmt.Errorf("%s host IP must be public", policy.hostPurpose())
 		}
 	}
 	return parsed, nil
+}
+
+func isNonCanonicalNumericIPHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	lower := strings.ToLower(host)
+	if strings.HasPrefix(lower, "0x") {
+		_, err := strconv.ParseUint(lower[2:], 16, 32)
+		return err == nil
+	}
+	if _, err := strconv.ParseUint(host, 10, 32); err == nil {
+		return true
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) > 1 && len(parts) < 4 {
+		for _, part := range parts {
+			if part == "" {
+				return false
+			}
+			if _, err := strconv.ParseUint(part, 10, 8); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func NewRequest(ctx context.Context, method, rawURL string, body io.Reader, policy URLPolicy) (*http.Request, error) {

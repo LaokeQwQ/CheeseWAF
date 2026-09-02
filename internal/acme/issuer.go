@@ -45,7 +45,6 @@ var (
 		"GCONV_PATH": {}, "TERM": {}, "HOME": {}, "USERPROFILE": {}, "SystemRoot": {}, "SYSTEMROOT": {},
 		"WINDIR": {}, "TMP": {}, "TEMP": {}, "TMPDIR": {},
 	}
-	reloadCmdShellMeta = regexp.MustCompile(`[;&|<>$` + "`" + `\\!\n\r*?]`)
 )
 
 type CommandRunner interface {
@@ -180,6 +179,12 @@ func (i *ACMESHIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult
 		return result, err
 	}
 
+	resolvedReloadCommand, err := config.ResolveACMEReloadCommand(req.ReloadCmd)
+	if err != nil {
+		err = fmt.Errorf("reload_command is invalid: %w", err)
+		return fail("validate", err.Error(), err, "")
+	}
+	req.ReloadCmd = resolvedReloadCommand
 	if err := validateIssueRequest(req); err != nil {
 		return fail("validate", err.Error(), err, "")
 	}
@@ -349,34 +354,6 @@ func validateIssueRequest(req IssueRequest) error {
 		if isBlockedDNSEnvKey(key) {
 			return fmt.Errorf("DNS env var %q is not allowed", key)
 		}
-	}
-	if err := validateReloadCommand(req.ReloadCmd); err != nil {
-		return err
-	}
-	return nil
-}
-
-func validateReloadCommand(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsAny(value, "\x00\r\n") {
-		return fmt.Errorf("reload_command must not contain control characters")
-	}
-	if reloadCmdShellMeta.MatchString(value) {
-		return fmt.Errorf("reload_command must not contain shell metacharacters")
-	}
-	// Prefer absolute commands; relative names are easy to hijack via PATH.
-	// Accept Unix absolute paths even when the control plane runs on Windows
-	// (acme.sh / reload usually executes on a Linux host).
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return fmt.Errorf("reload_command is empty")
-	}
-	exe := fields[0]
-	if !filepath.IsAbs(exe) && !strings.HasPrefix(exe, "/") {
-		return fmt.Errorf("reload_command executable must be an absolute path")
 	}
 	return nil
 }

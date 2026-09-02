@@ -3,12 +3,12 @@
 ## Completed Optimizations
 
 ### 1. Runtime GC Tuning (✅ Complete)
-- **Implementation**: `internal/gctune/gctune.go`
+- **Implementation**: `internal/perf/gctune/gctune.go`
 - **Strategy**: Adaptive GOMEMLIMIT = 75% of detected RAM, GOGC = 200
 - **Platform support**: Windows (GlobalMemoryStatusEx), Linux (cgroups)
 - **Tests**: 32/32 pass
 - **Detection**: 15.9 GiB RAM → 11.9 GiB GOMEMLIMIT on test system
-- **Config**: `runtime.enable_gc_tuning` (default: true)
+- **Config**: `performance.gc.enabled` (default: true)
 
 ### 2. Semantic Analyzer Memory Optimization (✅ Complete)
 - **Root cause**: Unconditional `maxCandidates=64` sizing consumed 88.7% of allocations
@@ -28,13 +28,13 @@
 - **Fix**: Sort query keys and header names before iteration
 - **Verification**: Not exploitable in practice (60/60 detections)
 
-### 4. Compiler Optimizations (✅ Complete)
+### 4. Compiler Settings (✅ Corrected)
 - **Makefile updates**:
-  - Added `-gcflags "-l=4"` (aggressive inlining) to all build targets
+  - Use Go's default optimizer/inliner; `-l=4` was removed because it disables inlining
   - Added LoongArch (loong64) to `build-all` and `build-linux`
 - **Platforms**: linux/darwin/windows × amd64/arm64 + linux/loong64
 - **Binary size**: No regression (31M baseline vs 31M optimized)
-- **Benchmark**: No measurable difference from -l=4 alone (regex/decoder bottleneck)
+- **Benchmark**: The old disabled-inlining build had no measurable benefit (regex/decoder bottleneck)
 
 ### 5. Fast Path Helpers (✅ Complete)
 - **File**: `internal/engine/semantic/fastpath.go`

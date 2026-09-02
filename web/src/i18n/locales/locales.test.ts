@@ -112,6 +112,7 @@ const REQUIRED_KEYS = [
   'passwordPolicy.usernameRelated',
   'common.loadFailed',
   'common.home',
+  'common.prev',
   'securityCategories.xxe',
   'securityCategories.protocolEnforcement',
   'securityCategories.ipAccess',
@@ -166,6 +167,18 @@ describe('locale dictionaries', () => {
     const keys = new Set(leafKeys(enUS));
     for (const key of REQUIRED_KEYS) {
       expect(keys.has(key), `missing required key ${key}`).toBe(true);
+    }
+  });
+
+  it('does not use English defaultValue fallbacks in the audited pages', () => {
+    const auditedPages = [
+      'pages/System/SystemPage.tsx',
+      'pages/BotChallenge/BotChallengePage.tsx',
+      'pages/Cluster/ClusterPage.tsx',
+    ];
+    for (const relativePath of auditedPages) {
+      const source = readFileSync(join(webSrcDir, relativePath), 'utf8');
+      expect(source.match(/\bt\([^)]*defaultValue\s*:/g) ?? [], relativePath).toEqual([]);
     }
   });
 

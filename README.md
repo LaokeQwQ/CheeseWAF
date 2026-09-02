@@ -44,6 +44,7 @@
 - [Configuration Reference](#configuration-reference)
 - [Tech Stack](#tech-stack)
 - [Development & Testing](#development--testing)
+- [Corpus Governance](#corpus-governance)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -116,6 +117,10 @@ flowchart TB
 
 The paranoia level is configured per site via `waf.paranoia_level` (valid values: **0–5**, default: **3**).
 
+> **Two independent knobs.** `waf.paranoia_level` (0–5) drives the semantic engine itself — how strictly it judges payload shapes. The proxy's block/challenge thresholds come from a *separate* setting, `protection_policy.web_attack` (`off` / `low` / `smart` / `high` / `strict`, default `smart`). They are configured independently: raising `paranoia_level` makes the engine more sensitive, while `web_attack` decides what happens to a detection (severity/confidence gates, aggregate risk score, and the fail-mode when the 100 ms detection budget runs out).
+>
+> In log metadata and the console, `waf_policy_decision.paranoia_level` reports the site's configured level (0–5) and `waf_policy_decision.policy_tier` reports the `web_attack` strategy ordinal (0–4). They are deliberately separate fields — do not read one as the other.
+
 The analyzer inspects **individual decoded parameter values** (paths and parameter names remain visible) and categorizes detected attack signatures into two structural shapes:
 - **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3`, allowing minimal wrappers like `@` or trailing semicolons).
 - **Embedded Payload**: The attack pattern appears inside ordinary text, user comments, articles, or descriptions.
@@ -154,27 +159,27 @@ Recommended for Linux physical servers and virtual machines for direct execution
 
 #### Step 1: Download and Extract Release Archive
 
-Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. Pick the file for your OS and CPU:
+Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. The version portion is `beta` on `master`, `PreTest` on `canary`, and `dev` on `dev`; these wildcard patterns cover every channel:
 
 | File | Platform |
 | --- | --- |
-| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
-| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
-| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux LoongArch64 |
-| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 single-file CLI |
-| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 single-file CLI |
-| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 portable folder |
-| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 portable folder |
+| `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*.tar.gz` | Linux LoongArch64 |
+| `cheesewaf-amd64-darwin-*.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*.exe` | Windows x86_64 single-file CLI |
+| `cheesewaf-arm64-windows-*.exe` | Windows ARM64 single-file CLI |
+| `cheesewaf-amd64-windows-*.zip` | Windows x86_64 portable folder |
+| `cheesewaf-arm64-windows-*.zip` | Windows ARM64 portable folder |
 
 ```bash
 # Linux x86_64 example
-tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
+tar -xzf cheesewaf-amd64-linux-*.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*-PreTest.tar.gz` or `cheesewaf-loong64-linux-*-PreTest.tar.gz`.
+Linux ARM64 and LoongArch64 use `cheesewaf-arm64-linux-*.tar.gz` or `cheesewaf-loong64-linux-*.tar.gz`.
 
 #### Step 2: Install Executable and Configure Directories
 
@@ -214,6 +219,8 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
+The systemd unit keeps `ProtectSystem=strict` and grants the service write access only to `/etc/cheesewaf`, `/var/lib/cheesewaf`, and `/var/log/cheesewaf`. This lets the management API save validated configuration changes while keeping the rest of the system read-only.
+
 The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tunnel) open `http://127.0.0.1:9443/setup`. Loopback `/setup` can finish first-install without pasting a token. From another host, copy the URL from `journalctl -u cheesewaf` or `/var/lib/cheesewaf/setup.url`. Remote `SERVER_IP:9443` stays closed until setup chooses a public admin strategy.
 
 `GET /api/setup` returns 405; first-install status is `GET /api/setup/status`. Completing setup is `POST /api/setup` with `X-CheeseWAF-Setup-Token`. Login from another host still needs the console captcha; loopback API login does not.
@@ -222,7 +229,7 @@ The default admin listener is `127.0.0.1:9443`. On the server (or over an SSH tu
 
 ### 2. Docker Deployment (Docker Compose)
 
-Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. The runtime image installs the distro CA bundle so outbound HTTPS to origins verifies certificates. Bind `9443` only on trusted networks; the image listens on all interfaces with admin TLS.
+Docker images are built from a git checkout (`deploy/docker/Dockerfile`). Release `.tar.gz` files are for systemd, not for `docker compose` without the repository. `docker compose build` produces `linux/amd64` or `linux/arm64` for the host CPU. The container runs as a non-root user (UID `10001`) with a read-only root filesystem. The runtime image installs the distro CA bundle so outbound HTTPS to origins verifies certificates. Compose maps admin TLS to host loopback (`127.0.0.1:9443`); use an SSH tunnel or a separately hardened reverse proxy when remote access is required.
 
 #### Step 1: Create Compose File
 
@@ -289,7 +296,7 @@ Three Windows shapes. The CLI is one `cheesewaf.exe`. The zip adds configs, the 
 2. Run it as `cheesewaf.exe`:
 
 ```powershell
-.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
 .\cheesewaf-*-windows-amd64.exe status
 .\cheesewaf-*-windows-amd64.exe stop
 ```
@@ -325,17 +332,12 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 
 ### 4. macOS Deployment (DMG)
 
-1. Download `cheesewaf-arm64-darwin-*-PreTest.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*-PreTest.dmg` (Intel).
+1. Download `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
 2. Open the disk image and drag **CheeseWAF** into **Applications**.
 3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
-4. If macOS says the app is damaged, that is Gatekeeper blocking an unsigned PreTest build. Run **Fix Gatekeeper.command** on the disk, or:
+4. Signed and notarized releases should open normally. For an ad-hoc PreTest developer build only, Control-click the app in Applications, choose **Open**, and confirm the one-time prompt.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
-open /Applications/CheeseWAF.app
-```
-
-Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*-PreTest.tar.gz` if you only want the CLI.
+Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
 
 ---
 
@@ -376,13 +378,13 @@ In **AI Settings**:
 
 ## Configuration Reference
 
-A default `cheesewaf.yaml` file is generated upon first startup (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)):
+A default `data/config/cheesewaf.yaml` file is generated upon first startup (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)):
 
 ```yaml
 server:
-  listen: "0.0.0.0:8080"         # Data plane ingress listener
-  admin_listen: "127.0.0.1:9443"   # Admin plane listener
-  admin_public: false            # Set true only with admin TLS configured
+  listen: "127.0.0.1:8080"       # Safe local default; expose intentionally
+  admin_listen: "127.0.0.1:9443" # Admin plane listener
+  admin_public: false             # Set true only with admin TLS configured
 
 sites:
   - id: "site-demo"
@@ -392,27 +394,39 @@ sites:
       - address: "192.168.1.100:8080"
         weight: 1
     waf:
+      enabled: true
+      mode: "block"
       paranoia_level: 3          # Paranoia Level (0–5)
+      semantic_policy:
+        auto_agree: true         # Auto-commit high-confidence review verdicts
 
 protection:
-  rate_limit:
+  ratelimit:
     enabled: true
-    requests_per_second: 100
-  ip_block:
-    enabled: true
+    default:
+      requests: 100
+      window: 60s
+      burst: 20
+  ip:
+    blacklist: []
+    whitelist: ["127.0.0.1", "::1"]
 
 ai:
   enabled: true
   provider: "openai"
   api_base: "https://api.example.com/v1"
-  model: "gpt-4o-mini"
-
-sites:
-  - id: "site-demo"
-    waf:
-      semantic_policy:
-        auto_agree: true         # Auto-commit high-confidence review verdicts
+  model: "provider-default"
 ```
+
+Site custom rules live only in `sites[].waf.custom_rules`. The console Rules page can import YAML/JSON: it validates and dedupes first, then replaces the site set. On failure the currently working rules stay in place and the API returns an error. The CLI can import the same document:
+
+```bash
+waf-cli --config ./data/config/cheesewaf.yaml rules example --format yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file custom_rules.yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
+```
+
+After you edit the config file, the process watches `cheesewaf.yaml` mtime, and `SIGHUP` reloads immediately. A load or compile failure keeps the previous rules.
 
 ---
 
@@ -466,14 +480,29 @@ go vet ./cmd/... ./internal/...
 # Frontend type checking and tests
 cd web && npm run typecheck && npm test && cd ..
 
-# Replay bundled security test corpus against the analyzer
-go run ./cmd/cheesewaf-corpus --mode analyzer
+# Generate and replay the governed security corpus
+make security-corpus
+```
+
+### Corpus Governance
+
+Governance runs are read-only and recursively enumerate every `.jsonl` or `.jsonl.gz` file below `internal/engine/semantic/testdata/` at runtime. The pipeline is ordered as: global deduplication → structural/semantic triage → selection and cleaning → second review. It writes `formal.jsonl`, `quarantine.jsonl`, and an auditable `manifest.json` to a temporary directory. Git-ignored large corpora are represented as optional inputs in the manifest when absent; nested and compressed copies are not silently omitted.
+
+`make corpus-governance` audits all available corpora while keeping their rows in a quarantine snapshot. `make security-corpus` separately builds a hash-bound formal snapshot from repository-curated sources, pins the input hashes, exact source/label/category coverage, governance policy and formal artifact hash, and requires zero hard rejects, then feeds only that snapshot to both analyzer replay and semantic evaluation. The malformed `pat-sqli-00119` record remains preserved in an explicitly pinned quarantine-only file; it is not silently replaced or removed from the audit denominator. CI also requires at least 250 benign and 10,000 attack rows before applying FPR below 0.8% and TPR of at least 99% to this governed regression snapshot. This does not claim that an independent blind set or every quarantined research corpus already meets the same target.
+
+```bash
+make corpus-governance
+make security-corpus
 ```
 
 ---
 
 ## Documentation
 
+- [ACME Certificate Reload Profiles](docs/acme.md)
+- [Semantic Evaluation Platform](docs/evaluation-platform.md)
+- [Semantic Corpus Governance](docs/semantic-corpus-governance.md)
+- [Release, Upgrade and Rollback](docs/release.md)
 - [Protection Policy & Roadmap](docs/protection-policy-roadmap.md)
 - [Paranoia Level Code Mapping](docs/paranoia-level-implementation.md)
 - [Performance Optimization Notes](docs/performance-optimization.md)

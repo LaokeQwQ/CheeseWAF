@@ -24,6 +24,7 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 			},
 			SemanticPolicy: config.SemanticPolicyConfig{
 				BudgetExhaustedPolicy: "closed",
+				DecodeDepth:           8,
 				PathAllowlist:         []string{"/health", "/static/*"},
 				ParamAllowlist:        []string{"content"},
 				PromoteSeconds:        45,
@@ -48,6 +49,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	if site.Advanced.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
 		t.Fatalf("expected budget policy closed, got %+v", site.Advanced.SemanticPolicy)
 	}
+	if site.Advanced.SemanticPolicy.DecodeDepth != 8 {
+		t.Fatalf("expected decode depth 8, got %+v", site.Advanced.SemanticPolicy)
+	}
 	if len(site.Advanced.SemanticPolicy.PathAllowlist) != 2 || site.Advanced.SemanticPolicy.ParamAllowlist[0] != "content" {
 		t.Fatalf("expected allowlists preserved: %+v", site.Advanced.SemanticPolicy)
 	}
@@ -63,6 +67,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	}
 	if converted.WAF.SemanticPolicy.BudgetExhaustedPolicy != "closed" {
 		t.Fatalf("expected semantic policy round-trip: %+v", converted.WAF.SemanticPolicy)
+	}
+	if converted.WAF.SemanticPolicy.DecodeDepth != 8 {
+		t.Fatalf("expected decode depth round-trip: %+v", converted.WAF.SemanticPolicy)
 	}
 	if len(converted.WAF.SemanticPolicy.PathAllowlist) != 2 {
 		t.Fatalf("expected path allowlist round-trip: %+v", converted.WAF.SemanticPolicy)
@@ -172,5 +179,36 @@ func TestSiteConfigRoundTripPreservesTrustedProxyProviderBindings(t *testing.T) 
 	site.Advanced.AccessControl.TrustedProxyProviders["cloudflare"][0] = "203.0.113.0/24"
 	if got := converted.WAF.AccessControl.TrustedProxyProviders["cloudflare"][0]; got != "198.51.100.0/24" {
 		t.Fatalf("config conversion must clone provider CIDRs, got %q", got)
+	}
+}
+
+func TestSiteConfigRoundTripPreservesTamperSnapshots(t *testing.T) {
+	capturedAt := time.Unix(100, 0).UTC()
+	original := config.SiteConfig{
+		ID: "site-tamper", Name: "site-tamper", Enabled: true,
+		Domains: []string{"example.test"}, Upstreams: []config.UpstreamConfig{{Address: "127.0.0.1:9000", Weight: 1}},
+		WAF: config.WAFConfig{
+			Enabled: true, Mode: "block",
+			Response: config.ResponseInspectionConfig{
+				Enabled: true, MaxBodyBytes: 1024, TamperKey: "01234567890123456789012345678901",
+				TamperSnapshots: []config.TamperSnapshotConfig{{
+					URL: "/index.html", MAC: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Size: 5, CapturedAt: capturedAt,
+				}},
+			},
+		},
+	}
+
+	stored := SiteFromConfig(original)
+	original.WAF.Response.TamperSnapshots[0].URL = "/mutated"
+	if got := stored.Advanced.Response.TamperSnapshots[0].URL; got != "/index.html" {
+		t.Fatalf("storage conversion did not clone snapshots: %q", got)
+	}
+	converted := SiteToConfig(stored)
+	stored.Advanced.Response.TamperSnapshots[0].URL = "/changed-again"
+	if got := converted.WAF.Response.TamperSnapshots[0]; got.URL != "/index.html" || got.CapturedAt != capturedAt {
+		t.Fatalf("tamper snapshot did not round trip: %+v", got)
+	}
+	if converted.WAF.Response.TamperKey != original.WAF.Response.TamperKey {
+		t.Fatal("tamper key did not round trip")
 	}
 }

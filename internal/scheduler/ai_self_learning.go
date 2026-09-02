@@ -20,10 +20,13 @@ func AISelfLearning(runtime Runtime) TaskFunc {
 			}
 		}
 		report, err := ai.RunSelfLearning(ctx, ai.SelfLearningOptions{
-			Config: cfg,
-			Client: client,
-			Sink:   runtime.Sink,
-			Rules:  runtime.Store,
+			Config:          cfg,
+			Client:          client,
+			Sink:            runtime.Sink,
+			Rules:           runtime.Store,
+			ListCustomRules: runtime.ListCustomRules,
+			ApplyCustomRule: runtime.ApplyCustomRule,
+			CanWriteRules:   runtime.CanWriteRules,
 		})
 		if err != nil {
 			return err

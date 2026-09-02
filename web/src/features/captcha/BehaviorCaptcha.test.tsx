@@ -189,4 +189,15 @@ describe('BehaviorCaptcha responses',()=>{
 
     expect(verifySignal?.aborted).toBe(true);
   });
+  it('clamps a fast curve_draw completion to the 120ms minimum', async () => {
+    const verify = vi.fn().mockResolvedValue({ valid: true });
+    render(<BehaviorCaptcha type="curve_draw" issue={vi.fn().mockResolvedValue(challenge('curve_draw'))} verify={verify} locale="en-US"/>);
+    const surface = await screen.findByTestId('curve-draw-surface');
+    rect(surface);
+    fireEvent.pointerDown(surface, { pointerId: 9, clientX: 40, clientY: 50 });
+    fireEvent.pointerMove(surface, { pointerId: 9, clientX: 160, clientY: 95 });
+    fireEvent.pointerUp(surface, { pointerId: 9, clientX: 280, clientY: 140 });
+    await waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+    expect(verify.mock.calls[0][0].duration_ms).toBeGreaterThanOrEqual(120);
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Search } from 'lucide-react';
@@ -7,10 +7,12 @@ import { decideReviewItem, fetchReviewItems, fetchSites } from '../../api/client
 import QueryErrorState from '../../components/QueryErrorState';
 import { displayCategory } from '../../utils/display';
 import type { ReviewDecision, ReviewItem } from '../../types/api';
-import { formatReviewTime, parseReviewVerdict, reviewSearchMatch, shapeLabelKey, statusLabelKey } from './reviewLogic';
+import { formatReviewTime, parseReviewVerdict, shapeLabelKey, statusLabelKey } from './reviewLogic';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 const ALL = '__all__';
 const PAGE_SIZE = 8;
+type PageCursor = { time: string; id: string };
 
 export default function ReviewPage() {
   const { t, i18n } = useTranslation();
@@ -21,17 +23,27 @@ export default function ReviewPage() {
   const [category, setCategory] = useState<string>();
   const [status, setStatus] = useState<string>('pending');
   const [page, setPage] = useState(1);
+  const [beforeByPage, setBeforeByPage] = useState<Record<number, PageCursor>>({});
+  const [watermark, setWatermark] = useState<PageCursor>();
+  const [snapshotTotal, setSnapshotTotal] = useState(0);
+  const deferredSearch = useDeferredValue(search.trim());
+  const before = beforeByPage[page];
+  const reviewRefetchInterval = usePollingVisibility(10_000);
   const { data: sites } = useQuery({ queryKey: ['sites'], queryFn: fetchSites, retry: false });
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
-    queryKey: ['review', siteId, category, status],
+    queryKey: ['review', siteId, category, status, deferredSearch, page, before?.time, before?.id, page > 1 ? watermark?.time : undefined, page > 1 ? watermark?.id : undefined],
     queryFn: () => fetchReviewItems({
-      limit: 100,
-      offset: 0,
+      limit: PAGE_SIZE,
       site_id: siteId,
       category,
       status: status || undefined,
+      search: deferredSearch || undefined,
+      before: before?.time,
+      before_id: before?.id,
+      watermark: page > 1 ? watermark?.time : undefined,
+      watermark_id: page > 1 ? watermark?.id : undefined,
     }),
-    refetchInterval: 10_000,
+    refetchInterval: page === 1 ? reviewRefetchInterval : false,
     retry: false,
   });
   const decide = useMutation({
@@ -42,22 +54,39 @@ export default function ReviewPage() {
     },
     onError: (error) => toast.error(error.message),
   });
-  const items = useMemo(
-    () => (data?.items ?? []).filter((item) => reviewSearchMatch(item, search)),
-    [data?.items, search],
-  );
-  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
-  const pageItems = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const items = data?.items ?? [];
+  const total = page === 1 ? (data?.total ?? snapshotTotal) : snapshotTotal;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const nextCursor = cursorForReview(items.at(-1));
+  const canNext = Boolean(watermark && nextCursor) && page < totalPages;
 
   useEffect(() => {
     setPage(1);
-  }, [search, siteId, category, status]);
+    setBeforeByPage({});
+    setWatermark(undefined);
+    setSnapshotTotal(0);
+  }, [deferredSearch, siteId, category, status]);
 
   useEffect(() => {
-    if (page > totalPages) {
-      setPage(totalPages);
+    if (page !== 1 || !data) {
+      return;
     }
-  }, [page, totalPages]);
+    setSnapshotTotal(data.total);
+    setWatermark(cursorForReview(data.items[0]));
+    setBeforeByPage({});
+  }, [data, page]);
+
+  const goToNextPage = () => {
+    if (!nextCursor || !canNext) {
+      return;
+    }
+    setBeforeByPage((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([key]) => Number(key) <= page));
+      next[page + 1] = nextCursor;
+      return next;
+    });
+    setPage((current) => current + 1);
+  };
 
   return (
     <section className="page-surface">
@@ -116,8 +145,8 @@ export default function ReviewPage() {
       <section className="table-panel">
         {isLoading && <div className="page-spinner" aria-busy="true" />}
         {!isLoading && isError && <QueryErrorState onRetry={() => void refetch()} retrying={isFetching} />}
-        {!isLoading && !isError && pageItems.length === 0 && <Empty description={t('review.empty')} />}
-        {!isLoading && !isError && pageItems.map((item) => (
+        {!isLoading && !isError && items.length === 0 && <Empty description={t('review.empty')} />}
+        {!isLoading && !isError && items.map((item) => (
           <ReviewCard
             key={item.id}
             item={item}
@@ -127,15 +156,22 @@ export default function ReviewPage() {
           />
         ))}
       </section>
-      {!isLoading && !isError && items.length > PAGE_SIZE && (
+      {!isLoading && !isError && total > PAGE_SIZE && (
         <div className="toolbar-row">
           <Button variant="outline" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>{t('common.back')}</Button>
           <span>{page} / {totalPages}</span>
-          <Button variant="outline" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>{t('common.next')}</Button>
+          <Button variant="outline" disabled={!canNext} onClick={goToNextPage}>{t('common.next')}</Button>
         </div>
       )}
     </section>
   );
+}
+
+function cursorForReview(item: ReviewItem | undefined): PageCursor | undefined {
+  if (!item?.created_at || !item.id) {
+    return undefined;
+  }
+  return { time: item.created_at, id: item.id };
 }
 
 function ReviewCard({

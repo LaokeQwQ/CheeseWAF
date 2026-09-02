@@ -3,10 +3,12 @@ package bot
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net"
@@ -96,7 +98,9 @@ func (s *ClearanceStateStore) Revoke(jti string) bool {
 	return true
 }
 
-func NewChallengeStore(c ChallengeStoreConfig) *ChallengeStore {
+// applyDefaults fills in every unset bound. It is shared with the Redis backend
+// so both stores enforce the same limits for the same configuration.
+func (c *ChallengeStoreConfig) applyDefaults() {
 	if c.Capacity < 1 {
 		c.Capacity = 10000
 	}
@@ -156,6 +160,10 @@ func NewChallengeStore(c ChallengeStoreConfig) *ChallengeStore {
 			c.PerPeerRate = c.PerPeerCapacity * 4
 		}
 	}
+}
+
+func NewChallengeStore(c ChallengeStoreConfig) *ChallengeStore {
+	c.applyDefaults()
 	return &ChallengeStore{
 		m:                  make(map[string]challengeEntry),
 		reservations:       make(map[uint64]*ChallengeReservation),
@@ -723,6 +731,8 @@ func pathWithinScope(path, scope string) bool {
 const PoWProtocolVersion = 2
 const powTokenPrefix = "p3."
 
+const powNonceBytes = 12
+
 var ErrPoWInvalid = errors.New("invalid proof")
 
 const (
@@ -742,7 +752,6 @@ type PoWContext struct {
 }
 type PoWManager struct {
 	secret     []byte
-	aead       cipher.AEAD
 	store      *ChallengeStore
 	now        func() time.Time
 	ttl        time.Duration
@@ -778,16 +787,28 @@ func NewPoWManager(secret []byte, store *ChallengeStore, ttl time.Duration, base
 	if len(a) == 0 {
 		a["sha256"] = struct{}{}
 	}
-	key := sha256.Sum256(append(append([]byte(nil), secret...), []byte("pow-aead-v3")...))
-	block, err := aes.NewCipher(key[:])
+	return &PoWManager{secret: append([]byte(nil), secret...), store: store, now: now, ttl: ttl, base: base, max: max, algorithms: a}, nil
+}
+
+func derivePoWAEAD(secret, salt []byte) (cipher.AEAD, error) {
+	key, err := hkdf.Key(sha256.New, secret, salt, "cheesewaf/pow/aead/v4", 32)
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	return &PoWManager{secret: append([]byte(nil), secret...), aead: aead, store: store, now: now, ttl: ttl, base: base, max: max, algorithms: a}, nil
+	return cipher.NewGCM(block)
+}
+
+func powAdditionalData(x PoWContext) []byte {
+	aad := []byte(powTokenPrefix)
+	for _, value := range []string{x.Site, x.Policy, x.PolicyVersion, x.Path, x.ClientKey} {
+		aad = binary.BigEndian.AppendUint32(aad, uint32(len(value)))
+		aad = append(aad, value...)
+	}
+	return aad
 }
 func (m *PoWManager) Issue(x PoWContext) (PoWChallenge, error) {
 	return m.issueWithSuite(x, "sha256")
@@ -837,11 +858,15 @@ func (m *PoWManager) issueWithSuite(x PoWContext, suite string) (PoWChallenge, e
 	if err != nil {
 		return PoWChallenge{}, err
 	}
-	nonce := make([]byte, m.aead.NonceSize())
+	nonce := make([]byte, powNonceBytes)
 	if _, err = rand.Read(nonce); err != nil {
 		return PoWChallenge{}, err
 	}
-	tok := powTokenPrefix + base64.RawURLEncoding.EncodeToString(m.aead.Seal(nonce, nonce, plain, []byte(powTokenPrefix)))
+	aead, err := derivePoWAEAD(m.secret, nonce)
+	if err != nil {
+		return PoWChallenge{}, err
+	}
+	tok := powTokenPrefix + base64.RawURLEncoding.EncodeToString(aead.Seal(nonce, nonce, plain, powAdditionalData(x)))
 	if e := m.store.Commit(reservation, j, time.Unix(exp, 0)); e != nil {
 		return PoWChallenge{}, e
 	}
@@ -862,10 +887,15 @@ func (m *PoWManager) Verify(token, answer string, x PoWContext) error {
 	if e != nil {
 		return ErrPoWInvalid
 	}
-	if len(raw) < m.aead.NonceSize() {
+	if len(raw) < powNonceBytes {
 		return ErrPoWInvalid
 	}
-	plain, e := m.aead.Open(nil, raw[:m.aead.NonceSize()], raw[m.aead.NonceSize():], []byte(powTokenPrefix))
+	nonce := raw[:powNonceBytes]
+	aead, e := derivePoWAEAD(m.secret, nonce)
+	if e != nil {
+		return ErrPoWInvalid
+	}
+	plain, e := aead.Open(nil, nonce, raw[powNonceBytes:], powAdditionalData(x))
 	if e != nil {
 		return ErrPoWInvalid
 	}

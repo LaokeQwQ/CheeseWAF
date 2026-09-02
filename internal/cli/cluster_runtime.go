@@ -19,6 +19,9 @@ func initializeClusterRuntime(cfg *config.Config, clock timekeeper.Clock) (*iden
 	if cfg == nil || !cfg.Cluster.Enabled {
 		return nil, nil, nil
 	}
+	if err := config.ValidateClusterConsensus(cfg); err != nil {
+		return nil, nil, fmt.Errorf("initialize cluster consensus: %w", err)
+	}
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}

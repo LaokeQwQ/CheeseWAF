@@ -18,6 +18,12 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+const (
+	sqliteBusyTimeoutMS       = 5000
+	defaultReviewRetentionAge = 30 * 24 * time.Hour
+	defaultReviewPruneBatch   = 500
+)
+
 func OpenSQLite(path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, fmt.Errorf("sqlite path is required")
@@ -30,63 +36,45 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
+	}
 	return &SQLiteStore{db: db}, nil
 }
 
-func (s *SQLiteStore) Migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, schemaSQL)
-	if err != nil {
-		return fmt.Errorf("migrate sqlite: %w", err)
-	}
-	if err := s.ensureColumns(ctx, "sites", map[string]string{
-		"loadbalance":    `ALTER TABLE sites ADD COLUMN loadbalance TEXT NOT NULL DEFAULT 'round_robin'`,
-		"waf_enabled":    `ALTER TABLE sites ADD COLUMN waf_enabled INTEGER NOT NULL DEFAULT 1`,
-		"waf_mode":       `ALTER TABLE sites ADD COLUMN waf_mode TEXT NOT NULL DEFAULT 'block'`,
-		"paranoia_level": `ALTER TABLE sites ADD COLUMN paranoia_level INTEGER NOT NULL DEFAULT 3`,
-		"advanced":       `ALTER TABLE sites ADD COLUMN advanced TEXT NOT NULL DEFAULT '{}'`,
-	}); err != nil {
-		return fmt.Errorf("migrate sqlite columns: %w", err)
-	}
-	if err := s.ensureColumns(ctx, "review_items", map[string]string{
-		"source":      `ALTER TABLE review_items ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
-		"param_name":  `ALTER TABLE review_items ADD COLUMN param_name TEXT NOT NULL DEFAULT ''`,
-		"fingerprint": `ALTER TABLE review_items ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''`,
-	}); err != nil {
-		return fmt.Errorf("migrate review columns: %w", err)
-	}
-	return nil
+func (s *SQLiteStore) MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO totp_consumed(user_id, counter, expires_at, created_at) VALUES(?, ?, ?, ?)
+		ON CONFLICT(user_id, counter) DO UPDATE SET expires_at = excluded.expires_at,
+		created_at = excluded.created_at`,
+		userID, counter, expiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
-func (s *SQLiteStore) ensureColumns(ctx context.Context, table string, migrations map[string]string) error {
-	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+func (s *SQLiteStore) IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error) {
+	var expiresAt string
+	err := s.db.QueryRowContext(ctx, `SELECT expires_at FROM totp_consumed WHERE user_id=? AND counter=?`, userID, counter).Scan(&expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	defer rows.Close()
-	existing := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return err
-		}
-		existing[name] = true
+	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return false, err
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for column, statement := range migrations {
-		if existing[column] {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-	return nil
+	return expiry.After(now), nil
+}
+
+func (s *SQLiteStore) DeleteTOTPConsumed(ctx context.Context, userID string, counter int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM totp_consumed WHERE user_id=? AND counter=?`, userID, counter)
+	return err
+}
+
+func (s *SQLiteStore) PruneTOTPConsumed(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM totp_consumed WHERE expires_at <= ?`, before.UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func (s *SQLiteStore) Close() error {
@@ -163,8 +151,24 @@ func (s *SQLiteStore) RestoreSite(ctx context.Context, site *Site) error {
 }
 
 func (s *SQLiteStore) DeleteSite(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sites WHERE id=?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	rollback := func(err error) error {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM review_items WHERE site_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM site_promotes WHERE site_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sites WHERE id=?`, id); err != nil {
+		return rollback(err)
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) ListRules(ctx context.Context, siteID string) ([]Rule, error) {
@@ -265,6 +269,14 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 		users = append(users, *user)
 	}
 	return users, rows.Err()
+}
+
+func (s *SQLiteStore) GetUserByID(ctx context.Context, id string) (*User, error) {
+	user, err := scanUser(s.db.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at FROM users WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return user, err
 }
 
 func (s *SQLiteStore) CreateSession(ctx context.Context, session *Session) error {
