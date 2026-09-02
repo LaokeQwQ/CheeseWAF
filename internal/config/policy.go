@@ -81,19 +81,19 @@ func IsBudgetExhaustedPolicy(value string) bool {
 // over silent hard-block of incomplete analysis.
 //
 //	off/low  → open     (pass + metrics)
-//	smart    → observe  (log, do not block solely for timeout)
-//	high     → observe  (same, proxy may escalate challenge on budget category)
+//	smart    → closed   (challenge when analysis cannot finish)
+//	high     → closed   (same as smart; a higher level must never end up more
+//	                     permissive than a lower one)
 //	strict   → closed   (challenge when analysis cannot finish)
+//
+// "closed" challenges instead of hard-blocking, so the false-positive cost of an
+// incomplete analysis is one CAPTCHA rather than a dropped request.
 func BudgetExhaustedPolicyFromWebAttack(level string) string {
 	switch level {
 	case ProtectionLevelOff, ProtectionLevelLow:
 		return BudgetPolicyOpen
-	case ProtectionLevelHigh:
-		return BudgetPolicyObserve
-	case ProtectionLevelStrict:
+	default: // smart, high, strict and unknown
 		return BudgetPolicyClosed
-	default: // smart and unknown
-		return BudgetPolicyObserve
 	}
 }
 

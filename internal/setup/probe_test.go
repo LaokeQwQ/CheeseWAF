@@ -32,6 +32,23 @@ func TestProfileDefaultsBarrel(t *testing.T) {
 	}
 }
 
+func TestProfileDefaultsSmartBetweenLowAndMedium(t *testing.T) {
+	smart := ProfileDefaults(ProfileSmart)
+	low := ProfileDefaults(ProfileLow)
+	medium := ProfileDefaults(ProfileMedium)
+	if smart.WebAttackLevel != "smart" {
+		t.Fatalf("smart profile should use smart web attack level, got %q", smart.WebAttackLevel)
+	}
+	if smart.ChallengeCapacity <= low.ChallengeCapacity || smart.ChallengeCapacity >= medium.ChallengeCapacity {
+		t.Fatalf("smart capacity should sit between low and medium: low=%d smart=%d medium=%d",
+			low.ChallengeCapacity, smart.ChallengeCapacity, medium.ChallengeCapacity)
+	}
+	if smart.PipelineBudgetMS <= low.PipelineBudgetMS || smart.PipelineBudgetMS >= medium.PipelineBudgetMS {
+		t.Fatalf("smart budget should sit between low and medium: low=%d smart=%d medium=%d",
+			low.PipelineBudgetMS, smart.PipelineBudgetMS, medium.PipelineBudgetMS)
+	}
+}
+
 func TestDraftStoreLifecycle(t *testing.T) {
 	s := NewDraftStore(time.Minute)
 	d, err := s.Create()

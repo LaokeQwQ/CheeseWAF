@@ -248,11 +248,6 @@ func openImageToken(opts ImageOptions, raw string) (imageTokenPayload, bool) {
 }
 
 func imageKey(secret string) []byte {
-	if secret == "" {
-		// Never fall back to a hard-coded secret — callers must supply one.
-		sum := sha256.Sum256([]byte("cheesewaf-image-v1\ninvalid-empty-secret"))
-		return sum[:]
-	}
 	sum := sha256.Sum256([]byte("cheesewaf-image-v1\n" + secret))
 	return sum[:]
 }

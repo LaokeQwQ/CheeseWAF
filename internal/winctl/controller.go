@@ -57,7 +57,7 @@ func New(opts Options) (*Controller, error) {
 		opts.Binary = defaultCheeseWAFBinary(self)
 	}
 	if opts.ConfigPath == "" {
-		opts.ConfigPath = filepath.Join(".", "data", "cheesewaf.yaml")
+		opts.ConfigPath = filepath.Join(".", "data", "config", "cheesewaf.yaml")
 	}
 	if opts.DataDir == "" {
 		opts.DataDir = filepath.Join(".", "data")

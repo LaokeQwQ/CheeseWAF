@@ -12,6 +12,7 @@ import (
 )
 
 func TestVisualIconClickAnswerIndexDistributionAcrossSeeds(t *testing.T) {
+	t.Parallel()
 	const samples = 64
 	counts := make([]int, selectionCount)
 

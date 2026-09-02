@@ -21,6 +21,28 @@ if [[ "$mod_version" != "$GO_VERSION" ]]; then
   exit 1
 fi
 
+go_satisfies() {
+  command -v go >/dev/null 2>&1 || return 1
+  [[ "$(go env GOVERSION 2>/dev/null)" == "go${GO_VERSION}" ]]
+}
+
+# Self-hosted Forgejo runners often already contain the pinned Go toolchain.
+# Reuse it instead of requiring a network download and shared tool-cache write.
+if go_satisfies; then
+  go version
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    echo "GOTOOLCHAIN=local" >>"$GITHUB_ENV"
+    if [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]]; then
+      echo "GOPROXY=${GOPROXY:-https://proxy.golang.org,direct}" >>"$GITHUB_ENV"
+      echo "GOSUMDB=${GOSUMDB:-sum.golang.org}" >>"$GITHUB_ENV"
+    else
+      echo "GOPROXY=${GOPROXY:-https://goproxy.cn,direct}" >>"$GITHUB_ENV"
+      echo "GOSUMDB=${GOSUMDB:-sum.golang.google.cn}" >>"$GITHUB_ENV"
+    fi
+  fi
+  exit 0
+fi
+
 command -v curl >/dev/null 2>&1 || {
   echo "::error::curl is required to install Go"
   exit 1
@@ -54,6 +76,14 @@ fi
 cache_root="${RUNNER_TOOL_CACHE:-${HOME}/.cache/cheesewaf-toolcache}"
 install_dir="${cache_root}/go/${GO_VERSION}/${goarch}"
 checksum_marker="${install_dir}/.archive.sha256"
+
+mkdir -p "$(dirname "$install_dir")"
+command -v flock >/dev/null 2>&1 || {
+  echo "::error::flock is required to protect the shared Go tool cache"
+  exit 1
+}
+exec 9>"${install_dir}.lock"
+flock 9
 
 if [[ ! -x "${install_dir}/bin/go" ]] ||
   [[ ! -r "$checksum_marker" ]] ||

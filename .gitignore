@@ -110,6 +110,8 @@ cheesewaf-*-deploy.tar.gz
 !docs/paranoia-level-implementation.md
 !docs/environment-variables.md
 !docs/acme.md
+!docs/semantic-corpus-governance.md
+!docs/open-corpus-catalog.md
 *.private.md
 *.local.md
 
@@ -174,6 +176,8 @@ internal/engine/semantic/testdata/mined_secprose_probe.jsonl
 # Regenerable test artifacts (FP exports, eval reports). The root /tmp/ rule is
 # anchored to the repo root and does not cover package-local tmp dirs.
 internal/engine/semantic/reports/
+internal/engine/semantic/tmp/
+/xcrun_db
 
 # Local toolchain / abandoned UI backup (never ship)
 .codex-gocache/

@@ -1,8 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -29,10 +33,25 @@ import (
 
 var errResponseTamperDetected = errors.New("authenticated response tamper detected")
 
+// Unknown-length body preflight runs in a bounded worker because an arbitrary
+// io.ReadCloser is allowed to ignore both context cancellation and Close.
+// A finite worker pool prevents such readers from turning request admission
+// into an unbounded goroutine leak.
+const (
+	maxInflightPreflightReads   = 128
+	preflightUnknownBodyTimeout = 30 * time.Second
+)
+
+var preflightBodySlots = make(chan struct{}, maxInflightPreflightReads)
+
+type requestDetectionPipeline interface {
+	Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error)
+}
+
 type Server struct {
 	config           *config.Config
 	runtimeMu        sync.RWMutex
-	pipeline         *engine.Pipeline
+	pipeline         requestDetectionPipeline
 	pipelineMu       sync.RWMutex
 	logSink          storage.LogSink
 	renderer         *blockpage.Renderer
@@ -171,9 +190,13 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if err != nil {
 		return nil, err
 	}
+	var activePipeline requestDetectionPipeline
+	if pipeline != nil {
+		activePipeline = pipeline
+	}
 	server := &Server{
 		config:           cfg,
-		pipeline:         pipeline,
+		pipeline:         activePipeline,
 		logSink:          sink,
 		renderer:         renderer,
 		lb:               NewLoadBalancer(cfg.Sites).WithHealth(health),
@@ -256,10 +279,14 @@ func (s *Server) UpdatePipeline(pipeline *engine.Pipeline) {
 	}
 	s.pipelineMu.Lock()
 	defer s.pipelineMu.Unlock()
+	if pipeline == nil {
+		s.pipeline = nil
+		return
+	}
 	s.pipeline = pipeline
 }
 
-func (s *Server) currentPipeline() *engine.Pipeline {
+func (s *Server) currentPipeline() requestDetectionPipeline {
 	if s == nil {
 		return nil
 	}
@@ -474,7 +501,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	// Keep the same cap on requests that skip body inspection. MaxBytesReader
 	// also bounds chunked and HTTP/2 bodies whose ContentLength is unknown.
-	if r.Body != nil {
+	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	}
 	// Defer body I/O until APISec/WAF (or verify). IP/geo/bot/rate use headers only.
@@ -484,9 +511,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			s.proxyError(w, r, site, nil, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
 			return
 		}
-		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
+		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", requestBodyReadErrorStatus(err, http.StatusBadRequest), start, err)
 		return
 	}
+	// SiteForHost above is the authoritative tenant/host check. Propagate that
+	// provenance so request-aware semantic optimizations may safely compare
+	// same-origin references without trusting an arbitrary Host header.
+	reqCtx.HostValidated = true
 	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, requestPath)
 	if accessDecision.Matched {
 		reqCtx.Metadata["ip_access_decision"] = accessDecision
@@ -523,7 +554,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 				return
 			}
-			http.Error(w, "failed to read request", http.StatusBadRequest)
+			http.Error(w, "failed to read request", requestBodyReadErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		s.handleBotBehaviorVerify(w, r, site, reqCtx)
@@ -583,7 +614,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
 				return
 			}
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "failed to read request", http.StatusBadRequest, start, err)
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "failed to read request", requestBodyReadErrorStatus(err, http.StatusBadRequest), start, err)
 			return
 		}
 	}
@@ -650,7 +681,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 		result, err := pipeline.Detect(r.Context(), reqCtx)
 		if err != nil {
-			s.proxyError(w, r, site, reqCtx, "proxy_error", "waf pipeline error", http.StatusInternalServerError, start, err)
+			if requestBodyTooLarge(err) {
+				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
+				return
+			}
+			status := requestBodyReadErrorStatus(err, http.StatusInternalServerError)
+			message := "waf pipeline error"
+			if status == http.StatusServiceUnavailable {
+				message = "request body inspection temporarily unavailable"
+			}
+			s.proxyError(w, r, site, reqCtx, "proxy_error", message, status, start, err)
 			return
 		}
 		if (result == nil || !result.Detected) && s.promotes.Active(site.ID, s.wallNow()) {
@@ -664,7 +704,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if result != nil && result.Detected {
-			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results)
+			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results, site.WAF.ParanoiaLevel)
 			reqCtx.Metadata["waf_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
 			switch decision.Action {
@@ -674,7 +714,31 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			case engine.ActionChallenge.String():
 				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
 				return
+			case engine.ActionLog.String():
+				// Explicit pass-through. Most of the time this is the intended
+				// outcome: something was detected but scored below the policy
+				// threshold. It is only a fail-open when the analysis never
+				// completed, and a WAF that forwards un-analysed traffic is
+				// indistinguishable from no WAF — so make that observable
+				// instead of letting it fall out of the switch unnoticed.
+				if exhausted, _ := reqCtx.Metadata["detection_budget_exhausted"].(bool); exhausted {
+					engine.RecordBudgetExhaustedPass()
+					log.Printf("waf: detection budget exhausted, forwarding un-analysed request site_id=%q trace_id=%q policy=%q", site.ID, reqCtx.TraceID, policy.WebAttack)
+				}
 			}
+		}
+	}
+	// Unknown-length request bodies must be fully bounded before any upstream
+	// attempt. Streaming a MaxBytesReader directly to the origin can otherwise
+	// let the origin process a prefix before the proxy discovers the 413.
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength < 0 {
+		if err := preflightUnknownBody(r, maxRequestBody); err != nil {
+			if errors.Is(err, engine.ErrRequestBodyTooLarge) {
+				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
+				return
+			}
+			s.proxyError(w, r, site, reqCtx, "proxy_error", "failed to read request", requestBodyReadErrorStatus(err, http.StatusBadRequest), start, err)
+			return
 		}
 	}
 	edgeRT.headers.Apply(r)
@@ -1004,6 +1068,16 @@ func requestBodyTooLarge(err error) bool {
 	return errors.As(err, &maxErr)
 }
 
+// requestBodyReadErrorStatus keeps malformed or failed client uploads as 400,
+// while exposing bounded reader-pool exhaustion as a transient server-side
+// capacity error. The latter is not caused by request syntax and is retryable.
+func requestBodyReadErrorStatus(err error, fallback int) int {
+	if errors.Is(err, engine.ErrRequestBodyReadOverload) {
+		return http.StatusServiceUnavailable
+	}
+	return fallback
+}
+
 func requestIsHTTPS(r *http.Request, trustedCIDRs []string) bool {
 	if r == nil {
 		return false
@@ -1068,7 +1142,104 @@ func retrySafeRequest(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.ContentLength <= 0
+	// A GET/HEAD with an unknown or non-empty body is not replay-safe: the
+	// first attempt may consume it or the origin may assign body semantics.
+	// Only an explicitly empty request can be retried across upstreams.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.ContentLength != 0 {
+		return false
+	}
+	// ContentLength == 0 alone is not evidence of an empty entity: callers may
+	// attach an unknown/custom body and leave the default length unchanged.
+	return r.Body == nil || r.Body == http.NoBody
+}
+
+// preflightUnknownBody buffers only requests whose wire length is unknown so
+// an oversized body is rejected before the first upstream read. It preserves
+// the original transfer-encoded bytes; decoding belongs to the WAF path.
+func preflightUnknownBody(r *http.Request, maxBodyBytes int64) error {
+	if r == nil {
+		return nil
+	}
+	return preflightUnknownBodyContext(r.Context(), r, maxBodyBytes)
+}
+
+func preflightUnknownBodyContext(ctx context.Context, r *http.Request, maxBodyBytes int64) error {
+	if r == nil || r.Body == nil || r.Body == http.NoBody || r.ContentLength >= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = 8 << 20
+	}
+	originalBody := r.Body
+	if maxBodyBytes == math.MaxInt64 {
+		return errors.New("request body limit is too large")
+	}
+	select {
+	case preflightBodySlots <- struct{}{}:
+	default:
+		_ = originalBody.Close()
+		return engine.ErrRequestBodyReadOverload
+	}
+	readCtx, cancel := context.WithTimeout(ctx, preflightUnknownBodyTimeout)
+	defer cancel()
+	closeOnce := &sync.Once{}
+	type bodyReadResult struct {
+		raw []byte
+		err error
+	}
+	resultCh := make(chan bodyReadResult, 1)
+	go func() {
+		defer func() { <-preflightBodySlots }()
+		defer closeOnce.Do(func() { _ = originalBody.Close() })
+		var raw []byte
+		var err error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = fmt.Errorf("request body reader panic: %v", recovered)
+				}
+			}()
+			raw, err = io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+		}()
+		resultCh <- bodyReadResult{raw: raw, err: err}
+	}()
+	var result bodyReadResult
+	select {
+	case result = <-resultCh:
+	case <-readCtx.Done():
+		closeOnce.Do(func() { _ = originalBody.Close() })
+		return readCtx.Err()
+	}
+	if result.err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(result.err, &maxErr) {
+			return engine.ErrRequestBodyTooLarge
+		}
+		return result.err
+	}
+	if int64(len(result.raw)) > maxBodyBytes {
+		return engine.ErrRequestBodyTooLarge
+	}
+	raw := append([]byte(nil), result.raw...)
+	if len(raw) == 0 {
+		r.Body = http.NoBody
+	} else {
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+	}
+	r.ContentLength = int64(len(raw))
+	r.GetBody = func() (io.ReadCloser, error) {
+		if len(raw) == 0 {
+			return http.NoBody, nil
+		}
+		return io.NopCloser(bytes.NewReader(raw)), nil
+	}
+	return nil
 }
 
 type proxyStatusRecorder struct {
@@ -1178,10 +1349,16 @@ func (s *Server) blockThreatIntel(w http.ResponseWriter, reqCtx *engine.RequestC
 }
 
 type webAttackPolicyDecision struct {
-	Level             string  `json:"level"`
-	Action            string  `json:"action"`
-	Reason            string  `json:"reason"`
+	Level  string `json:"level"`
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+	// ParanoiaLevel is the site's configured engine sensitivity
+	// (waf.paranoia_level, 0-5). PolicyTier is the separate 0-4 ordinal derived
+	// from the web_attack policy string. The two used to share the
+	// paranoia_level name, so logs and the console reported a strategy ordinal
+	// while operators read it as the site's configured sensitivity level.
 	ParanoiaLevel     int     `json:"paranoia_level"`
+	PolicyTier        int     `json:"policy_tier"`
 	MinimumSeverity   string  `json:"minimum_severity"`
 	MinimumConfidence float64 `json:"minimum_confidence"`
 	MinimumRiskScore  int     `json:"minimum_risk_score"`
@@ -1195,10 +1372,15 @@ type webAttackPolicyDecision struct {
 }
 
 func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAttackPolicyDecision {
-	return evaluateWebAttackPolicyWithEvidence(level, result, nil)
+	return evaluateWebAttackPolicyWithEvidence(level, result, nil, config.DefaultParanoiaLevel)
 }
 
-func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionResult, results []engine.DetectionResult) webAttackPolicyDecision {
+func evaluateWebAttackPolicyWithEvidence(
+	level string,
+	result *engine.DetectionResult,
+	results []engine.DetectionResult,
+	siteParanoiaLevel int,
+) webAttackPolicyDecision {
 	if level == "" {
 		level = config.ProtectionLevelSmart
 	}
@@ -1208,7 +1390,8 @@ func evaluateWebAttackPolicyWithEvidence(level string, result *engine.DetectionR
 		Level:             level,
 		Action:            engine.ActionLog.String(),
 		Reason:            "detected below policy threshold",
-		ParanoiaLevel:     webAttackParanoiaLevel(level),
+		ParanoiaLevel:     config.EffectiveParanoiaLevel(siteParanoiaLevel),
+		PolicyTier:        webAttackParanoiaLevel(level),
 		MinimumSeverity:   minSeverity.String(),
 		MinimumConfidence: minConfidence,
 		MinimumRiskScore:  riskThreshold,
@@ -1843,7 +2026,12 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 		s.enqueueReview(ctx, reqCtx, action)
 		return
 	}
-	_ = s.logSink.Write(ctx, entry)
+	// P0-2: a failed sink write used to be discarded silently, so events could
+	// vanish without a trace. Record it, count it, and log it.
+	if err := s.logSink.Write(ctx, entry); err != nil {
+		storage.RecordLogWriteFailure()
+		log.Printf("proxy: log sink write failed trace_id=%q site_id=%q action=%q: %v", entry.TraceID, entry.SiteID, entry.Action, err)
+	}
 	s.enqueueReview(ctx, reqCtx, action)
 }
 

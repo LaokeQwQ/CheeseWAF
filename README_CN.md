@@ -44,6 +44,7 @@
 - [配置说明](#配置说明)
 - [技术栈](#技术栈)
 - [开发与测试](#开发与测试)
+- [语料治理](#语料治理)
 - [相关文档](#相关文档)
 - [开源协议](#开源协议)
 
@@ -56,7 +57,7 @@
 CheeseWAF 采用分层处理方案：
 
 1. **实时拦截（数据平面）**：内置语义分析引擎在毫秒级对输入参数完成多层解码与抽象语法树（AST）语法分析，对确定性攻击实施即时拦截。
-2. **异步复核（ALAP 机制）**：**ALAP（AI Large-Language-Model Auto Pilot，大语言模型自动领航）** 在请求响应返回客户端后，将可疑、边界模糊或带有攻击特征的样本放入后台队列，由大语言模型异步深度审查，全程自动值守，不占用业务转发延迟。
+2. **异步复核（ALAP 机制）**：**ALAP（AI Large-Language-Model Auto Pilot，大语言模型自动值守）** 在请求响应返回客户端后，将可疑、边界模糊或带有攻击特征的样本放入后台队列，由大语言模型异步深度审查，全程自动值守，不占用业务转发延迟。
 3. **动态规则生成**：大模型复核判定为高危（`high` 或 `critical`）的样本，在开启自动同意后可自动沉淀为长期的 IP、客户端指纹或特征规则，反哺数据平面进行拦截。
 
 系统以单个静态二进制程序交付，内置响应式 Web 控制台、命令行 TUI 工具与 RESTful 管理 API，无需安装外部复杂中间件即可独立运行。
@@ -115,6 +116,10 @@ flowchart TB
 ## 防护等级说明
 
 站点防护等级通过参数 `waf.paranoia_level` 配置（合法范围为 **0～5**，默认值为 **3**）。
+
+> **两个彼此独立的开关。** `waf.paranoia_level`（0～5）驱动的是**语义分析引擎本身**——即引擎判定载荷形态的严格程度；代理层的拦截/挑战阈值来自**另一个**配置项 `protection_policy.web_attack`（`off` / `low` / `smart` / `high` / `strict`，默认 `smart`）。两者相互独立：`paranoia_level` 决定引擎有多敏感，`web_attack` 决定检出之后怎么处理（严重度/置信度门槛、聚合风险分，以及 100ms 检测预算耗尽时的失败策略）。
+>
+> 在日志元数据与控制台中，`waf_policy_decision.paranoia_level` 是站点配置的等级（0～5），`waf_policy_decision.policy_tier` 是 `web_attack` 策略的序号（0～4）。两者刻意分开，不要把其中一个当成另一个来读。
 
 检测对象为**单个参数解码后的值**（路径与参数名保持可见），检测引擎在语法分析时区分两种载荷形态：
 - **独立特征（Isolated）**：输入值几乎全部由攻击载荷构成（允许 `@`、结尾分号、`/{${...}}` 等微弱包装）。例如搜索框中直接输入 `UNION SELECT 1,2,3`。
@@ -214,7 +219,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-systemd 单元只读取 `/etc/cheesewaf/cheesewaf.yaml`，可写目录只有 `/var/lib/cheesewaf` 和 `/var/log/cheesewaf`。如果旧部署曾依赖服务进程写配置，现在请由 root（或配置管理系统）修改配置文件，然后执行 `sudo systemctl restart cheesewaf`。
+systemd 单元保留 `ProtectSystem=strict`，但只允许服务写入 `/etc/cheesewaf`、`/var/lib/cheesewaf` 和 `/var/log/cheesewaf`。这样管理 API 可以保存已校验的配置修改，其他系统目录仍保持只读。
 
 默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。本机打开时向导会自己拿到初始化令牌。从别的机器访问时，令牌在 `journalctl -u cheesewaf` 或 `/var/lib/cheesewaf/setup.url`。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
 
@@ -291,7 +296,7 @@ docker compose logs -f cheesewaf
 2. 直接运行：
 
 ```powershell
-.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
 .\cheesewaf-*-windows-amd64.exe status
 .\cheesewaf-*-windows-amd64.exe stop
 ```
@@ -375,7 +380,7 @@ CheeseWAF 提供三种互通的管理方式：
 
 ## 配置说明
 
-首次启动时，程序将在数据目录生成 `cheesewaf.yaml`（模板参见 [configs/cheesewaf.yaml](configs/cheesewaf.yaml)）。核心配置结构如下：
+首次启动时，程序将在数据目录生成 `data/config/cheesewaf.yaml`（模板参见 [configs/cheesewaf.yaml](configs/cheesewaf.yaml)）。核心配置结构如下：
 
 ```yaml
 server:
@@ -412,8 +417,18 @@ ai:
   enabled: true
   provider: "openai"
   api_base: "https://api.example.com/v1"
-  model: "gpt-4o-mini"
+  model: "provider-default"
 ```
+
+站点自定义规则只写在 `sites[].waf.custom_rules` 里。控制台「WAF 拦截规则」页可以导入 YAML/JSON；导入会先校验、去重，再整批替换。失败时继续用当前正在工作的规则，并返回错误。命令行同样可以导入：
+
+```bash
+waf-cli --config ./data/config/cheesewaf.yaml rules example --format yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file custom_rules.yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
+```
+
+改配置文件后，进程会监视 `cheesewaf.yaml` 的修改时间，也可以发 `SIGHUP` 立刻重载。加载或编译失败时仍使用原来的规则。
 
 ---
 
@@ -467,8 +482,19 @@ go vet ./cmd/... ./internal/...
 # 前端类型检查与单元测试
 cd web && npm run typecheck && npm test && cd ..
 
-# 运行内置安全攻击语料测试
-go run ./cmd/cheesewaf-corpus --mode analyzer
+# 生成并回放受治理安全语料
+make security-corpus
+```
+
+### 语料治理
+
+治理流程只读输入，并在运行时递归枚举 `internal/engine/semantic/testdata/` 下所有 `.jsonl` 和 `.jsonl.gz`。处理顺序为：全局去重 → 初筛 → 挑选/清洗 → 二次复核。`formal.jsonl`、`quarantine.jsonl` 和可审计的 `manifest.json` 均写入临时目录。被 `.gitignore` 忽略的大型语料即使缺失，也会作为 optional 输入记录在 manifest 中；嵌套或压缩副本也不会静默跳过。
+
+`make corpus-governance` 审计全部可用语料，并将记录保持在隔离快照中。`make security-corpus` 则从仓库内已整理的来源生成带哈希绑定的正式快照，固定输入哈希、来源/标签/类别精确覆盖、治理策略和正式产物哈希，并要求 hard reject 为零，然后只把该快照交给命令行回放器和语义评估器。畸形的 `pat-sqli-00119` 原始记录保留在明确钉死的隔离文件中，不会被静默替换、删除或缩小 attack 分母。CI 还要求应用比例指标前至少有 250 条 benign 和 10,000 条 attack，随后强制 FPR < 0.8%、TPR >= 99%。这是当前受治理回归快照的门禁，不代表独立盲测集或所有研究隔离语料已经达到同一指标。
+
+```bash
+make corpus-governance
+make security-corpus
 ```
 
 ---
@@ -477,6 +503,7 @@ go run ./cmd/cheesewaf-corpus --mode analyzer
 
 - [ACME 证书重载方案（英文）](docs/acme.md)
 - [防护策略与技术路线](docs/protection-policy-roadmap.md)
+- [语料治理与检测评估实施计划](docs/semantic-corpus-governance.md)
 - [防护等级代码实现映射](docs/paranoia-level-implementation.md)
 - [性能优化与基准测试](docs/performance-optimization.md)
 - [Windows 打包说明](deploy/windows/README.md)

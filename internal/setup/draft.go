@@ -24,20 +24,35 @@ var (
 	ErrDraftProbeInProgress = errors.New("draft probe already in progress")
 )
 
+// IntegrationsConfig captures optional external integrations entered during setup.
+// Values are stored in the draft but are not applied to the live config until the
+// operator saves them under System Settings after installation.
+type IntegrationsConfig struct {
+	PostgresEnabled   bool   `json:"postgresEnabled"`
+	PostgresDSN       string `json:"postgresDsn"`
+	PostgresTable     string `json:"postgresTable"`
+	PrometheusEnabled bool   `json:"prometheusEnabled"`
+	PrometheusPath    string `json:"prometheusPath"`
+	PrometheusPublic  bool   `json:"prometheusPublic"`
+	VictoriaEnabled   bool   `json:"victoriaEnabled"`
+	VictoriaEndpoint  string `json:"victoriaEndpoint"`
+}
+
 // SetupDraft holds multi-step wizard state until final confirmation.
 type SetupDraft struct {
-	ID            string          `json:"id"`
-	CreatedAt     time.Time       `json:"created_at"`
-	ExpiresAt     time.Time       `json:"expires_at"`
-	Probe         *ProbeResult    `json:"probe,omitempty"`
-	Profile       HardwareProfile `json:"profile,omitempty"`
-	Custom        *ProfileConfig  `json:"custom,omitempty"`
-	Username      string          `json:"username,omitempty"`
-	AdminListen   string          `json:"admin_listen,omitempty"`
-	AdminStrategy string          `json:"admin_strategy,omitempty"`
-	PasswordSet   bool            `json:"password_set"`
-	Confirmed     bool            `json:"confirmed"`
-	password      string          // never JSON-serialized
+	ID            string              `json:"id"`
+	CreatedAt     time.Time           `json:"created_at"`
+	ExpiresAt     time.Time           `json:"expires_at"`
+	Probe         *ProbeResult        `json:"probe,omitempty"`
+	Profile       HardwareProfile     `json:"profile,omitempty"`
+	Custom        *ProfileConfig      `json:"custom,omitempty"`
+	Username      string              `json:"username,omitempty"`
+	AdminListen   string              `json:"admin_listen,omitempty"`
+	AdminStrategy string              `json:"admin_strategy,omitempty"`
+	Integrations  *IntegrationsConfig `json:"integrations,omitempty"`
+	PasswordSet   bool                `json:"password_set"`
+	Confirmed     bool                `json:"confirmed"`
+	password      string              // never JSON-serialized
 	probeRunning  bool
 }
 

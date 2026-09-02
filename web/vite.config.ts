@@ -46,7 +46,11 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap,
-    chunkSizeWarningLimit: 500,
+    // MapLibre publishes one intentionally lazy, monolithic browser bundle
+    // (~948 kB minified, ~247 kB gzip in the current lockfile). Keep the
+    // warning threshold aligned with that dependency while the build-budget
+    // script still rejects unexpected oversized chunks and initial preloads.
+    chunkSizeWarningLimit: 1024,
     modulePreload: {
       resolveDependencies: (_filename, dependencies, context) =>
         context.hostType === 'html' ? dependencies.filter(isCriticalEntryPreload) : dependencies,

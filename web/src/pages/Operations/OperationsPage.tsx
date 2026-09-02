@@ -1,7 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Archive, Database, Edit3, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Archive, Database, Edit3, History, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -29,8 +29,15 @@ import {
   TableRow,
   toast,
 } from '@/components/ui';
-import { cleanupStorage, exportBackup, fetchStorageStats, fetchTasks, updateTasks } from '../../api/client';
-import type { ScheduledTask } from '../../types/api';
+import {
+  cleanupStorage,
+  exportBackup,
+  fetchStorageStats,
+  fetchTaskHistory,
+  fetchTasks,
+  updateTasks,
+} from '../../api/client';
+import type { ScheduledTask, ScheduledTaskHistoryEntry } from '../../types/api';
 import './OperationsPage.css';
 
 type DurationUnit = 'm' | 'h' | 'd';
@@ -45,12 +52,19 @@ const taskTypeOptions = ['cleanup', 'backup', 'security_report', 'ai_self_learni
 const taskFrequencyOptions = ['interval', 'daily', 'weekly', 'monthly'];
 
 export default function OperationsPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n?.resolvedLanguage;
   const queryClient = useQueryClient();
   const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks, retry: false });
   const storageQuery = useQuery({ queryKey: ['storage'], queryFn: fetchStorageStats, retry: false });
+  const historyQuery = useQuery({ queryKey: ['taskHistory'], queryFn: fetchTaskHistory, retry: false });
   const tasks = tasksQuery.data ?? [];
   const storage = storageQuery.data;
+  const history = historyQuery.data ?? [];
+  const taskNames = useMemo(
+    () => new Map((tasksQuery.data ?? []).map((task) => [task.id, task.name])),
+    [tasksQuery.data],
+  );
   const cleanup = useMutation({
     mutationFn: cleanupStorage,
     onSuccess: async (result) => {
@@ -291,12 +305,12 @@ export default function OperationsPage() {
               <Table className="ops-task-table">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>{t('ops.task')}</TableHead>
-                    <TableHead>{t('ops.type')}</TableHead>
-                    <TableHead>{t('ops.every')}</TableHead>
-                    <TableHead>{t('ops.target')}</TableHead>
-                    <TableHead>{t('rules.enabled')}</TableHead>
-                    <TableHead>{t('common.actions')}</TableHead>
+                    <TableHead className="w-[200px]">{t('ops.task')}</TableHead>
+                    <TableHead className="w-[124px]">{t('ops.type')}</TableHead>
+                    <TableHead className="w-[156px]">{t('ops.every')}</TableHead>
+                    <TableHead className="w-[242px]">{t('ops.target')}</TableHead>
+                    <TableHead className="w-[64px]">{t('rules.enabled')}</TableHead>
+                    <TableHead className="w-[200px]">{t('common.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -358,6 +372,40 @@ export default function OperationsPage() {
               ))}
             </div>
           </>
+        )}
+      </section>
+
+      <section className="table-panel ops-history-panel">
+        <div className="panel-heading">
+          <h2><History size={16} /> {t('ops.history')}</h2>
+        </div>
+        {historyQuery.isLoading ? <div className="skeleton-list" /> : historyQuery.isError ? (
+          <QueryError error={historyQuery.error} onRetry={() => historyQuery.refetch()} retryLabel={t('common.retry')} fallbackMessage={t('common.loadFailed')} />
+        ) : history.length === 0 ? <Empty description={t('ops.historyEmpty')} /> : (
+          <div className="desktop-table-wrap">
+            <Table className="ops-history-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('ops.task')}</TableHead>
+                  <TableHead>{t('ops.historyStarted')}</TableHead>
+                  <TableHead>{t('ops.historyDuration')}</TableHead>
+                  <TableHead>{t('common.status')}</TableHead>
+                  <TableHead>{t('ops.historyError')}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {history.map((entry, index) => (
+                  <HistoryRow
+                    key={`${entry.task_id}-${entry.started_at}-${index}`}
+                    entry={entry}
+                    taskName={taskNames.get(entry.task_id) ?? entry.task_id}
+                    locale={locale}
+                    t={t}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </section>
 
@@ -702,6 +750,71 @@ function durationUnitLabel(unit: DurationUnit, t: (key: string, options?: Record
     default:
       return t('ops.minutes');
   }
+}
+
+function HistoryRow({
+  entry,
+  taskName,
+  locale,
+  t,
+}: {
+  entry: ScheduledTaskHistoryEntry;
+  taskName: string;
+  locale?: string;
+  t: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  return (
+    <TableRow className={entry.success ? undefined : 'ops-history-row-failed'}>
+      <TableCell>
+        <span className="ops-history-task" title={taskName}>{taskName}</span>
+      </TableCell>
+      <TableCell>
+        <time className="ops-history-time" dateTime={entry.started_at}>{formatHistoryTime(entry.started_at, locale)}</time>
+      </TableCell>
+      <TableCell>
+        <code className="table-code">{formatNanoseconds(entry.duration)}</code>
+      </TableCell>
+      <TableCell>
+        <Badge variant={entry.success ? 'success' : 'destructive'}>
+          {entry.success ? t('ops.historySuccess') : t('ops.historyFailed')}
+        </Badge>
+      </TableCell>
+      <TableCell>
+        {entry.error ? <span className="ops-history-error" title={entry.error}>{entry.error}</span> : <span>-</span>}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/** Go time.Duration arrives as raw nanoseconds; render it Go-style (e.g. `340ms`, `1.2s`, `2m5s`). */
+function formatNanoseconds(value: number) {
+  const ns = Number(value);
+  if (!Number.isFinite(ns) || ns < 0) return '-';
+  if (ns < 1_000) return `${Math.round(ns)}ns`;
+  if (ns < 1_000_000) return `${trimUnit(ns / 1_000)}µs`;
+  if (ns < 1_000_000_000) return `${trimUnit(ns / 1_000_000)}ms`;
+  const seconds = ns / 1_000_000_000;
+  if (seconds < 60) return `${trimUnit(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = trimUnit(seconds % 60);
+  if (minutes < 60) {
+    return restSeconds === '0' ? `${minutes}m` : `${minutes}m${restSeconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes === 0 ? `${hours}h` : `${hours}h${restMinutes}m`;
+}
+
+function trimUnit(value: number) {
+  return String(Number(value.toFixed(1)));
+}
+
+function formatHistoryTime(value: string, locale?: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value || '-';
+  }
+  return date.toLocaleString(locale);
 }
 
 function QueryError({

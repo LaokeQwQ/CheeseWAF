@@ -55,6 +55,8 @@ func resolveHealthcheckConfigPath() string {
 	if strings.TrimSpace(dataDir) != "" {
 		candidates = append(candidates,
 			filepath.Join(dataDir, "config", setup.DefaultConfigFile),
+			filepath.Join(dataDir, "config", setup.LegacyConfigFile),
+			filepath.Join(dataDir, setup.LegacyConfigFile),
 			filepath.Join(dataDir, setup.DefaultConfigFile),
 		)
 	}

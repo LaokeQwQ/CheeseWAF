@@ -12,7 +12,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
-	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 )
 
 // TestMinedProseFPProbe measures the false-positive rate against security prose
@@ -25,13 +25,16 @@ import (
 // Without that, it prints the rate and the offending samples so FP sources can
 // be triaged one by one.
 func TestMinedProseFPProbe(t *testing.T) {
+	if testing.Short() && os.Getenv("MINED_FP_PROBE_SHORT") != "1" {
+		t.Skip("mined prose probe is report-only and opt-in in short runs; set MINED_FP_PROBE_SHORT=1 to run it")
+	}
 	const path = "testdata/mined_secprose_probe.jsonl"
 	f, err := os.Open(path)
 	if err != nil {
 		t.Skipf("probe corpus absent (%v) — mined corpus is opt-in", err)
 		return
 	}
-	cases, err := securitytest.LoadJSONL(f)
+	cases, err := security.LoadJSONL(f)
 	f.Close()
 	if err != nil {
 		t.Fatalf("load %s: %v", path, err)

@@ -49,6 +49,11 @@ var newAuditor = middleware.NewAuditorWithClock
 var newRouterAssistantApprovalStore = func() *ai.ApprovalStore { return nil }
 
 func NewRouter(opts Options) http.Handler {
+	router, _ := NewRouterWithAPI(opts)
+	return router
+}
+
+func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 	r := chi.NewRouter()
 	routerConfig := opts.Config
 	if opts.IsolateConfig && opts.Config != nil {
@@ -257,7 +262,10 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("read:sites"), h.ConfigReadMiddleware).Get("/acme/providers", h.ACMEDNSProviders)
 			r.With(require("write:sites")).Post("/sites/{id}/acme/issue", h.IssueSiteACME)
 			r.With(require("read:rules"), h.ConfigReadMiddleware).Get("/rules", h.ListRules)
+			r.With(require("read:rules"), h.ConfigReadMiddleware).Get("/rules/example", h.ExampleCustomRules)
+			r.With(require("read:rules"), h.ConfigReadMiddleware).Get("/rules/export", h.ExportCustomRules)
 			r.With(require("write:rules")).Post("/rules", h.CreateRule)
+			r.With(require("write:rules")).Post("/rules/import", h.ImportCustomRules)
 			r.With(require("write:rules")).Put("/rules/{id}", h.UpdateRule)
 			r.With(require("write:rules")).Delete("/rules/{id}", h.DeleteRule)
 			r.With(require("read:ops"), h.ConfigReadMiddleware).Get("/scheduler/tasks", h.ListTasks)
@@ -298,5 +306,5 @@ func NewRouter(opts Options) http.Handler {
 			r.With(require("write:sites")).Post("/nginx/import", h.ImportNginx)
 		})
 	})
-	return r
+	return r, h
 }

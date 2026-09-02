@@ -218,6 +218,38 @@ func TestAnalyzerDetectsSSTIWithEvidence(t *testing.T) {
 	}
 }
 
+func TestAnalyzerDetectsFreemarkerBeansRuntimeExec(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "/", bytes.NewBufferString(`{{beans.get('runtime').exec('id')}}`))
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAnalyzer("block", 2, "ssti").Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "ssti" {
+		t.Fatalf("expected Freemarker runtime exec SSTI detection, got %+v", result)
+	}
+}
+
+func TestFreemarkerBeansRuntimeExecDocumentationStaysClean(t *testing.T) {
+	body := "Documentation example: this unsafe FreeMarker expression is shown only for defenders: " +
+		`{{beans.get('runtime').exec('id')}}` + "\n" +
+		strings.Repeat("The surrounding text explains template sandboxing and remediation guidance. ", 5)
+	if !sstiFreemarkerBeansRuntimeExec.MatchString(normalize(body)) {
+		t.Fatal("Freemarker beans execution signature did not match its regression payload")
+	}
+	beansWin := evidenceWindow(body, []string{"beans", ".exec("})
+	if !technicalDocumentationContext(beansWin) {
+		t.Fatalf("documentation evidence window was not recognized: %q", beansWin)
+	}
+	got := detectOnTarget(t, NewAnalyzer("block", 2, "ssti"), http.MethodPost, "/docs", "text/plain", body)
+	if got != nil && got.Detected {
+		t.Fatalf("documentation-only FreeMarker expression was flagged: %+v", got)
+	}
+}
+
 func TestNoSQLiDetectorUsesAnalyzerGate(t *testing.T) {
 	attackReq, _ := http.NewRequest(http.MethodPost, "/login", bytes.NewBufferString(`{"username":{"$ne":null},"password":{"$ne":null}}`))
 	attackReq.Header.Set("Content-Type", "application/json")
@@ -458,6 +490,39 @@ func TestXSSDetectorBlocksScriptPayload(t *testing.T) {
 	}
 }
 
+func TestXSSDetectorStandaloneJavascriptURLContext(t *testing.T) {
+	tests := []struct {
+		name, target, body string
+		want               bool
+	}{
+		// A leading slash makes this an ordinary HTTP path, not a javascript:
+		// URL scheme. Keep it as a regression negative to avoid blocking routes
+		// such as /javascript:alert(1).
+		{name: "ordinary-http-path", target: "/javascript:alert(1)", want: false},
+		{name: "body", target: "/submit", body: "javascript:alert(1)", want: true},
+		{name: "ordinary-query", target: "/docs?text=javascript%3Aalert(1)", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, tc.target, bytes.NewBufferString(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got != nil && got.Detected) != tc.want {
+				t.Fatalf("standalone URL context detection = %v, want %v; result=%+v", got != nil && got.Detected, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 	cases := []string{
 		"/?next=%3Ca%20href%3Djava%00script%3Aalert(1)%3Ego%3C%2Fa%3E",
@@ -491,6 +556,10 @@ func TestXSSDetectorBlocksSMILAnimationHref(t *testing.T) {
 		`<svg><animate values="javascript:alert(1)" attributeName="xlink:href" /></svg>`,
 		`<svg><set attributeName="href" value="javascript:alert(1)" /></svg>`,
 		`<svg><set value="javascript:alert(1)" attributeName="xlink:href" /></svg>`,
+		`<svg><animate attributeName="xlink:href" from="javascript:alert(1)" to="" /></svg>`,
+		`<svg><animate from="javascript:alert(1)" to="" attributeName="xlink:href" /></svg>`,
+		`<svg><set attributeName="href" to="javascript:alert(1)" /></svg>`,
+		`<svg><set from="javascript:alert(1)" attributeName="href" /></svg>`,
 	}
 	for _, payload := range payloads {
 		t.Run(payload, func(t *testing.T) {
@@ -790,6 +859,63 @@ func TestReviewedExecFingerprintRequiresSQLContext(t *testing.T) {
 				t.Fatalf("payload %q accepted=%v, want %v", tc.payload, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestReviewedNumericCommentFingerprintRejectsURLSlugs(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		want          bool
+	}{
+		{name: "telemetry URL", payload: "https://shop.example.test/items/123--phone", want: false},
+		{name: "path slug", payload: "/items/123--phone-Samsung-Galaxy", want: false},
+		{name: "SQL comment with whitespace", payload: "1 OR 1=1-- trailing", want: true},
+		{name: "SQL comment at end", payload: "1 OR 1=1--", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsReviewedSQLFingerprint("nc", tc.payload); got != tc.want {
+				t.Fatalf("payload %q accepted=%v, want %v", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReviewedOperatorSubqueryFingerprintRequiresSQLContext(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		want          bool
+	}{
+		{name: "operator subquery", payload: "||(SELECT secret FROM users)", want: true},
+		{name: "analytics parenthetical", payload: "__utma=1.2.3;__utmz=1.2.3.4.utmcsr=(direct)|utmcmd=(none)", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsReviewedSQLFingerprint("o(", tc.payload); got != tc.want {
+				t.Fatalf("payload %q accepted=%v, want %v", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSQLDetectorKeepsNumericURLSlugsClean(t *testing.T) {
+	for _, target := range []string{
+		"/items/123--phone-Samsung-Galaxy-512GB",
+		"/tr/?dl=" + url.QueryEscape("https://shop.example.test/items/123--phone"),
+	} {
+		req, err := http.NewRequest(http.MethodGet, target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reqCtx, err := engine.NewRequestContext(req, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != nil && result.Detected {
+			t.Fatalf("numeric URL slug was flagged as SQLi: target=%q result=%+v", target, result)
+		}
 	}
 }
 

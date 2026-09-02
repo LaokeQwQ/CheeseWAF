@@ -1,7 +1,11 @@
 package semantic
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +13,69 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
+
+func TestWebshellDetectsURLDecodedFormInCompressedBody(t *testing.T) {
+	plain := []byte(`x=%24_GET%5B%27fn%27%5D%28%24_GET%5B%27arg%27%5D%29`)
+	for _, tc := range []struct {
+		name   string
+		encode func([]byte) ([]byte, error)
+	}{
+		{name: "gzip", encode: func(in []byte) ([]byte, error) {
+			var b bytes.Buffer
+			zw := gzip.NewWriter(&b)
+			if _, err := zw.Write(in); err != nil {
+				return nil, err
+			}
+			if err := zw.Close(); err != nil {
+				return nil, err
+			}
+			return b.Bytes(), nil
+		}},
+		{name: "deflate", encode: func(in []byte) ([]byte, error) {
+			var b bytes.Buffer
+			zw, err := flate.NewWriter(&b, flate.DefaultCompression)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := zw.Write(in); err != nil {
+				return nil, err
+			}
+			if err := zw.Close(); err != nil {
+				return nil, err
+			}
+			return b.Bytes(), nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := tc.encode(plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://x/submit", io.NopCloser(bytes.NewReader(encoded)))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("Content-Encoding", tc.name)
+			req.ContentLength = int64(len(encoded))
+			reqCtx, err := engine.NewRequestContextDeferredBody(req, "site-a", nil, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := engine.NewPipeline(NewWebshellDetector("block")).Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == nil || !got.Detected {
+				t.Fatalf("compressed %s form gadget was missed: %+v", tc.name, got)
+			}
+			if gotEncoding := req.Header.Get("Content-Encoding"); gotEncoding != tc.name {
+				t.Fatalf("parent content encoding changed to %q", gotEncoding)
+			}
+			replayed, err := io.ReadAll(req.Body)
+			if err != nil || !bytes.Equal(replayed, encoded) {
+				t.Fatalf("parent transfer body was not preserved (len=%d, err=%v)", len(replayed), err)
+			}
+		})
+	}
+}
 
 // TestWebshellRejectsSecurityDocuments pins the mined_probe FP that the ASPX
 // branch produced: a structured POC writeup naming System.Diagnostics.Process in

@@ -2,7 +2,10 @@
   margin: 0;
 }
 
-.ops-task-table table {
+/* `Table` 把 className 挂在 <table> 本身，不是外层 wrapper，
+   所以这里必须直接写 .ops-task-table —— 写成 `.ops-task-table table` 永远匹配不到。
+   列宽由 TableHead 上的 w-[Npx] 声明，合计 986px，与 min-width 一致。 */
+.ops-task-table {
   width: 100%;
   min-width: 986px;
   table-layout: fixed;
@@ -17,6 +20,34 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ops-history-table {
+  width: 100%;
+  min-width: 720px;
+  table-layout: fixed;
+}
+
+.ops-history-task,
+.ops-history-time {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-history-row-failed {
+  background: color-mix(in srgb, var(--accent-danger) 7%, transparent);
+}
+
+.ops-history-error {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--accent-danger);
 }
 
 .ops-task-card-title {

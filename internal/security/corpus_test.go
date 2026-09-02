@@ -1,4 +1,4 @@
-package securitytest
+package security
 
 import (
 	"bufio"

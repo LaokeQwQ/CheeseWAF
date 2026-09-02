@@ -244,18 +244,46 @@ func siteTamperSnapshotsToConfig(snapshots []SiteTamperSnapshot) []config.Tamper
 	return out
 }
 
+func SiteCustomRulesFromConfig(rules []config.CustomRuleConfig) []SiteCustomRule {
+	return siteCustomRulesFromConfig(rules)
+}
+
+func SiteCustomRulesToConfig(rules []SiteCustomRule) []config.CustomRuleConfig {
+	return siteCustomRulesToConfig(rules)
+}
+
+func RulesFromSiteCustomRules(siteID string, rules []SiteCustomRule) []Rule {
+	out := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, Rule{
+			ID:          rule.ID,
+			SiteID:      siteID,
+			Name:        rule.Name,
+			Description: rule.Description,
+			Pattern:     rule.Pattern,
+			Location:    rule.Location,
+			Action:      rule.Action,
+			Severity:    rule.Severity,
+			Enabled:     rule.Enabled,
+			Priority:    rule.Priority,
+		})
+	}
+	return out
+}
+
 func siteCustomRulesFromConfig(rules []config.CustomRuleConfig) []SiteCustomRule {
 	out := make([]SiteCustomRule, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, SiteCustomRule{
-			ID:       rule.ID,
-			Name:     rule.Name,
-			Pattern:  rule.Pattern,
-			Location: rule.Location,
-			Action:   rule.Action,
-			Severity: rule.Severity,
-			Enabled:  rule.Enabled,
-			Priority: rule.Priority,
+			ID:          rule.ID,
+			Name:        rule.Name,
+			Description: rule.Description,
+			Pattern:     rule.Pattern,
+			Location:    rule.Location,
+			Action:      rule.Action,
+			Severity:    rule.Severity,
+			Enabled:     rule.Enabled,
+			Priority:    rule.Priority,
 		})
 	}
 	return out
@@ -265,14 +293,15 @@ func siteCustomRulesToConfig(rules []SiteCustomRule) []config.CustomRuleConfig {
 	out := make([]config.CustomRuleConfig, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, config.CustomRuleConfig{
-			ID:       rule.ID,
-			Name:     rule.Name,
-			Pattern:  rule.Pattern,
-			Location: rule.Location,
-			Action:   rule.Action,
-			Severity: rule.Severity,
-			Enabled:  rule.Enabled,
-			Priority: rule.Priority,
+			ID:          rule.ID,
+			Name:        rule.Name,
+			Description: rule.Description,
+			Pattern:     rule.Pattern,
+			Location:    rule.Location,
+			Action:      rule.Action,
+			Severity:    rule.Severity,
+			Enabled:     rule.Enabled,
+			Priority:    rule.Priority,
 		})
 	}
 	return out

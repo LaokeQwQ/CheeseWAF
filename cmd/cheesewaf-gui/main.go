@@ -28,7 +28,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("cheesewaf-gui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	defaultConfig := "./data/cheesewaf.yaml"
+	defaultConfig := "./data/config/cheesewaf.yaml"
 	defaultDataDir := "./data"
 	if exe, err := os.Executable(); err == nil && runningInsideMacApp(exe) {
 		defaultConfig, defaultDataDir = applyMacAppLaunchPaths(exe)

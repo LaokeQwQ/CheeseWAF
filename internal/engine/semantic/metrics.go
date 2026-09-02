@@ -1,7 +1,6 @@
 package semantic
 
 import (
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -243,14 +242,4 @@ func (m *Metrics) ResetForTest() {
 	m.hitByCat = map[string]uint64{}
 	m.blockByCat = map[string]uint64{}
 	m.mu.Unlock()
-}
-
-// SortedCategoryKeys returns stable category keys from a snapshot map.
-func SortedCategoryKeys(m map[string]uint64) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

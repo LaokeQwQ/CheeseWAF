@@ -14,7 +14,7 @@ GO           := go
 GOFLAGS      := -trimpath
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go web-test web-build security-corpus security-corpus-http security-gate lint clean dev help
+.PHONY: all build build-cli run test test-go semantic-bench semantic-bench-report web-test web-build security-corpus security-corpus-http security-gate corpus-governance evaluation-split evaluation-replay evaluation-lock blind-lab blind-lab-test lint clean dev help
 
 ## help: Show this help message
 help:
@@ -25,8 +25,16 @@ help:
 	@echo "  make run         Run cheesewaf serve"
 	@echo "  make dev         Run with hot-reload (requires air)"
 	@echo "  make test        Run Go and frontend tests"
+	@echo "  make semantic-bench       Run repeatable semantic mixed-workload benchmarks"
+	@echo "  make semantic-bench-report Capture structured semantic benchmark statistics"
 	@echo "  make web-build   Build the web dashboard"
 	@echo "  make security-corpus      Run curated semantic corpus against analyzer"
+	@echo "  make corpus-governance   Validate and classify all semantic JSONL corpora"
+	@echo "  make evaluation-split    Build a manifest-bound train/validation/blind split (CORPUS=..., SPLIT_CONFIG=..., GOVERNANCE_MANIFEST=..., optional GOVERNANCE_FORMAL=..., OUTPUT=...)"
+	@echo "  make evaluation-replay   Replay one governed split with an independently stored artifact hash (CORPUS=..., GOVERNANCE_MANIFEST=..., EVALUATION_SPLIT=..., EXPECTED_ARTIFACT_SHA256=..., optional OUTPUT=...)"
+	@echo "  make evaluation-lock     Capture a first-use lock record for a governed split (CORPUS=..., GOVERNANCE_MANIFEST=..., EVALUATION_SPLIT=..., LOCK_OUTPUT=...)"
+	@echo "  make blind-lab            Generate a bounded, repeatable local blind-lab snapshot in a temporary directory"
+	@echo "  make blind-lab-test       Run focused blind-lab self-tests"
 	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
 	@echo "  make security-gate        Run analyzer, HTTP replay, and optional external scanner gate (BASE_URL=..., ADMIN_URL=...)"
 	@echo "  make lint        Run golangci-lint"
@@ -130,6 +138,23 @@ test: test-go web-test
 test-go:
 	$(GO) test -v -race -count=1 ./cmd/... ./internal/...
 
+SEMANTIC_BENCH_TIME ?= 1s
+SEMANTIC_BENCH_COUNT ?= 5
+SEMANTIC_BENCH_CPU ?= 1,4
+SEMANTIC_BENCH_OUTPUT ?=
+
+## semantic-bench: Run the fixed clean/attack semantic request workload with allocation metrics
+semantic-bench:
+	$(GO) test -run '^$$' -bench '^BenchmarkSemanticAnalyzerMixedRequestPath$$' -benchmem -benchtime=$(SEMANTIC_BENCH_TIME) -count=$(SEMANTIC_BENCH_COUNT) -cpu=$(SEMANTIC_BENCH_CPU) ./internal/engine/semantic
+
+## semantic-bench-report: Emit a structured, no-threshold semantic benchmark report
+semantic-bench-report:
+	SEMANTIC_BENCH_TIME="$(SEMANTIC_BENCH_TIME)" \
+	SEMANTIC_BENCH_COUNT="$(SEMANTIC_BENCH_COUNT)" \
+	SEMANTIC_BENCH_CPU="$(SEMANTIC_BENCH_CPU)" \
+	SEMANTIC_BENCH_OUTPUT="$(SEMANTIC_BENCH_OUTPUT)" \
+	bash scripts/ci/run-semantic-benchmark.sh
+
 ## web-test: Run frontend unit tests
 web-test:
 	cd web && npm test
@@ -140,11 +165,38 @@ web-build:
 
 ## security-corpus: Run curated attack/benign corpus against the semantic analyzer
 security-corpus:
-	$(GO) run ./cmd/cheesewaf-corpus --mode analyzer
+	bash scripts/ci/run-governed-semantic-gate.sh
 
 ## eval-shards: Run semantic evaluation corpus in parallel shards (env SEMANTIC_EVAL_SHARDS)
 eval-shards:
 	bash scripts/ci/run-semantic-eval-shards.sh
+
+## corpus-governance: Run read-only corpus governance into a temporary directory
+corpus-governance:
+	bash scripts/ci/run-corpus-governance.sh
+
+## evaluation-split: Build a complete, group-aware independent evaluation artifact
+evaluation-split:
+	@if [ -z "$(CORPUS)" ] || [ -z "$(SPLIT_CONFIG)" ] || [ -z "$(GOVERNANCE_MANIFEST)" ]; then echo "CORPUS, SPLIT_CONFIG, and GOVERNANCE_MANIFEST are required" >&2; exit 1; fi
+	$(GO) run ./cmd/cheesewaf-corpus --mode split --corpus "$(CORPUS)" --split-config "$(SPLIT_CONFIG)" --governance-manifest "$(GOVERNANCE_MANIFEST)" $(if $(GOVERNANCE_FORMAL),--governance-formal "$(GOVERNANCE_FORMAL)") $(if $(OUTPUT),--output "$(OUTPUT)") $(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") $(if $(MAX_BYTES),--max-bytes "$(MAX_BYTES)")
+
+## evaluation-replay: Replay one governed partition against an independently stored artifact hash
+evaluation-replay:
+	@if [ -z "$(CORPUS)" ] || [ -z "$(GOVERNANCE_MANIFEST)" ] || [ -z "$(EVALUATION_SPLIT)" ] || [ -z "$(EXPECTED_ARTIFACT_SHA256)" ]; then echo "CORPUS, GOVERNANCE_MANIFEST, EVALUATION_SPLIT, and EXPECTED_ARTIFACT_SHA256 are required" >&2; exit 1; fi
+	$(GO) run ./cmd/cheesewaf-corpus --mode evaluate-split --corpus "$(CORPUS)" --governance-manifest "$(GOVERNANCE_MANIFEST)" --evaluation-split "$(EVALUATION_SPLIT)" --expected-artifact-sha256 "$(EXPECTED_ARTIFACT_SHA256)" $(if $(OUTPUT),--output "$(OUTPUT)") $(if $(WORKERS),--workers "$(WORKERS)")
+
+## evaluation-lock: Capture a first-use, non-sensitive lock record for one governed split
+evaluation-lock:
+	@if [ -z "$(CORPUS)" ] || [ -z "$(GOVERNANCE_MANIFEST)" ] || [ -z "$(EVALUATION_SPLIT)" ] || [ -z "$(LOCK_OUTPUT)" ]; then echo "CORPUS, GOVERNANCE_MANIFEST, EVALUATION_SPLIT, and LOCK_OUTPUT are required" >&2; exit 1; fi
+	bash scripts/ci/lock-evaluation-artifact.sh "$(CORPUS)" "$(GOVERNANCE_MANIFEST)" "$(EVALUATION_SPLIT)" "$(LOCK_OUTPUT)"
+
+## blind-lab-test: Run the local blind-lab generator self-tests
+blind-lab-test:
+	$(GO) test ./scripts/e2e/blind-lab
+
+## blind-lab: Generate a temporary, bounded local blind-lab snapshot (no repository artifacts)
+blind-lab: blind-lab-test
+	$(GO) run ./scripts/e2e/blind-lab
 
 ## security-corpus-http: Run curated attack/benign corpus against a deployed WAF (BASE_URL=http://127.0.0.1:8080)
 security-corpus-http:

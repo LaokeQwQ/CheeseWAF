@@ -152,6 +152,7 @@ func TestBehaviorChallenge_ShapeSliderUsesMatchingPNGPieceAndRandomShapeMetadata
 }
 
 func TestBehaviorChallenge_ShapeSliderTrackAngleStaysUnder45AndVerifiesTiltedPath(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
 	seenTilt := false
 	for i := 0; i < 48; i++ {
@@ -440,27 +441,31 @@ func TestBehaviorChallenge_ScratchRequiresTargetsWithoutWholePanelErasure(t *tes
 func TestBehaviorChallenge_VisualSelectionGenerationStaysBounded(t *testing.T) {
 	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
 	for _, kind := range []BehaviorType{BehaviorTextClick, BehaviorIconClick, BehaviorScratch} {
-		seen := map[string]struct{}{}
-		for i := 0; i < 256; i++ {
-			challenge, err := IssueBehaviorChallenge(behaviorTestOptions(kind, now.Add(time.Duration(i)*time.Second)))
-			if err != nil {
-				t.Fatalf("%s generation %d: %v", kind, i, err)
-			}
-			decodeBehaviorPNG(t, challenge.Presentation.Image)
-			if len(challenge.Presentation.Image) > 64*1024 {
-				t.Fatalf("%s image exceeds transport budget: %d", kind, len(challenge.Presentation.Image))
-			}
-			if kind == BehaviorScratch {
-				decodeBehaviorPNG(t, challenge.Presentation.Piece)
-				if len(challenge.Presentation.Piece) > 64*1024 {
-					t.Fatalf("scratch mask exceeds transport budget: %d", len(challenge.Presentation.Piece))
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			seen := map[string]struct{}{}
+			for i := 0; i < 256; i++ {
+				challenge, err := IssueBehaviorChallenge(behaviorTestOptions(kind, now.Add(time.Duration(i)*time.Second)))
+				if err != nil {
+					t.Fatalf("%s generation %d: %v", kind, i, err)
 				}
+				decodeBehaviorPNG(t, challenge.Presentation.Image)
+				if len(challenge.Presentation.Image) > 64*1024 {
+					t.Fatalf("%s image exceeds transport budget: %d", kind, len(challenge.Presentation.Image))
+				}
+				if kind == BehaviorScratch {
+					decodeBehaviorPNG(t, challenge.Presentation.Piece)
+					if len(challenge.Presentation.Piece) > 64*1024 {
+						t.Fatalf("scratch mask exceeds transport budget: %d", len(challenge.Presentation.Piece))
+					}
+				}
+				seen[challenge.Presentation.Image] = struct{}{}
 			}
-			seen[challenge.Presentation.Image] = struct{}{}
-		}
-		if len(seen) < 12 {
-			t.Fatalf("%s lacks sufficient visual diversity: %d unique images", kind, len(seen))
-		}
+			if len(seen) < 12 {
+				t.Fatalf("%s lacks sufficient visual diversity: %d unique images", kind, len(seen))
+			}
+		})
 	}
 }
 

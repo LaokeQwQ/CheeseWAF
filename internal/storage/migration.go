@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -11,7 +12,7 @@ import (
 // version and must not be opened by this binary.
 var ErrSQLiteSchemaTooNew = errors.New("newer SQLite schema version")
 
-const sqliteSchemaVersion = 2
+const sqliteSchemaVersion = 3
 
 type sqliteMigration struct {
 	version int
@@ -29,6 +30,11 @@ var sqliteMigrations = []sqliteMigration{
 		version: 2,
 		name:    "review decision claims",
 		apply:   migrateSQLiteReviewDecisionClaims,
+	},
+	{
+		version: 3,
+		name:    "legacy rules to site custom rules",
+		apply:   migrateSQLiteLegacyRules,
 	},
 }
 
@@ -125,6 +131,95 @@ func migrateSQLiteReviewDecisionClaims(ctx context.Context, tx *sql.Tx) error {
 	return ensureColumns(ctx, tx, "review_items", []sqliteColumnMigration{
 		{column: "decision_claim", statement: `ALTER TABLE review_items ADD COLUMN decision_claim TEXT NOT NULL DEFAULT ''`},
 	})
+}
+
+func migrateSQLiteLegacyRules(ctx context.Context, tx *sql.Tx) error {
+	rulesBySite := make(map[string][]Rule)
+	ruleRows, err := tx.QueryContext(ctx, `SELECT id,site_id,name,description,pattern,location,action,severity,enabled,priority FROM rules ORDER BY site_id,priority,id`)
+	if err != nil {
+		return err
+	}
+	for ruleRows.Next() {
+		rule, scanErr := scanRule(ruleRows)
+		if scanErr != nil {
+			_ = ruleRows.Close()
+			return scanErr
+		}
+		rulesBySite[rule.SiteID] = append(rulesBySite[rule.SiteID], *rule)
+	}
+	if err := ruleRows.Err(); err != nil {
+		_ = ruleRows.Close()
+		return err
+	}
+	if err := ruleRows.Close(); err != nil {
+		return err
+	}
+	if len(rulesBySite) == 0 {
+		return nil
+	}
+
+	siteRows, err := tx.QueryContext(ctx, `SELECT id,advanced FROM sites`)
+	if err != nil {
+		return err
+	}
+	for siteRows.Next() {
+		var siteID, rawAdvanced string
+		if err := siteRows.Scan(&siteID, &rawAdvanced); err != nil {
+			_ = siteRows.Close()
+			return err
+		}
+		legacy := rulesBySite[siteID]
+		if len(legacy) == 0 {
+			continue
+		}
+		var advanced SiteAdvanced
+		if rawAdvanced != "" && rawAdvanced != "{}" {
+			if err := json.Unmarshal([]byte(rawAdvanced), &advanced); err != nil {
+				_ = siteRows.Close()
+				return fmt.Errorf("decode site %s advanced configuration: %w", siteID, err)
+			}
+		}
+		seenID := make(map[string]struct{}, len(advanced.CustomRules))
+		seenMatch := make(map[string]struct{}, len(advanced.CustomRules))
+		for _, rule := range advanced.CustomRules {
+			seenID[rule.ID] = struct{}{}
+			seenMatch[rule.Location+"\n"+rule.Pattern] = struct{}{}
+		}
+		for _, rule := range legacy {
+			matchKey := rule.Location + "\n" + rule.Pattern
+			if _, exists := seenID[rule.ID]; exists {
+				continue
+			}
+			if _, exists := seenMatch[matchKey]; exists {
+				continue
+			}
+			advanced.CustomRules = append(advanced.CustomRules, SiteCustomRule{
+				ID: rule.ID, Name: rule.Name, Description: rule.Description, Pattern: rule.Pattern,
+				Location: rule.Location, Action: rule.Action, Severity: rule.Severity,
+				Enabled: rule.Enabled, Priority: rule.Priority,
+			})
+			seenID[rule.ID] = struct{}{}
+			seenMatch[matchKey] = struct{}{}
+		}
+		encoded, err := json.Marshal(advanced)
+		if err != nil {
+			_ = siteRows.Close()
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sites SET advanced=? WHERE id=?`, string(encoded), siteID); err != nil {
+			_ = siteRows.Close()
+			return err
+		}
+	}
+	if err := siteRows.Err(); err != nil {
+		_ = siteRows.Close()
+		return err
+	}
+	if err := siteRows.Close(); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM rules`)
+	return err
 }
 
 type sqliteColumnMigration struct {

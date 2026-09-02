@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
@@ -11,7 +12,7 @@ import (
 
 var rcePatterns = []*regexp.Regexp{
 	// Shell operators + commands
-	regexp.MustCompile(`(?i)(?:;|&&|\|\||\||\n)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|telnet|tftp|dig|nslookup|host|arp|ifconfig|lua|gawk|awk|sed|tr)\b`),
+	regexp.MustCompile(`(?i)(?:;|&&|\|\||\||\n)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|telnet|tftp|dig|nslookup|host|arp|route|ifconfig|lua|gawk|awk|sed|tr)\b`),
 	// Command substitution
 	regexp.MustCompile(`(?i)(?:\$\(|` + "`" + `)\s*(?:cat|id|whoami|uname|curl|wget|bash|sh|zsh|dash|pwsh|powershell|cmd|python3?|perl|php|ruby|node|nc|ncat|netcat|socat|telnet)\b`),
 	// Shell binaries
@@ -45,7 +46,7 @@ var rcePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:>&\s*(?:[0-9]|/dev|/proc)|(?:[0-9]|/dev/(?:tcp|udp))\s*>\s*(?:[0-9]|&))`),
 	// Advanced PowerShell obfuscation techniques
 	regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)\b[^\r\n]{0,160}(?:-no(?:p|profile|-logo|-exit)|-w(?:in)?\s*(?:hidden|0)|-window\s*(?:hidden|style)|-noni|-noninteractive|-noprofile))`),
-	regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)\b[^\r\n]{0,200}(?:\]\s*\+\s*\[|Join\(|\.Replace\(|\.ToChar|FromBase64CharArray|\[Convert\]::))`),
+	regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)\b[^\r\n]{0,200}(?:-join\s*\(|\]\s*\+\s*\[|Join\(|\.Replace\(|\.ToChar|FromBase64CharArray|\[Convert\]::))`),
 	// Variable-based obfuscation (attacker trick: splitting commands across variables)
 	regexp.MustCompile(`(?i)(?:[&\|;\n]|%0[adAD]|%3[abB])(?:[a-z_][a-z0-9_]*=[a-z0-9_]+[\s;&|]+)*[a-z_][a-z0-9_]*\s*=\s*['"]?(?:cat|curl|wget|bash|sh|id|whoami|ls|dir)['"]?`),
 	// Chained encoding/phases (attacker psychology: multi-layer obfuscation)
@@ -69,21 +70,44 @@ func (d *RCEDetector) Priority() int { return 320 }
 
 func (d *RCEDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	payload := requestText(reqCtx)
-	candidates := []string{payload, decoder.Decode(payload).Text}
+	candidates := []string{payload, decoder.DecodeWithDepthPreserveControls(payload, decoder.DefaultDecodeDepth).Text}
 	for _, candidate := range candidates {
 		trimmed := strings.TrimSpace(candidate)
-		for _, pattern := range rcePatterns {
-			if guardedMatchString2K(pattern, trimmed) {
-				return &engine.DetectionResult{
-					Detected:   true,
-					DetectorID: d.ID(),
-					Category:   "rce",
-					Severity:   engine.SeverityCritical,
-					Action:     actionForMode(d.mode),
-					Message:    "command injection pattern matched",
-					Confidence: 0.84,
-					Payload:    trimmed,
-				}, nil
+		if trimmed == "" {
+			continue
+		}
+		views := []string{trimmed}
+		normalizedControl := normalizePreserveControls(trimmed)
+		normalized := normalize(trimmed)
+		if normalizedControl != trimmed {
+			// Keep the raw view first so control-byte/newline semantics remain
+			// unchanged. The compatibility-folded view retains controls, which
+			// prevents a NUL/newline from joining two documented tokens into a
+			// synthetic executable name.
+			views = append(views, normalizedControl)
+		}
+		if normalized != trimmed && normalized != normalizedControl && strings.IndexFunc(trimmed, unicode.IsControl) < 0 {
+			// A control-free value can safely use the compact normalized view.
+			views = append(views, normalized)
+		}
+		for _, view := range views {
+			lower := strings.ToLower(view)
+			for i, pattern := range rcePatterns {
+				if !rcePatternMayMatch(i, lower) {
+					continue
+				}
+				if guardedMatchString2K(pattern, view) {
+					return &engine.DetectionResult{
+						Detected:   true,
+						DetectorID: d.ID(),
+						Category:   "rce",
+						Severity:   engine.SeverityCritical,
+						Action:     actionForMode(d.mode),
+						Message:    "command injection pattern matched",
+						Confidence: 0.84,
+						Payload:    trimmed,
+					}, nil
+				}
 			}
 		}
 	}

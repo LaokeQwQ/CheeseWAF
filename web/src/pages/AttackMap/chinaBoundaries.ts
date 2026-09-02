@@ -57,6 +57,36 @@ export type ChinaBoundaryGateConfig = {
   source_type?: string;
 };
 
+/**
+ * Coordinate reference systems an external China boundary source may declare.
+ *
+ * `unknown` is deliberately the fail-closed value: a boundary whose CRS cannot
+ * be proven is never rendered. Guessing is not an option — a GCJ-02 source
+ * drawn as WGS84 sits ~300~500m off, and a map with offset boundaries is a
+ * compliance defect, not a cosmetic one.
+ *
+ * Baseline: the built-in packs this page renders (`china_province`,
+ * `china_county`) are WGS84/CGCS2000, and the MapLibre / d3-geo canvas is Web
+ * Mercator over WGS84, so WGS84 is the target of every conversion here.
+ * (Measured: DataV `areas_v3` is GCJ-02; see the note on `china_region` in the
+ * compliance audit — it is the one built-in pack that is not WGS84.)
+ */
+export type ChinaBoundaryCrs = 'WGS84' | 'GCJ02' | 'BD09' | 'unknown';
+
+/** Why an external boundary collection was refused. Drives the operator-facing warning. */
+export type ExternalChinaBoundaryRejection =
+  | 'no-crs'
+  | 'unsupported-crs'
+  | 'no-adcode'
+  | 'out-of-range';
+
+export type ExternalChinaBoundaryAdmission = {
+  /** Admitted, CRS-converted, code-filtered collection; `null` when refused. */
+  collection: GeoFeatureCollection | null;
+  /** `null` when accepted, or when there was simply nothing to admit. */
+  rejection: ExternalChinaBoundaryRejection | null;
+};
+
 export function chinaFeatureAdcode(properties: Record<string, unknown> | null | undefined): string {
   const props = properties ?? {};
   const gb = typeof props.gb === 'string' && props.gb.length >= 8 ? props.gb.slice(3) : '';
@@ -206,21 +236,58 @@ const chinaAdminNameAliases: Record<string, string> = {
   xihudistrict: '西湖',
 };
 
-const vendoredChinaCache = new Map<string, Promise<GeoFeatureCollection>>();
+export type VendoredChinaKind = 'province' | 'city' | 'county';
 
-const vendoredChinaFiles: Record<'province' | 'city' | 'county', string> = {
-  province: 'map/china/china_province.geojson.gz',
-  city: 'map/china/china_region.geojson.gz',
-  county: 'map/china/china_county.geojson.gz',
+/**
+ * Shipped coordinate system of each built-in pack, measured against
+ * WGS84 references rather than assumed from the file name.
+ *
+ * - `china_province` / `china_county`: WGS84 / CGCS2000.
+ * - `china_region`: **GCJ-02** (DataV GeoAtlas `areas_v3`). Measured on the 16
+ *   Beijing districts that exist in both this pack and `china_county`: the
+ *   area-weighted centroids sit `+565 m` east / `+143 m` north of the county
+ *   pack, against a GCJ-02 theoretical offset of `+533 m / +155 m` at
+ *   Tiananmen. Inverting GCJ-02 collapses the same measurement to
+ *   `+14 m / +2.5 m`, i.e. the residual generalisation difference between the
+ *   two packs.
+ *
+ * Because these three packs are merged into one layer chain, a pack declared
+ * `WGS84` here is passed through untouched and only `city` is rewritten.
+ */
+export const vendoredChinaBoundarySources: Record<
+  VendoredChinaKind,
+  { url: string; crs: Exclude<ChinaBoundaryCrs, 'unknown'> }
+> = {
+  province: { url: 'map/china/china_province.geojson.gz', crs: 'WGS84' },
+  city: { url: 'map/china/china_region.geojson.gz', crs: 'GCJ02' },
+  county: { url: 'map/china/china_county.geojson.gz', crs: 'WGS84' },
 };
 
-export function loadVendoredChinaCollection(kind: 'province' | 'city' | 'county', signal?: AbortSignal): Promise<GeoFeatureCollection> {
+const vendoredChinaCache = new Map<VendoredChinaKind, Promise<GeoFeatureCollection>>();
+
+/**
+ * Load a built-in pack and normalise it to WGS84.
+ *
+ * The conversion happens here — once, after decompression and before the
+ * promise is cached — so it never runs per render. `city` is the only pack
+ * that actually moves; the WGS84 packs short-circuit inside
+ * `projectChinaBoundaryToWgs84` and are returned by identity, so they cost
+ * nothing and stay byte-identical.
+ *
+ * The compliance geometry (`ten_dash`, `huangyan`, `china_borders`) is loaded
+ * by `loadChinaComplianceAssets()` and deliberately does not go through here:
+ * it is reviewed geometry and must never be rewritten.
+ */
+export function loadVendoredChinaCollection(kind: VendoredChinaKind, signal?: AbortSignal): Promise<GeoFeatureCollection> {
   let pending = vendoredChinaCache.get(kind);
   if (!pending) {
-    pending = fetchGzJson<GeoFeatureCollection>(vendoredChinaFiles[kind], signal).catch((error) => {
-      vendoredChinaCache.delete(kind);
-      throw error;
-    });
+    const { url, crs } = vendoredChinaBoundarySources[kind];
+    pending = fetchGzJson<GeoFeatureCollection>(url, signal)
+      .then((collection) => projectChinaBoundaryToWgs84(collection, crs))
+      .catch((error) => {
+        vendoredChinaCache.delete(kind);
+        throw error;
+      });
     vendoredChinaCache.set(kind, pending);
   }
   return pending;
@@ -251,10 +318,342 @@ export type MergedChinaBoundary = {
   sourceSummary: ChinaAdministrativeMap['sourceSummary'];
 };
 
+const WGS84_CRS_TOKENS = new Set(['WGS84', 'WGS-84', 'EPSG:4326', '4326', 'CRS84', 'OGC:CRS84', 'GCS_WGS_1984']);
+const GCJ02_CRS_TOKENS = new Set(['GCJ02', 'GCJ-02', 'GCJ02LL', 'AMAP', 'AUTONAVI']);
+const BD09_CRS_TOKENS = new Set(['BD09', 'BD-09', 'BD09LL', 'BAIDU']);
+/**
+ * Recognised-but-unusable declarations. Projected metres must never be fed to a
+ * lon/lat pipeline, and silently reinterpreting them would draw the boundary
+ * thousands of kilometres away, so they resolve to `unknown` (fail-closed).
+ */
+const PROJECTED_CRS_TOKENS = new Set(['EPSG:3857', '3857', 'EPSG:900913', 'EPSG:3785', 'EPSG:102100']);
+
+/**
+ * Accepted CRS declaration shapes, all of which must be spelled out explicitly:
+ * - plain string: `"WGS84"`, `"EPSG:4326"`, `"GCJ-02"`, …
+ * - legacy GeoJSON 2008 object: `{ "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } }`
+ */
+function extractCrsToken(value: unknown): string {
+  if (typeof value === 'string') {
+    return normalizeCrsToken(value);
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  const record = value as Record<string, unknown>;
+  const properties = record.properties;
+  if (properties && typeof properties === 'object') {
+    const name = (properties as Record<string, unknown>).name;
+    if (typeof name === 'string') {
+      return normalizeCrsToken(name);
+    }
+  }
+  return '';
+}
+
+function normalizeCrsToken(raw: string): string {
+  let token = raw.trim().toUpperCase().replace(/\s+/g, '');
+  if (!token) {
+    return '';
+  }
+  if (PROJECTED_CRS_TOKENS.has(token)) {
+    return '';
+  }
+  // urn:ogc:def:crs:OGC:1.3:CRS84 -> CRS84 ; urn:ogc:def:crs:EPSG::4326 -> EPSG::4326
+  const urn = token.match(/^URN:OGC:DEF:CRS:(?:OGC:[\d.]+:)?(.+)$/);
+  if (urn) {
+    token = urn[1];
+  }
+  return token.replace(/^EPSG:{1,2}/, 'EPSG:');
+}
+
+/**
+ * Whether a declaration is *present*, regardless of whether it is understood.
+ *
+ * Kept separate from `extractCrsToken` so the operator can be told apart:
+ * "this source declares nothing" from "this source declares something we
+ * cannot use". `extractCrsToken` deliberately blanks recognised-but-unusable
+ * tokens (projected CRS), which would collapse the two cases into one.
+ */
+function hasCrsDeclaration(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.trim().length > 0;
+  }
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const properties = (value as Record<string, unknown>).properties;
+  if (properties && typeof properties === 'object') {
+    const name = (properties as Record<string, unknown>).name;
+    return typeof name === 'string' && name.trim().length > 0;
+  }
+  return false;
+}
+
+/**
+ * Map an external CRS declaration onto a supported CRS.
+ *
+ * Anything missing, blank, misspelled, projected, or otherwise unrecognised
+ * resolves to `unknown` — callers must then refuse to render the data.
+ */
+export function parseChinaBoundaryCrs(value: unknown): ChinaBoundaryCrs {
+  const token = extractCrsToken(value);
+  if (!token) {
+    return 'unknown';
+  }
+  if (WGS84_CRS_TOKENS.has(token)) return 'WGS84';
+  if (GCJ02_CRS_TOKENS.has(token)) return 'GCJ02';
+  if (BD09_CRS_TOKENS.has(token)) return 'BD09';
+  return 'unknown';
+}
+
+/** In-band declarations: the GeoJSON document states its own CRS. */
+function inBandCrsDeclaration(collection: unknown): unknown {
+  if (!collection || typeof collection !== 'object') {
+    return undefined;
+  }
+  const record = collection as Record<string, unknown>;
+  return record.crs ?? record.coordinate_system ?? record.coordinateSystem;
+}
+
+const CRS_SEMI_MAJOR_AXIS = 6378245.0;
+const CRS_ECCENTRICITY_SQ = 0.00669342162296594323;
+const BD09_X_PI = (Math.PI * 3000.0) / 180.0;
+/** GCJ-02 applies no offset outside this box; there WGS84 === GCJ-02. */
+const CRS_OFFSET_BOX = { minLon: 72.004, maxLon: 137.8347, minLat: 0.8293, maxLat: 55.8271 };
+
+function isOutsideCrsOffsetBox(lon: number, lat: number): boolean {
+  return lon < CRS_OFFSET_BOX.minLon
+    || lon > CRS_OFFSET_BOX.maxLon
+    || lat < CRS_OFFSET_BOX.minLat
+    || lat > CRS_OFFSET_BOX.maxLat;
+}
+
+function gcjOffsetLat(lon: number, lat: number): number {
+  const x = lon - 105.0;
+  const y = lat - 35.0;
+  let offset = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+  offset += ((20.0 * Math.sin(6.0 * x * Math.PI)) + (20.0 * Math.sin(2.0 * x * Math.PI))) * 2.0 / 3.0;
+  offset += ((20.0 * Math.sin(y * Math.PI)) + (40.0 * Math.sin(y / 3.0 * Math.PI))) * 2.0 / 3.0;
+  offset += ((160.0 * Math.sin(y / 12.0 * Math.PI)) + (320 * Math.sin(y * Math.PI / 30.0))) * 2.0 / 3.0;
+  return offset;
+}
+
+function gcjOffsetLon(lon: number, lat: number): number {
+  const x = lon - 105.0;
+  const y = lat - 35.0;
+  let offset = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+  offset += ((20.0 * Math.sin(6.0 * x * Math.PI)) + (20.0 * Math.sin(2.0 * x * Math.PI))) * 2.0 / 3.0;
+  offset += ((20.0 * Math.sin(x * Math.PI)) + (40.0 * Math.sin(x / 3.0 * Math.PI))) * 2.0 / 3.0;
+  offset += ((150.0 * Math.sin(x / 12.0 * Math.PI)) + (300.0 * Math.sin(x / 30.0 * Math.PI))) * 2.0 / 3.0;
+  return offset;
+}
+
+/** WGS84 → GCJ-02. Public, deterministic, invertible; used by the inverse below. */
+export function wgs84ToGcj02(lon: number, lat: number): [number, number] {
+  if (isOutsideCrsOffsetBox(lon, lat)) {
+    return [lon, lat];
+  }
+  let dLat = gcjOffsetLat(lon, lat);
+  let dLon = gcjOffsetLon(lon, lat);
+  const radLat = lat / 180.0 * Math.PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - CRS_ECCENTRICITY_SQ * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180.0) / ((CRS_SEMI_MAJOR_AXIS * (1 - CRS_ECCENTRICITY_SQ)) / (magic * sqrtMagic) * Math.PI);
+  dLon = (dLon * 180.0) / (CRS_SEMI_MAJOR_AXIS / sqrtMagic * Math.cos(radLat) * Math.PI);
+  return [lon + dLon, lat + dLat];
+}
+
+/** GCJ-02 → WGS84. Fixed-point inversion of `wgs84ToGcj02` (converges to <1e-10 deg). */
+export function gcj02ToWgs84(lon: number, lat: number): [number, number] {
+  if (isOutsideCrsOffsetBox(lon, lat)) {
+    return [lon, lat];
+  }
+  let wLon = lon;
+  let wLat = lat;
+  for (let step = 0; step < 12; step += 1) {
+    const [gLon, gLat] = wgs84ToGcj02(wLon, wLat);
+    const dLon = gLon - lon;
+    const dLat = gLat - lat;
+    if (Math.abs(dLon) < 1e-11 && Math.abs(dLat) < 1e-11) {
+      break;
+    }
+    wLon -= dLon;
+    wLat -= dLat;
+  }
+  return [wLon, wLat];
+}
+
+/** BD-09 → WGS84 (BD-09 → GCJ-02 is exact; then invert GCJ-02). */
+export function bd09ToWgs84(lon: number, lat: number): [number, number] {
+  const x = lon - 0.0065;
+  const y = lat - 0.006;
+  const z = Math.sqrt(x * x + y * y) - 0.00002 * Math.sin(y * BD09_X_PI);
+  const theta = Math.atan2(y, x) - 0.000003 * Math.cos(x * BD09_X_PI);
+  return gcj02ToWgs84(z * Math.cos(theta), z * Math.sin(theta));
+}
+
+function isGeoPosition(value: unknown): value is [number, number] {
+  return Array.isArray(value) && value.length >= 2 && typeof value[0] === 'number' && typeof value[1] === 'number';
+}
+
+function mapGeometryCoordinates(
+  value: unknown,
+  project: (lon: number, lat: number) => [number, number],
+): unknown {
+  if (isGeoPosition(value)) {
+    return project(value[0], value[1]);
+  }
+  if (Array.isArray(value)) {
+    return value.map((child) => mapGeometryCoordinates(child, project));
+  }
+  return value;
+}
+
+/** Rewrite every coordinate of a collection into WGS84. `WGS84` input is returned untouched. */
+export function projectChinaBoundaryToWgs84(
+  collection: GeoFeatureCollection,
+  crs: Exclude<ChinaBoundaryCrs, 'unknown'>,
+): GeoFeatureCollection {
+  if (crs === 'WGS84') {
+    return collection;
+  }
+  const project = (lon: number, lat: number): [number, number] => (
+    crs === 'BD09' ? bd09ToWgs84(lon, lat) : gcj02ToWgs84(lon, lat)
+  );
+  return {
+    type: 'FeatureCollection',
+    features: collection.features.map((feature) => {
+      const geometry = feature.geometry as { coordinates?: unknown } | null | undefined;
+      if (!geometry || typeof geometry !== 'object') {
+        return feature;
+      }
+      return {
+        ...feature,
+        geometry: {
+          ...(geometry as Record<string, unknown>),
+          coordinates: mapGeometryCoordinates(geometry.coordinates, project),
+        },
+      };
+    }),
+  };
+}
+
+/** Generous box covering the whole territory the nine-dash line encloses. */
+const CHINA_ADMISSION_BOUNDS = { minLon: 70, maxLon: 138, minLat: 0, maxLat: 56 };
+
+/**
+ * Backstop against a misdeclared or projected source: every coordinate of an
+ * admitted Chinese administrative boundary must land inside this box after
+ * conversion. Rejecting here only costs an optional overlay — drawing a
+ * boundary at the wrong place costs compliance.
+ */
+export function isWithinChinaBounds(collection: GeoFeatureCollection): boolean {
+  let positions = 0;
+  const visit = (value: unknown): boolean => {
+    if (isGeoPosition(value)) {
+      const [lon, lat] = value;
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        return false;
+      }
+      positions += 1;
+      return lon >= CHINA_ADMISSION_BOUNDS.minLon
+        && lon <= CHINA_ADMISSION_BOUNDS.maxLon
+        && lat >= CHINA_ADMISSION_BOUNDS.minLat
+        && lat <= CHINA_ADMISSION_BOUNDS.maxLat;
+    }
+    if (Array.isArray(value)) {
+      return value.every(visit);
+    }
+    return true;
+  };
+  const inside = collection.features.every((feature) => visit((feature.geometry as { coordinates?: unknown } | null)?.coordinates));
+  return inside && positions > 0;
+}
+
+/**
+ * Whether an external feature may be drawn, keyed by its canonical 6-digit code.
+ *
+ * Two hard requirements, both fail-closed:
+ * 1. District / county level only (`xxYYzz`, not ending in `00`). The endpoint is
+ *    documented as a district-level supplement; letting an external province or
+ *    city polygon win the merge would *replace* a GS(2024)0650 / GS(2025)5996
+ *    boundary with an unvetted one.
+ * 2. Inside the requested adcode scope. The backend returns the whole configured
+ *    file per adcode without filtering, so the client has to scope it.
+ */
+export function isAllowedExternalAdcode(code: string, allowedAdcodes: string[]): boolean {
+  if (!/^\d{6}$/.test(code) || code.endsWith('00')) {
+    return false;
+  }
+  return allowedAdcodes.some((raw) => {
+    if (!/^\d{6}$/.test(raw)) {
+      return false;
+    }
+    if (raw === code) {
+      return true;
+    }
+    // city parent (xxYY00) -> its districts ; 直辖市 province (xx0000) -> its districts
+    if (raw.endsWith('00') && raw.slice(0, 4) === code.slice(0, 4)) {
+      return true;
+    }
+    return raw.endsWith('0000') && raw.slice(0, 2) === code.slice(0, 2);
+  });
+}
+
+/**
+ * Gate an external China boundary collection before it can reach the map.
+ *
+ * Fail-closed in every uncertain case: no CRS declaration, an unsupported CRS,
+ * no verifiable district-level adcode, or coordinates outside China. A refused
+ * collection returns `null` so callers keep rendering the built-in boundaries.
+ */
+export function admitExternalChinaBoundary(options: {
+  geojson: unknown;
+  /** Explicit declaration from the API (`coordinate_system`) — takes precedence. */
+  declaredCrs?: unknown;
+  allowedAdcodes: string[];
+}): ExternalChinaBoundaryAdmission {
+  const collection = asFeatureCollection(options.geojson);
+  if (collection.features.length === 0) {
+    return { collection: null, rejection: null };
+  }
+  const declared = options.declaredCrs ?? inBandCrsDeclaration(options.geojson);
+  const hasDeclaration = hasCrsDeclaration(declared);
+  const crs = parseChinaBoundaryCrs(declared);
+  if (crs === 'unknown') {
+    return { collection: null, rejection: hasDeclaration ? 'unsupported-crs' : 'no-crs' };
+  }
+  const projected = projectChinaBoundaryToWgs84(collection, crs);
+  const features = projected.features.filter((feature) => (
+    isAllowedExternalAdcode(chinaFeatureAdcode(feature.properties ?? {}), options.allowedAdcodes)
+  ));
+  if (features.length === 0) {
+    return { collection: null, rejection: 'no-adcode' };
+  }
+  const admitted: GeoFeatureCollection = { type: 'FeatureCollection', features };
+  if (!isWithinChinaBounds(admitted)) {
+    return { collection: null, rejection: 'out-of-range' };
+  }
+  return { collection: admitted, rejection: null };
+}
+
 /**
  * Merge builtin + offline + external China boundary layers into a single
  * deduplicated GeoFeatureCollection. Priority: external > offline > builtin.
  * Used by both the MapLibre overlay and the lightweight SVG sourceSummary path.
+ *
+ * Dedup key is the canonical 6-digit code from `chinaFeatureAdcode()`, which is
+ * the only identifier both code families share: the province/county packs carry
+ * it as `gb` (`"156440304"`), the city pack and external sources as `adcode`.
+ *
+ * A feature with no resolvable code used to fall back to `idx-N`, which made the
+ * key unique per feature and silently disabled deduplication entirely — external
+ * geometry then stacked on top of the built-in boundary and produced a double
+ * border. Now a keyless feature is only ever *appended* (never merged), and a
+ * keyless **external** feature is dropped outright: an unidentified polygon
+ * cannot be proven not to duplicate a compliant boundary, so it must not paint.
  */
 export function mergeChinaBoundaries(
   builtin: GeoFeatureCollection | null,
@@ -268,14 +667,17 @@ export function mergeChinaBoundaries(
   ];
   const byCode = new Map<string, { rank: number; feature: WorldFeature }>();
   const order: string[] = [];
-  const keyFor = (feature: WorldFeature): string => {
-    const props = feature.properties ?? {};
-    const code = normalizeChinaAdminCode(props.adcode ?? props.id ?? feature.id, String(props.name ?? props.fullname ?? ''), undefined);
-    return code || String(props.adcode ?? props.id ?? feature.id ?? '');
-  };
+  /** Unkeyed builtin/offline extras (border lines, the nine-dash feature) — never merged, only kept. */
+  const extras: WorldFeature[] = [];
   for (const source of sources) {
     for (const feature of source.features) {
-      const key = keyFor(feature) || `idx-${byCode.size}`;
+      const key = chinaFeatureAdcode(feature.properties ?? {});
+      if (!key) {
+        if (source.rank !== 3) {
+          extras.push(feature);
+        }
+        continue;
+      }
       if (!byCode.has(key)) {
         order.push(key);
       }
@@ -285,9 +687,10 @@ export function mergeChinaBoundaries(
       }
     }
   }
-  const features = order
-    .map((key) => byCode.get(key)!.feature)
-    .map(ensureFeatureAdminLevel);
+  const features = [
+    ...order.map((key) => byCode.get(key)!.feature),
+    ...extras,
+  ].map(ensureFeatureAdminLevel);
   const hasExternal = Boolean(external && external.features.length > 0);
   const levels = new Set(features.map((feature) => inferAdminLevel(feature)));
   let sourceSummary: ChinaAdministrativeMap['sourceSummary'];

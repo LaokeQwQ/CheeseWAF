@@ -616,6 +616,7 @@ export default function SystemPage() {
                         onChange={(e) => patchChinaBoundary({ attribution: e.target.value })}
                       />
                     </label>
+                    <p className="text-sm text-muted-foreground">{t('system.mapBoundaryCrsRequirement')}</p>
                     <label className="switch-line">
                       <span>{t('system.mapBoundaryAllowInsecure')}</span>
                       <Switch

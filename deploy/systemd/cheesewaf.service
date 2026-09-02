@@ -32,7 +32,7 @@ RestrictSUIDSGID=true
 RestrictNamespaces=true
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/var/lib/cheesewaf /var/log/cheesewaf
+ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 
 [Install]
 WantedBy=multi-user.target

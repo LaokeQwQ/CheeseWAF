@@ -140,8 +140,3 @@ func signReceipt(opts ReceiptOptions, encodedPayload string) string {
 	}
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
-
-func ReceiptFingerprint(receipt string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(receipt)))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
-}

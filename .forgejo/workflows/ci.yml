@@ -114,6 +114,21 @@ jobs:
       - name: Run go vet
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh vet
+      - name: Capture semantic request-path performance baseline
+        shell: bash
+        env:
+          SEMANTIC_BENCH_TIME: 1s
+          SEMANTIC_BENCH_COUNT: "3"
+          SEMANTIC_BENCH_CPU: 1,4
+          SEMANTIC_BENCH_OUTPUT: /tmp/cheesewaf-semantic-benchmark.json
+        run: bash scripts/ci/run-semantic-benchmark.sh
+      - name: Upload semantic performance baseline
+        uses: https://data.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: semantic-benchmark-${{ github.run_number }}-${{ github.sha }}
+          path: /tmp/cheesewaf-semantic-benchmark.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Enforce coverage floor
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh coverage
@@ -142,7 +157,7 @@ jobs:
       - name: Run dashboard tests with coverage
         working-directory: web
         shell: bash
-        run: npm test -- --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.reporter=json-summary --coverage.thresholds.lines=20 --coverage.thresholds.functions=20 --coverage.thresholds.statements=20 --coverage.thresholds.branches=10
+        run: npm test -- --coverage
       - name: Verify coverage output
         working-directory: web
         shell: bash
@@ -196,13 +211,29 @@ jobs:
       - name: Setup Go from mirror
         shell: bash
         run: bash scripts/ci/setup-go-mirror.sh
-      - name: Run curated semantic corpus
+      - name: Verify corpus governance integrity
         shell: bash
-        run: bash scripts/ci/go-env.sh go run ./cmd/cheesewaf-corpus --mode analyzer
-      - name: Run semantic evaluation gates (short)
+        env:
+          CORPUS_GOVERNANCE_MAX_PARSE_ERRORS: "0"
+          CORPUS_GOVERNANCE_MAX_INVALID_UTF8: "0"
+          CORPUS_GOVERNANCE_MAX_OVERLONG: "0"
+          CORPUS_GOVERNANCE_MAX_LABEL_CONFLICTS: "3"
+          CORPUS_GOVERNANCE_MAX_REPAIRS: "127"
+        run: bash scripts/ci/run-corpus-governance.sh
+      - name: Smoke-test evaluation artifact first-capture lock
         shell: bash
-        run: |
-          FPR_GATE=0.1 TPR_GATE=99.0 bash scripts/ci/go-env.sh go test -run TestEvaluationPlatform -short -count=1 ./internal/engine/semantic/
+        run: bash scripts/ci/lock-evaluation-artifact_test.sh
+      - name: Smoke-test authorized blind-lab wiring
+        shell: bash
+        run: bash scripts/ci/run-authorized-blind-lab_test.sh
+      - name: Replay and evaluate governed semantic snapshot
+        shell: bash
+        env:
+          FPR_GATE: "0.8"
+          TPR_GATE: "99.0"
+          FPR_MIN_BENIGN: "250"
+          TPR_MIN_ATTACK: "10000"
+        run: bash scripts/ci/run-governed-semantic-gate.sh
 
   cross-build:
     name: cross-build

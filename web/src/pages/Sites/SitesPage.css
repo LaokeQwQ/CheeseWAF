@@ -1,5 +1,79 @@
+.page-header .sites-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .sites-list-panel {
   overflow: visible;
+}
+
+.nginx-import-form {
+  display: grid;
+  gap: 12px;
+}
+
+.nginx-import-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.nginx-import-text {
+  width: 100%;
+  min-height: 220px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.nginx-import-message {
+  margin-bottom: 0;
+}
+
+.nginx-import-preview,
+.nginx-import-result {
+  display: grid;
+  gap: 10px;
+}
+
+.nginx-import-list {
+  display: grid;
+  gap: 8px;
+  max-height: 46vh;
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.nginx-import-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.nginx-import-row-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+
+.nginx-import-row-body > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
 }
 
 .sites-query-error {

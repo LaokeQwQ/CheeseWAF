@@ -733,11 +733,12 @@ func (h *Handler) RunAISelfLearning(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), aiLongRequestTimeout)
 	defer cancel()
 	report, err := ai.RunSelfLearning(ctx, ai.SelfLearningOptions{
-		Config:   cfg,
-		Client:   h.aiReasoningClient(),
-		Sink:     h.Sink,
-		Rules:    h.Store,
-		Language: req.Language,
+		Config:          cfg,
+		Client:          h.aiReasoningClient(),
+		Sink:            h.Sink,
+		ListCustomRules: h.ListCustomRules,
+		ApplyCustomRule: h.ApplyGeneratedCustomRule,
+		Language:        req.Language,
 		CanWriteRules: func() error {
 			return h.selfLearningRuleWriteAllowed(r)
 		},
@@ -763,6 +764,12 @@ func (h *Handler) selfLearningRuleWriteAllowed(r *http.Request) error {
 			freezeReason = "configuration state could not be restored"
 		}
 		return fmt.Errorf("configuration writes are frozen: %s", freezeReason)
+	}
+	if r != nil {
+		claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+		if !h.callerHasPermission(claims, "write:rules") {
+			return fmt.Errorf("automatic rule creation requires write:rules permission")
+		}
 	}
 	if ok, reason := h.clusterConfigWritable(requestLanguage(r)); !ok {
 		return fmt.Errorf("cluster protection mode: %s", reason)

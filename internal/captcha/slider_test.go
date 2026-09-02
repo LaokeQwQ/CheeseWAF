@@ -119,6 +119,7 @@ func TestSliderShapePoolRendersEverySupportedOutline(t *testing.T) {
 }
 
 func TestSliderChallengeAssetsAreRandomized(t *testing.T) {
+	t.Parallel()
 	opts := SliderOptions{Secret: "randomness-secret", Purpose: "admin-login-slider", ClientKey: "client", Path: "admin-login"}
 	images := make(map[string]struct{})
 	pieces := make(map[string]struct{})

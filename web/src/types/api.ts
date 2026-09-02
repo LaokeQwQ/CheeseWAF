@@ -17,6 +17,33 @@ export type Site = {
   updated_at?: string;
 };
 
+/**
+ * One parsed nginx `server` block returned by `POST /nginx/import`.
+ *
+ * This is a *parse result*, not a stored site: the endpoint never writes to the
+ * database, so it carries no `created_at`/`updated_at`, its `id` is derived from
+ * the first domain (`a.b` -> `a-b`) rather than being a storage UUID, and
+ * `upstreams` are `{ address, weight }` objects instead of the plain strings used
+ * by `Site`. Callers must convert it before creating a real site.
+ */
+export type NginxImportSite = {
+  id?: string;
+  name?: string;
+  domains?: string[];
+  upstreams?: { address?: string; weight?: number }[];
+  listen_port?: number;
+  loadbalance?: string;
+  enable_ssl?: boolean;
+  cert_file?: string;
+  key_file?: string;
+  enabled?: boolean;
+  waf?: {
+    enabled?: boolean;
+    mode?: 'block' | 'monitor' | 'off' | string;
+    rewrite?: SiteRewriteRule[];
+  };
+};
+
 export type SiteAdvanced = {
   certificate: SiteCertificateConfig;
   origin: SiteOriginConfig;
@@ -352,6 +379,16 @@ export type ScheduledTask = {
   keep: number;
   enabled: boolean;
   created_at?: string;
+};
+
+/** One past execution of a scheduled task (GET /scheduler/history). */
+export type ScheduledTaskHistoryEntry = {
+  task_id: string;
+  started_at: string;
+  /** Duration in nanoseconds (Go time.Duration marshals as an integer). */
+  duration: number;
+  success: boolean;
+  error?: string;
 };
 
 export type EdgeConfig = {
@@ -1271,6 +1308,13 @@ export type MapBoundaryResponse = {
   license?: string;
   review_id?: string;
   attribution?: string;
+  /**
+   * Declared coordinate system of `geojson` (`WGS84` | `GCJ02` | `BD09`).
+   * Optional because the endpoint does not emit it yet — until it does, the
+   * client falls back to an in-band declaration inside the GeoJSON document
+   * itself and refuses to render when neither is present.
+   */
+  coordinate_system?: string;
   geojson?: unknown;
 };
 
@@ -1310,6 +1354,29 @@ export type HostStats = {
 export type HealthStatus = {
   status: string;
   uptime_seconds: number;
+};
+
+/**
+ * GET /stats —— 进程运行时快照（internal/api/handler/stats.go）。
+ *
+ * 注意：这是 `MonitorSnapshot`（GET /monitor）的**子集**，除 `status` 外每个字段
+ * 都能在 `MonitorSnapshot` 里找到同名同义的字段：
+ * uptime_seconds / goroutines / process_count / memory_alloc / sites 全部重复。
+ * 因此前端不给它单独接 UI —— 详见 `client.ts` 中 `fetchStats` 的 JSDoc。
+ */
+export type RuntimeStats = {
+  /** 进程启动至今的秒数，基于 StartedAt 现算，非缓存。 */
+  uptime_seconds: number;
+  /** 当前 goroutine 数量，即 Go 运行时在跑的并发任务数。 */
+  goroutines: number;
+  /** CheeseWAF 自身服务进程数。后端保证 >= 1（扫不到进程表时兜底为 1），不会是 0 或缺失。 */
+  process_count: number;
+  /** 当前已分配且仍在使用的堆内存，单位字节。后端缓存最多 5 秒，不保证是实时值。 */
+  memory_alloc: number;
+  /** 当前生效配置中的站点数量。 */
+  sites: number;
+  /** handler 里写死的常量 "running"，不带任何健康状态语义 —— 别拿它当健康位。 */
+  status: string;
 };
 
 export type ClusterStatus = {
@@ -1406,6 +1473,8 @@ export type ClusterRollingJob = {
   steps: ClusterRollingStep[];
   started_at: string;
   updated_at: string;
+  /** Job creation time (RFC 3339). The backend uses it to enforce job TTL. */
+  created_at: string;
   finished_at?: string;
   stop_on_failure: boolean;
   restart_service: boolean;
@@ -1413,6 +1482,12 @@ export type ClusterRollingJob = {
   rollback_of?: string;
   rollback_job_id?: string;
   deploy_action?: string;
+  /**
+   * Identity that started the job: the session username, or `api-token:<id>`
+   * for management-token requests. Empty when no identity could be resolved.
+   * Only this initiator is allowed to roll the job back.
+   */
+  initiated_by?: string;
 };
 
 export type ClusterTrafficPeer = {
@@ -1543,6 +1618,14 @@ export type ClusterDeploymentAuthorization = {
   expires_at: string;
 };
 
+/**
+ * Outcome of an SSH precheck.
+ *
+ * `ok:false` is only observable on the **asynchronous** task path, i.e.
+ * `ClusterDeploymentTask.check_result`: the task manager stores the
+ * `CheckResult` even when `Check()` fails. The synchronous endpoint never
+ * yields a failed result — see `ClusterDeploymentCheckPassedResult`.
+ */
 export type ClusterDeploymentCheckResult = {
   ok: boolean;
   host: string;
@@ -1553,8 +1636,23 @@ export type ClusterDeploymentCheckResult = {
   checked_at: string;
 };
 
+/**
+ * The `result` of `POST /cluster/deploy/check`.
+ *
+ * `ok` is the literal `true` because the backend throws the whole
+ * `CheckResult` away on failure: `ClusterDeployCheck`
+ * (`internal/api/handler/cluster.go`) returns early with HTTP 400
+ * `CLUSTER_SSH_INVALID` as soon as `Check()` errors, so a failed result
+ * never reaches the client. Any `ok:false` branch written against this
+ * type is dead code — surface the HTTP error instead.
+ *
+ * If the backend is ever changed to return the failed `CheckResult`
+ * alongside the error, widen this back to `ClusterDeploymentCheckResult`.
+ */
+export type ClusterDeploymentCheckPassedResult = Omit<ClusterDeploymentCheckResult, 'ok'> & { ok: true };
+
 export type ClusterDeploymentCheckResponse = {
-  result: ClusterDeploymentCheckResult;
+  result: ClusterDeploymentCheckPassedResult;
   authorization: ClusterDeploymentAuthorization;
 };
 

@@ -595,6 +595,10 @@ func TestIssueSiteACMEIgnoresUntrustedRuntimeFields(t *testing.T) {
 	handler.Config.ACME.Home = filepath.Join(t.TempDir(), "acme-home")
 	handler.Config.ACME.CertDir = filepath.Join(t.TempDir(), "certs")
 	handler.Config.ACME.ReloadCommand = config.ACMEReloadProfileSystemdRestart
+	expectedACMEPath := handler.Config.ACME.ACMESHPath
+	expectedACMEHome := handler.Config.ACME.Home
+	expectedCertDir := handler.Config.ACME.CertDir
+	expectedReloadCommand := handler.Config.ACME.ReloadCommand
 	issuer := &recordingACMEIssuer{}
 	handler.ACMEIssuer = issuer
 
@@ -621,23 +625,23 @@ func TestIssueSiteACMEIgnoresUntrustedRuntimeFields(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected issue ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if issuer.request.ACMESHPath != handler.Config.ACME.ACMESHPath {
+	if issuer.request.ACMESHPath != expectedACMEPath {
 		t.Fatalf("site payload must not override acme.sh path, got %q", issuer.request.ACMESHPath)
 	}
-	if issuer.request.Home != handler.Config.ACME.Home {
+	if issuer.request.Home != expectedACMEHome {
 		t.Fatalf("site payload must not override acme home, got %q", issuer.request.Home)
 	}
-	if issuer.request.ReloadCmd != handler.Config.ACME.ReloadCommand {
+	if issuer.request.ReloadCmd != expectedReloadCommand {
 		t.Fatalf("site payload must not override reload command, got %q", issuer.request.ReloadCmd)
 	}
-	if strings.Contains(issuer.request.CertDir, "evil") || !strings.HasPrefix(issuer.request.CertDir, handler.Config.ACME.CertDir) {
+	if strings.Contains(issuer.request.CertDir, "evil") || !strings.HasPrefix(issuer.request.CertDir, expectedCertDir) {
 		t.Fatalf("site payload must not override cert dir, got %q", issuer.request.CertDir)
 	}
 	stored, err := handler.Store.GetSite(context.Background(), site.ID)
 	if err != nil {
 		t.Fatalf("get site: %v", err)
 	}
-	if stored.Advanced.Certificate.ACME.ReloadCommand != handler.Config.ACME.ReloadCommand {
+	if stored.Advanced.Certificate.ACME.ReloadCommand != expectedReloadCommand {
 		t.Fatalf("stored acme runtime should come from trusted config, got %+v", stored.Advanced.Certificate.ACME)
 	}
 	if strings.Contains(recorder.Body.String(), "secret") {

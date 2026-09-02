@@ -61,6 +61,9 @@ func sanitizeBlockPageNode(node *html.Node) bool {
 			if sanitizeBlockPageAttrs(child, tag) {
 				changed = true
 			}
+			if tag == "style" && sanitizeBlockPageStyleText(child) {
+				changed = true
+			}
 		} else if child.Type == html.CommentNode {
 			node.RemoveChild(child)
 			changed = true
@@ -73,6 +76,44 @@ func sanitizeBlockPageNode(node *html.Node) bool {
 		child = next
 	}
 	return changed
+}
+
+func sanitizeBlockPageStyleText(node *html.Node) bool {
+	changed := false
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.TextNode {
+			continue
+		}
+		clean, textChanged := sanitizeBlockPageCSSRules(child.Data)
+		if textChanged {
+			child.Data = clean
+			changed = true
+		}
+	}
+	return changed
+}
+
+func sanitizeBlockPageCSSRules(value string) (string, bool) {
+	changed := false
+	for {
+		start := strings.Index(strings.ToLower(value), "@import")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(value[start:], ";")
+		if end < 0 {
+			return value[:start], true
+		}
+		value = value[:start] + value[start+end+1:]
+		changed = true
+	}
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"url(", "expression(", "javascript:", "vbscript:", "behavior:", "-moz-binding"} {
+		if strings.Contains(lower, marker) {
+			return "", true
+		}
+	}
+	return value, changed
 }
 
 func sanitizeBlockPageAttrs(node *html.Node, tag string) bool {

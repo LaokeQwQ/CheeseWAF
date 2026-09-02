@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Badge,
   Button,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -397,6 +398,8 @@ export default function IPManagePage() {
       };
     }));
   };
+  // Pending blacklist confirmation (P2-17).
+  const [blockPending, setBlockPending] = useState<{ entries: string[] } | null>(null);
   const defaultAccessRuleName = t('ip.defaultAccessRuleName');
   const saveAccessRules = (nextRules = accessRules) => {
     accessRulesMutation.mutate(nextRules.map((rule) => normalizeAccessRuleForSave(rule, defaultAccessRuleName)).filter((rule) => rule.entries.length > 0));
@@ -426,11 +429,39 @@ export default function IPManagePage() {
       name: accessDraft.name || entries[0],
       entries,
     }, defaultAccessRuleName);
+
+    // P2-17: a blacklist rule takes effect as soon as it is saved and writes a
+    // global access rule, so a slip here can lock out a whole range. Make the
+    // destructive case confirm first; whitelist/monitor are additive and safe.
+    if (nextRule.action === 'block') {
+      setBlockPending({ entries });
+      return;
+    }
+
     const nextRules = [...accessRules, nextRule];
     accessRulesDirtyRef.current = true;
     setAccessRules(nextRules);
     setAccessDraft(defaultAccessDraft);
     saveAccessRules(nextRules);
+  };
+
+  const confirmBlockedAccessRule = () => {
+    if (!blockPending) {
+      return;
+    }
+    const entries = blockPending.entries;
+    const nextRule = normalizeAccessRuleForSave({
+      ...accessDraft,
+      id: accessDraft.id || `ip-rule-${Date.now()}`,
+      name: accessDraft.name || entries[0],
+      entries,
+    }, defaultAccessRuleName);
+    const nextRules = [...accessRules, nextRule];
+    accessRulesDirtyRef.current = true;
+    setAccessRules(nextRules);
+    setAccessDraft(defaultAccessDraft);
+    saveAccessRules(nextRules);
+    setBlockPending(null);
   };
   const saveEditedAccessRule = (index: number) => {
     const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule, defaultAccessRuleName) : rule));
@@ -805,6 +836,15 @@ export default function IPManagePage() {
                   </div>
                 </div>
               </section>
+              <ConfirmDialog
+                open={blockPending !== null}
+                onOpenChange={(next) => { if (!next) setBlockPending(null); }}
+                title={t('ip.blockConfirmTitle')}
+                description={t('ip.blockConfirmEntry')}
+                confirmLabel={t('ip.block')}
+                loading={accessRulesMutation.isPending}
+                onConfirm={confirmBlockedAccessRule}
+              />
               <div className="table-panel table-panel-embedded ip-access-table">
                 <div className="ip-access-table-desktop">
                   <Table>

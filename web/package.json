@@ -13,7 +13,9 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -b",
+    "test:scripts": "node --test --test-concurrency=1 scripts/*.test.mjs",
     "test:captcha-contract": "node --test --test-concurrency=1 ../scripts/e2e/captcha-lab/lab-page.test.mjs ../scripts/e2e/captcha-integration/fixture-client.test.mjs",
+    "test:e2e-contracts": "node --test --test-concurrency=1 ../scripts/e2e/captcha-lab/lab-page.test.mjs ../scripts/e2e/captcha-lab/interactions/range.test.mjs ../scripts/e2e/captcha-lab/interactions/surface.test.mjs ../scripts/e2e/captcha-lab/interactions/click.test.mjs ../scripts/e2e/captcha-lab/fixed-harness.test.mjs ../scripts/e2e/captcha-lab/private-harness.test.mjs ../scripts/e2e/captcha-integration/fixture-client.test.mjs ../scripts/e2e/captcha-integration/browser-monitor.test.mjs ../scripts/e2e/captcha-integration/runtime.test.mjs ../scripts/e2e/captcha-integration/captcha-lab-flow.test.mjs",
     "e2e:captcha": "npm run test:captcha-contract && node --test --test-concurrency=1 ../scripts/e2e/captcha-lab/interactions/range.test.mjs ../scripts/e2e/captcha-lab/interactions/surface.test.mjs ../scripts/e2e/captcha-lab/interactions/click.test.mjs ../scripts/e2e/captcha-lab/fixed-harness.test.mjs ../scripts/e2e/captcha-lab/private-harness.test.mjs ../scripts/e2e/captcha-integration/browser-monitor.test.mjs ../scripts/e2e/captcha-integration/runtime.test.mjs ../scripts/e2e/captcha-integration/captcha-lab-flow.test.mjs && node ../scripts/e2e/captcha-integration/run.mjs --profile desktop && node ../scripts/e2e/captcha-lab/run-local.mjs"
   },
   "dependencies": {
@@ -71,6 +73,7 @@
   "overrides": {
     "hono": "^4.12.34",
     "fast-uri": "^3.1.5",
+    "nanoid": "^3.3.18",
     "@hono/node-server": "^2.0.5",
     "@ai-sdk/provider-utils": "^5.0.12",
     "@ai-sdk/gateway": {

@@ -53,6 +53,21 @@ func TestDecodeWithDepthUsesDefaultAndHardCeiling(t *testing.T) {
 	}
 }
 
+func TestDecodeWithDepthPreserveControlsRetainsDecodedNUL(t *testing.T) {
+	for _, raw := range []string{"before%00after", `before\u0000after`, "before\x00after"} {
+		t.Run(raw, func(t *testing.T) {
+			preserved := DecodeWithDepthPreserveControls(raw, DefaultDecodeDepth)
+			if !strings.ContainsRune(preserved.Text, 0) {
+				t.Fatalf("preserved text = %q, want a NUL boundary", preserved.Text)
+			}
+			legacy := DecodeWithDepth(raw, DefaultDecodeDepth)
+			if strings.ContainsRune(legacy.Text, 0) {
+				t.Fatalf("legacy text = %q, want historical NUL stripping", legacy.Text)
+			}
+		})
+	}
+}
+
 func countLayerNamed(layers []string, name string) int {
 	count := 0
 	for _, layer := range layers {
@@ -101,7 +116,11 @@ func TestDecodeAllAddsPrintableBase64VariantForShortInput(t *testing.T) {
 }
 
 func TestFlattenJSONIncludesNestedKeysAndScalarValues(t *testing.T) {
-	got := strings.Fields(FlattenJSON([]byte(`{"user":{"name":"alice","active":true},"roles":["admin",2],"none":null}`)))
+	flat, err := FlattenJSON([]byte(`{"user":{"name":"alice","active":true},"roles":["admin",2],"none":null}`))
+	if err != nil {
+		t.Fatalf("FlattenJSON error = %v", err)
+	}
+	got := strings.Fields(flat)
 	sort.Strings(got)
 	want := []string{"2", "active", "admin", "alice", "name", "none", "roles", "true", "user"}
 	sort.Strings(want)
@@ -112,7 +131,11 @@ func TestFlattenJSONIncludesNestedKeysAndScalarValues(t *testing.T) {
 
 func TestFlattenJSONReturnsMalformedInputUnchanged(t *testing.T) {
 	raw := []byte(`{"unterminated":`)
-	if got := FlattenJSON(raw); got != string(raw) {
+	got, err := FlattenJSON(raw)
+	if err != nil {
+		t.Fatalf("FlattenJSON error = %v", err)
+	}
+	if got != string(raw) {
 		t.Fatalf("got %q", got)
 	}
 }

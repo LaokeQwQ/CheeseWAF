@@ -42,7 +42,7 @@ func markdownProseRequest(t *testing.T, body string) *engine.RequestContext {
 //     "or"/"union"/"select" elsewhere in the text, so "--flag ... or ..." and
 //     "## heading ... or ..." both mint "syntax: SQL comment used to truncate
 //     query" with semantics: none.
-//   - rceShellControlEvidence treats any leftover single backtick as command
+//   - rceShellControlEvidenceForContext treats any leftover single backtick as command
 //     substitution, so markdown inline code (`site:`) mints "syntax: shell
 //     control operator or command substitution" with semantics: none.
 func TestMarkdownProseIsNotAnAttack(t *testing.T) {

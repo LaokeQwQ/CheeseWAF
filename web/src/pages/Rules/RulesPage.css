@@ -1,5 +1,37 @@
 
 
+.rules-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+  justify-content: flex-end;
+}
+
+.rules-site-picker {
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.rules-site-picker span,
+.rules-site-picker em {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: normal;
+}
+
+.rule-import-form {
+  display: grid;
+  gap: 16px;
+}
+
+.rule-import-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .rule-editor-form {
   display: flex;
   flex-direction: column;

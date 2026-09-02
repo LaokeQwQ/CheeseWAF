@@ -70,7 +70,8 @@ func newCandidateCache(maxSize int, ttl time.Duration) *candidateCache {
 
 // processCandidateCache is shared across Analyzer instances. Keys include the
 // analyzer policy and field context so configs and parameter sinks never
-// cross-contaminate.
+// cross-contaminate; request-sensitive SSRF candidates add an origin/path/query
+// scope before lookup.
 var processCandidateCache = newCandidateCache(defaultCacheSize, defaultCacheTTL)
 
 // A per-process seed prevents an attacker from manufacturing collisions in the
@@ -88,6 +89,36 @@ func candidateCacheKey(mode string, catFP uint64, source, name, text string) uin
 	writeCacheKeyString(&h, source)
 	writeCacheKeyString(&h, name)
 	writeCacheKeyString(&h, text)
+	return h.Sum64()
+}
+
+// candidateCacheKeyWithSSRFScope extends an already complete candidate key
+// with the request context used by the SSRF same-origin gate. Keeping the
+// scoped variant separate preserves the stable key contract for all other
+// detectors while allowing request-sensitive candidates to retain cache hits.
+func candidateCacheKeyWithSSRFScope(base uint64, scope ssrfCacheScope) uint64 {
+	var h maphash.Hash
+	h.SetSeed(candidateCacheSeed)
+	var encoded [8]byte
+	binary.LittleEndian.PutUint64(encoded[:], base)
+	_, _ = h.Write(encoded[:])
+	writeCacheKeyString(&h, "ssrf-request-context-v1")
+	if scope.hostValidated {
+		encoded[0] = 1
+	} else {
+		encoded[0] = 0
+	}
+	if scope.tls {
+		encoded[1] = 1
+	} else {
+		encoded[1] = 0
+	}
+	_, _ = h.Write(encoded[:2])
+	writeCacheKeyString(&h, scope.scheme)
+	writeCacheKeyString(&h, scope.requestHost)
+	writeCacheKeyString(&h, scope.urlHost)
+	writeCacheKeyString(&h, scope.path)
+	writeCacheKeyString(&h, scope.rawQuery)
 	return h.Sum64()
 }
 
