@@ -3,7 +3,7 @@ module github.com/LaokeQwQ/CheeseWAF
 go 1.26.6
 
 require (
-	github.com/andybalholm/brotli v1.2.2
+	github.com/andybalholm/brotli v1.2.3
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/go-chi/chi/v5 v5.3.2
