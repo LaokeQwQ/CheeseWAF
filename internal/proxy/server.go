@@ -514,6 +514,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.proxyError(w, r, site, nil, "proxy_error", "failed to read request", requestBodyReadErrorStatus(err, http.StatusBadRequest), start, err)
 		return
 	}
+	// SiteForHost above is the authoritative tenant/host check. Propagate that
+	// provenance so request-aware semantic optimizations may safely compare
+	// same-origin references without trusting an arbitrary Host header.
+	reqCtx.HostValidated = true
 	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, requestPath)
 	if accessDecision.Matched {
 		reqCtx.Metadata["ip_access_decision"] = accessDecision

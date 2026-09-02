@@ -244,6 +244,9 @@ jobs:
       - name: Smoke-test evaluation artifact first-capture lock
         shell: bash
         run: bash scripts/ci/lock-evaluation-artifact_test.sh
+      - name: Smoke-test authorized blind-lab wiring
+        shell: bash
+        run: bash scripts/ci/run-authorized-blind-lab_test.sh
       - name: Replay and evaluate governed semantic snapshot
         env:
           FPR_GATE: "0.8"

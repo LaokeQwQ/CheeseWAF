@@ -6,6 +6,14 @@ precision, F1, per-source counts, per-category recall, optional paranoia-level
 metrics, performance counters, and up to 100 failed-case examples per test
 process.
 
+Every source carries an explicit `scope`: `request` for complete request-shaped
+corpora (`curated_corpus`, `mined_probe`, and governed formal snapshots), or
+`payload-only` for the optional `external_dataset` cybersec payload/label files.
+The primary `overall`, `by_category`, `by_paranoia_level`, and FPR/TPR gates use
+request scope only. `all_sources` plus the `*_all_sources` diagnostic maps retain
+combined totals; payload-only rows never become independent request-level
+evidence. Reports that omit scope are treated as `request`.
+
 ## Short and full runs
 
 `TestEvaluationPlatform` uses a block-mode analyzer at paranoia level 2 for its
@@ -101,9 +109,15 @@ primary report and paranoia sweep use the same membership, so each non-empty
 line belongs to exactly one shard and the same cases feed both aggregates.
 Each shard writes an ordinary evaluation report. The
 `merge-semantic-eval-shards.py` script sums source, category, and paranoia
-integer counts, then recomputes FPR, TPR, precision, and F1 from those counts;
-it does not average shard percentages. Failed cases are diagnostic examples and
-do not participate in metric calculation.
+integer counts, validates consistent scope metadata, then recomputes both the
+request-level `overall` and all-scope diagnostic `all_sources` metrics from
+those counts; it does not average shard percentages. Failed cases are diagnostic
+examples and do not participate in metric calculation.
+Shard reports are evaluation artifacts from one controlled run, not an
+independent corpus or trust anchor. Do not hand-edit, mix reports from different
+code/data snapshots, or treat a legacy report with omitted scope as new evidence;
+the merge step can validate declared source scope, but it cannot recover provenance
+that was never recorded in a report.
 
 ## Independent splits and blind-set isolation
 
@@ -446,6 +460,31 @@ grouping sidecar fields. Generate `site`, `session`, and `timestamp` metadata in
 a controlled pipeline, capture the first split-input and artifact hashes there,
 and treat that capture boundary as part of the trusted evaluation process.
 
+### Authorized local blind-lab wiring smoke
+
+The repository includes a bounded, repeatable local HTTP transaction fixture
+for exercising the complete engineering chain without downloading data or
+leaving generated artifacts in the checkout:
+
+```bash
+bash scripts/ci/run-authorized-blind-lab_test.sh
+```
+
+The smoke command captures four fixed transactions across two local
+deployments, applies the same governance parser and provenance checks used by
+real corpora, binds the grouping envelope to the formal rows, creates a
+fractional train/validation/blind artifact, replays only `blind`, and captures
+a first-use lock. The fixture uses a deterministic seed chosen to keep all
+three partitions populated without repair; the script fails if the blind
+partition loses either label, has fewer than two groups, or reports any false
+positive/missed attack.
+
+This fixture proves wiring, schema, provenance, leakage and lock behavior only.
+It is locally generated and its fixed oracle is not independent external data,
+not a generalization estimate, and not a replacement for a future authorized
+or openly licensed blind corpus. The external-data search is intentionally
+optional for the current engineering goal.
+
 ### Confidence bounds
 
 Reports include point estimates plus 99% Wilson fields where a denominator is
@@ -632,6 +671,17 @@ closed. The temporary report SHA-256 is
 Neither measurement is an independent blind or independent FPR/TPR result, and
 neither is evaluated as part of the current governed CI snapshot.
 
+The latest local hardening replay on 2026-09-02 (same quarantine inputs, clean
+working tree at revision `a39b9cde59b572b91457764e985cf5e24795a3e1`) measured
+`97/28,945 = 0.335%` benign FP and `13,000/15,641 = 83.11%` attack hits. The
+clean-negative subset had `1/28,945 = 0.004%` FP; `14` coverage-incomplete and
+`2` unbuildable rows were excluded and caused the opt-in test to fail. The
+temporary report SHA-256 is
+`93448f53221d964985f800970e8405ecd31b3b64d03881067243adffbdb2f9f9`. This is a
+research-only diagnostic snapshot, not an independent blind, generalization,
+or release-quality result; use the report provenance and input hashes before
+comparing it with another run.
+
 When a report is persisted, use `/tmp` or an ignored output directory for
 `SEMANTIC_EXTERNAL_BASELINE_OUT` and failure dumps; an explicit output path can
 otherwise place generated reports in the checkout.
@@ -643,3 +693,8 @@ hash and Git state were captured and the worktree was clean; a dirty or otherwis
 incomplete report is intentionally unbound and must not be compared as a
 reproducible run. Compare the recorded input hashes and revision before reading
 a failure dump or quoting any historical rate.
+
+External-corpus inputs are opened through an `Lstat → Open → SameFile` identity
+check before hashing or replay. Final-component symlinks and replacement during
+the initial open are rejected so a quarantine-only baseline cannot bind its
+report to one file while reading another through an alias.

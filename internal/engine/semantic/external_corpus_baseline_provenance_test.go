@@ -72,15 +72,26 @@ func collectBaselineProvenance(paths map[string]string) baselineProvenance {
 }
 
 func hashBaselineInput(path string) (bytesRead int64, digest string, err error) {
-	f, err := os.Open(path)
+	f, err := openStableCorpusInput(path)
 	if err != nil {
 		return 0, "", fmt.Errorf("open input: %w", err)
 	}
 	h := sha256.New()
 	bytesRead, readErr := io.Copy(h, f)
+	after, statErr := f.Stat()
+	pathAfter, pathErr := os.Lstat(path)
 	closeErr := f.Close()
 	if readErr != nil {
 		return bytesRead, "", fmt.Errorf("read input: %w", readErr)
+	}
+	if statErr != nil {
+		return bytesRead, "", fmt.Errorf("stat input: %w", statErr)
+	}
+	if pathErr != nil {
+		return bytesRead, "", fmt.Errorf("lstat input: %w", pathErr)
+	}
+	if !os.SameFile(after, pathAfter) || after.Size() != pathAfter.Size() {
+		return bytesRead, "", fmt.Errorf("input changed while hashing")
 	}
 	if closeErr != nil {
 		return bytesRead, "", fmt.Errorf("close input: %w", closeErr)
@@ -199,6 +210,24 @@ func TestCollectBaselineProvenanceRecordsHashFailure(t *testing.T) {
 	}
 	if input.SHA256 != "" || provenance.ProvenanceComplete {
 		t.Fatalf("incomplete provenance was marked complete: %+v", provenance)
+	}
+}
+
+func TestBaselineCorpusInputsRejectSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "source.jsonl")
+	alias := filepath.Join(dir, "source-link.jsonl")
+	if err := os.WriteFile(target, []byte("source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := openCorpusFile(alias); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink corpus was unexpectedly accepted: %v", err)
+	}
+	if _, _, err := hashBaselineInput(alias); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink provenance input was unexpectedly accepted: %v", err)
 	}
 }
 

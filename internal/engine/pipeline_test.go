@@ -580,6 +580,60 @@ func TestEnsureBodyReadFailureDoesNotInstallPartialSnapshot(t *testing.T) {
 	}
 }
 
+func TestEnsureBodyReadOverloadClosesOriginalBody(t *testing.T) {
+	waitBodyReadSlotsIdle(t)
+	if got := cap(bodyReadSlots); got != maxInflightBodyReads {
+		t.Fatalf("body read slot capacity = %d, want %d", got, maxInflightBodyReads)
+	}
+	for i := 0; i < cap(bodyReadSlots); i++ {
+		bodyReadSlots <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for i := 0; i < cap(bodyReadSlots); i++ {
+			select {
+			case <-bodyReadSlots:
+			case <-time.After(2 * time.Second):
+				t.Errorf("timed out draining body read slot %d/%d", i+1, cap(bodyReadSlots))
+				return
+			}
+		}
+		waitBodyReadSlotsIdle(t)
+	})
+
+	body := &closeCountingBody{}
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/overload", body)
+	req.ContentLength = -1
+	originalBody := req.Body
+	reqCtx, err := NewRequestContextDeferredBody(req, "site-a", nil, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotErr := reqCtx.EnsureBodyContext(context.Background()); !errors.Is(gotErr, ErrRequestBodyReadOverload) {
+		t.Fatalf("EnsureBodyContext error = %v, want %v", gotErr, ErrRequestBodyReadOverload)
+	}
+	if got := body.closeCount.Load(); got != 1 {
+		t.Fatalf("original body close count = %d, want 1", got)
+	}
+	if req.Body != originalBody || req.ContentLength != -1 || req.GetBody != nil {
+		t.Fatalf("overload changed request replay state: body_changed=%v length=%d get_body=%v", req.Body != originalBody, req.ContentLength, req.GetBody != nil)
+	}
+	select {
+	case <-reqCtx.bodyReadDone:
+	default:
+		t.Fatal("overload left body read attempt unfinished")
+	}
+
+	// The terminal overload result is shared by subsequent callers and must not
+	// close the original source more than once.
+	if gotErr := reqCtx.EnsureBodyContext(context.Background()); !errors.Is(gotErr, ErrRequestBodyReadOverload) {
+		t.Fatalf("second EnsureBodyContext error = %v, want %v", gotErr, ErrRequestBodyReadOverload)
+	}
+	if got := body.closeCount.Load(); got != 1 {
+		t.Fatalf("original body was closed again on retry: count=%d", got)
+	}
+}
+
 func TestEnsureBodyCancellationCannotLateWriteRequestOrPartialSnapshot(t *testing.T) {
 	release := make(chan struct{})
 	secondRead := make(chan struct{}, 1)
@@ -996,6 +1050,17 @@ func waitGuardSlotsIdle(t *testing.T) {
 	}
 }
 
+func waitBodyReadSlotsIdle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(bodyReadSlots) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("body read slots did not drain, leftover=%d", len(bodyReadSlots))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 type countingDetector struct {
 	id       string
 	priority int
@@ -1124,6 +1189,17 @@ type partialBlockingBody struct {
 	secondRead chan<- struct{}
 	emitted    bool
 	closed     atomic.Bool
+}
+
+type closeCountingBody struct {
+	closeCount atomic.Int32
+}
+
+func (*closeCountingBody) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (r *closeCountingBody) Close() error {
+	r.closeCount.Add(1)
+	return nil
 }
 
 func (r *partialBlockingBody) Read(p []byte) (int, error) {

@@ -792,6 +792,28 @@ func TestAnalyzerRCERepresentativePatternCoverage(t *testing.T) {
 	}
 }
 
+func TestRCEHTMLMarkupEntitiesDoNotBecomeShellSeparators(t *testing.T) {
+	body := `{"bio":"Enthusiast of &lt;code&gt;Python&lt;/code&gt; and &lt;b&gt;HTML&lt;/b&gt;!"}`
+	got := detectOnTarget(t, NewAnalyzer("block", 2, "rce"), "PUT", "/profile", "application/json", body)
+	if got != nil && got.Detected {
+		t.Fatalf("HTML entity terminators in structured prose produced RCE: %+v", got)
+	}
+	if rceShellControlEvidenceForContext("&lt;code&gt;Python&lt;/code&gt;", "body.json", "bio", false) {
+		t.Fatal("HTML markup entities were treated as shell control evidence")
+	}
+}
+
+func TestRCECookiePairSeparatorsDoNotBecomeShellSyntax(t *testing.T) {
+	value := "auth_session=token123; ui_settings=timezone=UTC&theme=light; preference_flags=show_tutorial=false"
+	got := detectOnTargetWithHeader(t, NewAnalyzer("block", 2, "rce"), "GET", "/dashboard", "", "", "Cookie", value)
+	if got != nil && got.Detected {
+		t.Fatalf("ordinary Cookie pair separators produced RCE: %+v", got)
+	}
+	if !rceShellControlEvidenceForContext("session=token;id", "header", "Cookie", false) {
+		t.Fatal("malformed Cookie command tail was incorrectly treated as transport-only")
+	}
+}
+
 func containsByte(s string, want byte) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] == want {

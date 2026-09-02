@@ -62,6 +62,8 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not capture the semantic performance baseline"
   grep -Fq 'bash scripts/ci/lock-evaluation-artifact_test.sh' "$workflow" ||
     fail "${workflow} does not run the evaluation artifact lock smoke test"
+  grep -Fq 'bash scripts/ci/run-authorized-blind-lab_test.sh' "$workflow" ||
+    fail "${workflow} does not run the authorized blind-lab wiring smoke test"
   grep -Fq 'bash scripts/ci/run-governed-semantic-gate.sh' "$workflow" ||
     fail "${workflow} does not run the governed semantic gate"
   for governance_var in \
@@ -97,10 +99,14 @@ grep -Fq 'SEMANTIC_BENCH_OUTPUT="/tmp/semantic-bench-check.json"' <<<"$makefile_
   fail "evaluation artifact lock helper must be executable"
 [[ -x scripts/ci/lock-evaluation-artifact_test.sh ]] ||
   fail "evaluation artifact lock smoke test must be executable"
+[[ -x scripts/ci/run-authorized-blind-lab.sh ]] ||
+  fail "authorized blind-lab runner must be executable"
+[[ -x scripts/ci/run-authorized-blind-lab_test.sh ]] ||
+  fail "authorized blind-lab smoke test must be executable"
 [[ -x scripts/ci/run-semantic-benchmark.sh ]] ||
   fail "semantic benchmark runner must be executable"
-bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh ||
-  fail "evaluation and benchmark scripts must pass bash syntax validation"
+bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh ||
+  fail "evaluation, benchmark, and blind-lab scripts must pass bash syntax validation"
 
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
   fail "GitHub Actions must pin Node ${NODE_VERSION}"

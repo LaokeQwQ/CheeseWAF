@@ -26,6 +26,11 @@ var xssPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<\s*details\b[^>]*\bontoggle\s*=`),
 }
 
+var (
+	xssGenericEventAssignment = regexp.MustCompile(`(?i)\bon[a-z0-9_-]{3,}\s*=`)
+	xssHTMLTagStart           = regexp.MustCompile(`(?is)<\s*[a-z][^>]{0,256}(?:>|$)`)
+)
+
 // dynsrc and lowsrc are legacy <img> attributes that still accept a URL, and
 // therefore still accept a javascript: URL.
 var javascriptURLContext = regexp.MustCompile(`(?i)<[^>]+\b(?:href|src|srcset|xlink:href|formaction|action|poster|codebase|background|longdesc|profile|usemap|dynsrc|lowsrc)\s*=\s*['"]?\s*javascript\s*:`)
@@ -465,4 +470,19 @@ func executableXSSContext(normalized string) bool {
 	// every obfuscated javascript: URL has to contain that stem somewhere,
 	// including the CDATA-split form ("javas]]><![cdata[cript:").
 	return xssObfuscatedJavascriptURL.MatchString(normalized)
+}
+
+// xssBareEventHandlerNoise rejects a generic on*= token that is not attached
+// to an HTML tag and has no executable value. CSS/property names and escaped
+// comment fragments such as "style/onload=prompt" are common telemetry or
+// parser data; treating the bare token as a browser handler creates a high-FP
+// path. Real handlers with markup, a call, a quoted breakout, a scheme, or a
+// property access remain visible to the normal pattern battery.
+func xssBareEventHandlerNoise(normalized string) bool {
+	if !xssGenericEventAssignment.MatchString(normalized) || xssHTMLTagStart.MatchString(normalized) {
+		return false
+	}
+	return !strings.ContainsAny(normalized, `"'()`) &&
+		!strings.Contains(normalized, "javascript:") &&
+		!strings.Contains(normalized, ".")
 }

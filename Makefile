@@ -14,7 +14,7 @@ GO           := go
 GOFLAGS      := -trimpath
 CGO_ENABLED  := 0
 
-.PHONY: all build build-cli run test test-go semantic-bench semantic-bench-report web-test web-build security-corpus security-corpus-http security-gate corpus-governance evaluation-split evaluation-replay evaluation-lock lint clean dev help
+.PHONY: all build build-cli run test test-go semantic-bench semantic-bench-report web-test web-build security-corpus security-corpus-http security-gate corpus-governance evaluation-split evaluation-replay evaluation-lock blind-lab blind-lab-test lint clean dev help
 
 ## help: Show this help message
 help:
@@ -33,6 +33,8 @@ help:
 	@echo "  make evaluation-split    Build a manifest-bound train/validation/blind split (CORPUS=..., SPLIT_CONFIG=..., GOVERNANCE_MANIFEST=..., optional GOVERNANCE_FORMAL=..., OUTPUT=...)"
 	@echo "  make evaluation-replay   Replay one governed split with an independently stored artifact hash (CORPUS=..., GOVERNANCE_MANIFEST=..., EVALUATION_SPLIT=..., EXPECTED_ARTIFACT_SHA256=..., optional OUTPUT=...)"
 	@echo "  make evaluation-lock     Capture a first-use lock record for a governed split (CORPUS=..., GOVERNANCE_MANIFEST=..., EVALUATION_SPLIT=..., LOCK_OUTPUT=...)"
+	@echo "  make blind-lab            Generate a bounded, repeatable local blind-lab snapshot in a temporary directory"
+	@echo "  make blind-lab-test       Run focused blind-lab self-tests"
 	@echo "  make security-corpus-http Run curated corpus against deployed WAF (BASE_URL=...)"
 	@echo "  make security-gate        Run analyzer, HTTP replay, and optional external scanner gate (BASE_URL=..., ADMIN_URL=...)"
 	@echo "  make lint        Run golangci-lint"
@@ -187,6 +189,14 @@ evaluation-replay:
 evaluation-lock:
 	@if [ -z "$(CORPUS)" ] || [ -z "$(GOVERNANCE_MANIFEST)" ] || [ -z "$(EVALUATION_SPLIT)" ] || [ -z "$(LOCK_OUTPUT)" ]; then echo "CORPUS, GOVERNANCE_MANIFEST, EVALUATION_SPLIT, and LOCK_OUTPUT are required" >&2; exit 1; fi
 	bash scripts/ci/lock-evaluation-artifact.sh "$(CORPUS)" "$(GOVERNANCE_MANIFEST)" "$(EVALUATION_SPLIT)" "$(LOCK_OUTPUT)"
+
+## blind-lab-test: Run the local blind-lab generator self-tests
+blind-lab-test:
+	$(GO) test ./scripts/e2e/blind-lab
+
+## blind-lab: Generate a temporary, bounded local blind-lab snapshot (no repository artifacts)
+blind-lab: blind-lab-test
+	$(GO) run ./scripts/e2e/blind-lab
 
 ## security-corpus-http: Run curated attack/benign corpus against a deployed WAF (BASE_URL=http://127.0.0.1:8080)
 security-corpus-http:

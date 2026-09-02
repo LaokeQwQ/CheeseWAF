@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"math"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/security"
@@ -55,19 +57,21 @@ func TestEvaluationPlatform(t *testing.T) {
 		attackPath string
 		required   bool
 		skipShort  bool
+		scope      string
 	}{
-		{name: "curated_corpus", benignPath: "testdata/curated_external_shapes.jsonl", required: true, skipShort: false},
-		{name: "mined_probe", benignPath: "testdata/mined_secprose_probe.jsonl", required: false, skipShort: false},
-		{name: "external_dataset", benignPath: "testdata/cybersec_benign_clean.jsonl", attackPath: "testdata/cybersec_attack_clean.jsonl", required: false, skipShort: true},
+		{name: "curated_corpus", benignPath: "testdata/curated_external_shapes.jsonl", required: true, skipShort: false, scope: ScopeRequest},
+		{name: "mined_probe", benignPath: "testdata/mined_secprose_probe.jsonl", required: false, skipShort: false, scope: ScopeRequest},
+		{name: "external_dataset", benignPath: "testdata/cybersec_benign_clean.jsonl", attackPath: "testdata/cybersec_attack_clean.jsonl", required: false, skipShort: true, scope: ScopePayloadOnly},
 	}
 	governedMode := false
+	governedManifestPath := ""
 	if governedPath := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_GOVERNED_CORPUS")); governedPath != "" {
 		manifestPath := strings.TrimSpace(os.Getenv("SEMANTIC_EVAL_GOVERNANCE_MANIFEST"))
 		if manifestPath == "" {
 			t.Fatal("SEMANTIC_EVAL_GOVERNANCE_MANIFEST is required with SEMANTIC_EVAL_GOVERNED_CORPUS")
 		}
-		verifyGovernedSnapshot(t, governedPath, manifestPath)
 		governedMode = true
+		governedManifestPath = manifestPath
 		dataSources = dataSources[:0]
 		dataSources = append(dataSources, struct {
 			name       string
@@ -75,15 +79,18 @@ func TestEvaluationPlatform(t *testing.T) {
 			attackPath string
 			required   bool
 			skipShort  bool
-		}{name: "governed_formal_snapshot", benignPath: governedPath, required: true})
+			scope      string
+		}{name: "governed_formal_snapshot", benignPath: governedPath, required: true, scope: ScopeRequest})
 	}
 
 	report := &EvaluationReport{
-		Timestamp:       time.Now().Format(time.RFC3339),
-		Sources:         make(map[string]*SourceMetrics),
-		ByCategory:      make(map[string]*CategoryMetrics),
-		ByParanoiaLevel: make(map[string]*ParanoiaMetrics),
-		FailedCases:     make([]FailedCase, 0),
+		Timestamp:                 time.Now().Format(time.RFC3339),
+		Sources:                   make(map[string]*SourceMetrics),
+		ByCategory:                make(map[string]*CategoryMetrics),
+		ByCategoryAllSources:      make(map[string]*CategoryMetrics),
+		ByParanoiaLevel:           make(map[string]*ParanoiaMetrics),
+		ByParanoiaLevelAllSources: make(map[string]*ParanoiaMetrics),
+		FailedCases:               make([]FailedCase, 0),
 	}
 
 	for _, ds := range dataSources {
@@ -95,10 +102,13 @@ func TestEvaluationPlatform(t *testing.T) {
 		t.Logf("Processing data source: %s", ds.name)
 		if ds.attackPath != "" {
 			// Process separate benign and attack files
-			processDataSourceSplit(t, analyzer, ds.name, ds.benignPath, ds.attackPath, ds.required, report)
+			processDataSourceSplit(t, analyzer, ds.name, ds.benignPath, ds.attackPath, ds.required, ds.scope, report)
 		} else {
 			// Process single file with mixed labels
-			processDataSource(t, analyzer, ds.name, ds.benignPath, ds.required, governedMode, report)
+			processDataSource(t, analyzer, ds.name, ds.benignPath, ds.required, governedMode, governedManifestPath, ds.scope, report)
+		}
+		if governedManifestPath != "" && ds.name == "governed_formal_snapshot" && strings.HasSuffix(strings.ToLower(ds.benignPath), ".gz") {
+			t.Fatalf("governed corpus must be uncompressed")
 		}
 	}
 
@@ -111,7 +121,7 @@ func TestEvaluationPlatform(t *testing.T) {
 	if testing.Short() {
 		t.Log("Skipping by-paranoia-level sweep in -short mode")
 	} else {
-		computeByParanoiaLevel(t, dataSources, report)
+		computeByParanoiaLevel(t, dataSources, report, governedManifestPath)
 	}
 
 	// Add performance metrics from semantic engine
@@ -133,8 +143,8 @@ func applyEvaluationGates(t *testing.T, report *EvaluationReport) {
 	}
 	if fprEnabled {
 		minimum := positiveEnvInt(t, "FPR_MIN_BENIGN", 100)
-		if sumBenign(report.Sources) < minimum {
-			t.Fatalf("FPR gate requires at least %d benign samples, got %d", minimum, sumBenign(report.Sources))
+		if sumBenignByScope(report.Sources, ScopeRequest) < minimum {
+			t.Fatalf("FPR gate requires at least %d request samples, got %d", minimum, sumBenignByScope(report.Sources, ScopeRequest))
 		}
 		// The acceptance target is strictly below the configured ceiling.
 		if report.Overall.FPR >= maxFPR {
@@ -148,8 +158,8 @@ func applyEvaluationGates(t *testing.T, report *EvaluationReport) {
 	}
 	if tprEnabled {
 		minimum := positiveEnvInt(t, "TPR_MIN_ATTACK", 100)
-		if sumAttack(report.Sources) < minimum {
-			t.Fatalf("TPR gate requires at least %d attack samples, got %d", minimum, sumAttack(report.Sources))
+		if sumAttackByScope(report.Sources, ScopeRequest) < minimum {
+			t.Fatalf("TPR gate requires at least %d request attack samples, got %d", minimum, sumAttackByScope(report.Sources, ScopeRequest))
 		}
 		if report.Overall.TPR < minTPR {
 			t.Fatalf("TPR gate failed: %.4f%% < %.4f%%", report.Overall.TPR, minTPR)
@@ -170,35 +180,84 @@ func positiveEnvInt(t *testing.T, name string, fallback int) int {
 	return value
 }
 
-func verifyGovernedSnapshot(t *testing.T, corpusPath, manifestPath string) {
-	t.Helper()
-	manifestBytes, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatalf("read governance manifest: %v", err)
+func TestBoundedReaderReportsOverflow(t *testing.T) {
+	r := &boundedReader{Reader: strings.NewReader("12345"), max: 4}
+	buf := make([]byte, 8)
+	if _, err := r.Read(buf); err == nil {
+		t.Fatal("expected overflow error")
 	}
-	var manifest security.GovernanceManifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		t.Fatalf("parse governance manifest: %v", err)
+}
+
+func TestLoadGovernedExpectationAcceptsManifestOverOneMiB(t *testing.T) {
+	entries := strings.TrimSuffix(strings.Repeat(`"x",`, 300000), ",")
+	manifest := fmt.Sprintf(`{"formal":1,"output_hashes":{"formal":"%s"},"missing_optional":[%s]}`,
+		strings.Repeat("a", 64), entries)
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if manifest.Formal <= 0 || manifest.OutputHashes["formal"] == "" {
-		t.Fatalf("governance manifest has no formal snapshot")
+	expectation := loadGovernedExpectation(t, path)
+	if expectation.records != 1 || expectation.hash != strings.Repeat("a", 64) {
+		t.Fatalf("unexpected expectation: %+v", expectation)
 	}
-	data, err := os.ReadFile(corpusPath)
-	if err != nil {
-		t.Fatalf("read governed corpus: %v", err)
+}
+
+func TestParseGovernedExpectationRejectsManifestOverBound(t *testing.T) {
+	if _, err := parseGovernedExpectation(bytes.NewReader(bytes.Repeat([]byte("x"), maxGovernanceManifestBytes+1))); err == nil {
+		t.Fatal("expected over-bound manifest rejection")
 	}
-	digest := sha256.Sum256(data)
-	if got := hex.EncodeToString(digest[:]); got != manifest.OutputHashes["formal"] {
-		t.Fatalf("governed corpus hash mismatch: got %s want %s", got, manifest.OutputHashes["formal"])
+}
+
+func TestParseGovernedExpectationRejectsUnknownAndDuplicateKeys(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"unknown":   `{"formal":1,"output_hashes":{"formal":"` + strings.Repeat("a", 64) + `"},"unexpected":1}`,
+		"duplicate": `{"formal":1,"Formal":2,"output_hashes":{"formal":"` + strings.Repeat("a", 64) + `"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseGovernedExpectation(strings.NewReader(manifest)); err == nil {
+				t.Fatalf("expected %s manifest rejection", name)
+			}
+		})
 	}
-	lines := 0
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		if len(bytes.TrimSpace(line)) > 0 {
-			lines++
-		}
+}
+
+func TestParseGovernedExpectationRejectsExcessiveNesting(t *testing.T) {
+	nested := "0"
+	for i := 0; i <= security.DefaultEvaluationArtifactMaxDepth; i++ {
+		nested = "[" + nested + "]"
 	}
-	if lines != manifest.Formal {
-		t.Fatalf("governed corpus line count mismatch: got %d want %d", lines, manifest.Formal)
+	manifest := `{"formal":1,"output_hashes":{"formal":"` + strings.Repeat("a", 64) + `"},"missing_optional":` + nested + `}`
+	if _, err := parseGovernedExpectation(strings.NewReader(manifest)); err == nil {
+		t.Fatal("expected excessive manifest nesting rejection")
+	}
+}
+
+func TestGovernedPassReaderVerifyFailuresAndSuccess(t *testing.T) {
+	data := []byte("{}\n")
+	h := sha256.Sum256(data)
+	makeReader := func(maxBytes int64) (*governedPassReader, security.JSONLStats, string) {
+		gr := &governedPassReader{Reader: bytes.NewReader(data), hash: sha256.New(), maxBytes: maxBytes, maxRecords: 1}
+		stats, _ := security.ForEachJSONLRaw(gr, 1, 0, nil)
+		return gr, stats, hex.EncodeToString(h[:])
+	}
+	gr, stats, digest := makeReader(2)
+	if err := gr.verify(stats, governedExpectation{hash: digest, records: 1}); err == nil {
+		t.Fatal("expected byte overflow")
+	}
+	gr, stats, digest = makeReader(1 << 20)
+	if err := gr.verify(stats, governedExpectation{hash: "bad", records: 1}); err == nil {
+		t.Fatal("expected hash mismatch")
+	}
+	if err := gr.verify(stats, governedExpectation{hash: digest, records: 2}); err == nil {
+		t.Fatal("expected line mismatch")
+	}
+	if err := gr.verify(stats, governedExpectation{hash: digest, records: 1}); err != nil {
+		t.Fatalf("success verify: %v", err)
+	}
+	gr = &governedPassReader{Reader: strings.NewReader("{}\n{}\n"), hash: sha256.New(), maxBytes: 1 << 20, maxRecords: 1}
+	stats, _ = security.ForEachJSONLRaw(gr, 1, 0, nil)
+	if err := gr.verify(stats, governedExpectation{records: 2}); err == nil {
+		t.Fatal("expected record overflow")
 	}
 }
 
@@ -243,14 +302,64 @@ func TestPercentGateFromEnvRejectsExplicitBlankValue(t *testing.T) {
 	}
 }
 
+func TestAggregateMetricsSeparatesRequestAndPayloadScopes(t *testing.T) {
+	report := &EvaluationReport{Sources: map[string]*SourceMetrics{
+		"request": {Scope: ScopeRequest, BenignTotal: 100, BenignFP: 1, AttackTotal: 100, AttackHit: 90},
+		"payload": {Scope: ScopePayloadOnly, BenignTotal: 900, BenignFP: 90, AttackTotal: 900, AttackHit: 450},
+	}}
+	computeAggregateMetrics(report)
+	if report.Overall.FPR != 1 || report.Overall.TPR != 90 {
+		t.Fatalf("request overall = %+v, want 1%% FPR and 90%% TPR", report.Overall)
+	}
+	if report.AllSources.FPR != 9.1 || report.AllSources.TPR != 54 {
+		t.Fatalf("all-sources = %+v, want 9.1%% FPR and 54%% TPR", report.AllSources)
+	}
+	if normalizeScope("") != ScopeRequest || normalizeScope("payload-only") != ScopePayloadOnly {
+		t.Fatal("scope compatibility/defaulting failed")
+	}
+	report.ByCategory = map[string]*CategoryMetrics{"sqli": {AttackTotal: 100, AttackHit: 90}}
+	report.ByCategoryAllSources = map[string]*CategoryMetrics{"sqli": {AttackTotal: 100, AttackHit: 90}, "xss": {AttackTotal: 900, AttackHit: 450}}
+	computeAggregateMetrics(report)
+	if _, ok := report.ByCategory["xss"]; ok {
+		t.Fatal("payload-only category leaked into primary by_category")
+	}
+	if _, ok := report.ByCategoryAllSources["xss"]; !ok {
+		t.Fatal("payload-only category missing from all-sources diagnostics")
+	}
+}
+
+func TestSourceScopeSerializes(t *testing.T) {
+	report := &EvaluationReport{Sources: map[string]*SourceMetrics{"cybersec": {Scope: ScopePayloadOnly}}}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"scope":"payload-only"`)) {
+		t.Fatalf("scope missing: %s", data)
+	}
+}
+
+func TestCustomSourceNameHonorsExplicitPayloadScope(t *testing.T) {
+	report := &EvaluationReport{Sources: map[string]*SourceMetrics{
+		"vendor_payload_fixture": {Scope: ScopePayloadOnly, BenignTotal: 10, BenignFP: 10, AttackTotal: 10, AttackHit: 1},
+	}}
+	computeAggregateMetrics(report)
+	if report.Overall.BenignTotal != 0 || report.AllSources.BenignTotal != 10 {
+		t.Fatalf("custom payload scope was not separated: overall=%+v all=%+v", report.Overall, report.AllSources)
+	}
+}
+
 type EvaluationReport struct {
-	Timestamp       string                      `json:"timestamp"`
-	Sources         map[string]*SourceMetrics   `json:"sources"`
-	ByCategory      map[string]*CategoryMetrics `json:"by_category"`
-	Overall         EvalMetrics                 `json:"overall"`
-	ByParanoiaLevel map[string]*ParanoiaMetrics `json:"by_paranoia_level"`
-	Performance     *PerformanceMetrics         `json:"performance,omitempty"`
-	FailedCases     []FailedCase                `json:"failed_cases"`
+	Timestamp                 string                      `json:"timestamp"`
+	Sources                   map[string]*SourceMetrics   `json:"sources"`
+	ByCategory                map[string]*CategoryMetrics `json:"by_category"`
+	Overall                   EvalMetrics                 `json:"overall"`
+	AllSources                EvalMetrics                 `json:"all_sources"`
+	ByCategoryAllSources      map[string]*CategoryMetrics `json:"by_category_all_sources,omitempty"`
+	ByParanoiaLevel           map[string]*ParanoiaMetrics `json:"by_paranoia_level"`
+	ByParanoiaLevelAllSources map[string]*ParanoiaMetrics `json:"by_paranoia_level_all_sources,omitempty"`
+	Performance               *PerformanceMetrics         `json:"performance,omitempty"`
+	FailedCases               []FailedCase                `json:"failed_cases"`
 }
 
 type ParanoiaMetrics struct {
@@ -265,11 +374,26 @@ type ParanoiaMetrics struct {
 }
 
 type SourceMetrics struct {
+	Scope       string      `json:"scope"`
 	BenignTotal int         `json:"benign_total"`
 	BenignFP    int         `json:"benign_fp"`
 	AttackTotal int         `json:"attack_total"`
 	AttackHit   int         `json:"attack_hit"`
 	EvalMetrics EvalMetrics `json:"metrics"`
+}
+
+const (
+	ScopeRequest     = "request"
+	ScopePayloadOnly = "payload-only"
+)
+
+func normalizeScope(scope string) string {
+	switch strings.TrimSpace(scope) {
+	case ScopePayloadOnly:
+		return ScopePayloadOnly
+	default:
+		return ScopeRequest
+	}
 }
 
 type CategoryMetrics struct {
@@ -279,12 +403,16 @@ type CategoryMetrics struct {
 }
 
 type EvalMetrics struct {
-	FPR        float64 `json:"fpr_percent"`
-	TPR        float64 `json:"tpr_percent"`
-	Precision  float64 `json:"precision_percent"`
-	F1Score    float64 `json:"f1_score"`
-	FPRUpper99 float64 `json:"fpr_upper_99_percent,omitempty"`
-	TPRLower99 float64 `json:"tpr_lower_99_percent,omitempty"`
+	BenignTotal int     `json:"benign_total"`
+	BenignFP    int     `json:"benign_fp"`
+	AttackTotal int     `json:"attack_total"`
+	AttackHit   int     `json:"attack_hit"`
+	FPR         float64 `json:"fpr_percent"`
+	TPR         float64 `json:"tpr_percent"`
+	Precision   float64 `json:"precision_percent"`
+	F1Score     float64 `json:"f1_score"`
+	FPRUpper99  float64 `json:"fpr_upper_99_percent,omitempty"`
+	TPRLower99  float64 `json:"tpr_lower_99_percent,omitempty"`
 }
 
 type PerformanceMetrics struct {
@@ -322,7 +450,10 @@ func TestEvaluationDocumentationMatchesModesAndLevels(t *testing.T) {
 	}
 }
 
-func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required, governed bool, report *EvaluationReport) {
+func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string, required, governed bool, manifestPath, scope string, report *EvaluationReport) {
+	if governed && strings.HasSuffix(strings.ToLower(path), ".gz") {
+		t.Fatalf("governed corpus must be uncompressed")
+	}
 	f, err := openCorpusFile(path)
 	if err != nil {
 		if required {
@@ -334,18 +465,41 @@ func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string
 	defer f.Close()
 
 	srcMetrics := &SourceMetrics{}
+	srcMetrics.Scope = normalizeScope(scope)
 	report.Sources[sourceName] = srcMetrics
 
 	processed := 0
-	err = security.ForEachJSONL(f, evalShardTotal(), evalShardIndex(evalShardTotal()), caseCap(func(tc security.Case) error {
+	var stats security.JSONLStats
+	reader := io.Reader(f)
+	var governedReader *governedPassReader
+	var expectation governedExpectation
+	if governed {
+		expectation = loadGovernedExpectation(t, manifestPath)
+		governedReader = &governedPassReader{Reader: f, hash: sha256.New(), maxBytes: 256 << 20, maxRecords: 1_000_000}
+		reader = governedReader
+	}
+	if required && !governed {
+		reader = &boundedReader{Reader: f, max: 256 << 20}
+	}
+	cb := func(tc security.Case) error {
 		processOneSourceCase(t, analyzer, tc, sourceName, governed, report, srcMetrics)
 		return nil
-	}, &processed, sourceName))
-	if err != nil && !isCapStop(err) {
-		t.Fatalf("Failed to load/stream %s: %v", sourceName, err)
 	}
-	if isCapStop(err) {
+	if !governed && !required {
+		cb = caseCap(cb, &processed, sourceName)
+	}
+	stats, err = security.ForEachJSONLWithStats(reader, evalShardTotal(), evalShardIndex(evalShardTotal()), cb)
+	capped, decisionErr := corpusStreamDecision(err, required, governed, stats.SkippedOverlong)
+	if decisionErr != nil {
+		t.Fatalf("Failed to load/stream %s: %v", sourceName, decisionErr)
+	}
+	if capped {
 		t.Logf("Capped %s at %d cases (SEMANTIC_EVAL_MAX_CASES=0 evaluates everything)", sourceName, evalMaxCases())
+	}
+	if governed {
+		if err := governedReader.verify(stats, expectation); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Compute metrics for this source
@@ -363,6 +517,201 @@ func processDataSource(t *testing.T, analyzer *Analyzer, sourceName, path string
 		srcMetrics.AttackTotal,
 		srcMetrics.AttackHit,
 	)
+}
+
+func corpusStreamDecision(streamErr error, required, governed bool, skippedOverlong int) (bool, error) {
+	if skippedOverlong > 0 && (required || governed) {
+		return false, fmt.Errorf("required corpus contains %d overlong record(s)", skippedOverlong)
+	}
+	if streamErr == nil {
+		return false, nil
+	}
+	if isCapStop(streamErr) {
+		if required || governed {
+			return false, fmt.Errorf("required corpus hit evaluation cap")
+		}
+		return true, nil
+	}
+	return false, streamErr
+}
+
+func TestCorpusStreamDecision(t *testing.T) {
+	cases := []struct {
+		name               string
+		err                error
+		required, governed bool
+		overlong           int
+		capped             bool
+		wantErr            bool
+	}{
+		{"nil", nil, false, false, 0, false, false}, {"error", errors.New("x"), false, false, 0, false, true},
+		{"optional cap", errEvalCaseCapReached, false, false, 0, true, false}, {"required cap", errEvalCaseCapReached, true, false, 0, false, true},
+		{"required overlong", nil, true, false, 1, false, true}, {"optional overlong", nil, false, false, 1, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capped, err := corpusStreamDecision(tc.err, tc.required, tc.governed, tc.overlong)
+			if capped != tc.capped || (err != nil) != tc.wantErr {
+				t.Fatalf("got capped=%v err=%v", capped, err)
+			}
+		})
+	}
+	br := &boundedReader{Reader: strings.NewReader("12345"), max: 4}
+	buf := make([]byte, 8)
+	_, err := br.Read(buf)
+	if _, decisionErr := corpusStreamDecision(err, true, false, 0); decisionErr == nil {
+		t.Fatal("expected bounded overflow to fail closed")
+	}
+}
+
+type governedExpectation struct {
+	hash    string
+	records int
+}
+
+// Governance manifests are bounded artifacts. The CI projection contract
+// allows up to 8 MiB; retain headroom for legitimately large duplicate
+// relation arrays while still rejecting unbounded input.
+const maxGovernanceManifestBytes = 8 << 20
+
+type governedPassReader struct {
+	io.Reader
+	hash       hash.Hash
+	bytes      int64
+	maxBytes   int64
+	maxRecords int
+}
+type boundedReader struct {
+	io.Reader
+	max, n int64
+}
+
+func (r *boundedReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.n += int64(n)
+	if r.n > r.max {
+		return n, fmt.Errorf("input exceeds %d bytes", r.max)
+	}
+	return n, err
+}
+
+func (r *governedPassReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytes += int64(n)
+	if n > 0 {
+		_, _ = r.hash.Write(p[:n])
+	}
+	if r.bytes > r.maxBytes {
+		return n, fmt.Errorf("governed corpus exceeds %d bytes", r.maxBytes)
+	}
+	return n, err
+}
+func (r *governedPassReader) verify(stats security.JSONLStats, e governedExpectation) error {
+	if stats.SkippedOverlong > 0 {
+		return fmt.Errorf("governed corpus contains %d overlong record(s)", stats.SkippedOverlong)
+	}
+	if stats.NonEmptyLines > r.maxRecords {
+		return fmt.Errorf("governed corpus exceeds %d records", r.maxRecords)
+	}
+	if r.bytes > r.maxBytes {
+		return fmt.Errorf("governed corpus exceeds %d bytes", r.maxBytes)
+	}
+	if hex.EncodeToString(r.hash.Sum(nil)) != e.hash {
+		return fmt.Errorf("governed corpus hash mismatch")
+	}
+	if stats.NonEmptyLines != e.records {
+		return fmt.Errorf("governed corpus line count mismatch: got %d want %d", stats.NonEmptyLines, e.records)
+	}
+	return nil
+}
+func loadGovernedExpectation(t *testing.T, path string) governedExpectation {
+	t.Helper()
+	f, err := openStableCorpusInput(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	expectation, err := parseGovernedExpectation(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return expectation
+}
+
+func parseGovernedExpectation(r io.Reader) (governedExpectation, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxGovernanceManifestBytes+1))
+	if err != nil || len(b) > maxGovernanceManifestBytes {
+		return governedExpectation{}, errors.New("invalid governance manifest")
+	}
+	if err := validateGovernanceManifestJSON(b); err != nil {
+		return governedExpectation{}, fmt.Errorf("invalid governance manifest: %w", err)
+	}
+	var m security.GovernanceManifest
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&m); err != nil || m.OutputHashes["formal"] == "" || m.Formal <= 0 {
+		return governedExpectation{}, errors.New("governance manifest has no formal snapshot")
+	}
+	return governedExpectation{hash: m.OutputHashes["formal"], records: m.Formal}, nil
+}
+
+func validateGovernanceManifestJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("manifest is not valid UTF-8")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := walkGovernanceJSONValue(dec, 0); err != nil {
+		return err
+	}
+	if tok, err := dec.Token(); err != io.EOF || tok != nil {
+		return errors.New("manifest contains trailing data")
+	}
+	return nil
+}
+
+func walkGovernanceJSONValue(dec *json.Decoder, depth int) error {
+	if depth > security.DefaultEvaluationArtifactMaxDepth {
+		return fmt.Errorf("manifest exceeds maximum JSON depth %d", security.DefaultEvaluationArtifactMaxDepth)
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := tok.(json.Delim); ok {
+		switch delim {
+		case '{':
+			seen := make(map[string]struct{})
+			for dec.More() {
+				key, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				name, ok := key.(string)
+				if !ok {
+					return errors.New("manifest object key is not a string")
+				}
+				name = strings.ToLower(name)
+				if _, exists := seen[name]; exists {
+					return fmt.Errorf("manifest contains duplicate key %q", name)
+				}
+				seen[name] = struct{}{}
+				if err := walkGovernanceJSONValue(dec, depth+1); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token()
+			return err
+		case '[':
+			for dec.More() {
+				if err := walkGovernanceJSONValue(dec, depth+1); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token()
+			return err
+		}
+	}
+	return nil
 }
 
 func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc security.Case, sourceName string, governed bool, report *EvaluationReport, srcMetrics *SourceMetrics) {
@@ -430,13 +779,27 @@ func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc security.Case, so
 
 	case "attack":
 		srcMetrics.AttackTotal++
+		if report.ByCategory == nil {
+			report.ByCategory = make(map[string]*CategoryMetrics)
+		}
+		if report.ByCategoryAllSources == nil {
+			report.ByCategoryAllSources = make(map[string]*CategoryMetrics)
+		}
+		catAll := report.ByCategoryAllSources[tc.Category]
+		if catAll == nil {
+			catAll = &CategoryMetrics{}
+		}
+		catAll.AttackTotal++
 		if detected {
 			srcMetrics.AttackHit++
-			if report.ByCategory[tc.Category] == nil {
-				report.ByCategory[tc.Category] = &CategoryMetrics{}
+			catAll.AttackHit++
+			if normalizeScope(srcMetrics.Scope) == ScopeRequest {
+				if report.ByCategory[tc.Category] == nil {
+					report.ByCategory[tc.Category] = &CategoryMetrics{}
+				}
+				report.ByCategory[tc.Category].AttackTotal++
+				report.ByCategory[tc.Category].AttackHit++
 			}
-			report.ByCategory[tc.Category].AttackTotal++
-			report.ByCategory[tc.Category].AttackHit++
 		} else {
 			if len(report.FailedCases) < 100 {
 				payload := tc.Body
@@ -453,16 +816,19 @@ func processOneSourceCase(t *testing.T, analyzer *Analyzer, tc security.Case, so
 					Payload:  payload,
 				})
 			}
-			if report.ByCategory[tc.Category] == nil {
-				report.ByCategory[tc.Category] = &CategoryMetrics{}
+			if normalizeScope(srcMetrics.Scope) == ScopeRequest {
+				if report.ByCategory[tc.Category] == nil {
+					report.ByCategory[tc.Category] = &CategoryMetrics{}
+				}
+				report.ByCategory[tc.Category].AttackTotal++
 			}
-			report.ByCategory[tc.Category].AttackTotal++
 		}
+		report.ByCategoryAllSources[tc.Category] = catAll
 	}
 }
 
 func computeMetrics(benignTotal, benignFP, attackTotal, attackHit int) EvalMetrics {
-	m := EvalMetrics{}
+	m := EvalMetrics{BenignTotal: benignTotal, BenignFP: benignFP, AttackTotal: attackTotal, AttackHit: attackHit}
 
 	// FPR: false positives / total benign
 	if benignTotal > 0 {
@@ -495,16 +861,29 @@ func computeMetrics(benignTotal, benignFP, attackTotal, attackHit int) EvalMetri
 }
 
 func computeAggregateMetrics(report *EvaluationReport) {
+	if report == nil {
+		return
+	}
+	if report.ByCategoryAllSources == nil {
+		report.ByCategoryAllSources = make(map[string]*CategoryMetrics)
+	}
 	var totalBenign, totalBenignFP, totalAttack, totalAttackHit int
 
+	var allBenign, allFP, allAttack, allHit int
 	for _, src := range report.Sources {
-		totalBenign += src.BenignTotal
-		totalBenignFP += src.BenignFP
-		totalAttack += src.AttackTotal
-		totalAttackHit += src.AttackHit
+		allBenign += src.BenignTotal
+		allFP += src.BenignFP
+		allAttack += src.AttackTotal
+		allHit += src.AttackHit
+		if normalizeScope(src.Scope) == ScopeRequest {
+			totalBenign += src.BenignTotal
+			totalBenignFP += src.BenignFP
+			totalAttack += src.AttackTotal
+			totalAttackHit += src.AttackHit
+		}
 	}
-
 	report.Overall = computeMetrics(totalBenign, totalBenignFP, totalAttack, totalAttackHit)
+	report.AllSources = computeMetrics(allBenign, allFP, allAttack, allHit)
 
 	// Compute per-category TPR
 	for cat, metrics := range report.ByCategory {
@@ -512,6 +891,12 @@ func computeAggregateMetrics(report *EvaluationReport) {
 			metrics.TPR = float64(metrics.AttackHit) / float64(metrics.AttackTotal) * 100
 		}
 		report.ByCategory[cat] = metrics
+	}
+	for cat, metrics := range report.ByCategoryAllSources {
+		if metrics.AttackTotal > 0 {
+			metrics.TPR = float64(metrics.AttackHit) / float64(metrics.AttackTotal) * 100
+		}
+		report.ByCategoryAllSources[cat] = metrics
 	}
 }
 
@@ -526,19 +911,20 @@ func outputReport(t *testing.T, report *EvaluationReport) {
 
 	// Human-readable summary
 	fmt.Println("\n===SUMMARY===")
-	fmt.Printf("Overall FPR: %.4f%% (%d FP / %d benign)\n",
+	fmt.Printf("Request-level Overall FPR: %.4f%% (%d FP / %d benign)\n",
 		report.Overall.FPR,
-		sumFP(report.Sources),
-		sumBenign(report.Sources),
+		sumFPByScope(report.Sources, ScopeRequest),
+		sumBenignByScope(report.Sources, ScopeRequest),
 	)
 	if report.Overall.FPRUpper99 > 0 {
 		fmt.Printf("FPR 99%% upper bound: %.4f%%\n", report.Overall.FPRUpper99)
 	}
-	fmt.Printf("Overall TPR: %.4f%% (%d hit / %d attack)\n",
+	fmt.Printf("Request-level Overall TPR: %.4f%% (%d hit / %d attack)\n",
 		report.Overall.TPR,
-		sumAttackHit(report.Sources),
-		sumAttack(report.Sources),
+		sumAttackHitByScope(report.Sources, ScopeRequest),
+		sumAttackByScope(report.Sources, ScopeRequest),
 	)
+	fmt.Printf("All-sources diagnostic FPR: %.4f%%, TPR: %.4f%%\n", report.AllSources.FPR, report.AllSources.TPR)
 	if report.Overall.TPRLower99 > 0 {
 		fmt.Printf("TPR 99%% lower bound: %.4f%%\n", report.Overall.TPRLower99)
 	}
@@ -606,6 +992,43 @@ func outputReport(t *testing.T, report *EvaluationReport) {
 	}
 }
 
+func sumBenignByScope(sources map[string]*SourceMetrics, scope string) int {
+	total := 0
+	for _, s := range sources {
+		if normalizeScope(s.Scope) == scope {
+			total += s.BenignTotal
+		}
+	}
+	return total
+}
+func sumFPByScope(sources map[string]*SourceMetrics, scope string) int {
+	total := 0
+	for _, s := range sources {
+		if normalizeScope(s.Scope) == scope {
+			total += s.BenignFP
+		}
+	}
+	return total
+}
+func sumAttackByScope(sources map[string]*SourceMetrics, scope string) int {
+	total := 0
+	for _, s := range sources {
+		if normalizeScope(s.Scope) == scope {
+			total += s.AttackTotal
+		}
+	}
+	return total
+}
+func sumAttackHitByScope(sources map[string]*SourceMetrics, scope string) int {
+	total := 0
+	for _, s := range sources {
+		if normalizeScope(s.Scope) == scope {
+			total += s.AttackHit
+		}
+	}
+	return total
+}
+
 func sumBenign(sources map[string]*SourceMetrics) int {
 	total := 0
 	for _, s := range sources {
@@ -638,8 +1061,9 @@ func sumAttackHit(sources map[string]*SourceMetrics) int {
 	return total
 }
 
-func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benignPath, attackPath string, required bool, report *EvaluationReport) {
+func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benignPath, attackPath string, required bool, scope string, report *EvaluationReport) {
 	srcMetrics := &SourceMetrics{}
+	srcMetrics.Scope = normalizeScope(scope)
 	report.Sources[sourceName] = srcMetrics
 
 	// Process benign samples
@@ -653,17 +1077,26 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 		} else {
 			defer f.Close()
 			benignProcessed := 0
-			stats, streamErr := forEachCybersecJSONL(f, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), caseCap(func(tc security.Case) error {
+			var r io.Reader = f
+			if required {
+				r = &boundedReader{Reader: f, max: 256 << 20}
+			}
+			cb := func(tc security.Case) error {
 				srcMetrics.BenignTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "benign") {
 					srcMetrics.BenignFP++
 				}
 				return nil
-			}, &benignProcessed, sourceName+"/benign"))
-			if streamErr != nil && !isCapStop(streamErr) {
-				t.Fatalf("Failed to stream benign samples from %s: %v", benignPath, streamErr)
 			}
-			if isCapStop(streamErr) {
+			if !required {
+				cb = caseCap(cb, &benignProcessed, sourceName+"/benign")
+			}
+			stats, streamErr := forEachCybersecJSONL(r, "benign", evalShardTotal(), evalShardIndex(evalShardTotal()), cb)
+			capped, decErr := corpusStreamDecision(streamErr, required, false, stats.SkippedOverlong)
+			if decErr != nil {
+				t.Fatalf("Failed to stream benign samples from %s: %v", benignPath, decErr)
+			}
+			if capped {
 				t.Logf("Capped %s/benign at %d cases (SEMANTIC_EVAL_MAX_CASES=0 evaluates everything)", sourceName, evalMaxCases())
 			}
 			if stats.SkippedOverlong > 0 {
@@ -683,27 +1116,50 @@ func processDataSourceSplit(t *testing.T, analyzer *Analyzer, sourceName, benign
 		} else {
 			defer f.Close()
 			attackProcessed := 0
-			stats, streamErr := forEachCybersecJSONL(f, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), caseCap(func(tc security.Case) error {
+			var r io.Reader = f
+			if required {
+				r = &boundedReader{Reader: f, max: 256 << 20}
+			}
+			cb := func(tc security.Case) error {
 				srcMetrics.AttackTotal++
+				if report.ByCategoryAllSources == nil {
+					report.ByCategoryAllSources = make(map[string]*CategoryMetrics)
+				}
+				allCat := report.ByCategoryAllSources[tc.Category]
+				if allCat == nil {
+					allCat = &CategoryMetrics{}
+				}
+				allCat.AttackTotal++
 				if detectSample(t, analyzer, &tc, report, sourceName, "attack") {
 					srcMetrics.AttackHit++
-					if report.ByCategory[tc.Category] == nil {
-						report.ByCategory[tc.Category] = &CategoryMetrics{}
+					allCat.AttackHit++
+					if normalizeScope(srcMetrics.Scope) == ScopeRequest {
+						if report.ByCategory[tc.Category] == nil {
+							report.ByCategory[tc.Category] = &CategoryMetrics{}
+						}
+						report.ByCategory[tc.Category].AttackTotal++
+						report.ByCategory[tc.Category].AttackHit++
 					}
-					report.ByCategory[tc.Category].AttackTotal++
-					report.ByCategory[tc.Category].AttackHit++
 				} else {
-					if report.ByCategory[tc.Category] == nil {
-						report.ByCategory[tc.Category] = &CategoryMetrics{}
+					if normalizeScope(srcMetrics.Scope) == ScopeRequest {
+						if report.ByCategory[tc.Category] == nil {
+							report.ByCategory[tc.Category] = &CategoryMetrics{}
+						}
+						report.ByCategory[tc.Category].AttackTotal++
 					}
-					report.ByCategory[tc.Category].AttackTotal++
 				}
+				report.ByCategoryAllSources[tc.Category] = allCat
 				return nil
-			}, &attackProcessed, sourceName+"/attack"))
-			if streamErr != nil && !isCapStop(streamErr) {
-				t.Fatalf("Failed to stream attack samples from %s: %v", attackPath, streamErr)
 			}
-			if isCapStop(streamErr) {
+			if !required {
+				cb = caseCap(cb, &attackProcessed, sourceName+"/attack")
+			}
+			stats, streamErr := forEachCybersecJSONL(r, "attack", evalShardTotal(), evalShardIndex(evalShardTotal()), cb)
+			capped, decErr := corpusStreamDecision(streamErr, required, false, stats.SkippedOverlong)
+			if decErr != nil {
+				t.Fatalf("Failed to stream attack samples from %s: %v", attackPath, decErr)
+			}
+			if capped {
 				t.Logf("Capped %s/attack at %d cases (SEMANTIC_EVAL_MAX_CASES=0 evaluates everything)", sourceName, evalMaxCases())
 			}
 			if stats.SkippedOverlong > 0 {
@@ -819,6 +1275,7 @@ func TestParanoiaSweepUsesRawLineShardMembership(t *testing.T) {
 		attackPath string
 		required   bool
 		skipShort  bool
+		scope      string
 	}{{name: "raw_shard", benignPath: path, required: true}}
 
 	computeByParanoiaLevel(t, dataSources, report)
@@ -826,6 +1283,47 @@ func TestParanoiaSweepUsesRawLineShardMembership(t *testing.T) {
 		metrics := report.ByParanoiaLevel[strconv.Itoa(level)]
 		if metrics == nil || metrics.BenignTotal != 1 {
 			t.Fatalf("level %d metrics=%+v, want one raw-line selected sample", level, metrics)
+		}
+	}
+}
+
+func TestParanoiaSweepSeparatesPayloadOnlyMixedSource(t *testing.T) {
+	benign := security.Case{Name: "payload-benign", Label: "benign", Method: http.MethodGet, Target: "/health"}
+	attack := security.Case{Name: "payload-attack", Label: "attack", Category: "sqli", Method: http.MethodGet, Target: "/search?q=1%20UNION%20SELECT%20password%20FROM%20users--"}
+	var corpus []byte
+	for _, tc := range []security.Case{benign, attack} {
+		line, err := json.Marshal(tc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		corpus = append(corpus, line...)
+		corpus = append(corpus, '\n')
+	}
+	corpusPath := filepath.Join(t.TempDir(), "payload-mixed.jsonl")
+	if err := os.WriteFile(corpusPath, corpus, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dataSources := []struct {
+		name       string
+		benignPath string
+		attackPath string
+		required   bool
+		skipShort  bool
+		scope      string
+	}{{name: "payload_mixed", benignPath: corpusPath, required: true, scope: ScopePayloadOnly}}
+	report := &EvaluationReport{ByParanoiaLevel: make(map[string]*ParanoiaMetrics)}
+	computeByParanoiaLevel(t, dataSources, report)
+
+	for level := 0; level <= 5; level++ {
+		key := strconv.Itoa(level)
+		primary := report.ByParanoiaLevel[key]
+		all := report.ByParanoiaLevelAllSources[key]
+		if primary == nil || primary.BenignTotal != 0 || primary.AttackTotal != 0 {
+			t.Fatalf("level %d primary metrics=%+v, want no payload-only samples", level, primary)
+		}
+		if all == nil || all.BenignTotal != 1 || all.AttackTotal != 1 {
+			t.Fatalf("level %d all-sources metrics=%+v, want one benign and one attack sample", level, all)
 		}
 	}
 }
@@ -942,9 +1440,14 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 	attackPath string
 	required   bool
 	skipShort  bool
-}, report *EvaluationReport) {
+	scope      string
+}, report *EvaluationReport, governedManifestPath ...string) {
+	if report.ByParanoiaLevel == nil {
+		report.ByParanoiaLevel = make(map[string]*ParanoiaMetrics)
+	}
 	t.Logf("\n===Computing by-paranoia-level metrics (single-pass + offline grading)===")
 	var totals [6]evalLevelTotals
+	var allTotals [6]evalLevelTotals
 	shards := evalShardTotal()
 	shard := evalShardIndex(shards)
 
@@ -952,9 +1455,16 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 		if testing.Short() && ds.skipShort {
 			continue
 		}
+		if len(governedManifestPath) > 0 && governedManifestPath[0] != "" && ds.name == "governed_formal_snapshot" && strings.HasSuffix(strings.ToLower(ds.benignPath), ".gz") {
+			t.Fatalf("governed corpus must be uncompressed")
+		}
 		if ds.attackPath != "" {
-			processCybersecLevels(t, ds, "benign", ds.benignPath, shards, shard, &totals)
-			processCybersecLevels(t, ds, "attack", ds.attackPath, shards, shard, &totals)
+			levelTotals := []*[6]evalLevelTotals{&allTotals}
+			if normalizeScope(ds.scope) == ScopeRequest {
+				levelTotals = append(levelTotals, &totals)
+			}
+			processCybersecLevels(t, ds, "benign", ds.benignPath, shards, shard, levelTotals...)
+			processCybersecLevels(t, ds, "attack", ds.attackPath, shards, shard, levelTotals...)
 			continue
 		}
 		f, err := openCorpusFile(ds.benignPath)
@@ -964,19 +1474,40 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 			}
 			continue
 		}
-		stats, streamErr := security.ForEachJSONLWithStats(f, shards, shard, func(tc security.Case) error {
-			accumulateParanoiaTotals(t, tc, tc.Label, &totals)
+		levelTotals := []*[6]evalLevelTotals{&allTotals}
+		if normalizeScope(ds.scope) == ScopeRequest {
+			levelTotals = append(levelTotals, &totals)
+		}
+		var levelReader io.Reader = f
+		var gr *governedPassReader
+		var exp governedExpectation
+		if len(governedManifestPath) > 0 && governedManifestPath[0] != "" && ds.name == "governed_formal_snapshot" {
+			exp = loadGovernedExpectation(t, governedManifestPath[0])
+			gr = &governedPassReader{Reader: f, hash: sha256.New(), maxBytes: 256 << 20, maxRecords: 1_000_000}
+			levelReader = gr
+		}
+		if ds.required && gr == nil {
+			levelReader = &boundedReader{Reader: f, max: 256 << 20}
+		}
+		stats, streamErr := security.ForEachJSONLWithStats(levelReader, shards, shard, func(tc security.Case) error {
+			accumulateParanoiaTotals(t, tc, tc.Label, levelTotals...)
 			return nil
 		})
 		closeErr := f.Close()
-		if streamErr != nil {
-			t.Fatalf("Failed to stream paranoia samples from %s: %v", ds.benignPath, streamErr)
+		_, decErr := corpusStreamDecision(streamErr, ds.required, ds.name == "governed_formal_snapshot", stats.SkippedOverlong)
+		if decErr != nil {
+			t.Fatalf("Failed to stream paranoia samples from %s: %v", ds.benignPath, decErr)
 		}
 		if closeErr != nil {
 			t.Fatalf("Failed to close paranoia source %s: %v", ds.benignPath, closeErr)
 		}
 		if stats.SkippedOverlong > 0 {
 			t.Logf("Skipped %d overlong paranoia record(s) from %s", stats.SkippedOverlong, ds.benignPath)
+		}
+		if gr != nil {
+			if err := gr.verify(stats, exp); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 
@@ -998,6 +1529,23 @@ func computeByParanoiaLevel(t *testing.T, dataSources []struct {
 			FPR:         fpr,
 			TPR:         tpr,
 		}
+		if report.ByParanoiaLevelAllSources == nil {
+			report.ByParanoiaLevelAllSources = make(map[string]*ParanoiaMetrics)
+		}
+		am := allTotals[level]
+		report.ByParanoiaLevelAllSources[levelKey] = &ParanoiaMetrics{BenignTotal: am.benignTotal, BenignFP: am.benignFP, AttackTotal: am.attackTotal, AttackHit: am.attackHit}
+		if am.benignTotal > 0 {
+			report.ByParanoiaLevelAllSources[levelKey].FPR = float64(am.benignFP) / float64(am.benignTotal) * 100
+		}
+		if am.attackTotal > 0 {
+			report.ByParanoiaLevelAllSources[levelKey].TPR = float64(am.attackHit) / float64(am.attackTotal) * 100
+		}
+		if _, upper, ok := security.WilsonInterval99(am.benignFP, am.benignTotal); ok {
+			report.ByParanoiaLevelAllSources[levelKey].FPRUpper99 = upper * 100
+		}
+		if lower, _, ok := security.WilsonInterval99(am.attackHit, am.attackTotal); ok {
+			report.ByParanoiaLevelAllSources[levelKey].TPRLower99 = lower * 100
+		}
 		if _, upper, ok := security.WilsonInterval99(totals[level].benignFP, totals[level].benignTotal); ok {
 			report.ByParanoiaLevel[levelKey].FPRUpper99 = upper * 100
 		}
@@ -1016,7 +1564,8 @@ func processCybersecLevels(t *testing.T, ds struct {
 	attackPath string
 	required   bool
 	skipShort  bool
-}, label, path string, shards, shard int, totals *[6]evalLevelTotals) {
+	scope      string
+}, label, path string, shards, shard int, totals ...*[6]evalLevelTotals) {
 	f, err := openCorpusFile(path)
 	if err != nil {
 		if ds.required {
@@ -1024,13 +1573,18 @@ func processCybersecLevels(t *testing.T, ds struct {
 		}
 		return
 	}
-	stats, streamErr := forEachCybersecJSONL(f, label, shards, shard, func(tc security.Case) error {
-		accumulateParanoiaTotals(t, tc, label, totals)
+	var levelReader io.Reader = f
+	if ds.required {
+		levelReader = &boundedReader{Reader: f, max: 256 << 20}
+	}
+	stats, streamErr := forEachCybersecJSONL(levelReader, label, shards, shard, func(tc security.Case) error {
+		accumulateParanoiaTotals(t, tc, label, totals...)
 		return nil
 	})
 	closeErr := f.Close()
-	if streamErr != nil {
-		t.Fatalf("Failed to stream paranoia samples from %s: %v", path, streamErr)
+	_, decErr := corpusStreamDecision(streamErr, ds.required, false, stats.SkippedOverlong)
+	if decErr != nil {
+		t.Fatalf("Failed to stream paranoia samples from %s: %v", path, decErr)
 	}
 	if closeErr != nil {
 		t.Fatalf("Failed to close paranoia source %s: %v", path, closeErr)
@@ -1040,19 +1594,21 @@ func processCybersecLevels(t *testing.T, ds struct {
 	}
 }
 
-func accumulateParanoiaTotals(t *testing.T, tc security.Case, label string, totals *[6]evalLevelTotals) {
+func accumulateParanoiaTotals(t *testing.T, tc security.Case, label string, totals ...*[6]evalLevelTotals) {
 	t.Helper()
 	hits := detectHitsOnce(t, &tc)
-	for level := 0; level <= 5; level++ {
-		if label == "benign" {
-			totals[level].benignTotal++
-			if hitsBlockableAny(hits, level) {
-				totals[level].benignFP++
-			}
-		} else if label == "attack" {
-			totals[level].attackTotal++
-			if hitsBlockableAny(hits, level) {
-				totals[level].attackHit++
+	for _, total := range totals {
+		for level := 0; level <= 5; level++ {
+			if label == "benign" {
+				total[level].benignTotal++
+				if hitsBlockableAny(hits, level) {
+					total[level].benignFP++
+				}
+			} else if label == "attack" {
+				total[level].attackTotal++
+				if hitsBlockableAny(hits, level) {
+					total[level].attackHit++
+				}
 			}
 		}
 	}
@@ -1211,6 +1767,7 @@ func TestParanoiaSweepUsesPrimaryEvaluationShardMembership(t *testing.T) {
 		attackPath string
 		required   bool
 		skipShort  bool
+		scope      string
 	}{
 		{name: "shard_parity", benignPath: corpusPath, required: true},
 	}
@@ -1342,7 +1899,7 @@ func (g *gzipCorpusFile) Close() error {
 }
 
 func openCorpusFile(path string) (io.ReadCloser, error) {
-	f, err := os.Open(path)
+	f, err := openStableCorpusInput(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1353,6 +1910,34 @@ func openCorpusFile(path string) (io.ReadCloser, error) {
 			return nil, err
 		}
 		return &gzipCorpusFile{Reader: gz, closers: []io.Closer{gz, f}}, nil
+	}
+	return f, nil
+}
+
+// openStableCorpusInput rejects final-component symlinks and closes the
+// Lstat/Open race before an evaluation corpus is parsed. A corpus path is an
+// evidence identity, not merely a convenient alias; following a mutable link
+// could make a baseline report bind one file while replaying another.
+func openStableCorpusInput(path string) (*os.File, error) {
+	lstat, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !lstat.Mode().IsRegular() {
+		return nil, fmt.Errorf("corpus must be a regular file: %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(lstat, info) {
+		_ = f.Close()
+		return nil, fmt.Errorf("corpus changed while opening: %s", path)
 	}
 	return f, nil
 }

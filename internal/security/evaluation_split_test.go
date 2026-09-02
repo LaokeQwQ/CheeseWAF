@@ -689,6 +689,46 @@ func TestForEachEvaluationJSONLRequireGoverned(t *testing.T) {
 	}
 }
 
+func TestForEachEvaluationJSONLRejectsSymlinkGovernanceSource(t *testing.T) {
+	dir := t.TempDir()
+	formalPath := filepath.Join(dir, "formal.jsonl")
+	aliasPath := filepath.Join(dir, "formal-alias.jsonl")
+	when := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+	row := makeEvaluationRecord("symlinked", "source", "site", "session", "/", when)
+	formalLine, err := json.Marshal(row.Case)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(formalPath, append(formalLine, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(formalPath, aliasPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	row.GovernancePath = aliasPath
+	row.GovernanceLine = 1
+	row.RawHash = hashBytes(formalLine)
+	row.Decision = "auto"
+	encoded, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ForEachEvaluationJSONL(bytes.NewReader(append(encoded, '\n')), EvaluationLoadOptions{
+		MaxRecords:      1,
+		RequireGoverned: true,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink governance source unexpectedly accepted: %v", err)
+	}
+	got, readErr := os.ReadFile(formalPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(append(formalLine, '\n')) {
+		t.Fatalf("symlink verification modified target: %q", string(got))
+	}
+}
+
 func TestLoadEvaluationSplitArtifactEnforcesByteBudget(t *testing.T) {
 	data := bytes.Repeat([]byte{' '}, DefaultEvaluationArtifactMaxBytes+1)
 	_, err := LoadEvaluationSplitArtifact(bytes.NewReader(data), 1)

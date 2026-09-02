@@ -263,7 +263,7 @@ func runContext(ctx context.Context, opts options) error {
 	if err := security.ValidateShard(opts.Shards, opts.Shard); err != nil {
 		return err
 	}
-	file, err := os.Open(opts.CorpusPath)
+	file, err := openLocalRegularFile(opts.CorpusPath, "corpus")
 	if err != nil {
 		return err
 	}
@@ -945,14 +945,7 @@ func hashGovernanceSourceFile(ctx context.Context, path string, maxBytes int64) 
 	if isRemotePath(path) {
 		return "", errors.New("governance source must be a local file")
 	}
-	pathBefore, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	if !pathBefore.Mode().IsRegular() {
-		return "", errors.New("governance source must be a regular file")
-	}
-	file, err := os.Open(path)
+	file, err := openLocalRegularFile(path, "governance source")
 	if err != nil {
 		return "", err
 	}
@@ -963,9 +956,6 @@ func hashGovernanceSourceFile(ctx context.Context, path string, maxBytes int64) 
 	}
 	if !before.Mode().IsRegular() {
 		return "", errors.New("governance source must be a regular file")
-	}
-	if !os.SameFile(pathBefore, before) {
-		return "", errors.New("changed while opening")
 	}
 	if maxBytes < 1 || maxBytes > maxGovernanceSourceHashBytes {
 		maxBytes = maxGovernanceSourceHashBytes
@@ -1001,12 +991,12 @@ func hashGovernanceSourceFile(ctx context.Context, path string, maxBytes int64) 
 	if err != nil {
 		return "", err
 	}
-	pathAfter, err := os.Stat(path)
+	pathAfter, err := os.Lstat(path)
 	if err != nil {
 		return "", err
 	}
 	if !os.SameFile(before, after) || before.Size() != after.Size() ||
-		!os.SameFile(pathBefore, pathAfter) || pathBefore.Size() != pathAfter.Size() {
+		!os.SameFile(before, pathAfter) || before.Size() != pathAfter.Size() {
 		return "", errors.New("changed while hashing")
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -2311,7 +2301,6 @@ func validateAnalyzerContext(ctx context.Context, analyzer *semantic.Analyzer, t
 	req, err := newCorpusRequest(tc)
 	if err != nil {
 		res.Error = err.Error()
-		res.Passed = true
 		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
@@ -2319,11 +2308,14 @@ func validateAnalyzerContext(ctx context.Context, analyzer *semantic.Analyzer, t
 	reqCtx, err := engine.NewRequestContext(req, "corpus")
 	if err != nil {
 		res.Error = err.Error()
-		res.Passed = true
 		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
 	}
+	// The offline runner replays the authority captured with the case. This is
+	// an evaluation-only trust boundary; production requests are marked by the
+	// proxy only after tenant host validation.
+	reqCtx.HostValidated = true
 	detection, err := analyzer.Detect(ctx, reqCtx)
 	if err != nil {
 		res.Error = err.Error()
@@ -2362,7 +2354,6 @@ func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]str
 	target, err := resolveTarget(baseURL, tc.Target)
 	if err != nil {
 		res.Error = err.Error()
-		res.Passed = true
 		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
@@ -2370,7 +2361,6 @@ func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]str
 	req, err := http.NewRequest(tc.Method, target, strings.NewReader(tc.Body))
 	if err != nil {
 		res.Error = err.Error()
-		res.Passed = true
 		res.Warning = true
 		res.LatencyMS = durationMS(time.Since(start))
 		return res
@@ -2379,9 +2369,7 @@ func validateHTTP(client *http.Client, baseURL string, blockStatuses map[int]str
 		req.Header.Set("Content-Type", tc.ContentType)
 	}
 	req.Header.Set("User-Agent", "CheeseWAF-Corpus-Runner/0.1")
-	for key, value := range tc.Header {
-		req.Header.Set(key, value)
-	}
+	applyCorpusHeaders(req, tc.Header)
 	resp, err := client.Do(req)
 	if err != nil {
 		res.Error = err.Error()
@@ -2422,10 +2410,22 @@ func newCorpusRequest(tc security.Case) (*http.Request, error) {
 	if tc.ContentType != "" {
 		req.Header.Set("Content-Type", tc.ContentType)
 	}
-	for key, value := range tc.Header {
+	applyCorpusHeaders(req, tc.Header)
+	return req, nil
+}
+
+// applyCorpusHeaders mirrors net/http's request model: Host is stored on
+// Request.Host rather than in Request.Header. Keeping that distinction makes
+// analyzer and live HTTP replays observe the same authority and therefore the
+// same same-origin/security semantics as production traffic.
+func applyCorpusHeaders(req *http.Request, headers map[string]string) {
+	for key, value := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), "host") {
+			req.Host = strings.TrimSpace(value)
+			continue
+		}
 		req.Header.Set(key, value)
 	}
-	return req, nil
 }
 
 func parseBlockStatuses(raw string) (map[int]struct{}, error) {
@@ -2491,6 +2491,17 @@ func (s *summary) count(res result) {
 	s.Total++
 	if res.Warning {
 		s.Warnings++
+		// A warning means the case could not be evaluated (for example, the
+		// request could not be constructed). Preserve its label denominator,
+		// but never treat it as a pass or as a detected false positive.
+		s.Failures++
+		switch res.Label {
+		case "attack":
+			s.AttackTotal++
+			s.AttackMissed++
+		case "benign":
+			s.BenignTotal++
+		}
 		return
 	}
 	switch res.Label {

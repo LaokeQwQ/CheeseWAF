@@ -33,7 +33,8 @@
 | [openappsec WAF Comparison Project](https://github.com/openappsec/waf-comparison-project) Legitimate Requests Dataset | 约 1,040,242 条真实浏览操作产生的完整良性 HTTP 请求，按站点/业务类别分组 | 公开直链；无需账号或申请 | 独立 benign 候选、路径/参数/Header 分布和长尾白流量 | `research-quarantine`；须先做全局去重、PII/第三方内容清洗、文件级许可复核和分组切分 |
 | [SR-BH 2020 multi-label dataset](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OGOIXX) | 约 907,814 条带时间、目标、Header/Cookie、请求体和响应字段的 WordPress HTTP 请求；normal/attack 与 13 类 CAPEC 标签 | Harvard Dataverse 公开记录；无需申请，但原始日志仍含 PII/凭据样式风险 | 跨来源 benign/attack 候选、时间切片和长尾请求 | `research-quarantine`；需锁定文件版本/哈希、完成去敏与独立标签复核后再评估 |
 | [REDI Web logs de DVWA（V1）](https://doi.org/10.60895/redata/G4HCSX) | 公开记录包含 `access.log`/`error.log` 以及 `sqlmap.zip`；描述为 DVWA 正常访问与 SQLi（B/E/U/T/Q）攻击日志，文件级大小与 MD5 可查 | 数据集列表标为 Public、CC BY 4.0 且公开 API 地址可见；但单文件页出现“确认/补充信息后申请访问”提示，是否真正无门槛尚未确认 | 独立 SQLi/良性候选、日志适配和时间/会话分组研究 | `research-quarantine`；在访问条件明确前不下载、不申请；单一 DVWA 生成环境且攻击由 sqlmap 产生，须先确认压缩包是否保留完整请求上下文、校验哈希、去敏、全局去重和标签复核，不能直接作 blind |
-| [ModSec-WP / WordPress Web Attack Audit Log Dataset](https://zenodo.org/records/21872151) | v2 约 108,883 条完整 HTTP 事务，`combined_final_dataset_augmented.xlsx`（约 27.8 MB，MD5 `6d02547829e0b460ef6473d5603a84db`），含请求/响应、Header、Body 和 `sqli`/`xss`/`fileinclusion-ldf`/`rce`/`bruteforce`/`normal` 六类标签；单一 WordPress 测试床 | Zenodo 记录标为 Open、无需申请；但本项目尚未确认文件级许可证/权利证据 | WordPress 业务形态和攻击邻居参考 | `research-quarantine`；标签由场景关联、规则匹配和专家复核混合产生，且页面提示有大量近重复请求，不能直接作为独立 blind |
+| [ModSec-WP / WordPress Web Attack Audit Log Dataset](https://zenodo.org/records/21872151) | v2 约 108,883 条完整 HTTP 事务，`combined_final_dataset_augmented.xlsx`（约 27.8 MB，MD5 `6d02547829e0b460ef6473d5603a84db`，SHA-256 `f959c79e185502b03206f6fdeb29306a65571394c2f009dda503d43ba306d16d`），含请求/响应、Header、Body 和 `sqli`/`xss`/`fileinclusion-ldf`/`rce`/`bruteforce`/`normal` 六类标签；单一 WordPress 测试床 | [Zenodo 官方记录/API](https://zenodo.org/api/records/21872151) 明确给出 `access_right=open` 和 `CC BY 4.0`，无需申请；许可证仅证明该记录的公开授权，不替代字段级去敏、标签独立性或再分发审查 | WordPress 业务形态和攻击邻居参考 | `research-quarantine`；标签由场景关联、规则匹配和专家复核混合产生，且页面提示有大量近重复请求，不能直接作为独立 blind |
+| [WAF Data v2（Hugging Face）](https://huggingface.co/datasets/puyang2025/waf_data_v2) | 数据卡声明 2,405,579 条完整 HTTP 请求记录，字段含 method、URL、protocol、serialized headers、body、normal/anomalous 标签；提供 train/eval/test/heldout 分区 | 页面公开可读，数据卡声明 MIT；但未给出上游原始来源、逐文件哈希、站点/会话/时间边界或系统化去敏证明，公开样例可见 Cookie、邮箱和凭据样式值 | 仅作为待治理的训练候选、请求形状与长尾攻击邻居；`heldout` 不能直接视为盲集 | `research-quarantine`；不得直接下载或接入；若取得受控副本，必须先与现有语料全局去重、初筛、语义挑选、PII/Cookie/Token 清洗、标签复核和独立分组切分，未完成前不能作为 blind 或 FPR/TPR 证据 |
 | [Thirty-Day OWASP ModSecurity production blocked requests](https://zenodo.org/records/17178461) | 约 30 天生产 Web 服务器被 OWASP CRS 拦截的匿名恶意 HTTP 请求，`owasp.zip` 约 29.5 MB，MD5 `95b7a8237abc163d8ca31e49f7318efd`；仅攻击侧、非 benign/attack 配对集 | Zenodo 记录标为 Open、无需申请；当前记录的 Rights/License 字段未提供可核验文件级许可 | 攻击请求形状、CRS 规则覆盖和 hard-positive 参考；不能支撑 FPR 或完整 blind | `research-quarantine`；先确认文件级许可证、请求字段/时间与会话边界、去敏和标签来源，再与现有语料全局去重、初筛、语义挑选、清洗和二次复核；不下载、不进入 formal/blind |
 | [OWASP Core Rule Set](https://github.com/coreruleset/coreruleset) 回归测试夹具 | HTTP 请求形状、规则期望结果、攻击类别线索 | 公开仓库；具体测试文件仍需逐文件核验 | 攻击邻居、协议差分、规则回归 | 候选；仅在 Apache-2.0 及文件级证据确认后进入治理 |
 | [OWASP Juice Shop](https://github.com/juice-shop/juice-shop) 本地应用 | 通过本地靶场生成的请求/响应；标签由已知路由和动作产生 | 公开仓库；数据由本地生成，不搬运生产日志 | 生成良性业务流量和可重复攻击重放 | 候选生成器；生成物单独去重、脱敏和复核 |
@@ -53,6 +54,7 @@
 | --- | --- | --- |
 | [HttpParamsDataset](https://github.com/Morzeux/HttpParamsDataset) | 仓库声明 MIT，但记录是可嵌入 HTTP 参数的孤立值，且由多个工具/来源混合生成；不是完整请求 | 训练阶段的参数形状与 hard-negative 参考；不得直接计入请求级 FPR/TPR 或 blind |
 | [CSIC 2010 HTTP Dataset 镜像](https://github.com/sunbeamdotpt/csic-dataset) | 具有完整 raw HTTP 和 normal/anomalous 划分，但镜像明确说明数据文件没有 stated license，仓库 Apache-2.0 不覆盖数据文件 | 在取得原始权利人/文件级许可证证据前不得接入；不下载、不进入 formal/blind |
+| [CSIC/TORPEDA 2012 数据集](https://www.tic.itefi.csic.es/torpeda/datasets.html) | 历史资料描述为约 7.4 万条 XML 请求，含 normal、anomalous 与多类攻击标签，并保留 Method、Path、Headers、Body；当前官方旧入口可用性、精确文件版本、文件级许可证与哈希均未核验 | `research-quarantine` 候选；不申请、不下载；若取得合法副本，必须先全局去重、初筛、语义挑选、脱敏、标签复核和按站点/会话/时间分组，不能直接作为 blind |
 | [Superviz26-SQL](https://zenodo.org/records/19627322) | 数据表明为 MIT，但内容是合成 SQL 语句而非 HTTP 请求；其生成器还提示攻击样本未逐条验证 | 仅可在本地受控靶场包装成请求后作 SQL 语法邻居；先治理，不能直接作请求级 blind |
 | [WEB-IDS23](https://github.com/sys-uos/web-ids23) | 公开 DOI 的 Zeek/FlowMeter 流级 CSV，含 HTTP/S 类别标签，但不是原始 HTTP 请求 | 仅作流量类别和压力参考；不得直接送入语义请求检测器 |
 | [Normal & Malicious SQLi](https://data.mendeley.com/datasets/sx84kj3xfz/1) | 官方页面称超过 64,000 条 benign/SQLi web-request 记录，版本 1，CC BY 4.0；页面未公开字段字典、文件哈希或标签生成细节 | `research-quarantine` 候选；不申请账号、不下载前先确认匿名可取、完整请求字段、文件级哈希、去敏和标签独立性；不得直接进入 formal/blind |
@@ -71,11 +73,20 @@
   在此之前只留在 `research-quarantine`。
 - [ModSec-WP v2](https://zenodo.org/records/21872151) 页面列出 108,883 条事务、
   `combined_final_dataset_augmented.xlsx`（约 27.8 MB，MD5
-  `6d02547829e0b460ef6473d5603a84db`）和六类标签。记录说明数据来自单一 WordPress
-  测试床的 detection-only WAF，标签结合时间/执行关联、规则匹配和专家复核，且自动化
-  工具会产生大量近重复请求。当前仍没有可供本项目确认的文件级许可证证据，因此只
-  能帮助定位 WordPress 形态缺口，不能作为独立攻击标签或 blind 分母；取得受控副本
-  后仍须走同一套全局去重、初筛、语义挑选、清洗、分组和二次复核。
+  `6d02547829e0b460ef6473d5603a84db`）；官方 API 同时给出 `access_right=open`、
+  `CC BY 4.0` 和同一文件校验值（[记录元数据](https://zenodo.org/api/records/21872151)）。
+  这解决了“是否公开、是否有记录级许可”的证据缺口，但不证明请求字段已去敏，也不
+  证明标签对本项目独立。数据来自单一 WordPress 测试床的 detection-only WAF，标签
+  结合时间/执行关联、规则匹配和专家复核，且自动化工具会产生大量近重复请求，因此
+  仍只作为 `research-quarantine` 审计输入，不能作为独立攻击标签或 blind 分母；受控
+  副本必须先走全局去重、初筛、语义挑选、清洗、分组和二次复核。
+
+  本轮仅在隔离目录保留原始文件哈希，未把 XLSX 或转换产物写入仓库。后续临时审计应
+  将每行转换为请求级 envelope，只允许 `request_line`、请求 Header/Body 等检测输入
+  字段进入 analyzer；`message_rule_*`、`full_message_line`、响应字段和原始 `label`
+  只能留在审计 sidecar，防止规则/标签泄漏。审计必须记录源文件哈希、行号、站点/会话/
+  时间分组、PII/Cookie/Token 清洗计数、精确与规范化重复组、不可适配/拒绝原因，并将
+  所有结果保持在 `research-quarantine`，不得自动提升为 `formal` 或 `blind`。
 - [openappsec Legitimate Requests Dataset](https://github.com/openappsec/waf-comparison-project)
   目前只能作为 benign-only 候选。它没有独立攻击标签，不能单独支撑 TPR；完整压缩包
   较大且真实站点内容可能包含第三方数据，所以仍不自动下载或接入。
@@ -107,6 +118,54 @@
   元数据，不下载；后续若访问条件和许可明确，副本仍须先与现有语料全局去重、初筛、
   语义挑选、PII/Cookie/Token 清洗、按时间/会话分组并二次复核，再决定是否作为攻击侧
   研究输入。
+- [WAF Data v2](https://huggingface.co/datasets/puyang2025/waf_data_v2) 的数据卡声明
+  2,405,579 条带 method/URL/protocol/Header/Body 和二元标签的 HTTP 记录，分为
+  `train`/`eval`/`test`/`heldout`，并标注 MIT。页面公开样例同时出现 Cookie、邮箱和
+  密码/Token 样式值，且没有给出可审计的上游来源、逐文件哈希、站点/会话/时间切片或
+  系统化去敏证明；因此即使访问无门槛，也不能把卡片上的许可证和分区名称直接当作
+  独立 blind 凭据。本轮只登记候选，不下载、不接入；任何受控副本仍须先走全局去重、
+  初筛、语义挑选、脱敏、标签复核和独立分组流程。
+- 2026-09-02 对该候选的固定提交 `b035dc17f875f1f732c10654709abed66a4e9742` 做了
+  只读文件清单核验：`heldout.parquet` 为 `208,828,803` bytes、LFS 对象
+  `8a9fb198761f9646cf346e465387a5da1ec26fe1057c69879e265f2b1980095b`；
+  `train`/`eval`/`test` 的文件大小分别为 `80,180,766`/`11,204,310`/
+  `11,181,374` bytes。该提交与对象哈希可用于后续副本锁定，但不补足来源、去敏或
+  标签独立性证据，因此仍不生成 blind 分母。为避免读取样本，本轮只取 `heldout`
+  文件末尾 `65,536` bytes；Parquet 尾标记和元数据长度字段有效（footer 片段哈希
+  `3c62f2f1262e8050caa9605c6cca1956df36fff6e742fd275a9e58f122b25ca3`），未保留该
+  临时片段。
+  固定提交历史只显示后续由 `train.json`/`eval.json`/`test.json`/`heldout.json`
+  转存为 Parquet 的动作，没有随数据发布可核验的上游来源清单或去敏 sidecar；这进一步
+  支持“可作训练候选、不可直接作独立盲集”的隔离结论。
+
+### 训练参考来源的补充审计（2026-09-02）
+
+本轮继续只查官方/原始发布页，不注册、不申请、不下载，也没有改变任何正式分母。
+新增候选均先按“文件级许可、完整请求上下文、独立标签、版本/哈希、去敏和跨组独立性”
+逐项核验；缺一项就留在隔离区或明确淘汰：
+
+- [PositiveTechnologies/seq2seq-web-attack-detection](https://github.com/PositiveTechnologies/seq2seq-web-attack-detection)
+  公开说明约 `21,991` 条 benign 与 `1,097` 条 anomalous raw HTTP 请求，能还原请求文本；
+  但仓库 MIT 许可没有证明数据文件或原始来源的再分发权，也没有文件级版本哈希、去敏
+  sidecar 和逐条标签审计。状态：`research-quarantine`，不得直接进入 train/formal/blind。
+- [pralab/modsec-learn-dataset](https://github.com/pralab/modsec-learn-dataset)
+  提供 legitimate/malicious 分目录和重建脚本；攻击侧混合多个 payload/工具来源，未见
+  独立数据许可、完整请求字段、标签来源和稳定制品哈希。状态：`research-quarantine`，
+  仅可在取得合法副本后按全局去重、初筛、语义挑选、清洗和二次复核流程处理。
+- [ML Based WAF-mitmproxy 数据集](https://figshare.com/articles/dataset/ML_Based_WAF-mitmproxy_csv_and_log_files/26583526)
+  Figshare 页面标注版本 2、CC BY 4.0、约 `7.79 GB`，论文说明其混合 CSIC、HttpParams
+  和实时 Burp/mitmproxy 请求；因此虽然公开可见，仍缺少统一上游许可、独立来源边界、
+  文件级字段/标签审计和去敏证明。状态：`research-quarantine`，不下载、不把其分区名
+  当作 blind 凭据。
+- [CSIC 2010 HTTP Dataset 镜像](https://github.com/sunbeamdotpt/csic-dataset) 与
+  [官方资料存档](https://petescully.co.uk/wp-content/uploads/2018/04/http_dataset_csic_2010.pdf)
+  说明约 `36,000` normal 和 `25,000+` anomalous raw HTTP 请求，但原始发布没有 stated
+  license，镜像代码许可不覆盖数据，且资料描述使用真实姓名/地址字段；没有官方文件哈希
+  或稳定版本。状态：明确排除 formal/blind，最多留作许可待核验的隔离候选。
+- [ECML/PKDD 2007 Web Analyzing Traffic Challenge](https://www.lirmm.fr/pkdd2007-challenge/inscription.html)
+  的论文描述了带 method、URI、headers、body 和专家标签的 XML 请求，但官方入口要求
+  填写注册表，当前也无法核验开放许可、文件级哈希和稳定下载版本。状态：明确排除，
+  不申请、不下载。
 
 这次审计没有发现同时满足“文件级许可可复核、精确版本可锁定、完整请求上下文、
 独立标签、跨站点/时间分组和去敏”全部条件的现成开放 blind 文件。后续若取得合法
@@ -156,6 +215,31 @@ Cookie、CSRF 和会话字段仍需逐来源审查。
 降至 `0/796`；`include`、`require` 等显式包含入口仍保留无扩展名 URL 覆盖。
 该数字只用于发现误报簇和验证回归，样本经过来源筛选、脱敏且没有攻击标签，不能
 充当独立 blind、独立泛化或发布质量证据，也不改变正式评估分母。
+
+### 独立 blind 候选补充审计（2026-09-02）
+
+本次仍只读取官方记录和数据说明，不登录、不申请、不下载、不改变任何
+`train`、`formal` 或 `blind` 分母。新增候选均先按“文件级许可、精确版本/哈希、
+完整 HTTP 上下文、独立标签、去敏和跨组独立性”逐项核验：
+
+- [Superviz25-SQL（Zenodo v2）](https://zenodo.org/records/17086037)：官方记录给出
+  `Open`、版本 `v2`、文件 `dataset.csv` 的 MD5，以及 MIT 分发说明；但实例是单一
+  数据库部署上的合成 SQL 查询，不是带 method/target/header/body 的完整 HTTP 事务，
+  标签来自生成器和 `sqlmap`，且 train/test 只围绕同一 schema/部署，不能证明跨组
+  独立。状态：`research-quarantine`，最多作为 SQL 形状训练参考，不能作为请求级
+  blind。
+- [PMT MLSec 的 CSIC 2010 页面](https://permotion.github.io/pmt_mlsec/datasets/)：页面
+  记录 raw HTTP、文件 SHA-256 和 normal/anomalous 划分，但许可证写为 `For research use`，
+  原始入口要求 request form，且没有可核验的去敏和 site/session/time 分组证据。状态：
+  明确排除正式 blind，不申请、不下载。
+- [LSPR25（Zenodo）](https://zenodo.org/records/17093949)：官方记录将文件标为
+  `Restricted` 并要求登录；内容是 CICFlowMeter 流级特征而非完整 HTTP 请求，记录没有
+  可复核的文件级许可/哈希和去敏证明。即使其标签来自演练元数据或红队基础设施标识，
+  也不能满足本项目的无门槛、完整请求上下文和跨组独立性要求。状态：明确排除正式
+  blind，不登录、不申请、不下载。
+
+这轮没有发现同时满足全部准入条件的现成开放 blind 文件；任何后续受控副本仍必须
+先与现有语料全局去重、初筛、语义挑选、清洗、标签复核和独立分组，再决定是否晋级。
 
 ## 仅研究隔离或明确排除
 

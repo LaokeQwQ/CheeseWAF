@@ -12,7 +12,6 @@ import (
 	"io"
 	"math"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -314,7 +313,13 @@ func loadEvaluationSourceIndex(path string) (*evaluationSourceIndex, error) {
 	if isRemoteCorpusPath(path) {
 		return nil, errors.New("governance source must be a local file")
 	}
-	file, err := os.Open(path)
+	// Keep provenance verification on the same file-identity boundary as the
+	// governance reader. Following a final-component symlink here would let a
+	// metadata row name one path while the index is built from another file.
+	// The CLI's full-source hash pass catches this for governed splits, but the
+	// library loader is also used directly by callers that opt into provenance
+	// verification, so it must fail closed on its own.
+	file, err := openGovernanceRegularFile(path, "governance source")
 	if err != nil {
 		return nil, err
 	}

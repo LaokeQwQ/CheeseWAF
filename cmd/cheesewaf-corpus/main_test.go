@@ -56,6 +56,30 @@ func TestRunGovernanceConfigSuccessWritesManifestSummary(t *testing.T) {
 	}
 }
 
+func TestNewCorpusRequestPreservesValidatedHostAuthority(t *testing.T) {
+	tc := security.Case{
+		Method: http.MethodGet,
+		Target: "http://origin.example.test/telemetry",
+		Header: map[string]string{
+			" Host ":  "tenant.example.test:8443",
+			"X-Trace": "trace-value",
+		},
+	}
+	req, err := newCorpusRequest(tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Host != "tenant.example.test:8443" {
+		t.Fatalf("request host = %q, want validated authority", req.Host)
+	}
+	if got := req.Header.Get("Host"); got != "" {
+		t.Fatalf("Host must use Request.Host, found duplicate header %q", got)
+	}
+	if got := req.Header.Get("X-Trace"); got != "trace-value" {
+		t.Fatalf("ordinary header was not preserved: %q", got)
+	}
+}
+
 func TestRunEvaluationSplitWritesAuditableArtifact(t *testing.T) {
 	dir := t.TempDir()
 	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -194,6 +218,26 @@ func TestVerifyGovernanceSourceHashesRejectsUnreferencedChanges(t *testing.T) {
 	}
 	if err := verifyGovernanceSourceHashes(context.Background(), optionalManifest); err == nil || !strings.Contains(err.Error(), "appeared after the manifest was created") {
 		t.Fatalf("newly present optional source was accepted: %v", err)
+	}
+}
+
+func TestVerifyGovernanceSourceHashesRejectsSingleSymlinkSource(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "source.jsonl")
+	alias := filepath.Join(dir, "source-link.jsonl")
+	data := []byte("source\n")
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	manifest := security.GovernanceManifest{
+		SourceSpecs: []security.SourceSpec{{Path: alias}},
+		InputHashes: map[string]string{alias: digestHex(data)},
+	}
+	if err := verifyGovernanceSourceHashes(context.Background(), manifest); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("single symlink source was unexpectedly accepted: %v", err)
 	}
 }
 
@@ -869,6 +913,27 @@ func TestOpenLocalRegularFileRejectsSymlinkAndAcceptsStableFile(t *testing.T) {
 		t.Fatal("symlinked file was unexpectedly accepted")
 	} else if !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("symlink rejection was misclassified: %v", err)
+	}
+}
+
+func TestRunContextRejectsSymlinkCorpusForReplayModes(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "corpus.jsonl")
+	alias := filepath.Join(dir, "corpus-link.jsonl")
+	line := []byte(`{"name":"benign","source_family":"unit","label":"benign","method":"GET","target":"/"}` + "\n")
+	if err := os.WriteFile(target, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := runContext(context.Background(), options{
+		Mode:       "analyzer",
+		CorpusPath: alias,
+		Shards:     1,
+		Workers:    1,
+	}); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink corpus was unexpectedly accepted: %v", err)
 	}
 }
 
@@ -2243,7 +2308,7 @@ func TestRunStreamGateFailureWritesSummaryBeforeReturningError(t *testing.T) {
 	}
 }
 
-func TestLocalCorpusRequestConstructionErrorsAreWarnings(t *testing.T) {
+func TestLocalCorpusRequestConstructionWarningsFailAndPreserveDenominators(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -2263,20 +2328,57 @@ func TestLocalCorpusRequestConstructionErrorsAreWarnings(t *testing.T) {
 				BlockStatuses: "403",
 				OutputPath:    output,
 			})
-			if err != nil {
-				t.Fatalf("local construction error should be a warning: %v", err)
+			if err == nil || !strings.Contains(err.Error(), "security corpus validation failed") {
+				t.Fatalf("local construction warning should fail validation: %v", err)
 			}
 
 			report := readSummary(t, output)
-			if report.Total != 2 || report.Warnings != 2 || report.Failures != 0 {
+			if report.Total != 2 || report.Warnings != 2 || report.Failures != 2 || report.BenignTotal != 2 || report.BenignClean != 0 {
 				t.Fatalf("unexpected local construction summary: %+v", report)
 			}
 			for _, res := range report.Results {
-				if !res.Warning || !res.Passed || res.Error == "" {
+				if !res.Warning || res.Passed || res.Error == "" {
 					t.Fatalf("unexpected local construction result: %+v", res)
 				}
 			}
 		})
+	}
+}
+
+func TestStreamRequestConstructionWarningsFailAndPreserveDenominators(t *testing.T) {
+	corpus := writeCorpus(t,
+		`{"name":"bad-benign","source_family":"unit","label":"benign","method":"GET\\nBAD","target":"/ok"}`+"\n"+
+			`{"name":"bad-attack","source_family":"unit","label":"attack","category":"sqli","method":"GET","target":"%gh"}`+"\n",
+	)
+	output := filepath.Join(t.TempDir(), "results.ndjson")
+	err := run(options{Mode: "analyzer", CorpusPath: corpus, OutputPath: output, Stream: true, Shards: 1})
+	if err == nil || !strings.Contains(err.Error(), "security corpus validation failed") {
+		t.Fatalf("stream warning should fail validation: %v", err)
+	}
+
+	report := readSummary(t, output+".summary.json")
+	if report.Warnings != 2 || report.Failures != 2 || report.BenignTotal != 1 || report.AttackTotal != 1 || report.AttackMissed != 1 || report.BenignClean != 0 {
+		t.Fatalf("unexpected streamed warning summary: %+v", report)
+	}
+	if len(report.Results) != 0 {
+		t.Fatalf("stream summary should not collect per-case results: %+v", report.Results)
+	}
+	lines, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []result
+	for _, line := range strings.Split(strings.TrimSpace(string(lines)), "\n") {
+		var res result
+		if err := json.Unmarshal([]byte(line), &res); err != nil {
+			t.Fatalf("invalid streamed result: %v", err)
+		}
+		results = append(results, res)
+	}
+	for _, res := range results {
+		if !res.Warning || res.Passed || res.Error == "" {
+			t.Fatalf("unexpected streamed warning result: %+v", res)
+		}
 	}
 }
 

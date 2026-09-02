@@ -114,6 +114,82 @@ func TestSQLNaturalLanguageFingerprintGate(t *testing.T) {
 	}
 }
 
+func TestSQLHTTPMIMEWildcardDoesNotTriggerFingerprint(t *testing.T) {
+	candidate := semanticCandidate{
+		input: InputPoint{Source: "body", Name: "raw"},
+		text: "GET /catalog/items?filter=limited+edition+%26+signed&category=art+prints HTTP/1.1\n" +
+			"Host: modern-art-gallery.biz\n" +
+			"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\n" +
+			"Accept-Encoding: gzip, deflate\n" +
+			"Connection: keep-alive",
+	}
+	if _, detected := analyzeSQL(candidate); detected {
+		t.Fatal("HTTP Accept MIME wildcard was misclassified as SQL injection")
+	}
+}
+
+func TestSQLMultipartBinaryEnvelopeDoesNotTriggerFingerprint(t *testing.T) {
+	benign := `--AaB03x
+Content-Disposition: form-data; name="document"; filename="annual_report_2023.pdf"
+Content-Type: application/pdf
+
+%PDF-1.3
+% Placeholder PDF annual report
+--AaB03x--`
+	candidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: benign}
+	if _, detected := analyzeSQL(candidate); detected {
+		t.Fatal("multipart PDF transport syntax was misclassified as SQL injection")
+	}
+	attack := strings.Replace(benign, "%PDF-1.3", "1' UNION SELECT password FROM users--\n%PDF-1.3", 1)
+	attackCandidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: attack}
+	if _, detected := analyzeSQL(attackCandidate); !detected {
+		t.Fatal("explicit SQL syntax in a multipart upload was suppressed")
+	}
+}
+
+func TestSQLWordPressLockMultipartEnvelopeDoesNotTriggerFingerprint(t *testing.T) {
+	benign := `-----------------------------37543699551198878052739651719
+Content-Disposition: form-data; name="action"
+
+wp-remove-post-lock
+-----------------------------37543699551198878052739651719
+Content-Disposition: form-data; name="_wpnonce"
+
+83d610751d
+-----------------------------37543699551198878052739651719
+Content-Disposition: form-data; name="post_ID"
+
+131
+-----------------------------37543699551198878052739651719
+Content-Disposition: form-data; name="active_post_lock"
+
+1722963921:1
+-----------------------------37543699551198878052739651719--`
+	candidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: benign}
+	if _, detected := analyzeSQL(candidate); detected {
+		t.Fatal("WordPress lock multipart control data was misclassified as SQL injection")
+	}
+
+	attack := strings.Replace(benign, "wp-remove-post-lock", "1' UNION SELECT password FROM users--", 1)
+	attackCandidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: attack}
+	if _, detected := analyzeSQL(attackCandidate); !detected {
+		t.Fatal("explicit SQL syntax in a WordPress-shaped multipart body was suppressed")
+	}
+}
+
+func TestSQLJSONTrailingInventoryNoteDoesNotTriggerFingerprint(t *testing.T) {
+	benign := `{"warehouses":[{"items":[{"sku":"INV-000124","description":"Ergonomic Keyboard"}]}] /* Total 1200 items across 8 warehouses, detailed in JSON with product specs. */}`
+	candidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: benign}
+	if _, detected := analyzeSQL(candidate); detected {
+		t.Fatal("trailing JSON inventory note was misclassified as SQL injection")
+	}
+	attack := `{"q":"1'/**/UNION/**/SELECT password FROM users--"}`
+	attackCandidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: attack}
+	if _, detected := analyzeSQL(attackCandidate); !detected {
+		t.Fatal("explicit SQL syntax in a JSON body was suppressed")
+	}
+}
+
 func TestSQLQuotedAndSelectSubqueryGate(t *testing.T) {
 	attacks := []struct {
 		name, field, text string

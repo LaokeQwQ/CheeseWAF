@@ -69,6 +69,35 @@ func TestCandidateCacheKeyIncludesFieldContext(t *testing.T) {
 	}
 }
 
+func TestCandidateCacheKeyIncludesSSRFRequestScope(t *testing.T) {
+	fingerprint := enabledCategoryFingerprint(map[string]bool{"ssrf": true})
+	text := "http://192.168.171.131/admin"
+	reqA, _ := http.NewRequest(http.MethodGet, "http://192.168.171.131/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url=x", nil)
+	reqB, _ := http.NewRequest(http.MethodGet, "http://192.168.171.132/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url=x", nil)
+	for _, req := range []*http.Request{reqA, reqB} {
+		req.Host = req.URL.Host
+	}
+	candidateA := semanticCandidate{input: InputPoint{Source: "query", Name: "url"}, text: text, request: reqA, hostValidated: true}
+	candidateB := semanticCandidate{input: InputPoint{Source: "query", Name: "url"}, text: text, request: reqB, hostValidated: true}
+	scopeA, ok := ssrfRequestCacheScope(candidateA)
+	if !ok {
+		t.Fatal("expected URL query candidate to carry an SSRF request scope")
+	}
+	scopeB, ok := ssrfRequestCacheScope(candidateB)
+	if !ok {
+		t.Fatal("expected second URL query candidate to carry an SSRF request scope")
+	}
+	base := candidateCacheKey("block", fingerprint, candidateA.input.Source, candidateA.input.Name, text)
+	keyA := candidateCacheKeyWithSSRFScope(base, scopeA)
+	keyB := candidateCacheKeyWithSSRFScope(base, scopeB)
+	if keyA == keyB {
+		t.Fatal("SSRF request scope must separate different authorities")
+	}
+	if keyA != candidateCacheKeyWithSSRFScope(base, scopeA) {
+		t.Fatal("identical SSRF request scope must remain deterministic")
+	}
+}
+
 func TestEnabledCategoryFingerprintIncludesEveryAnalyzerCategory(t *testing.T) {
 	empty := enabledCategoryFingerprint(nil)
 	webshell := enabledCategoryFingerprint(map[string]bool{"webshell": true})
