@@ -35,7 +35,7 @@
     "clsx": "^2.1.1",
     "d3-geo": "^3.1.1",
     "dompurify": "^3.4.14",
-    "i18next": "^26.3.6",
+    "i18next": "^26.4.0",
     "lucide-react": "^1.33.0",
     "maplibre-gl": "^6.4.1",
     "qrcode": "^1.5.4",
