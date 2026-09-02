@@ -57,7 +57,7 @@ func New(opts Options) (*Controller, error) {
 		opts.Binary = defaultCheeseWAFBinary(self)
 	}
 	if opts.ConfigPath == "" {
-		opts.ConfigPath = filepath.Join(".", "data", "cheesewaf.yaml")
+		opts.ConfigPath = filepath.Join(".", "data", "config", "cheesewaf.yaml")
 	}
 	if opts.DataDir == "" {
 		opts.DataDir = filepath.Join(".", "data")
@@ -209,8 +209,9 @@ func (c *Controller) Stop() error {
 
 // Restart stops then starts.
 func (c *Controller) Restart() error {
-	_ = c.Stop()
-	time.Sleep(300 * time.Millisecond)
+	if err := c.Stop(); err != nil {
+		return fmt.Errorf("stop before restart: %w", err)
+	}
 	return c.Start()
 }
 

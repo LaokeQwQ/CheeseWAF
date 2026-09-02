@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
-	"github.com/LaokeQwQ/CheeseWAF/internal/securitytest"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 )
 
 func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
@@ -36,7 +36,7 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 			case "attack":
 				detected := result != nil && result.Detected
 				categoryMatch := result != nil && result.Category == tc.Category
-				if securitytest.StrictCategory(tc.SourceFamily) {
+				if security.StrictCategory(tc.SourceFamily) {
 					if !categoryMatch {
 						t.Fatalf("STRICT: expected %s detection from %s (%s), got category=%v", tc.Category, tc.Name, tc.SourceFamily, result)
 					}
@@ -54,14 +54,14 @@ func TestAnalyzerCuratedExternalCorpus(t *testing.T) {
 	}
 }
 
-func loadAllCorpusCases(t *testing.T) []securitytest.Case {
+func loadAllCorpusCases(t *testing.T) []security.Case {
 	t.Helper()
 	files := []string{
 		"testdata/curated_external_shapes.jsonl",
 		"testdata/benign_production_shapes.jsonl",
 		"testdata/handcrafted_attack_neighbors.jsonl",
 	}
-	var all []securitytest.Case
+	var all []security.Case
 	for _, name := range files {
 		path := name
 		if _, err := os.Stat(path); err != nil {
@@ -71,7 +71,7 @@ func loadAllCorpusCases(t *testing.T) []securitytest.Case {
 		if err != nil {
 			t.Fatalf("open %s: %v", name, err)
 		}
-		cases, err := securitytest.LoadJSONL(file)
+		cases, err := security.LoadJSONL(file)
 		file.Close()
 		if err != nil {
 			t.Fatalf("load %s: %v", name, err)

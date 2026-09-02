@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -20,20 +21,33 @@ type Alert struct {
 
 type Alerter struct {
 	cfg   config.AlertEngineConfig
-	state map[string]time.Time
+	mu    sync.Mutex
+	state map[string]alertState
 	now   func() time.Time
 }
 
+type alertState struct {
+	startedAt time.Time
+	lastFired time.Time
+}
+
+const defaultAlertCooldown = time.Hour
+
 func NewAlerter(cfg config.AlertEngineConfig) *Alerter {
-	return &Alerter{cfg: cfg, state: map[string]time.Time{}, now: time.Now}
+	return &Alerter{cfg: cfg, state: map[string]alertState{}, now: time.Now}
 }
 
 func (a *Alerter) Evaluate(snapshot Snapshot) []Alert {
 	if a == nil || !a.cfg.Enabled {
 		return nil
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	values := Values(snapshot)
-	now := a.now().UTC()
+	now := time.Now().UTC()
+	if a.now != nil {
+		now = a.now().UTC()
+	}
 	var alerts []Alert
 	for _, rule := range a.cfg.Rules {
 		if !rule.Enabled {
@@ -47,14 +61,24 @@ func (a *Alerter) Evaluate(snapshot Snapshot) []Alert {
 			delete(a.state, rule.ID)
 			continue
 		}
-		started := a.state[rule.ID]
-		if started.IsZero() {
-			started = now
-			a.state[rule.ID] = started
+		state := a.state[rule.ID]
+		if state.startedAt.IsZero() {
+			state.startedAt = now
 		}
-		if rule.For > 0 && now.Sub(started) < rule.For {
+		if rule.For > 0 && now.Sub(state.startedAt) < rule.For {
+			a.state[rule.ID] = state
 			continue
 		}
+		cooldown := rule.Cooldown
+		if cooldown <= 0 {
+			cooldown = defaultAlertCooldown
+		}
+		if !state.lastFired.IsZero() && now.Sub(state.lastFired) < cooldown {
+			a.state[rule.ID] = state
+			continue
+		}
+		state.lastFired = now
+		a.state[rule.ID] = state
 		alerts = append(alerts, Alert{
 			RuleID:    rule.ID,
 			Name:      rule.Name,
@@ -62,7 +86,7 @@ func (a *Alerter) Evaluate(snapshot Snapshot) []Alert {
 			Value:     value,
 			Threshold: rule.Threshold,
 			Severity:  empty(rule.Severity, "warning"),
-			StartsAt:  started,
+			StartsAt:  state.startedAt,
 			Message:   fmt.Sprintf("%s is %g %s %g", rule.Metric, value, rule.Operator, rule.Threshold),
 		})
 	}

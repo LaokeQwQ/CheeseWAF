@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -38,6 +39,17 @@ func TestNewRequestContextWithLimitsReplaysFullyInspectedBody(t *testing.T) {
 	replayed, err := io.ReadAll(req.Body)
 	if err != nil || string(replayed) != "12345678" {
 		t.Fatalf("replayed body = %q, err=%v", replayed, err)
+	}
+}
+
+func TestNewRequestContextReservesDetectionResults(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx, err := NewRequestContextDeferredBody(req, "site-a", nil, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap(ctx.Results) < 8 {
+		t.Fatalf("results capacity = %d, want at least 8", cap(ctx.Results))
 	}
 }
 

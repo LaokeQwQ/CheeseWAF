@@ -1,455 +1,641 @@
-# CheeseWAF MVP configuration.
+deployment:
+    mode: "standalone"
 server:
-  listen: "127.0.0.1:8080"
-  listen_tls: ""
-  listen_http3: ""
-  admin_listen: "127.0.0.1:9443"
-  admin_public: false
-  admin_tls:
-    enabled: false
+    listen: "127.0.0.1:8080"
+    listen_tls: ""
+    listen_http3: ""
+    admin_listen: "127.0.0.1:9443"
+    admin_public: false
+    admin_tls:
+        enabled: false
+        cert_file: "./data/certs/admin.crt"
+        key_file: "./data/certs/admin.key"
+        self_signed: true
+    read_timeout: 10s
+    write_timeout: 30s
+    idle_timeout: 1m0s
+    http3:
+        enabled: false
+        zero_rtt: false
+time_sync:
+    enabled: true
+    sources:
+        - time.cloudflare.com
+        - time.google.com
+        - time.aws.com
+        - time.apple.com
+        - ntp.aliyun.com
+        - time1.cloud.tencent.com
+        - ntp.ubuntu.com
+        - pool.ntp.org
+    selection_interval: 24h0m0s
+    sync_interval: 30m0s
+    timeout: 2s
+    samples_per_source: 3
+    max_accepted_offset: 5m0s
+    max_root_dispersion: 2s
+    consensus_tolerance: 250ms
+tls:
+    auto_cert: false
     cert_file: "./data/certs/admin.crt"
     key_file: "./data/certs/admin.key"
-    self_signed: true
-  read_timeout: 10s
-  write_timeout: 30s
-  idle_timeout: 60s
-  http3:
-    enabled: false
-    zero_rtt: false
-
-tls:
-  auto_cert: false
-  cert_file: "./data/certs/admin.crt"
-  key_file: "./data/certs/admin.key"
-  min_version: "1.3"
-  hsts: true
-
+    min_version: "1.3"
+    hsts: true
 setup:
-  data_dir: "./data"
-  runtime_dir: "./data/run"
-  three_end_unified: true
-
-deployment:
-  mode: "standalone"
-
+    data_dir: "./data"
+    runtime_dir: "./data/run"
+    three_end_unified: true
 cluster:
-  enabled: false
-  cluster_id: ""
-  node_id: ""
-  ha_mode: "single-node"
-  interconnect:
-    listen: "127.0.0.1:9444"
-    advertise_addr: ""
-    mtls_required: true
-    ca_file: ""
-    cert_file: ""
-    key_file: ""
-  consensus:
-    provider: "builtin"
-    etcd_endpoints: []
-  join:
-    require_approval: true
-    token_ttl: 15m
-  nodes: []
-  protection:
-    freeze_writes_without_majority: true
-    allow_traffic_in_protection_mode: true
-
+    enabled: false
+    cluster_id: ""
+    node_id: ""
+    ha_mode: single-node
+    ssh:
+        # Deliberate self-hosted opt-in: permits RFC1918 and IPv6 ULA deployment targets only.
+        allow_private_targets: false
+    interconnect:
+        listen: 127.0.0.1:9444
+        advertise_addr: ""
+        mtls_required: true
+        ca_file: ""
+        cert_file: ""
+        key_file: ""
+    consensus:
+        provider: builtin
+        etcd_endpoints: []
+    join:
+        require_approval: true
+        token_ttl: 15m0s
+    nodes: []
+    protection:
+        freeze_writes_without_majority: true
+        allow_traffic_in_protection_mode: true
 console:
-  login:
-    captcha:
-      enabled: true
-      mode: "slider"
-      max_number: 75000
-      ttl: 120s
-      slider:
-        width: 320
-        height: 150
-        piece_size: 42
-        tolerance: 6
-        min_drag: 450ms
-        pow_enabled: false
-        pow_max_number: 12000
-    security_entry:
-      enabled: false
-      path: "/__cheesewaf-entry"
-      cookie_name: "cheesewaf_admin_entry"
-    background:
-      enabled: false
-      type: "auto"
-      url: ""
-  map:
-    china_boundary:
-      enabled: false
-      source_type: "file"
-      source: ""
-      license: ""
-      review_id: ""
-      attribution: ""
-      allow_insecure: false
-      allow_private: false
-
+    login:
+        captcha:
+            enabled: true
+            mode: slider
+            max_number: 75000
+            ttl: 2m0s
+            slider:
+                width: 320
+                height: 150
+                piece_size: 42
+                tolerance: 6
+                min_drag: 450ms
+                pow_enabled: false
+                pow_max_number: 12000
+        security_entry:
+            enabled: false
+            path: /__cheesewaf-entry
+            cookie_name: cheesewaf_admin_entry
+        background:
+            enabled: false
+            type: auto
+            url: ""
+        copyright: Copyright © CheeseWAF. All rights reserved.
+        show_product_version: true
+    map:
+        china_boundary:
+            enabled: false
+            source_type: file
+            source: ""
+            license: ""
+            review_id: ""
+            attribution: ""
+            allow_insecure: false
+            allow_private: false
+captcha_assets:
+    backend: local
+    local:
+        path: "./data/captcha-assets"
+    s3:
+        endpoint: ""
+        bucket: ""
+        region: us-east-1
+        path_style: false
+        prefix: ""
+        use_tls: true
+        allow_private_endpoint: false
+        credential_file: ""
+        metadata_key_file: ""
+        request_timeout: 15s
+    limits:
+        max_image_bytes: 8388608
+        max_font_bytes: 16777216
+        max_pixels: 16000000
+        max_assets: 512
+        max_total_bytes: 536870912
 sites:
-  - id: "default"
-    name: "localhost"
-    domains: ["localhost", "127.0.0.1"]
-    upstreams:
-      - address: "127.0.0.1:9000"
-        weight: 1
-    # Stored for import/UI. Routing uses domains (Host); this does not bind a port.
-    listen_port: 80
-    loadbalance: "round_robin"
-    enabled: true
-    waf:
+    - id: default
+      name: localhost
+      domains:
+        - localhost
+        - 127.0.0.1
+      upstreams:
+        - address: 127.0.0.1:9000
+          weight: 1
+      listen_port: 80
+      loadbalance: round_robin
+      enable_ssl: false
+      certificate:
+        mode: file
+        auto_renew: false
+        force_https: false
+        hsts: false
+        min_tls_version: "1.2"
+        acme:
+            provider_id: ""
+            dns_api: ""
+            account_email: ""
+            server: ""
+            key_type: ""
+            acme_sh_path: ""
+            home: ""
+            cert_dir: ""
+            reload_command: ""
+            domains: []
+            env: {}
+            notify: false
+      waf:
+        enabled: true
+        mode: block
+        paranoia_level: 3
+        semantic_engines:
+            sql: true
+            xss: true
+            rce: true
+            lfi: true
+            xxe: true
+            ssrf: true
+            nosql: true
+            ssti: true
+        semantic_policy:
+            budget_exhausted_policy: auto
+            decode_depth: 6
+            path_allowlist: []
+            param_allowlist: []
+            promote_seconds: 0
+            auto_agree: false
+            fingerprint_deny: []
+        protection_policy:
+            web_attack: ""
+            api_security: ""
+            bot_cc: ""
+            threat_intel: ""
+        custom_rules:
+            - id: block-admin-probe
+              name: Admin path probe
+              pattern: (?i)/(wp-admin|phpmyadmin|\.git)
+              location: uri
+              action: block
+              severity: medium
+              enabled: true
+              priority: 180
+        performance:
+            max_body_bytes: 8388608
+            max_header_bytes: 1048576
+            proxy_timeout: 30s
+        response:
+            enabled: true
+            max_body_bytes: 1048576
+            sensitive_patterns:
+                - AKIA[0-9A-Z]{16}
+                - (?i)password\s*[=:]\s*['\"]?[^'\"\s]+
+                - (?i)secret[_-]?key\s*[=:]\s*['\"]?[^'\"\s]+
+        rewrite:
+            - id: legacy-api
+              pattern: ^/v1/(.*)$
+              replacement: /api/$1
+              redirect_code: 0
+              enabled: false
+        health_check:
+            enabled: true
+            path: /
+            interval: 30s
+            timeout: 3s
+            healthy_threshold: 2
+            unhealthy_threshold: 2
+        access_control:
+            auth_enabled: false
+            waiting_room: false
+            dynamic_guard: true
+            trusted_cidrs: []
       enabled: true
-      mode: "block"
-      # 0=record-only, 1=low, 2=mid-low, 3=smart (default), 4=mid-high, 5=high.
-      paranoia_level: 3
-      semantic_engines:
-        sql: true
-        xss: true
-        rce: true
-        lfi: true
-        xxe: true
-        ssrf: true
-        nosql: true
-        ssti: true
-      # Commercial ops knobs: budget fail-mode follows web_attack when "auto".
-      semantic_policy:
-        budget_exhausted_policy: auto
-        path_allowlist: []
-        param_allowlist: []
-      protection_policy:
-        web_attack: ""
-        api_security: ""
-        bot_cc: ""
-        threat_intel: ""
-      custom_rules:
-        - id: "block-admin-probe"
-          name: "Admin path probe"
-          pattern: "(?i)/(wp-admin|phpmyadmin|\\.git)"
-          location: "uri"
-          action: "block"
-          severity: "medium"
-          enabled: true
-          priority: 180
-      performance:
-        max_body_bytes: 8388608
-        max_header_bytes: 1048576
-        proxy_timeout: 30s
-      response:
-        enabled: true
-        max_body_bytes: 1048576
-        sensitive_patterns:
-          - "AKIA[0-9A-Z]{16}"
-          - "(?i)password\\s*[=:]\\s*['\\\"]?[^'\\\"\\s]+"
-          - "(?i)secret[_-]?key\\s*[=:]\\s*['\\\"]?[^'\\\"\\s]+"
-      rewrite:
-        - id: "legacy-api"
-          pattern: "^/v1/(.*)$"
-          replacement: "/api/$1"
-          redirect_code: 0
-          enabled: false
-      health_check:
-        enabled: true
-        path: "/"
-        interval: 30s
-        timeout: 3s
-        healthy_threshold: 2
-        unhealthy_threshold: 2
-      access_control:
-        auth_enabled: false
-        waiting_room: false
-        dynamic_guard: true
-        trusted_cidrs: []
-        trusted_proxy_providers: {}
-
 protection:
-  policy:
-    web_attack: "smart"
-    api_security: "smart"
-    bot_cc: "smart"
-    threat_intel: "smart"
-  ip:
-    whitelist: ["127.0.0.1", "::1"]
-    blacklist: []
-    access_rules: []
-    reputation_overrides: {}
-    tags: {}
-    threat_intel: []
-    geoip:
-      enabled: false
-      database: "./data/GeoLite2-Country.mmdb"
-      precision_database: ""
-      blocked_countries: []
-      country_cidrs: {}
-  ratelimit:
-    enabled: true
-    default:
-      requests: 100
-      window: 60s
-      burst: 20
-  bot:
-    enabled: false
-    js_challenge: true
-    captcha: false
-    captcha_type: "pow" # pow | image | slider
-    captcha_max_attempts: 5
-    image_captcha_length: 6
-    image_captcha_width: 220
-    image_captcha_height: 86
-    image_captcha_audio_limit: 6
-    slider_captcha_width: 320
-    slider_captcha_height: 150
-    slider_captcha_piece: 42
-    slider_captcha_tolerance: 6
-    slider_captcha_min_drag: 450ms
-    slider_captcha_track_required: true
-    captcha_mobile_type: pow
-    challenge_difficulty: 4
-    altcha_max_number: 75000
-    altcha_header_name: "X-CheeseWAF-Altcha"
-    waiting_room: false
-    waiting_room_max_active: 1000
-    waiting_room_ttl: 5m
-    challenge_ttl: 30m
-    cookie_name: "cheesewaf_js_clearance"
-    secret: ""
-    path_prefixes:
-      - "/"
-    exempt_path_prefixes:
-      - "/health"
-    allowed_user_agents: []
-    suspicious_user_agents:
-      - "curl"
-      - "python-requests"
-      - "sqlmap"
-      - "nikto"
-      - "nuclei"
-      - "masscan"
-      - "zgrab"
-      - "httpclient"
-  acl:
-    enabled: true
-    rules:
-      - id: "deny-debug"
-        name: "Deny debug endpoints"
-        method: ""
-        path_prefix: "/debug"
-        header: ""
-        header_value: ""
-        action: "block"
-        severity: "high"
+    policy:
+        web_attack: smart
+        api_security: smart
+        bot_cc: smart
+        threat_intel: smart
+    ip:
+        blacklist: []
+        whitelist:
+            - 127.0.0.1
+            - ::1
+        access_rules: []
+        reputation_overrides: {}
+        geoip:
+            enabled: false
+            database: "./data/GeoLite2-Country.mmdb"
+            precision_database: ""
+            blocked_countries: []
+            country_cidrs: {}
+        tags: {}
+        threat_intel: []
+        providers: []
+    ratelimit:
         enabled: true
-
-block_page:
-  template_id: "minimal"
-  custom_enabled: false
-  custom_html: ""
-
-storage:
-  sqlite:
-    path: "./data/cheesewaf.db"
-  redis:
-    enabled: false
-    address: "127.0.0.1:6379"
-  clickhouse:
-    enabled: false
-    endpoint: ""
-    allow_private_endpoint: false
-    database: "default"
-    table: "cheesewaf_logs"
-    username: ""
-    password: ""
-    timeout: 10s
-  victorialogs:
-    enabled: false
-    endpoint: ""
-    allow_private_endpoint: false
-    timeout: 10s
-  postgresql:
-    enabled: false
-    dsn: ""
-    table: "cheesewaf_logs"
-    timeout: 10s
-
-logging:
-  level: "info"
-  format: "json"
-  output:
-    type: "file"
-    file:
-      path: "./logs/access.log"
-      max_size: "100MB"
-      max_backups: 10
-
-ai:
-  enabled: false
-  provider: "openai" # openai | anthropic
-  api_base: "https://api.openai.com/v1"
-  api_key: ""
-  model: "gpt-4o-mini"
-  async: true
-
-update:
-  ota:
-    enabled: false
-    server: ""
-    channel: "stable"
-    check_interval: 6h
-    auto_update_rules: true
-    auto_update_binary: false
-    verify_signature: true
-    public_key: ""
-
-scheduler:
-  enabled: true
-  tasks:
-    - id: "log-cleanup"
-      name: "Log cleanup"
-      type: "cleanup"
-      every: 24h
-      target: "./logs"
-      keep: 14
-      enabled: true
-    - id: "config-backup"
-      name: "Config backup"
-      type: "backup"
-      every: 24h
-      target: "./data/backups"
-      keep: 7
-      enabled: false
-    - id: "security-daily-report"
-      name: "Security daily report"
-      type: "security_report"
-      frequency: "daily"
-      at: "08:00"
-      channel: "file"
-      recipient: "./data/reports"
-      period: "daily"
-      format: "markdown"
-      enabled: false
-
-edge:
-  headers:
-    enabled: true
-    rules:
-      - id: "set-edge-marker"
-        name: "Set edge marker"
-        operation: "set"
-        header: "X-CheeseWAF"
-        value: "edge"
-        path_prefix: ""
-        enabled: true
-      - id: "remove-origin-leak"
-        name: "Remove origin leak header"
-        operation: "delete"
-        header: "X-Origin-Secret"
-        value: ""
-        path_prefix: ""
-        enabled: true
-  cache:
-    enabled: true
-    mode: "public"
-    ttl: 5m
-    status_codes: [200, 304]
-    path_prefixes: ["/assets/", "/static/"]
-    max_body_bytes: 2097152
-  compression:
-    enabled: true
-    algorithms: ["br", "gzip"]
-    level: 5
-    min_bytes: 1024
-    content_types:
-      - "text/"
-      - "application/json"
-      - "application/javascript"
-      - "application/xml"
-      - "image/svg+xml"
-
-monitor:
-  prometheus:
-    enabled: true
-    path: "/metrics"
-    public: false
-  remote_write:
-    enabled: false
-    endpoint: ""
-    allow_private_endpoint: false
-    interval: 1m
-    timeout: 10s
-  alerts:
-    enabled: true
-    rules:
-      - id: "high-block-rate"
-        name: "High block rate"
-        metric: "cheesewaf_blocked_total"
-        operator: ">"
-        threshold: 100
-        for: 5m
-        severity: "high"
-        enabled: true
-      - id: "disk-usage"
-        name: "Disk usage high"
-        metric: "cheesewaf_disk_usage_bytes:data"
-        operator: ">"
-        threshold: 10737418240
-        for: 10m
-        severity: "medium"
-        enabled: true
-  notifiers:
-    - id: "default-webhook"
-      name: "Default webhook"
-      type: "webhook"
-      endpoint: ""
-      allow_private_endpoint: false
-      to: ""
-      token: ""
-      headers: {}
-      enabled: false
-
-apisec:
-  enabled: true
-  discovery:
-    enabled: true
-    sample_limit: 500
-    window: 1h
-    ignore_prefixes: ["/assets/", "/static/", "/favicon"]
-  validation:
-    enabled: true
-    schemas:
-      - id: "api-search"
-        method: "GET"
-        path_pattern: "^/api/search$"
-        required_params: ["q"]
-        required_headers: []
-        max_body_bytes: 0
+        default:
+            requests: 100
+            window: 1m0s
+            burst: 20
+    bot:
         enabled: false
-  auth:
+        challenge_backend: memory
+        risk_level: 2
+        risk_low_threshold: 35
+        risk_medium_threshold: 55
+        risk_high_threshold: 75
+        risk_block_threshold: 95
+        risk_confidence_min: 0.6
+        js_challenge: true
+        captcha: false
+        captcha_type: pow
+        captcha_types:
+            - pow
+            - shape_slider
+            - rotate
+            - text_click
+        captcha_challenge_ttl: 2m0s
+        captcha_failure_window: 10m0s
+        captcha_block_duration: 15m0s
+        captcha_escalation_types:
+            - pow
+            - shape_slider
+            - text_click
+        captcha_binding_mode: strict_ip_ua
+        captcha_policy_version: "1"
+        captcha_max_attempts: 5
+        image_captcha_length: 6
+        image_captcha_width: 220
+        image_captcha_height: 86
+        image_captcha_audio_limit: 6
+        slider_captcha_width: 320
+        slider_captcha_height: 150
+        slider_captcha_piece: 42
+        slider_captcha_tolerance: 6
+        slider_captcha_min_drag: 450ms
+        slider_captcha_track_required: true
+        captcha_mobile_type: pow
+        challenge_difficulty: 4
+        altcha_max_number: 75000
+        altcha_header_name: X-CheeseWAF-Altcha
+        clearance_header_enabled: false
+        clearance_header_name: X-CheeseWAF-Clearance
+        clearance_method_scope: false
+        clearance_state_capacity: 20000
+        pow_max_difficulty: 6
+        pow_accept_legacy: false
+        clearance_accept_legacy: false
+        waiting_room: false
+        waiting_room_max_active: 1000
+        waiting_room_ttl: 5m0s
+        challenge_ttl: 30m0s
+        cookie_name: cheesewaf_js_clearance
+        secret: ""
+        path_prefixes:
+            - /
+        exempt_path_prefixes:
+            - /health
+        allowed_user_agents: []
+        suspicious_user_agents:
+            - curl
+            - python-requests
+            - sqlmap
+            - nikto
+            - nuclei
+            - masscan
+            - zgrab
+            - httpclient
+    acl:
+        enabled: true
+        rules:
+            - id: deny-debug
+              name: Deny debug endpoints
+              method: ""
+              path_prefix: /debug
+              header: ""
+              header_value: ""
+              action: block
+              severity: high
+              enabled: true
+storage:
+    sqlite:
+        path: "./data/cheesewaf.db"
+    redis:
+        enabled: false
+        address: 127.0.0.1:6379
+    clickhouse:
+        enabled: false
+        endpoint: ""
+        allow_private_endpoint: false
+        database: default
+        table: cheesewaf_logs
+        username: ""
+        password: ""
+        timeout: 10s
+    victorialogs:
+        enabled: false
+        endpoint: ""
+        allow_private_endpoint: false
+        timeout: 10s
+    postgresql:
+        enabled: false
+        dsn: ""
+        table: cheesewaf_logs
+        timeout: 10s
+    elasticsearch:
+        enabled: false
+        endpoint: ""
+        allow_private_endpoint: false
+        index: cheesewaf-logs
+        username: ""
+        password: ""
+        api_key: ""
+        headers: {}
+        timeout: 10s
+logging:
+    level: info
+    format: json
+    output:
+        type: file
+        file:
+            path: "./logs/access.log"
+            max_size: 100MB
+            max_backups: 10
+acme:
     enabled: false
-    jwt_issuers: []
-    jwt_audiences: []
-    required_scopes: []
-    endpoint_policies: []
-    jwt_algorithms: []
-    jwt_shared_secret: ""
-    jwt_public_key_file: ""
-    jwt_public_key_pem: ""
-    jwks_file: ""
-    jwks_json: ""
-    jwks_url: ""
-    jwks_cache_file: "./data/apisec/jwks-cache.json"
-    jwks_refresh_interval: 1h
-  rate_limits:
-    - id: "login-api"
-      method: "POST"
-      path_pattern: "^/api/auth/login$"
-      requests: 10
-      window: 1m
-      enabled: true
-  permissions:
-    admin: ["*"]
-    readonly: ["read:*", "read:cluster"]
-  audit:
+    acme_sh_path: acme.sh
+    home: ./data/acme
+    server: letsencrypt
+    account_email: ""
+    cert_dir: ./data/certs
+    key_type: ec-256
+    reload_command: ""
+    dns_providers: []
+    notify: true
+ai:
+    enabled: false
+    provider: openai
+    api_base: https://api.openai.com/v1
+    api_key: ""
+    api_key_header: authorization
+    model: gpt-4o-mini
+    max_tokens: 4096
+    async: true
+    allow_private_api_base: false
+    assistant:
+        provider: openai
+        api_base: https://api.openai.com/v1
+        api_key: ""
+        api_key_header: authorization
+        model: gpt-4o-mini
+        max_tokens: 4096
+        allow_private_api_base: false
+    reasoning:
+        provider: openai
+        api_base: https://api.openai.com/v1
+        api_key: ""
+        api_key_header: authorization
+        model: gpt-4o-mini
+        max_tokens: 4096
+        allow_private_api_base: false
+    self_learning:
+        enabled: false
+        auto_apply: false
+        dry_run: true
+        interval: 24h0m0s
+        at: "03:30"
+        min_confidence: 0.995
+        min_events: 5
+        max_events: 200
+        max_rules_per_run: 3
+        action: block
+    knowledge:
+        enabled: true
+        builtin: true
+        max_snippets: 5
+update:
+    ota:
+        enabled: false
+        server: ""
+        channel: stable
+        check_interval: 6h0m0s
+        auto_update_rules: true
+        auto_update_binary: false
+        verify_signature: true
+        public_key: ""
+vulnerability:
+    enabled: false
+    feeds: []
+scheduler:
     enabled: true
-    path: "./logs/audit.log"
+    tasks:
+        - id: log-cleanup
+          name: Log cleanup
+          type: cleanup
+          schedule: ""
+          every: 24h0m0s
+          frequency: ""
+          at: ""
+          target: "./logs"
+          channel: ""
+          recipient: ""
+          period: ""
+          format: ""
+          keep: 14
+          enabled: true
+          created_at: 0001-01-01T00:00:00Z
+        - id: config-backup
+          name: Config backup
+          type: backup
+          schedule: ""
+          every: 24h0m0s
+          frequency: ""
+          at: ""
+          target: "./data/backups"
+          channel: ""
+          recipient: ""
+          period: ""
+          format: ""
+          keep: 7
+          enabled: false
+          created_at: 0001-01-01T00:00:00Z
+        - id: security-daily-report
+          name: Security daily report
+          type: security_report
+          schedule: ""
+          every: 0s
+          frequency: daily
+          at: "08:00"
+          target: ""
+          channel: file
+          recipient: "./data/reports"
+          period: daily
+          format: markdown
+          keep: 0
+          enabled: false
+          created_at: 0001-01-01T00:00:00Z
+edge:
+    headers:
+        enabled: true
+        rules:
+            - id: set-edge-marker
+              name: Set edge marker
+              operation: set
+              header: X-CheeseWAF
+              value: edge
+              path_prefix: ""
+              enabled: true
+            - id: remove-origin-leak
+              name: Remove origin leak header
+              operation: delete
+              header: X-Origin-Secret
+              value: ""
+              path_prefix: ""
+              enabled: true
+    cache:
+        enabled: true
+        mode: public
+        ttl: 5m0s
+        status_codes:
+            - 200
+            - 304
+        path_prefixes:
+            - /assets/
+            - /static/
+        max_body_bytes: 2097152
+    compression:
+        enabled: true
+        algorithms:
+            - br
+            - gzip
+        level: 5
+        min_bytes: 1024
+        content_types:
+            - text/
+            - application/json
+            - application/javascript
+            - application/xml
+            - image/svg+xml
+monitor:
+    prometheus:
+        enabled: true
+        path: /metrics
+        public: false
+    remote_write:
+        enabled: false
+        endpoint: ""
+        allow_private_endpoint: false
+        interval: 1m0s
+        timeout: 10s
+    alerts:
+        enabled: true
+        rules:
+            - id: high-block-rate
+              name: High block rate
+              metric: cheesewaf_blocked_total
+              operator: '>'
+              threshold: 100
+              for: 5m0s
+              cooldown: 0s
+              severity: high
+              enabled: true
+            - id: disk-usage
+              name: Disk usage high
+              metric: cheesewaf_disk_usage_bytes:data
+              operator: '>'
+              threshold: 1.073741824e+10
+              for: 10m0s
+              cooldown: 0s
+              severity: medium
+              enabled: true
+    notifiers:
+        - id: default-webhook
+          name: Default webhook
+          type: webhook
+          endpoint: ""
+          allow_private_endpoint: false
+          to: ""
+          token: ""
+          headers: {}
+          enabled: false
+apisec:
+    enabled: true
+    discovery:
+        enabled: true
+        sample_limit: 500
+        window: 1h0m0s
+        ignore_prefixes:
+            - /assets/
+            - /static/
+            - /favicon
+    validation:
+        enabled: true
+        schemas:
+            - id: api-search
+              method: GET
+              path_pattern: ^/api/search$
+              required_params:
+                - q
+              required_headers: []
+              max_body_bytes: 0
+              enabled: false
+    auth:
+        enabled: false
+        jwt_issuers: []
+        jwt_audiences: []
+        required_scopes: []
+        endpoint_policies: []
+        jwt_algorithms: []
+        jwt_shared_secret: ""
+        jwt_public_key_file: ""
+        jwt_public_key_pem: ""
+        jwks_file: ""
+        jwks_json: ""
+        jwks_url: ""
+        jwks_cache_file: "./data/apisec/jwks-cache.json"
+        jwks_refresh_interval: 1h0m0s
+    management_api:
+        enabled: false
+        tokens: []
+    rate_limits:
+        - id: login-api
+          method: POST
+          path_pattern: ^/api/auth/login$
+          requests: 10
+          window: 1m0s
+          enabled: true
+    permissions:
+        admin:
+            - '*'
+        readonly:
+            - read:*
+            - read:cluster
+    audit:
+        enabled: true
+        path: "./logs/audit.log"
+block_page:
+    template_id: minimal
+    custom_enabled: false
+    custom_html: ""
+performance:
+    gc:
+        enabled: true
+        memory_limit_ratio: 0
+        min_gogc: 0
+        max_gogc: 0
+        base_gogc: 0
+        target_gc_cpu_fraction: 0
+        interval: 0s

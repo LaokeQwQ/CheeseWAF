@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CaptchaLocale } from "./i18n";
 import { captchaText } from "./i18n";
 import {
+  DEFAULT_MIN_DURATION_MS,
   appendTrack,
   normalizePoint,
   solvePow,
@@ -29,6 +30,11 @@ import { IconClickChallenge } from "./challenges/IconClickChallenge";
 import { ScratchChallenge } from "./challenges/ScratchChallenge";
 import sliderStyles from "./challenges/ChallengeSlider.module.css";
 import styles from "./BehaviorCaptcha.module.css";
+
+// Auto-refresh backoff after an invalid answer: 1s -> 2s -> 4s, then stop and
+// ask the user to retry manually / request a new challenge.
+const AUTO_RETRY_BASE_MS = 1000;
+const MAX_AUTO_RETRIES = 3;
 
 export interface BehaviorCaptchaProps {
   type: CaptchaType;
@@ -76,6 +82,7 @@ export function BehaviorCaptcha({
   const issueController = useRef<AbortController>();
   const verifyController = useRef<AbortController>();
   const retryTimer = useRef<number>();
+  const failCount = useRef(0);
   const changeStatus = useCallback(
     (next: CaptchaStatus) => {
       setStatus(next);
@@ -83,8 +90,7 @@ export function BehaviorCaptcha({
     },
     [onStatusChange],
   );
-  const refresh = useCallback(() => {
-    window.clearTimeout(retryTimer.current);
+  const bumpGeneration = useCallback(() => {
     issueController.current?.abort();
     verifyController.current?.abort();
     requestSequence.current += 1;
@@ -93,6 +99,23 @@ export function BehaviorCaptcha({
     submitLock.current = false;
     setGeneration((value) => value + 1);
   }, []);
+
+  const refresh = useCallback(() => {
+    window.clearTimeout(retryTimer.current);
+    failCount.current = 0;
+    bumpGeneration();
+  }, [bumpGeneration]);
+
+  const scheduleAutoRetry = useCallback(() => {
+    failCount.current += 1;
+    if (failCount.current > MAX_AUTO_RETRIES) {
+      changeStatus("error");
+      setMessage(captchaText(locale, "manualRetry"));
+      return;
+    }
+    window.clearTimeout(retryTimer.current);
+    retryTimer.current = window.setTimeout(bumpGeneration, AUTO_RETRY_BASE_MS * 2 ** (failCount.current - 1));
+  }, [bumpGeneration, changeStatus, locale]);
   const close = useCallback(() => {
     window.clearTimeout(retryTimer.current);
     issueController.current?.abort();
@@ -169,7 +192,7 @@ export function BehaviorCaptcha({
         }
         changeStatus("failure");
         setMessage(captchaText(locale, "failed"));
-        retryTimer.current = window.setTimeout(refresh, 1000);
+        scheduleAutoRetry();
       } catch (error) {
         if (!isAbortError(error) && sequence === verifySequence.current && activeToken.current === token) {
           changeStatus("error");
@@ -187,7 +210,7 @@ export function BehaviorCaptcha({
       disabled,
       locale,
       onVerified,
-      refresh,
+      scheduleAutoRetry,
       response,
       status,
       verify,
@@ -286,7 +309,7 @@ function ChallengeBody(props: BodyProps) {
   }
   if (challenge.type === "scratch") {
     const mask = safeImageDataUri(challenge.presentation.piece);
-    return mask ? <ScratchChallenge imageSrc={image} maskSrc={mask} width={challenge.presentation.width} height={challenge.presentation.height} label={localizedPrompt(challenge, locale)} disabled={disabled} startedAt={props.started} onInteractionStart={() => setStatus("interacting")} onSubmit={submit}/> : <SafeImage src={challenge.presentation.piece} alt={localizedPrompt(challenge, locale)}/>;
+    return mask ? <ScratchChallenge imageSrc={image} maskSrc={mask} width={challenge.presentation.width} height={challenge.presentation.height} label={localizedPrompt(challenge, locale)} disabled={disabled} startedAt={props.started} minDurationMs={challenge.presentation.track?.min_duration_ms ?? DEFAULT_MIN_DURATION_MS} onInteractionStart={() => setStatus("interacting")} onSubmit={submit}/> : <SafeImage src={challenge.presentation.piece} alt={localizedPrompt(challenge, locale)}/>;
   }
   if (challenge.type === "curve_draw")
     return (
@@ -295,6 +318,7 @@ function ChallengeBody(props: BodyProps) {
         disabled={disabled}
         alt={localizedPrompt(challenge, locale)}
         onInteractionStart={() => setStatus("interacting")}
+        minDurationMs={challenge.presentation.track?.min_duration_ms ?? DEFAULT_MIN_DURATION_MS}
         onSubmit={submit}
       />
     );
@@ -355,6 +379,7 @@ function ChallengeBody(props: BodyProps) {
           movingPart: challenge.presentation.moving_part,
           maxOffsetPercent: challenge.presentation.max_offset,
           initialOffsetPercent: challenge.presentation.initial_offset,
+          minDurationMs: challenge.presentation.track?.min_duration_ms ?? DEFAULT_MIN_DURATION_MS,
         }}
         disabled={disabled}
         label={localizedPrompt(challenge, locale)}
@@ -412,6 +437,7 @@ function SliderBody({
   const [sliderTrack, setSliderTrack] = useState<CaptchaTrackPoint[]>([]);
   const width = challenge.presentation.width ?? 320;
   const height = challenge.presentation.height ?? 180;
+  const minDurationMs = challenge.presentation.track?.min_duration_ms ?? DEFAULT_MIN_DURATION_MS;
   const pieceSize = challenge.presentation.piece_size ?? 64;
   const startY =
     challenge.presentation.piece_y ?? Math.round((height - pieceSize) / 2);
@@ -454,7 +480,7 @@ function SliderBody({
   };
   const finish = () => {
     const point = pointFor(value);
-    const duration_ms = Math.round(performance.now() - started.current);
+    const duration_ms = Math.max(minDurationMs, Math.round(performance.now() - started.current));
     const track = appendTrack(
       sliderTrack,
       trackPoint(point, duration_ms, "up"),

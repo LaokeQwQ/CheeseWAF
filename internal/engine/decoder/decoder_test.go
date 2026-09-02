@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"encoding/base64"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -17,6 +18,64 @@ func TestDeepDecodeRevealsNestedBase64AndURLPayload(t *testing.T) {
 	if !reflect.DeepEqual(decoded.Layers, []string{"raw", "base64", "url"}) {
 		t.Fatalf("layers = %v", decoded.Layers)
 	}
+}
+
+func TestDeepDecodeRevealsSevenURLLayers(t *testing.T) {
+	raw := "<script>alert(1)</script>"
+	for range 7 {
+		raw = url.QueryEscape(raw)
+	}
+	decoded := DeepDecode(raw)
+	if decoded.Text != "<script>alert(1)</script>" {
+		t.Fatalf("text = %q", decoded.Text)
+	}
+	urlLayers := 0
+	for _, layer := range decoded.Layers {
+		if layer == "url" {
+			urlLayers++
+		}
+	}
+	if urlLayers != 7 {
+		t.Fatalf("URL layers = %d, want 7 (%v)", urlLayers, decoded.Layers)
+	}
+}
+
+func TestDecodeWithDepthUsesDefaultAndHardCeiling(t *testing.T) {
+	raw := "<script>"
+	for range MaxDecodeDepth + 1 {
+		raw = url.QueryEscape(raw)
+	}
+	if got := DecodeWithDepth(raw, MaxDecodeDepth+100); countLayerNamed(got.Layers, "url") != MaxDecodeDepth {
+		t.Fatalf("ceiling layers=%v", got.Layers)
+	}
+	if got := DecodeWithDepth(raw, 0); countLayerNamed(got.Layers, "url") != DefaultDecodeDepth {
+		t.Fatalf("default layers=%v", got.Layers)
+	}
+}
+
+func TestDecodeWithDepthPreserveControlsRetainsDecodedNUL(t *testing.T) {
+	for _, raw := range []string{"before%00after", `before\u0000after`, "before\x00after"} {
+		t.Run(raw, func(t *testing.T) {
+			preserved := DecodeWithDepthPreserveControls(raw, DefaultDecodeDepth)
+			if !strings.ContainsRune(preserved.Text, 0) {
+				t.Fatalf("preserved text = %q, want a NUL boundary", preserved.Text)
+			}
+			legacy := DecodeWithDepth(raw, DefaultDecodeDepth)
+			if strings.ContainsRune(legacy.Text, 0) {
+				t.Fatalf("legacy text = %q, want historical NUL stripping", legacy.Text)
+			}
+		})
+	}
+}
+
+func countLayerNamed(layers []string, name string) int {
+	count := 0
+	for _, layer := range layers {
+		if layer == name {
+			count++
+		}
+	}
+	return count
 }
 
 func TestDecodeHandlesUnicodeAndMalformedEscapes(t *testing.T) {
@@ -57,7 +116,11 @@ func TestDecodeAllAddsPrintableBase64VariantForShortInput(t *testing.T) {
 }
 
 func TestFlattenJSONIncludesNestedKeysAndScalarValues(t *testing.T) {
-	got := strings.Fields(FlattenJSON([]byte(`{"user":{"name":"alice","active":true},"roles":["admin",2],"none":null}`)))
+	flat, err := FlattenJSON([]byte(`{"user":{"name":"alice","active":true},"roles":["admin",2],"none":null}`))
+	if err != nil {
+		t.Fatalf("FlattenJSON error = %v", err)
+	}
+	got := strings.Fields(flat)
 	sort.Strings(got)
 	want := []string{"2", "active", "admin", "alice", "name", "none", "roles", "true", "user"}
 	sort.Strings(want)
@@ -68,7 +131,11 @@ func TestFlattenJSONIncludesNestedKeysAndScalarValues(t *testing.T) {
 
 func TestFlattenJSONReturnsMalformedInputUnchanged(t *testing.T) {
 	raw := []byte(`{"unterminated":`)
-	if got := FlattenJSON(raw); got != string(raw) {
+	got, err := FlattenJSON(raw)
+	if err != nil {
+		t.Fatalf("FlattenJSON error = %v", err)
+	}
+	if got != string(raw) {
 		t.Fatalf("got %q", got)
 	}
 }

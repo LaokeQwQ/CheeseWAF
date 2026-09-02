@@ -14,14 +14,22 @@ import (
 
 type HealthRegistry struct {
 	mu     sync.RWMutex
-	states map[string]bool
+	states map[string]upstreamHealthState
+}
+
+type upstreamHealthState struct {
+	healthy            bool
+	consecutiveSuccess int
+	consecutiveFailure int
+	healthyThreshold   int
+	unhealthyThreshold int
 }
 
 func NewHealthRegistry(sites []config.SiteConfig) *HealthRegistry {
-	registry := &HealthRegistry{states: map[string]bool{}}
+	registry := &HealthRegistry{states: map[string]upstreamHealthState{}}
 	for _, site := range sites {
 		for _, upstream := range site.Upstreams {
-			registry.states[normalizeUpstream(upstream.Address)] = true
+			registry.addUpstream(upstream.Address, site.WAF.HealthCheck)
 		}
 	}
 	return registry
@@ -33,8 +41,8 @@ func (r *HealthRegistry) Healthy(address string) bool {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	healthy, ok := r.states[normalizeUpstream(address)]
-	return !ok || healthy
+	state, ok := r.states[normalizeUpstream(address)]
+	return !ok || state.healthy
 }
 
 func (r *HealthRegistry) Set(address string, healthy bool) {
@@ -43,8 +51,21 @@ func (r *HealthRegistry) Set(address string, healthy bool) {
 	}
 	r.mu.Lock()
 	key := normalizeUpstream(address)
-	if _, ok := r.states[key]; ok {
-		r.states[key] = healthy
+	if state, ok := r.states[key]; ok {
+		if healthy {
+			state.consecutiveFailure = 0
+			state.consecutiveSuccess++
+			if state.consecutiveSuccess >= state.healthyThreshold {
+				state.healthy = true
+			}
+		} else {
+			state.consecutiveSuccess = 0
+			state.consecutiveFailure++
+			if state.consecutiveFailure >= state.unhealthyThreshold {
+				state.healthy = false
+			}
+		}
+		r.states[key] = state
 	}
 	r.mu.Unlock()
 }
@@ -54,11 +75,9 @@ func (r *HealthRegistry) UpdateSites(sites []config.SiteConfig) {
 	if r == nil {
 		return
 	}
-	next := make(map[string]struct{})
+	next := NewHealthRegistry(sites).states
 	for _, site := range sites {
-		for _, upstream := range site.Upstreams {
-			next[normalizeUpstream(upstream.Address)] = struct{}{}
-		}
+		_ = site
 	}
 	r.mu.Lock()
 	for address := range r.states {
@@ -66,9 +85,13 @@ func (r *HealthRegistry) UpdateSites(sites []config.SiteConfig) {
 			delete(r.states, address)
 		}
 	}
-	for address := range next {
-		if _, ok := r.states[address]; !ok {
-			r.states[address] = true
+	for address, configured := range next {
+		if current, ok := r.states[address]; ok {
+			current.healthyThreshold = configured.healthyThreshold
+			current.unhealthyThreshold = configured.unhealthyThreshold
+			r.states[address] = current
+		} else {
+			r.states[address] = configured
 		}
 	}
 	r.mu.Unlock()
@@ -81,8 +104,8 @@ func (r *HealthRegistry) Snapshot() map[string]bool {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for address, healthy := range r.states {
-		out[address] = healthy
+	for address, state := range r.states {
+		out[address] = state.healthy
 	}
 	return out
 }
@@ -198,7 +221,34 @@ func (h *HealthChecker) check(site config.SiteConfig) {
 			continue
 		}
 		_ = netguard.DrainAndClose(resp.Body)
-		h.registry.Set(upstream.Address, resp.StatusCode >= 200 && resp.StatusCode < 500)
+		h.registry.Set(upstream.Address, resp.StatusCode >= 200 && resp.StatusCode < 400)
+	}
+}
+
+func (r *HealthRegistry) addUpstream(address string, cfg config.HealthCheckConfig) {
+	key := normalizeUpstream(address)
+	healthyThreshold := cfg.HealthyThreshold
+	if healthyThreshold <= 0 {
+		healthyThreshold = 1
+	}
+	unhealthyThreshold := cfg.UnhealthyThreshold
+	if unhealthyThreshold <= 0 {
+		unhealthyThreshold = 1
+	}
+	if existing, ok := r.states[key]; ok {
+		if healthyThreshold > existing.healthyThreshold {
+			existing.healthyThreshold = healthyThreshold
+		}
+		if unhealthyThreshold > existing.unhealthyThreshold {
+			existing.unhealthyThreshold = unhealthyThreshold
+		}
+		r.states[key] = existing
+		return
+	}
+	r.states[key] = upstreamHealthState{
+		healthy:            true,
+		healthyThreshold:   healthyThreshold,
+		unhealthyThreshold: unhealthyThreshold,
 	}
 }
 

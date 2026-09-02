@@ -1,0 +1,1 @@
+{"Name":"pat-sqli-00119","SourceFamily":"pat-sqli","Label":"attack","Category":"sqli","Method":"GET","Target":"/search?q=sql1 = \"SELECT * FROM admin WHERE pass = ''or'6�]��!r,��b\u001c'\";","ContentType":"","Body":"","Rationale":"Import pat-sqli"}

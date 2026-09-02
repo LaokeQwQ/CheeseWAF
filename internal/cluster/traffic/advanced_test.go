@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -31,6 +33,58 @@ func TestCircuitOpensAfterFailures(t *testing.T) {
 	healthy := s.FilterHealthy(peers)
 	if len(healthy) != 2 {
 		t.Fatalf("expected half-open to restore a, healthy=%+v", healthy)
+	}
+}
+
+func TestHalfOpenCircuitAllowsSingleConcurrentProbe(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	s := NewScheduler()
+	s.ConfigureAdvanced(AdvancedOptions{
+		CircuitFailures: 1,
+		CircuitOpenFor:  time.Second,
+		Now:             func() time.Time { return now },
+	})
+	s.ReportFailure("a")
+	now = now.Add(2 * time.Second)
+	peers := []Peer{{NodeID: "a", AdvertiseAddr: "a", Weight: 1}}
+
+	const callers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var admitted atomic.Int32
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if peer, ok := s.PickAdvanced(ModeRoundRobin, peers, "", "", ""); ok && peer.NodeID == "a" {
+				admitted.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := admitted.Load(); got != 1 {
+		t.Fatalf("half-open circuit admitted %d probes, want 1", got)
+	}
+}
+
+func TestHalfOpenProbeReservationExpires(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	s := NewScheduler()
+	s.ConfigureAdvanced(AdvancedOptions{CircuitFailures: 1, CircuitOpenFor: time.Second, Now: func() time.Time { return now }})
+	s.ReportFailure("a")
+	now = now.Add(2 * time.Second)
+	peers := []Peer{{NodeID: "a", AdvertiseAddr: "a"}}
+	if _, ok := s.PickAdvanced(ModeRoundRobin, peers, "", "", ""); !ok {
+		t.Fatal("first half-open probe was not admitted")
+	}
+	if _, ok := s.PickAdvanced(ModeRoundRobin, peers, "", "", ""); ok {
+		t.Fatal("probe reservation did not block a second probe")
+	}
+	now = now.Add(2 * time.Second)
+	if _, ok := s.PickAdvanced(ModeRoundRobin, peers, "", "", ""); !ok {
+		t.Fatal("stale probe reservation did not expire")
 	}
 }
 

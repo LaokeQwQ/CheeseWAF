@@ -23,6 +23,7 @@ import PolicyDecisionCard from '../../components/PolicyDecisionCard';
 import SafeMarkdown from '../../components/SafeMarkdown';
 import type { AIAssistantTraceEvent, AIConfig, AIModelConfig, AIModelInfo, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
+import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 import '../../styles/ai-page.css';
 
 const analysisRanges = [
@@ -151,6 +152,7 @@ export default function AIPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const singleAnalysisAbortRef = useRef<{ key: string; controller: AbortController } | null>(null);
+  const formDirtyRef = useRef(false);
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
   const [eventPage, setEventPage] = useState(1);
@@ -168,10 +170,11 @@ export default function AIPage() {
   const [maxEventsError, setMaxEventsError] = useState('');
   const configQuery = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
   const { data } = configQuery;
+  const aiEventsRefetchInterval = usePollingVisibility(5_000);
   const { data: logs, isLoading } = useQuery({
     queryKey: ['ai-events', analysisRange],
     queryFn: () => fetchLogs(buildAnalysisWindowQuery(analysisRange, 80)),
-    refetchInterval: 5_000,
+    refetchInterval: aiEventsRefetchInterval,
     retry: false,
   });
   const config = data ?? fallback;
@@ -197,6 +200,9 @@ export default function AIPage() {
   }, [events, selectedId]);
 
   useEffect(() => {
+    if (formDirtyRef.current) {
+      return;
+    }
     setFormValues(formValuesFromConfig(config, assistantConfig, reasoningConfig));
     setMaxEventsError('');
   }, [
@@ -244,12 +250,14 @@ export default function AIPage() {
   }, []);
 
   const setField = <K extends keyof AIFormValues>(key: K, value: AIFormValues[K]) => {
+    formDirtyRef.current = true;
     setFormValues((current) => ({ ...current, [key]: value }));
   };
 
   const updateMutation = useMutation({
     mutationFn: updateAIConfig,
     onSuccess: () => {
+      formDirtyRef.current = false;
       queryClient.invalidateQueries({ queryKey: ['ai-config'] });
       toast.success(t('system.saved'));
     },

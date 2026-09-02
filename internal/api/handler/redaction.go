@@ -48,6 +48,8 @@ func systemConfigView(cfg *config.Config) map[string]any {
 	if cfg == nil {
 		return map[string]any{"version": nil}
 	}
+	update := effectiveUpdateConfigView(cfg.Update)
+	vulnerability := effectiveVulnerabilityConfigView(cfg.Vulnerability)
 	return map[string]any{
 		"server":        cfg.Server,
 		"time_sync":     cfg.TimeSync,
@@ -61,12 +63,35 @@ func systemConfigView(cfg *config.Config) map[string]any {
 		"scheduler":     cfg.Scheduler,
 		"edge":          cfg.Edge,
 		"ai":            aiConfigView(cfg.AI),
-		"update":        cfg.Update,
-		"vulnerability": cfg.Vulnerability,
-		"monitor":       monitorConfigView(cfg.Monitor),
-		"apisec":        apiSecConfigView(cfg.APISec),
-		"block_page":    cfg.BlockPage,
+		"update":        update,
+		"vulnerability": vulnerability,
+		"capabilities": map[string]any{
+			"ota_updates":         map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
+			"vulnerability_feeds": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
+			"bot_challenge_redis": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED", "message": "bot challenge state uses the in-process memory backend; storage.redis does not change it"},
+		},
+		"monitor":    monitorConfigView(cfg.Monitor),
+		"apisec":     apiSecConfigView(cfg.APISec),
+		"block_page": cfg.BlockPage,
 	}
+}
+
+func effectiveUpdateConfigView(in config.UpdateConfig) config.UpdateConfig {
+	out := in
+	out.OTA.Enabled = false
+	out.OTA.AutoUpdateRules = false
+	out.OTA.AutoUpdateBinary = false
+	return out
+}
+
+func effectiveVulnerabilityConfigView(in config.VulnerabilityConfig) config.VulnerabilityConfig {
+	out := in
+	out.Enabled = false
+	out.Feeds = append([]config.VulnerabilityFeedConfig(nil), in.Feeds...)
+	for idx := range out.Feeds {
+		out.Feeds[idx].Enabled = false
+	}
+	return out
 }
 
 func storageConfigView(in config.StorageConfig) config.StorageConfig {
@@ -149,6 +174,7 @@ func siteView(site storage.Site) storage.Site {
 	out := site
 	out.Advanced.Certificate.KeyPEM = ""
 	out.Advanced.Certificate.ACME.Env = redactStringMap(out.Advanced.Certificate.ACME.Env)
+	out.Advanced.Response.TamperKey = ""
 	return out
 }
 
@@ -164,6 +190,9 @@ func preserveSiteSecrets(existing *storage.Site, next *storage.Site) {
 		existing.Advanced.Certificate.ACME.Env,
 		next.Advanced.Certificate.ACME.Env,
 	)
+	if strings.TrimSpace(next.Advanced.Response.TamperKey) == "" {
+		next.Advanced.Response.TamperKey = existing.Advanced.Response.TamperKey
+	}
 	// Site form does not edit live review-generated rules; keep them unless the client sent some.
 	if len(next.Advanced.CustomRules) == 0 && len(existing.Advanced.CustomRules) > 0 {
 		next.Advanced.CustomRules = append([]storage.SiteCustomRule(nil), existing.Advanced.CustomRules...)

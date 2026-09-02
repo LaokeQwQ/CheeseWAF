@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Badge,
   Button,
+  ConfirmDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -41,6 +42,7 @@ import {
   fetchSites,
   importThreatIntel,
   lookupThreatIntel,
+  adoptThreatIntel,
   syncThreatIntel,
   testThreatIntelProvider,
   updateIPAccessRules,
@@ -107,6 +109,7 @@ export default function IPManagePage() {
     contents: '',
   });
   const [lookupDraft, setLookupDraft] = useState({ providerId: '', ip: '' });
+  const [lookupItems, setLookupItems] = useState<Array<Record<string, unknown>>>([]);
   const [providerStatuses, setProviderStatuses] = useState<Record<string, IntelOperationStatus>>({});
   const [importStatus, setImportStatus] = useState<IntelOperationStatus | null>(null);
   const [syncStatus, setSyncStatus] = useState<IntelOperationStatus | null>(null);
@@ -270,12 +273,38 @@ export default function IPManagePage() {
   const lookupMutation = useMutation({
     mutationFn: () => lookupThreatIntel(lookupDraft.providerId, lookupDraft.ip),
     onSuccess: (result) => {
+      const found = result.items.length > 0;
+      const status = buildCountStatus({
+        tone: found ? 'success' : 'warning',
+        title: found ? t('ip.lookupFound') : t('ip.lookupClean'),
+        countLabel: t('ip.parsedItems'),
+        imported: result.items.length,
+        total: result.items.length,
+        t,
+        items: result.items,
+      });
+      setLookupStatus(status);
+      setLookupItems(result.items);
+      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
+      showStatusMessage(status);
+    },
+    onError: (error) => {
+      const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
+      setLookupStatus(status);
+      setLookupItems([]);
+      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
+      toast.error(error.message);
+    },
+  });
+  const adoptMutation = useMutation({
+    mutationFn: () => adoptThreatIntel(lookupItems),
+    onSuccess: (result) => {
       const status = buildCountStatus({
         tone: result.imported > 0 ? 'success' : 'warning',
-        title: result.imported > 0 ? t('ip.lookupApplied') : t('ip.lookupClean'),
+        title: t('ip.lookupApplied'),
         countLabel: t('ip.lookupImported'),
         imported: result.imported,
-        total: result.items.length,
+        total: result.total,
         t,
         items: result.items,
       });
@@ -287,7 +316,6 @@ export default function IPManagePage() {
     onError: (error) => {
       const status = buildErrorStatus(t('ip.lookupFailed'), error.message);
       setLookupStatus(status);
-      setProviderStatuses((current) => ({ ...current, [lookupDraft.providerId]: status }));
       toast.error(error.message);
     },
   });
@@ -370,6 +398,8 @@ export default function IPManagePage() {
       };
     }));
   };
+  // Pending blacklist confirmation (P2-17).
+  const [blockPending, setBlockPending] = useState<{ entries: string[] } | null>(null);
   const defaultAccessRuleName = t('ip.defaultAccessRuleName');
   const saveAccessRules = (nextRules = accessRules) => {
     accessRulesMutation.mutate(nextRules.map((rule) => normalizeAccessRuleForSave(rule, defaultAccessRuleName)).filter((rule) => rule.entries.length > 0));
@@ -399,11 +429,39 @@ export default function IPManagePage() {
       name: accessDraft.name || entries[0],
       entries,
     }, defaultAccessRuleName);
+
+    // P2-17: a blacklist rule takes effect as soon as it is saved and writes a
+    // global access rule, so a slip here can lock out a whole range. Make the
+    // destructive case confirm first; whitelist/monitor are additive and safe.
+    if (nextRule.action === 'block') {
+      setBlockPending({ entries });
+      return;
+    }
+
     const nextRules = [...accessRules, nextRule];
     accessRulesDirtyRef.current = true;
     setAccessRules(nextRules);
     setAccessDraft(defaultAccessDraft);
     saveAccessRules(nextRules);
+  };
+
+  const confirmBlockedAccessRule = () => {
+    if (!blockPending) {
+      return;
+    }
+    const entries = blockPending.entries;
+    const nextRule = normalizeAccessRuleForSave({
+      ...accessDraft,
+      id: accessDraft.id || `ip-rule-${Date.now()}`,
+      name: accessDraft.name || entries[0],
+      entries,
+    }, defaultAccessRuleName);
+    const nextRules = [...accessRules, nextRule];
+    accessRulesDirtyRef.current = true;
+    setAccessRules(nextRules);
+    setAccessDraft(defaultAccessDraft);
+    saveAccessRules(nextRules);
+    setBlockPending(null);
   };
   const saveEditedAccessRule = (index: number) => {
     const nextRules = accessRules.map((rule, ruleIndex) => (ruleIndex === index ? normalizeAccessRuleForSave(rule, defaultAccessRuleName) : rule));
@@ -778,6 +836,15 @@ export default function IPManagePage() {
                   </div>
                 </div>
               </section>
+              <ConfirmDialog
+                open={blockPending !== null}
+                onOpenChange={(next) => { if (!next) setBlockPending(null); }}
+                title={t('ip.blockConfirmTitle')}
+                description={t('ip.blockConfirmEntry')}
+                confirmLabel={t('ip.block')}
+                loading={accessRulesMutation.isPending}
+                onConfirm={confirmBlockedAccessRule}
+              />
               <div className="table-panel table-panel-embedded ip-access-table">
                 <div className="ip-access-table-desktop">
                   <Table>
@@ -1152,6 +1219,14 @@ export default function IPManagePage() {
                 <div className="form-action-row">
                   <Button disabled={!lookupDraft.providerId || !lookupDraft.ip} loading={lookupMutation.isPending} onClick={() => lookupMutation.mutate()}>
                     {t('ip.lookup')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={lookupItems.length === 0}
+                    loading={adoptMutation.isPending}
+                    onClick={() => adoptMutation.mutate()}
+                  >
+                    {t('ip.lookupAdopt')}
                   </Button>
                 </div>
                 {lookupStatus && <IntelStatusPanel status={lookupStatus} t={t} />}

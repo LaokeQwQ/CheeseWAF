@@ -35,7 +35,13 @@ func BackupConfig(configPath, dataDir string) TaskFunc {
 			return err
 		}
 		if configPath == "" {
-			configPath = filepath.Join(dataDir, "cheesewaf.yaml")
+			configPath = filepath.Join(dataDir, "config", "cheesewaf.yaml")
+			if _, err := os.Stat(configPath); err != nil {
+				legacy := filepath.Join(dataDir, "waf.yaml")
+				if _, lerr := os.Stat(legacy); lerr == nil {
+					configPath = legacy
+				}
+			}
 		}
 		backupRoot, targetRel, err := resolveBackupTarget(dataDir, task.Target)
 		if err != nil {

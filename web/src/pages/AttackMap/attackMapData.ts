@@ -12,7 +12,7 @@ export type WorldFeature = {
   geometry: unknown;
   properties?: Record<string, unknown>;
 };
-type WorldFeatureCollection = {
+export type GeoFeatureCollection = {
   type: 'FeatureCollection';
   features: WorldFeature[];
 };
@@ -65,7 +65,7 @@ export type AttackRegion = {
 const mapWidth = 1000;
 const mapHeight = 500;
 const topo = worldTopology as any;
-const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as WorldFeatureCollection;
+const worldFeatureCollection = feature(topo, topo.objects.countries) as unknown as GeoFeatureCollection;
 export const worldFeatures = worldFeatureCollection.features.filter((item) => item.geometry);
 export const mapProjection = geoNaturalEarth1().fitExtent([[28, 28], [mapWidth - 28, mapHeight - 28]], worldFeatureCollection as any);
 const mapPath = geoPath(mapProjection);
@@ -290,20 +290,36 @@ export function aggregateRegions(entries: LogEntry[]): AttackRegion[] {
 export function buildCountryLevelMap(regions: AttackRegion[]) {
   const byCountry = new Map<string, { attacks: number; severityRank: number }>();
   for (const region of regions) {
-    if (!region.mappable || !countryNumericIds[region.countryCode]) {
+    if (!region.mappable) {
       continue;
     }
-    const current = byCountry.get(region.countryCode) ?? { attacks: 0, severityRank: 0 };
+    const bucketCountry = worldFillCountryCode(region.countryCode);
+    const current = byCountry.get(bucketCountry) ?? { attacks: 0, severityRank: 0 };
     current.attacks += region.attacks;
     current.severityRank = Math.max(current.severityRank, region.severityRank);
-    byCountry.set(region.countryCode, current);
+    byCountry.set(bucketCountry, current);
   }
   const maxAttacks = Math.max(1, ...Array.from(byCountry.values()).map((item) => item.attacks));
   const levels = new Map<string, ThreatLevel>();
   for (const [country, value] of byCountry.entries()) {
-    levels.set(countryNumericIds[country], threatLevelFor(value.attacks, value.severityRank, maxAttacks));
+    const level = threatLevelFor(value.attacks, value.severityRank, maxAttacks);
+    levels.set(country, level);
+    const numericId = countryNumericIds[country];
+    if (numericId) {
+      levels.set(numericId, level);
+    }
+    if (country === 'CN') {
+      const taiwanNumeric = countryNumericIds.TW;
+      if (taiwanNumeric) {
+        levels.set(taiwanNumeric, level);
+      }
+    }
   }
   return levels;
+}
+
+export function worldFillCountryCode(countryCode: string): string {
+  return countryCode === 'HK' || countryCode === 'MO' || countryCode === 'TW' ? 'CN' : countryCode;
 }
 
 export function resolveProtectedTarget(entries: LogEntry[], t: (key: string, options?: Record<string, unknown>) => string): ProtectedTarget {
@@ -460,15 +476,9 @@ function inferCountryFromIP(ip: string | undefined) {
   if (a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
     return 'LOCAL';
   }
-  if ([1, 14, 27, 36, 39, 42, 49, 58, 59, 60, 61, 101, 106, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 139, 140, 150, 171, 175, 180, 182, 183, 202, 203, 210, 211, 218, 219, 220, 221, 222, 223].includes(a)) {
-    return 'CN';
-  }
-  if (a === 5) {
-    return 'NL';
-  }
-  if ([3, 4, 8, 13, 15, 18, 20, 23, 34, 35, 38, 44, 52, 54, 63, 64, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 96, 98, 99, 100, 104, 107, 108, 129, 130, 131, 132, 134, 135, 136, 137, 138, 144, 146, 147, 148, 152, 155, 156, 157, 158, 159, 160, 162, 164, 165, 166, 167, 168, 169, 170, 172, 173, 174, 184, 192, 198, 199, 204, 205, 206, 207, 208, 209, 216].includes(a)) {
-    return 'US';
-  }
+  // No GeoIP library is bundled client-side. A first-octet heuristic is not
+  // reliable enough to label IPs as CN/US/NL, so unknown addresses stay
+  // UNLOCATED/UNMAPPED instead of being silently mislabelled.
   return 'UNLOCATED';
 }
 

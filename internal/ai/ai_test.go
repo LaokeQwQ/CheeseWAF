@@ -454,6 +454,43 @@ func TestClientUsesOpenAIStandardBearerAuth(t *testing.T) {
 	}
 }
 
+func TestClientUsesConfiguredAPIKeyHeader(t *testing.T) {
+	var gotPath, gotXAPIKey, gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotXAPIKey = r.Header.Get("x-api-key")
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.AIConfig{
+		Enabled:      true,
+		Provider:     "openai",
+		APIBase:      server.URL,
+		APIKey:       "test-secret-key",
+		APIKeyHeader: "x-api-key",
+		Model:        "gpt-4o-mini",
+	}, server.Client())
+	result, err := client.CompleteWithUsage(context.Background(), []Message{{Role: "user", Content: "ping"}})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if gotPath != "/chat/completions" {
+		t.Fatalf("unexpected OpenAI path: %q", gotPath)
+	}
+	if gotXAPIKey != "test-secret-key" {
+		t.Fatalf("expected configured x-api-key header, got %q", gotXAPIKey)
+	}
+	if gotAuthorization != "" {
+		t.Fatalf("default Authorization header should be suppressed when a custom API key header is configured, got %q", gotAuthorization)
+	}
+	if result.Content != "ok" {
+		t.Fatalf("unexpected OpenAI result: %+v", result)
+	}
+}
+
 func TestClientParsesOpenAINativeToolCalls(t *testing.T) {
 	var parsed struct {
 		Tools []map[string]any `json:"tools"`
@@ -632,6 +669,7 @@ func TestClientUsesAnthropicMessagesAPI(t *testing.T) {
 		APIBase:             server.URL,
 		APIKey:              "test-secret",
 		Model:               "claude-3-5-haiku-latest",
+		MaxTokens:           8192,
 		AllowPrivateAPIBase: true,
 	}, server.Client())
 	result, err := client.CompleteWithUsage(context.Background(), []Message{
@@ -652,6 +690,9 @@ func TestClientUsesAnthropicMessagesAPI(t *testing.T) {
 	}
 	if len(parsed.Messages) != 1 || parsed.Messages[0].Role != "user" || parsed.Messages[0].Content != "ping" {
 		t.Fatalf("unexpected anthropic messages: %+v", parsed.Messages)
+	}
+	if parsed.MaxTokens != 8192 {
+		t.Fatalf("Anthropic max_tokens = %d, want 8192", parsed.MaxTokens)
 	}
 	if result.Provider != "anthropic" || result.Model != "claude-3-5-haiku-latest" || result.Usage.InputTokens != 17 || result.Usage.OutputTokens != 4 || result.Usage.TotalTokens != 21 {
 		t.Fatalf("unexpected Anthropic result: %+v", result)
@@ -720,7 +761,7 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	registry.Register(fakeTool{sensitivity: Modify})
 	assistant := NewAssistant(registry, NewApprovalStore())
 
-	first, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, "")
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -731,7 +772,7 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	second, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, approved.ID)
+	second, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, approved.ID)
 	if err != nil {
 		t.Fatalf("execute approved tool: %v", err)
 	}
@@ -741,8 +782,115 @@ func TestAssistantRequiresApprovalForSensitiveTool(t *testing.T) {
 	if second.Approval == nil || second.Approval.Status != ApprovalExecuted {
 		t.Fatalf("expected approval to be marked executed after tool success, got %+v", second.Approval)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", nil, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", nil, approved.ID); err == nil {
 		t.Fatal("expected approved request to be single-use")
+	}
+}
+
+// A read-only tool never creates an approval, so an approval id on a read-only
+// call can only point at somebody else's request. Honouring it would let any
+// caller flip a foreign `executing` request to executed/failed and leave its
+// owner unable to complete a change that was already applied.
+func TestAssistantReadOnlyExecutionDoesNotFinalizeForeignApproval(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(fakeTool{sensitivity: Modify})
+	registry.Register(approvalReadOnlyTool{})
+	store := NewApprovalStore()
+	assistant := NewAssistant(registry, store)
+
+	owner := ApprovalActor{Subject: "owner", SessionID: "owner-session"}
+	pending, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", owner)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	approved, err := store.ApproveFor(pending.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"})
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	// Park the request in `executing`, exactly like an in-flight
+	// continue/stream call made by its owner.
+	executing, err := store.BeginExecutionFor(approved.ID, "fake_modify", nil, owner)
+	if err != nil {
+		t.Fatalf("begin execution: %v", err)
+	}
+	if executing.Status != ApprovalExecuting {
+		t.Fatalf("expected executing approval, got %s", executing.Status)
+	}
+
+	// A different console user (an approver can list every approval id) calls
+	// a read-only tool while carrying that id.
+	intruder := ContextWithApprovalActor(context.Background(), ApprovalActor{Subject: "intruder", SessionID: "intruder-session", Role: "approver"})
+	execution, err := assistant.ExecuteTool(intruder, "approval_read", nil, executing.ID)
+	if err != nil {
+		t.Fatalf("read-only tool should still execute: %v", err)
+	}
+	if execution.Result == nil || !execution.Result.Success {
+		t.Fatalf("unexpected read-only result: %+v", execution.Result)
+	}
+	if execution.Approval != nil {
+		t.Fatalf("read-only execution must not adopt an approval: %+v", execution.Approval)
+	}
+	stored, ok := store.Get(executing.ID)
+	if !ok {
+		t.Fatal("foreign approval disappeared from the store")
+	}
+	if stored.Status != ApprovalExecuting {
+		t.Fatalf("read-only call finalized a foreign approval: status=%s", stored.Status)
+	}
+	// The owner must still be able to finalize its own request.
+	if _, err := store.MarkExecuted(executing.ID, owner); err != nil {
+		t.Fatalf("owner can no longer complete its own approval: %v", err)
+	}
+}
+
+// The continue path consumes an approved request through
+// BeginExecutionForWithPreview; an approval that expired while it was waiting
+// for a second person must not become executable.
+func TestApprovalExecutionRejectsExpiredApprovedRequest(t *testing.T) {
+	store := NewApprovalStore()
+	now := time.Now().UTC()
+	store.now = func() time.Time { return now }
+
+	owner := ApprovalActor{Subject: "owner", SessionID: "owner-session"}
+	request, err := store.CreateFor(fakeTool{sensitivity: Modify}, nil, "", owner)
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	if _, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	store.now = func() time.Time { return now.Add(defaultApprovalTTL + time.Minute) }
+	if _, err := store.BeginExecutionFor(request.ID, "fake_modify", nil, owner); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired approval was consumed: %v", err)
+	}
+	stored, _ := store.Get(request.ID)
+	if stored.Status != ApprovalApproved {
+		t.Fatalf("expiration must not move the request out of approved: %s", stored.Status)
+	}
+}
+
+func TestAssistantRejectsApprovalWhenPreviewStateChanged(t *testing.T) {
+	state := "before"
+	registry := NewRegistry()
+	registry.Register(previewStateTool{state: &state})
+	store := NewApprovalStore()
+	assistant := NewAssistant(registry, store)
+
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "preview_state_modify", nil, "")
+	if err != nil || first.Approval == nil {
+		t.Fatalf("create approval: execution=%+v err=%v", first, err)
+	}
+	if _, err := assistant.Approve(first.Approval.ID); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	state = "changed by another writer"
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "preview_state_modify", nil, first.Approval.ID); err == nil || !strings.Contains(err.Error(), "requires approved request") {
+		t.Fatalf("stale preview was accepted: %v", err)
+	}
+	stored, ok := store.Get(first.Approval.ID)
+	if !ok || stored.Status != ApprovalApproved {
+		t.Fatalf("stale preview must not consume approval: %+v", stored)
 	}
 }
 
@@ -795,7 +943,7 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	assistant := NewAssistant(registry, store)
 	args := map[string]any{"enabled": true}
 
-	first, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, "")
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "fake_fail_once", args, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -803,7 +951,7 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_fail_once", args, approved.ID); err == nil {
 		t.Fatal("expected first approved execution to fail")
 	}
 	stored, ok := store.Get(approved.ID)
@@ -813,7 +961,7 @@ func TestAssistantApprovedToolCannotRetryAfterExecutionFailure(t *testing.T) {
 	if stored.Status != ApprovalFailed {
 		t.Fatalf("failed execution should mark approval failed, got %+v", stored)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_fail_once", args, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_fail_once", args, approved.ID); err == nil {
 		t.Fatal("expected failed approval to be single-use")
 	}
 }
@@ -876,7 +1024,7 @@ func TestAssistantRejectsApprovalArgumentSwap(t *testing.T) {
 	registry.Register(fakeTool{sensitivity: Modify})
 	assistant := NewAssistant(registry, NewApprovalStore())
 
-	first, err := assistant.ExecuteTool(context.Background(), "fake_modify", map[string]any{"enabled": true}, "")
+	first, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", map[string]any{"enabled": true}, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -884,7 +1032,7 @@ func TestAssistantRejectsApprovalArgumentSwap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if _, err := assistant.ExecuteTool(context.Background(), "fake_modify", map[string]any{"enabled": false}, approved.ID); err == nil {
+	if _, err := assistant.ExecuteTool(testAdminAIContext(), "fake_modify", map[string]any{"enabled": false}, approved.ID); err == nil {
 		t.Fatal("expected approval argument mismatch to be rejected")
 	}
 }
@@ -954,6 +1102,25 @@ func TestApprovalStoreListReturnsSortedDefensiveSnapshots(t *testing.T) {
 
 type fakeTool struct {
 	sensitivity ToolSensitivity
+}
+
+type previewStateTool struct {
+	state *string
+}
+
+func (previewStateTool) Name() string                 { return "preview_state_modify" }
+func (previewStateTool) Description() string          { return "preview state test tool" }
+func (previewStateTool) Sensitivity() ToolSensitivity { return Modify }
+func (previewStateTool) Parameters() map[string]any   { return map[string]any{"type": "object"} }
+func (t previewStateTool) Preview(context.Context, map[string]any) (string, error) {
+	return *t.state, nil
+}
+func (previewStateTool) Execute(context.Context, map[string]any) (*ToolResult, error) {
+	return &ToolResult{Success: true}, nil
+}
+
+func testAdminAIContext() context.Context {
+	return ContextWithApprovalActor(context.Background(), ApprovalActor{Subject: "test-admin", SessionID: "test-session", Role: "admin"})
 }
 
 func (f fakeTool) Name() string {

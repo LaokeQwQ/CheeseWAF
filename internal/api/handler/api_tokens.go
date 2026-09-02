@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -48,19 +49,19 @@ type managementAPITokenView struct {
 func (h *Handler) ListManagementAPITokens(w http.ResponseWriter, _ *http.Request) {
 	h.configMutationMu.RLock()
 	defer h.configMutationMu.RUnlock()
-	items := managementAPITokenViews(h.Config.APISec.ManagementAPI.Tokens)
-	writeData(w, map[string]any{"enabled": h.Config.APISec.ManagementAPI.Enabled, "items": items, "total": len(items)})
+	items := managementAPITokenViews(h.currentConfig().APISec.ManagementAPI.Tokens)
+	writeData(w, map[string]any{"enabled": h.currentConfig().APISec.ManagementAPI.Enabled, "items": items, "total": len(items)})
 }
 
 func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*middleware.Claims, func(), bool) {
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil, nil, false
 	}
 	at = at.UTC()
 	// Copy the small authentication snapshot while locked, then perform digest or
 	// legacy bcrypt verification without holding configuration locks.
 	h.configMutationMu.RLock()
-	snapshot := cloneManagementAPIConfig(h.Config.APISec.ManagementAPI)
+	snapshot := cloneManagementAPIConfig(h.currentConfig().APISec.ManagementAPI)
 	interval := h.managementTokenFlushInterval
 	h.configMutationMu.RUnlock()
 
@@ -87,12 +88,21 @@ func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*mid
 	tokenID := claims.ID
 
 	h.configMutationMu.Lock()
-	// Touch last-used by id without re-hashing; re-check revoke/enabled for the race window.
-	for idx := range h.Config.APISec.ManagementAPI.Tokens {
-		token := &h.Config.APISec.ManagementAPI.Tokens[idx]
+	// Re-check revoke/enabled for the race window, then publish a cloned
+	// snapshot. Atomic snapshots are immutable and must never be edited in place.
+	candidate, cloneErr := config.Clone(h.currentConfig())
+	if cloneErr != nil {
+		h.configMutationMu.Unlock()
+		return nil, nil, false
+	}
+	updated := false
+	found := false
+	for idx := range candidate.APISec.ManagementAPI.Tokens {
+		token := &candidate.APISec.ManagementAPI.Tokens[idx]
 		if token.ID != tokenID {
 			continue
 		}
+		found = true
 		if !token.Enabled || !token.RevokedAt.IsZero() {
 			h.configMutationMu.Unlock()
 			return nil, nil, false
@@ -102,22 +112,36 @@ func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*mid
 			return nil, nil, false
 		}
 		if token.LastUsedAt.IsZero() || at.Sub(token.LastUsedAt) >= interval {
-			previous := token.LastUsedAt
 			token.LastUsedAt = at
-			if err := h.persistManagementAPITokenUseLocked(); err != nil {
-				token.LastUsedAt = previous
-			}
+			updated = true
 		}
 		break
 	}
-	snapshot = cloneManagementAPIConfig(h.Config.APISec.ManagementAPI)
+	if !found {
+		h.configMutationMu.Unlock()
+		return nil, nil, false
+	}
+	if updated {
+		if err := h.publishConfig(candidate); err != nil {
+			h.configMutationMu.Unlock()
+			return nil, nil, false
+		}
+	}
+	snapshot = cloneManagementAPIConfig(h.currentConfig().APISec.ManagementAPI)
 	h.configMutationMu.Unlock()
 
 	claims, ok = middleware.VerifyManagementAPIToken(raw, snapshot, at)
 	if !ok {
 		return nil, nil, false
 	}
-	return claims, nil, true
+	if !updated || h.ConfigPath == "" {
+		return claims, nil, true
+	}
+	return claims, func() {
+		if err := h.persistManagementAPITokenUsageSnapshot(); err != nil {
+			log.Printf("management api token usage flush failed: %v", err)
+		}
+	}, true
 }
 
 func cloneManagementAPIConfig(source config.ManagementAPIConfig) config.ManagementAPIConfig {
@@ -130,18 +154,26 @@ func cloneManagementAPIConfig(source config.ManagementAPIConfig) config.Manageme
 	return cloned
 }
 
-func (h *Handler) persistManagementAPITokenUseLocked() error {
-	if h == nil || h.Config == nil || h.ConfigPath == "" {
+func (h *Handler) persistManagementAPITokenUsageSnapshot() error {
+	if h == nil || h.ConfigPath == "" {
 		return nil
 	}
-	return config.Save(h.ConfigPath, h.Config)
+	h.configPersistMu.Lock()
+	defer h.configPersistMu.Unlock()
+	h.configMutationMu.RLock()
+	snapshot, err := config.Clone(h.currentConfig())
+	h.configMutationMu.RUnlock()
+	if err != nil {
+		return err
+	}
+	return config.Save(h.ConfigPath, snapshot)
 }
 
 func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
-	if h.Config == nil || !h.Config.APISec.ManagementAPI.Enabled {
+	if h.currentConfig() == nil || !h.currentConfig().APISec.ManagementAPI.Enabled {
 		writeError(w, http.StatusBadRequest, "API_TOKEN_DISABLED", "management api tokens are disabled")
 		return
 	}
@@ -320,8 +352,8 @@ func (h *Handler) validateManagementAPITokenScopes(r *http.Request, scopes []str
 		return fmt.Errorf("caller is not authenticated")
 	}
 	permissions := config.Default().APISec.Permissions
-	if h != nil && h.Config != nil && len(h.Config.APISec.Permissions) > 0 {
-		permissions = h.Config.APISec.Permissions
+	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
+		permissions = h.currentConfig().APISec.Permissions
 	}
 	for _, scope := range scopes {
 		if strings.TrimSpace(scope) == "*" {

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIConfig, AIModelConfig } from '../../types/api';
@@ -97,6 +97,33 @@ describe('AI self-learning max_events', () => {
 
     await waitFor(() => expect(apiMocks.fetchAIConfig).toHaveBeenCalled());
     expect(await screen.findByDisplayValue('321')).toBeTruthy();
+  });
+
+  it('preserves dirty form values across config refetch', async () => {
+    apiMocks.fetchAIConfig.mockReset();
+    apiMocks.fetchAIConfig
+      .mockResolvedValueOnce(baseConfig)
+      .mockResolvedValueOnce({
+        ...baseConfig,
+        self_learning: { ...baseConfig.self_learning, max_events: 999 },
+      });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <AIPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const input = await screen.findByDisplayValue('321');
+    fireEvent.change(input, { target: { value: '777' } });
+    expect(screen.getByDisplayValue('777')).toBeTruthy();
+
+    await client.invalidateQueries({ queryKey: ['ai-config'] });
+    await waitFor(() => expect(apiMocks.fetchAIConfig).toHaveBeenCalledTimes(2));
+    expect(screen.getByDisplayValue('777')).toBeTruthy();
   });
 
   it('saves a validated numeric max_events value into the API payload', () => {

@@ -52,16 +52,19 @@ type Client struct {
 	provider     string
 	apiBase      string
 	apiKey       string
+	apiKeyHeader string
 	model        string
+	maxTokens    int
 	allowPrivate bool
 	http         *http.Client
 	openai       openaisdk.Client
 }
 
 const (
-	defaultAIHTTPTimeout     = 5 * time.Minute
-	maxAIJSONResponseBytes   = 4 << 20
-	maxAIStreamResponseBytes = 16 << 20
+	defaultAIHTTPTimeout      = 5 * time.Minute
+	maxAIJSONResponseBytes    = 4 << 20
+	maxAIStreamResponseBytes  = 16 << 20
+	defaultAnthropicMaxTokens = 4096
 )
 
 var errAIResponseTooLarge = errors.New("AI API response exceeds byte limit")
@@ -76,14 +79,41 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		provider:     provider,
 		apiBase:      strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
 		apiKey:       cfg.APIKey,
+		apiKeyHeader: strings.TrimSpace(cfg.APIKeyHeader),
 		model:        cfg.Model,
+		maxTokens:    normalizedMaxTokens(cfg.MaxTokens),
 		allowPrivate: cfg.AllowPrivateAPIBase,
 		http:         httpClient,
 	}
 	if provider == "openai" {
-		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, httpClient)
+		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, client.apiKeyHeader, httpClient)
 	}
 	return client
+}
+
+func normalizedMaxTokens(value int) int {
+	if value <= 0 {
+		return defaultAnthropicMaxTokens
+	}
+	if value > 200000 {
+		return 200000
+	}
+	return value
+}
+
+func (c *Client) setAPIKeyHeader(req *http.Request, fallback string) {
+	if c.apiKey == "" {
+		return
+	}
+	name := strings.TrimSpace(c.apiKeyHeader)
+	if name == "" {
+		name = fallback
+	}
+	value := c.apiKey
+	if strings.EqualFold(name, "authorization") && !strings.HasPrefix(strings.ToLower(value), "bearer ") {
+		value = "Bearer " + value
+	}
+	req.Header.Set(name, value)
 }
 
 type aiResponseLimitTransport struct {
@@ -165,7 +195,7 @@ func newAIHTTPClient(cfg config.AIConfig, timeout time.Duration) *http.Client {
 	})
 }
 
-func newOpenAISDKClient(apiBase, apiKey string, httpClient *http.Client) openaisdk.Client {
+func newOpenAISDKClient(apiBase, apiKey, apiKeyHeader string, httpClient *http.Client) openaisdk.Client {
 	options := []openaioption.RequestOption{
 		openaioption.WithHTTPClient(httpClient),
 		openaioption.WithMaxRetries(0),
@@ -173,6 +203,13 @@ func newOpenAISDKClient(apiBase, apiKey string, httpClient *http.Client) openais
 	}
 	if strings.TrimSpace(apiBase) != "" {
 		options = append(options, openaioption.WithBaseURL(apiBase))
+	}
+	if name := strings.TrimSpace(apiKeyHeader); name != "" && apiKey != "" {
+		if strings.EqualFold(name, "authorization") {
+			options = append(options, openaioption.WithHeader("authorization", "Bearer "+apiKey))
+		} else {
+			options = append(options, openaioption.WithHeaderDel("authorization"), openaioption.WithHeader(name, apiKey))
+		}
 	}
 	return openaisdk.NewClient(options...)
 }
@@ -450,9 +487,7 @@ func (c *Client) listOpenAIModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
+	c.setAPIKeyHeader(req, "Authorization")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -539,7 +574,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 		Model:       c.model,
 		System:      system,
 		Messages:    conversation,
-		MaxTokens:   1024,
+		MaxTokens:   c.maxTokens,
 		Temperature: 0.2,
 	}
 	body, err := json.Marshal(payload)
@@ -556,9 +591,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if c.apiKey != "" {
-		req.Header.Set("x-api-key", c.apiKey)
-	}
+	c.setAPIKeyHeader(req, "x-api-key")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -611,7 +644,7 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 		Model:       c.model,
 		System:      system,
 		Messages:    conversation,
-		MaxTokens:   1024,
+		MaxTokens:   c.maxTokens,
 		Temperature: 0.2,
 		Tools:       anthropicTools(tools),
 	}
@@ -629,9 +662,7 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if c.apiKey != "" {
-		req.Header.Set("x-api-key", c.apiKey)
-	}
+	c.setAPIKeyHeader(req, "x-api-key")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -693,9 +724,7 @@ func (c *Client) listAnthropicModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, err
 	}
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if c.apiKey != "" {
-		req.Header.Set("x-api-key", c.apiKey)
-	}
+	c.setAPIKeyHeader(req, "x-api-key")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -793,7 +822,7 @@ func (c *Client) anthropicPayload(messages []Message, tools []map[string]any) an
 		Model:       c.model,
 		System:      system,
 		Messages:    conversation,
-		MaxTokens:   1024,
+		MaxTokens:   c.maxTokens,
 		Temperature: 0.2,
 	}
 	if len(tools) > 0 {
@@ -813,9 +842,7 @@ func (c *Client) doAnthropicRequest(ctx context.Context, body []byte) (*http.Res
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if c.apiKey != "" {
-		req.Header.Set("x-api-key", c.apiKey)
-	}
+	c.setAPIKeyHeader(req, "x-api-key")
 	return c.http.Do(req)
 }
 

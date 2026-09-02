@@ -19,9 +19,12 @@ func (h *Hub) WSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	transport := &WebSocketTransport{conn: conn}
+	if err := transport.Send(r.Context(), ConnectedMessage("ws")); err != nil {
+		_ = transport.Close()
+		return
+	}
 	h.Add(transport)
 	defer h.Remove(transport)
-	_ = transport.Send(r.Context(), &Message{Type: MsgStats, Payload: map[string]any{"connected": true}})
 	for {
 		if _, err := transport.Receive(r.Context()); err != nil {
 			return
@@ -52,7 +55,7 @@ func (t *WebSocketTransport) Receive(ctx context.Context) (*Message, error) {
 }
 
 func (t *WebSocketTransport) Close() error {
-	return t.conn.Close(websocket.StatusNormalClosure, "closed")
+	return t.conn.CloseNow()
 }
 
 func (t *WebSocketTransport) Type() string { return "ws" }

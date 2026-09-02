@@ -3,6 +3,7 @@ package rules
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
@@ -29,6 +30,7 @@ func (e *Engine) Priority() int { return 250 }
 
 func (e *Engine) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
 	views := new(requestViews)
+	var best *engine.DetectionResult
 	for _, rule := range e.rules {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -37,8 +39,11 @@ func (e *Engine) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*en
 			continue
 		}
 		value := views.match(rule, reqCtx)
+		if rule.literalPrefix != "" && !strings.Contains(value, rule.literalPrefix) {
+			continue
+		}
 		if rule.Pattern.MatchString(value) {
-			return &engine.DetectionResult{
+			result := &engine.DetectionResult{
 				Detected:   true,
 				DetectorID: e.ID() + "." + rule.ID,
 				Category:   "custom_rule",
@@ -46,11 +51,38 @@ func (e *Engine) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*en
 				Action:     rule.Action,
 				Message:    "custom rule matched: " + rule.Name,
 				Confidence: 0.8,
-				Payload:    clipPayloadAroundMatch(value, rule),
-			}, nil
+				Payload:    matchPayload(value, rule),
+			}
+			if best == nil || actionStrength(result.Action) > actionStrength(best.Action) {
+				best = result
+			}
 		}
 	}
-	return nil, nil
+	return best, nil
+}
+
+func matchPayload(value string, rule Rule) string {
+	switch rule.Location {
+	case "header":
+		return "[redacted header match]"
+	case "cookie":
+		return "[redacted cookie match]"
+	default:
+		return clipPayloadAroundMatch(value, rule)
+	}
+}
+
+func actionStrength(action engine.Action) int {
+	switch action {
+	case engine.ActionBlock:
+		return 3
+	case engine.ActionChallenge:
+		return 2
+	case engine.ActionLog:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // clipPayloadAroundMatch keeps at most maxPayloadBytes of value, preferring a

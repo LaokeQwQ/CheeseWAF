@@ -13,7 +13,7 @@ import (
 func TestCandidateCacheHitAndTTL(t *testing.T) {
 	processCandidateCache.resetForTest()
 	ProcessMetrics().ResetForTest()
-	c := newCandidateCache(8, 50*time.Millisecond)
+	c := newCandidateCache(8, time.Minute)
 	key := candidateCacheKey("block", enabledCategoryFingerprint(map[string]bool{"sqli": true}), "query", "q", "1 union select 1")
 	if _, ok := c.get(key); ok {
 		t.Fatal("expected miss")
@@ -23,9 +23,38 @@ func TestCandidateCacheHitAndTTL(t *testing.T) {
 	if !ok || len(got) != 1 || got[0].Category != "sqli" {
 		t.Fatalf("expected cache hit, got ok=%v hits=%+v", ok, got)
 	}
-	time.Sleep(60 * time.Millisecond)
+
+	shard := c.shard(key)
+	shard.mu.Lock()
+	entry := shard.items[key]
+	entry.expires = time.Now().Add(-time.Nanosecond).UnixNano()
+	shard.items[key] = entry
+	shard.mu.Unlock()
+
 	if _, ok := c.get(key); ok {
 		t.Fatal("expected TTL expiry miss")
+	}
+}
+
+func TestCacheTTLJitterBoundsAreSymmetric(t *testing.T) {
+	ttl := 80 * time.Second
+	jitter := ttl / 8
+	tests := []struct {
+		name   string
+		sample int64
+		want   time.Duration
+	}{
+		{name: "lower bound", sample: 0, want: ttl - jitter},
+		{name: "configured TTL", sample: int64(jitter), want: ttl},
+		{name: "upper bound", sample: int64(2 * jitter), want: ttl + jitter},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cacheTTLWithJitter(ttl, tc.sample); got != tc.want {
+				t.Fatalf("cache TTL with jitter = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -37,6 +66,35 @@ func TestCandidateCacheKeyIncludesFieldContext(t *testing.T) {
 	header := candidateCacheKey("block", fingerprint, "header", "url", text)
 	if plain == fetchSink || fetchSink == header || plain == header {
 		t.Fatal("cache key must partition source and parameter-name-sensitive analysis")
+	}
+}
+
+func TestCandidateCacheKeyIncludesSSRFRequestScope(t *testing.T) {
+	fingerprint := enabledCategoryFingerprint(map[string]bool{"ssrf": true})
+	text := "http://192.168.171.131/admin"
+	reqA, _ := http.NewRequest(http.MethodGet, "http://192.168.171.131/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url=x", nil)
+	reqB, _ := http.NewRequest(http.MethodGet, "http://192.168.171.132/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url=x", nil)
+	for _, req := range []*http.Request{reqA, reqB} {
+		req.Host = req.URL.Host
+	}
+	candidateA := semanticCandidate{input: InputPoint{Source: "query", Name: "url"}, text: text, request: reqA, hostValidated: true}
+	candidateB := semanticCandidate{input: InputPoint{Source: "query", Name: "url"}, text: text, request: reqB, hostValidated: true}
+	scopeA, ok := ssrfRequestCacheScope(candidateA)
+	if !ok {
+		t.Fatal("expected URL query candidate to carry an SSRF request scope")
+	}
+	scopeB, ok := ssrfRequestCacheScope(candidateB)
+	if !ok {
+		t.Fatal("expected second URL query candidate to carry an SSRF request scope")
+	}
+	base := candidateCacheKey("block", fingerprint, candidateA.input.Source, candidateA.input.Name, text)
+	keyA := candidateCacheKeyWithSSRFScope(base, scopeA)
+	keyB := candidateCacheKeyWithSSRFScope(base, scopeB)
+	if keyA == keyB {
+		t.Fatal("SSRF request scope must separate different authorities")
+	}
+	if keyA != candidateCacheKeyWithSSRFScope(base, scopeA) {
+		t.Fatal("identical SSRF request scope must remain deterministic")
 	}
 }
 

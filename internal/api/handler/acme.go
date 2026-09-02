@@ -42,7 +42,7 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
-	if h.Config != nil && !h.Config.ACME.Enabled {
+	if h.currentConfig() != nil && !h.currentConfig().ACME.Enabled {
 		writeError(w, http.StatusServiceUnavailable, "ACME_DISABLED", "acme automation is disabled")
 		return
 	}
@@ -299,7 +299,12 @@ type trustedACMERuntime struct {
 func (h *Handler) trustedSiteACMERuntime(site *storage.Site) trustedACMERuntime {
 	cfg := config.Default()
 	if h != nil && h.Config != nil {
+		// Config is the compatibility view kept in sync by publishConfig and is
+		// also the field used by package-level callers to override test/runtime
+		// ACME paths before issuing a certificate.
 		cfg = *h.Config
+	} else if h != nil && h.currentConfig() != nil {
+		cfg = *h.currentConfig()
 	}
 	acmeCfg := cfg.ACME
 	baseDir := cfg.Setup.DataDir
@@ -348,14 +353,14 @@ func (h *Handler) ensureACMEIssuer() acme.Issuer {
 	if h != nil && h.ACMEIssuer != nil {
 		return h.ACMEIssuer
 	}
-	if h == nil || h.Config == nil {
+	if h == nil || h.currentConfig() == nil {
 		return nil
 	}
-	return acme.NewIssuer(acme.IssuerOptions{Config: h.Config})
+	return acme.NewIssuer(acme.IssuerOptions{Config: h.currentConfig()})
 }
 
 func (h *Handler) notifyACMEIssue(r *http.Request, site *storage.Site, result acme.IssueResult, cause error) {
-	if h == nil || h.Config == nil || !result.Notify {
+	if h == nil || h.currentConfig() == nil || !result.Notify {
 		return
 	}
 	severity := "info"
@@ -383,7 +388,7 @@ func (h *Handler) notifyACMEIssue(r *http.Request, site *storage.Site, result ac
 		StartsAt:  startsAt,
 	}
 	alert.Name = "ACME certificate pipeline: " + name
-	manager := monitornotify.NewManager(h.Config.Monitor.Notifiers)
+	manager := monitornotify.NewManager(h.currentConfig().Monitor.Notifiers)
 	_ = manager.Notify(r.Context(), []monitor.Alert{alert})
 }
 

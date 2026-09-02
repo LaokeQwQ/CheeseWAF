@@ -35,8 +35,12 @@ compile_tests() {
     test_base=(-tags "${tags}" -c -o "${null_out}")
   fi
 
-  local pkgs
-  mapfile -t pkgs < <(go_cmd list "${list_args[@]}")
+  local pkg
+  local -a pkgs=()
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    pkgs+=("$pkg")
+  done < <(go_cmd list "${list_args[@]}")
   if [[ "${#pkgs[@]}" -eq 0 ]]; then
     return 0
   fi

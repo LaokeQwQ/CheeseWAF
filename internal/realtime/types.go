@@ -28,11 +28,19 @@ type Message struct {
 	Payload any         `json:"payload"`
 }
 
+// ApprovalEvent invalidates clients' authorized approval views without
+// exposing one request's object-scoped details on the shared realtime stream.
+type ApprovalEvent struct {
+	Status string `json:"status"`
+}
+
 // Transport is the interface for real-time communication channels.
 // WebSocket and SSE both implement this interface.
 // 实时通信通道接口，WebSocket 和 SSE 都实现此接口。
 type Transport interface {
 	// Send sends a message to the client.
+	// Implementations must honor context cancellation so the hub can disconnect
+	// slow clients without leaking a sender goroutine.
 	// 向客户端发送消息。
 	Send(ctx context.Context, msg *Message) error
 

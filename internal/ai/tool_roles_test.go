@@ -35,3 +35,17 @@ func TestRoleToolPolicyReadOnlyDefault(t *testing.T) {
 		t.Fatal("expected guard error")
 	}
 }
+
+func TestRoleToolPolicyUnknownAndEmptyRolesAreReadOnly(t *testing.T) {
+	p := DefaultRoleToolPolicy()
+	read := roleProbeTool{name: "read", sens: ReadOnly}
+	modify := roleProbeTool{name: "modify", sens: Modify}
+	for _, role := range []string{"", "typo-role"} {
+		if !p.ToolAllowed(role, read) {
+			t.Fatalf("role %q should retain read-only access", role)
+		}
+		if p.ToolAllowed(role, modify) {
+			t.Fatalf("role %q must not inherit modification access", role)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package ip
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 )
@@ -16,7 +17,7 @@ func NewMatcher(entries []string) (*Matcher, error) {
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
-			continue
+			return nil, fmt.Errorf("empty IP entry")
 		}
 		if strings.Contains(entry, "/") {
 			prefix, err := netip.ParsePrefix(entry)
@@ -33,7 +34,7 @@ func NewMatcher(entries []string) (*Matcher, error) {
 		}
 		addr, err := netip.ParseAddr(entry)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid IP entry %q: %w", entry, err)
 		}
 		m.ips[addr.Unmap()] = struct{}{}
 	}
@@ -53,20 +54,4 @@ func (m *Matcher) Contains(raw string) bool {
 		return true
 	}
 	return len(m.cidrs.match(addr)) > 0
-}
-
-type Blacklist struct {
-	matcher *Matcher
-}
-
-func NewBlacklist(entries []string) (*Blacklist, error) {
-	matcher, err := NewMatcher(entries)
-	if err != nil {
-		return nil, err
-	}
-	return &Blacklist{matcher: matcher}, nil
-}
-
-func (b *Blacklist) Blocked(ip string) bool {
-	return b != nil && b.matcher.Contains(ip)
 }

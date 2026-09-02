@@ -34,7 +34,7 @@ func TestTrustedLoginClientIPOnlyHonorsXFFFromLoopback(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := trustedLoginClientIP(req(tc.peer+":12345", tc.xff), tc.peer)
+			got := trustedLoginClientIP(req(tc.peer+":12345", tc.xff), tc.peer, false)
 			if got != tc.want {
 				t.Fatalf("trustedLoginClientIP peer=%q xff=%q = %q, want %q", tc.peer, tc.xff, got, tc.want)
 			}
@@ -49,7 +49,7 @@ func TestLoginRateLimitKeysIgnorePrivatePeerXFF(t *testing.T) {
 		RemoteAddr: "10.1.2.3:4444",
 	}
 	r.Header.Set("X-Forwarded-For", "198.51.100.77")
-	keys := loginRateLimitKeys(r, "admin")
+	keys := loginRateLimitKeys(r, "admin", false)
 	for _, key := range keys {
 		if key == "client:198.51.100.77" {
 			t.Fatalf("rate limit keys must not include spoofable XFF client, got %v", keys)
@@ -63,5 +63,24 @@ func TestLoginRateLimitKeysIgnorePrivatePeerXFF(t *testing.T) {
 	}
 	if !foundPeer {
 		t.Fatalf("expected peer key, got %v", keys)
+	}
+}
+
+func TestTrustedLoginClientIPRejectsXFFWhenAdminPublic(t *testing.T) {
+	t.Parallel()
+	r := &http.Request{Header: make(http.Header), RemoteAddr: "127.0.0.1:54321"}
+	r.Header.Set("X-Forwarded-For", "198.51.100.50")
+	if got := trustedLoginClientIP(r, "127.0.0.1", true); got != "" {
+		t.Fatalf("admin public must not trust XFF even from loopback, got %q", got)
+	}
+	if loginCAPTCHASkippedForPeer(r, true) {
+		t.Fatal("admin public must not skip CAPTCHA for loopback")
+	}
+	if loginCAPTCHASkippedForPeer(r, false) {
+		t.Fatal("loopback with a forwarded client must not skip CAPTCHA")
+	}
+	local := &http.Request{Header: make(http.Header), RemoteAddr: "127.0.0.1:54321"}
+	if !loginCAPTCHASkippedForPeer(local, false) {
+		t.Fatal("direct loopback without X-Forwarded-For may skip CAPTCHA")
 	}
 }

@@ -37,8 +37,10 @@ func (c *Controller) ListenAndServe(ctx context.Context) error {
 	go func() {
 		errCh <- c.server.Serve(ln)
 	}()
-	// Best-effort open the local UI once.
-	_ = openURL("http://" + c.opts.Listen + "/")
+	// The token travels only in the URL fragment. Fragments are not sent in
+	// HTTP requests, so an unauthenticated GET of the controller page cannot
+	// disclose the mutating credential to another local process.
+	_ = openURL("http://" + c.opts.Listen + "/#control_token=" + url.QueryEscape(c.controlToken))
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -116,9 +118,7 @@ func (c *Controller) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Embed the per-process control token so same-origin UI mutations can authenticate.
-	html := strings.ReplaceAll(controlHTML, "__CONTROL_TOKEN__", c.controlToken)
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write([]byte(controlHTML))
 }
 
 func (c *Controller) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -236,11 +236,13 @@ label{display:flex;align-items:center;gap:8px;color:var(--muted)}
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const CONTROL_TOKEN = "__CONTROL_TOKEN__";
+const CONTROL_TOKEN = new URLSearchParams(location.hash.slice(1)).get('control_token') || '';
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
 const err = (m) => { $('err').textContent = m || ''; };
 async function api(path, opts) {
   opts = Object.assign({ credentials: 'same-origin' }, opts || {});
-  opts.headers = Object.assign({ 'X-CheeseWAF-Control-Token': CONTROL_TOKEN }, opts.headers || {});
+  opts.headers = Object.assign({}, opts.headers || {});
+  if (CONTROL_TOKEN) opts.headers['X-CheeseWAF-Control-Token'] = CONTROL_TOKEN;
   const res = await fetch(path, opts);
   const body = await res.json().catch(() => ({}));
   if (!res.ok || body.ok === false) throw new Error(body.error || res.statusText);

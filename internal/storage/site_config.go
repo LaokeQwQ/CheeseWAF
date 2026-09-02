@@ -68,6 +68,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 			},
 			SemanticPolicy: SiteSemanticPolicy{
 				BudgetExhaustedPolicy: site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
+				DecodeDepth:           site.WAF.SemanticPolicy.DecodeDepth,
 				PathAllowlist:         cloneStrings(site.WAF.SemanticPolicy.PathAllowlist),
 				ParamAllowlist:        cloneStrings(site.WAF.SemanticPolicy.ParamAllowlist),
 				PromoteSeconds:        site.WAF.SemanticPolicy.PromoteSeconds,
@@ -83,7 +84,9 @@ func SiteFromConfig(site config.SiteConfig) Site {
 			Response: SiteResponseConfig{
 				Enabled:           site.WAF.Response.Enabled,
 				MaxBodyBytes:      site.WAF.Response.MaxBodyBytes,
-				SensitivePatterns: site.WAF.Response.SensitivePatterns,
+				SensitivePatterns: cloneStrings(site.WAF.Response.SensitivePatterns),
+				TamperKey:         site.WAF.Response.TamperKey,
+				TamperSnapshots:   siteTamperSnapshotsFromConfig(site.WAF.Response.TamperSnapshots),
 			},
 			HealthCheck: SiteHealthCheckConfig{
 				Enabled:            site.WAF.HealthCheck.Enabled,
@@ -167,6 +170,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 			},
 			SemanticPolicy: config.SemanticPolicyConfig{
 				BudgetExhaustedPolicy: site.Advanced.SemanticPolicy.BudgetExhaustedPolicy,
+				DecodeDepth:           site.Advanced.SemanticPolicy.DecodeDepth,
 				PathAllowlist:         cloneStrings(site.Advanced.SemanticPolicy.PathAllowlist),
 				ParamAllowlist:        cloneStrings(site.Advanced.SemanticPolicy.ParamAllowlist),
 				PromoteSeconds:        site.Advanced.SemanticPolicy.PromoteSeconds,
@@ -187,7 +191,9 @@ func SiteToConfig(site Site) config.SiteConfig {
 			Response: config.ResponseInspectionConfig{
 				Enabled:           site.Advanced.Response.Enabled,
 				MaxBodyBytes:      site.Advanced.Response.MaxBodyBytes,
-				SensitivePatterns: site.Advanced.Response.SensitivePatterns,
+				SensitivePatterns: cloneStrings(site.Advanced.Response.SensitivePatterns),
+				TamperKey:         site.Advanced.Response.TamperKey,
+				TamperSnapshots:   siteTamperSnapshotsToConfig(site.Advanced.Response.TamperSnapshots),
 			},
 			HealthCheck: config.HealthCheckConfig{
 				Enabled:            site.Advanced.HealthCheck.Enabled,
@@ -218,18 +224,66 @@ func SitesToConfig(sites []Site) []config.SiteConfig {
 	return out
 }
 
+func siteTamperSnapshotsFromConfig(snapshots []config.TamperSnapshotConfig) []SiteTamperSnapshot {
+	out := make([]SiteTamperSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, SiteTamperSnapshot{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
+	}
+	return out
+}
+
+func siteTamperSnapshotsToConfig(snapshots []SiteTamperSnapshot) []config.TamperSnapshotConfig {
+	out := make([]config.TamperSnapshotConfig, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, config.TamperSnapshotConfig{
+			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
+	}
+	return out
+}
+
+func SiteCustomRulesFromConfig(rules []config.CustomRuleConfig) []SiteCustomRule {
+	return siteCustomRulesFromConfig(rules)
+}
+
+func SiteCustomRulesToConfig(rules []SiteCustomRule) []config.CustomRuleConfig {
+	return siteCustomRulesToConfig(rules)
+}
+
+func RulesFromSiteCustomRules(siteID string, rules []SiteCustomRule) []Rule {
+	out := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, Rule{
+			ID:          rule.ID,
+			SiteID:      siteID,
+			Name:        rule.Name,
+			Description: rule.Description,
+			Pattern:     rule.Pattern,
+			Location:    rule.Location,
+			Action:      rule.Action,
+			Severity:    rule.Severity,
+			Enabled:     rule.Enabled,
+			Priority:    rule.Priority,
+		})
+	}
+	return out
+}
+
 func siteCustomRulesFromConfig(rules []config.CustomRuleConfig) []SiteCustomRule {
 	out := make([]SiteCustomRule, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, SiteCustomRule{
-			ID:       rule.ID,
-			Name:     rule.Name,
-			Pattern:  rule.Pattern,
-			Location: rule.Location,
-			Action:   rule.Action,
-			Severity: rule.Severity,
-			Enabled:  rule.Enabled,
-			Priority: rule.Priority,
+			ID:          rule.ID,
+			Name:        rule.Name,
+			Description: rule.Description,
+			Pattern:     rule.Pattern,
+			Location:    rule.Location,
+			Action:      rule.Action,
+			Severity:    rule.Severity,
+			Enabled:     rule.Enabled,
+			Priority:    rule.Priority,
 		})
 	}
 	return out
@@ -239,14 +293,15 @@ func siteCustomRulesToConfig(rules []SiteCustomRule) []config.CustomRuleConfig {
 	out := make([]config.CustomRuleConfig, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, config.CustomRuleConfig{
-			ID:       rule.ID,
-			Name:     rule.Name,
-			Pattern:  rule.Pattern,
-			Location: rule.Location,
-			Action:   rule.Action,
-			Severity: rule.Severity,
-			Enabled:  rule.Enabled,
-			Priority: rule.Priority,
+			ID:          rule.ID,
+			Name:        rule.Name,
+			Description: rule.Description,
+			Pattern:     rule.Pattern,
+			Location:    rule.Location,
+			Action:      rule.Action,
+			Severity:    rule.Severity,
+			Enabled:     rule.Enabled,
+			Priority:    rule.Priority,
 		})
 	}
 	return out

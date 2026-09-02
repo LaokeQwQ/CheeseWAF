@@ -2,7 +2,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useRef, useState } from 'react';
 import { MoveRight } from 'lucide-react';
 import type { CaptchaTrackPoint } from '../protocol';
-import { trackPoint } from '../interaction';
+import { DEFAULT_TRACK_LIMIT, appendTrack, trackPoint } from '../interaction';
 import styles from './ChallengeSlider.module.css';
 
 export interface RotatePuzzleChallengeData { image: string; width?: number; height?: number; pieceSize?: number; initialAngle?: number; minDurationMs?: number }
@@ -49,13 +49,13 @@ export function RotatePuzzleChallenge({ challenge, disabled, label, onChange, on
   const finish = (event: ReactPointerEvent<HTMLInputElement>) => {
     if (activePointer.current !== event.pointerId) return;
     const durationMs = completedDuration();
-    operation.current = [...operation.current, trackPoint({ x: value, y: 5000 }, durationMs, 'up')];
+    operation.current = appendTrack(operation.current, trackPoint({ x: value, y: 5000 }, durationMs, 'up'), DEFAULT_TRACK_LIMIT);
     activePointer.current = undefined;
     onComplete({ ...answer(), durationMs });
   };
 
   return <div className={styles.challenge} data-testid="rotate-puzzle-challenge">
     <div className={styles.stage} style={stageStyle}><img className={styles.stageImage} src={challenge.image} alt="" draggable={false} /><span className={styles.piece} data-testid="rotate-piece" aria-hidden="true" /></div>
-    <div className={styles.controls}><span className={styles.dragIcon} aria-hidden="true"><MoveRight size={25} /></span><input className={styles.range} aria-label={resolvedLabel} type="range" min={0} max={10000} step={1} value={value} disabled={disabled} style={{ '--captcha-progress': `${value / 100}%` } as CSSProperties} onPointerDown={begin} onChange={event => { const next = Number(event.currentTarget.value); setValue(next); const durationMs = elapsed(startedAt.current); if (activePointer.current !== undefined) operation.current.push(trackPoint({ x: next, y: 5000 }, durationMs, 'move')); onChange?.({ angle: answerAngle(angleFor(next)), durationMs, track: operation.current }); }} onPointerUp={finish} onPointerCancel={() => { activePointer.current = undefined; operation.current = []; }} onKeyDown={event => { if (!event.repeat && ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) { startedAt.current = performance.now(); operation.current = [trackPoint({ x: value, y: 5000 }, 0, 'down')]; } }} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) { const durationMs = completedDuration(); operation.current.push(trackPoint({ x: value, y: 5000 }, durationMs, 'up')); onComplete({ ...answer(), durationMs }); } }} /></div>
+    <div className={styles.controls}><span className={styles.dragIcon} aria-hidden="true"><MoveRight size={25} /></span><input className={styles.range} aria-label={resolvedLabel} type="range" min={0} max={10000} step={1} value={value} disabled={disabled} style={{ '--captcha-progress': `${value / 100}%` } as CSSProperties} onPointerDown={begin} onChange={event => { const next = Number(event.currentTarget.value); setValue(next); const durationMs = elapsed(startedAt.current); if (activePointer.current !== undefined) operation.current = appendTrack(operation.current, trackPoint({ x: next, y: 5000 }, durationMs, 'move'), DEFAULT_TRACK_LIMIT); onChange?.({ angle: answerAngle(angleFor(next)), durationMs, track: operation.current }); }} onPointerUp={finish} onPointerCancel={() => { activePointer.current = undefined; operation.current = []; }} onKeyDown={event => { if (!event.repeat && ['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) { startedAt.current = performance.now(); operation.current = [trackPoint({ x: value, y: 5000 }, 0, 'down')]; } }} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) { const durationMs = completedDuration(); operation.current = appendTrack(operation.current, trackPoint({ x: value, y: 5000 }, durationMs, 'up'), DEFAULT_TRACK_LIMIT); onComplete({ ...answer(), durationMs }); } }} /></div>
   </div>;
 }

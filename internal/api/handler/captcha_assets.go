@@ -188,11 +188,11 @@ func (h *Handler) GetCAPTCHAAssetConfig(w http.ResponseWriter, _ *http.Request) 
 		writeData(w, captchaAssetConfigView(runtime.config))
 		return
 	}
-	if h.Config == nil {
+	if h.currentConfig() == nil {
 		writeError(w, http.StatusServiceUnavailable, "CAPTCHA_ASSET_CONFIG_UNAVAILABLE", "captcha asset configuration is unavailable")
 		return
 	}
-	writeData(w, captchaAssetConfigView(h.Config.CAPTCHAAssets))
+	writeData(w, captchaAssetConfigView(h.currentConfig().CAPTCHAAssets))
 }
 func (h *Handler) UpdateCAPTCHAAssetConfig(w http.ResponseWriter, r *http.Request) {
 	var req captchaAssetConfigRequest
@@ -200,6 +200,8 @@ func (h *Handler) UpdateCAPTCHAAssetConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	h.configPersistMu.Lock()
+	defer h.configPersistMu.Unlock()
 	h.configMutationMu.Lock()
 	defer h.configMutationMu.Unlock()
 	if h.configWriteFrozen {
@@ -211,7 +213,7 @@ func (h *Handler) UpdateCAPTCHAAssetConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	next, err := config.Clone(h.Config)
+	next, err := config.Clone(h.currentConfig())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "CONFIG_CLONE_ERROR", "unable to prepare configuration")
 		return
@@ -243,7 +245,10 @@ func (h *Handler) UpdateCAPTCHAAssetConfig(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "CONFIG_SAVE_ERROR", err.Error())
 		return
 	}
-	*h.Config = *next
+	if err = h.publishConfig(next); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_PUBLISH_ERROR", err.Error())
+		return
+	}
 	h.CAPTCHAAssets = store
 	h.CAPTCHAAssetReferences = refs
 	h.CAPTCHAAssetInitError = nil
@@ -263,11 +268,11 @@ func (h *Handler) TestCAPTCHAAssetConfig(w http.ResponseWriter, r *http.Request)
 	}
 	candidate := req.config()
 	candidate = defaultCAPTCHAAssetCandidate(candidate)
-	if strings.TrimSpace(candidate.S3.CredentialFile) == "" && h.Config != nil {
-		candidate.S3.CredentialFile = h.Config.CAPTCHAAssets.S3.CredentialFile
+	if strings.TrimSpace(candidate.S3.CredentialFile) == "" && h.currentConfig() != nil {
+		candidate.S3.CredentialFile = h.currentConfig().CAPTCHAAssets.S3.CredentialFile
 	}
-	if strings.TrimSpace(candidate.S3.MetadataKeyFile) == "" && h.Config != nil {
-		candidate.S3.MetadataKeyFile = h.Config.CAPTCHAAssets.S3.MetadataKeyFile
+	if strings.TrimSpace(candidate.S3.MetadataKeyFile) == "" && h.currentConfig() != nil {
+		candidate.S3.MetadataKeyFile = h.currentConfig().CAPTCHAAssets.S3.MetadataKeyFile
 	}
 	if err := validateCAPTCHAAssetCandidate(candidate); err != nil {
 		writeError(w, http.StatusBadRequest, "CAPTCHA_ASSET_CONFIG_INVALID", err.Error())
@@ -346,12 +351,12 @@ func (h *Handler) loadCAPTCHAAssetRuntime(w http.ResponseWriter) (*captchaAssetR
 		}
 		if h.CAPTCHAAssets != nil && h.CAPTCHAAssetReferences != nil {
 			limits := config.CAPTCHAAssetLimits{}
-			if h.Config != nil {
-				limits = h.Config.CAPTCHAAssets.Limits
+			if h.currentConfig() != nil {
+				limits = h.currentConfig().CAPTCHAAssets.Limits
 			}
 			runtimeConfig := config.CAPTCHAAssetsConfig{Limits: limits}
-			if h.Config != nil {
-				runtimeConfig = h.Config.CAPTCHAAssets
+			if h.currentConfig() != nil {
+				runtimeConfig = h.currentConfig().CAPTCHAAssets
 			}
 			runtime := &captchaAssetRuntime{store: h.CAPTCHAAssets, references: h.CAPTCHAAssetReferences, limits: limits, config: runtimeConfig}
 			if h.captchaAssetRuntime.CompareAndSwap(nil, runtime) && runtime.acquire() {

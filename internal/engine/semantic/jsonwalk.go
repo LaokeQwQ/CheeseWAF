@@ -20,6 +20,7 @@ type jsonWalker struct {
 	source string
 	inputs *[]InputPoint
 	nodes  int
+	status *traversalStatus
 
 	// keyStack holds the source byte ranges of the object keys currently in
 	// scope, one contiguous region per nesting level. encoding/json decodes an
@@ -42,7 +43,20 @@ const maxWalkerKeys = 256
 // emission stops.
 func (w *jsonWalker) value(prefix string, depth int, suppress bool) bool {
 	if !suppress {
-		if depth > maxJSONDepth || w.nodes >= maxJSONNodes || len(*w.inputs) >= maxCandidates {
+		if depth > maxJSONDepth {
+			if w.status != nil {
+				w.status.mark(jsonDepthLimitIncompleteReason)
+			}
+			suppress = true
+		} else if w.nodes >= maxJSONNodes {
+			if w.status != nil {
+				w.status.mark(jsonNodeLimitIncompleteReason)
+			}
+			suppress = true
+		} else if len(*w.inputs) >= maxCandidates {
+			if w.status != nil {
+				w.status.mark(jsonCollectorLimitReason)
+			}
 			suppress = true
 		} else {
 			w.nodes++
@@ -61,6 +75,9 @@ func (w *jsonWalker) value(prefix string, depth int, suppress bool) bool {
 		text, ok := w.stringToken()
 		if !ok {
 			return false
+		}
+		if clipped := clipRaw(text); clipped != text && w.status != nil {
+			w.status.mark(jsonRawClippedReason)
 		}
 		w.emit(prefix, clipRaw(text), suppress)
 		return true
@@ -93,6 +110,8 @@ func (w *jsonWalker) emit(name, raw string, suppress bool) {
 	if suppress {
 		return
 	}
+	// The fast path receives already-clipped text; callers mark clipping at the
+	// source boundary so exact-cap values remain complete.
 	*w.inputs = append(*w.inputs, InputPoint{Source: w.source, Name: name, Raw: raw, Layers: rawLayersOnly})
 }
 
@@ -139,6 +158,13 @@ func (w *jsonWalker) object(prefix string, depth int, suppress bool) bool {
 		// Budget is re-checked per key, exactly where the decoder walk checks it.
 		childSuppress := suppress
 		if !childSuppress && (w.nodes >= maxJSONNodes || len(*w.inputs) >= maxCandidates) {
+			if w.status != nil {
+				if w.nodes >= maxJSONNodes {
+					w.status.mark(jsonNodeLimitIncompleteReason)
+				} else {
+					w.status.mark(jsonCollectorLimitReason)
+				}
+			}
 			childSuppress = true
 		}
 		name := prefix
@@ -148,6 +174,11 @@ func (w *jsonWalker) object(prefix string, depth int, suppress bool) bool {
 				name = key
 			} else {
 				name = prefix + "." + key
+			}
+			if clipped := clipRaw(key); clipped != key {
+				if w.status != nil {
+					w.status.mark(jsonRawClippedReason)
+				}
 			}
 			w.emit(name, clipRaw(key), false)
 		}
@@ -189,6 +220,9 @@ func (w *jsonWalker) array(prefix string, depth int, suppress bool) bool {
 	for {
 		childSuppress := suppress
 		if !childSuppress && w.nodes >= maxJSONNodes {
+			if w.status != nil {
+				w.status.mark(jsonNodeLimitIncompleteReason)
+			}
 			childSuppress = true
 		}
 		if !w.value(childPrefix, depth+1, childSuppress) {

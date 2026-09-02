@@ -11,6 +11,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const reviewCreatedAtKeySQL = `(CASE
+	WHEN instr(created_at, '.') = 0 THEN substr(created_at, 1, 19) || '.000000000Z'
+	ELSE substr(created_at, 1, instr(created_at, '.')) || substr(substr(created_at, instr(created_at, '.') + 1, length(created_at) - instr(created_at, '.') - 1) || '000000000', 1, 9) || 'Z'
+	END)`
+
 func (s *SQLiteStore) CreateReviewItem(ctx context.Context, item *ReviewItem) error {
 	if item == nil {
 		return fmt.Errorf("review item is required")
@@ -66,7 +71,7 @@ func (s *SQLiteStore) ListReviewItems(ctx context.Context, filter ReviewFilter) 
 	queryArgs := append(append([]any(nil), args...), limit, filter.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT id,trace_id,site_id,client_ip,method,uri,category,severity,payload,
 		protection_level,shape,source,param_name,fingerprint,status,ai_verdict,decided_by_subject,decided_by_name,decided_by_role,
-		decided_at,decision,applied_rule_id,created_at FROM review_items WHERE `+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
+		decided_at,decision,applied_rule_id,created_at FROM review_items WHERE `+where+` ORDER BY `+reviewCreatedAtKeySQL+` DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -89,6 +94,22 @@ func (s *SQLiteStore) HasPendingReview(ctx context.Context, siteID, category, pa
 
 func (s *SQLiteStore) HasSimilarReview(ctx context.Context, siteID, category, payload, uri string) (bool, error) {
 	return s.hasReview(ctx, siteID, category, payload, uri, false)
+}
+
+// PruneReviewItems removes only old, terminal review items. Pending items are
+// retained regardless of age so a delayed operator or model can still inspect
+// them. The batch limit keeps each maintenance transaction short.
+func (s *SQLiteStore) PruneReviewItems(ctx context.Context, before time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 || batchSize > defaultReviewPruneBatch {
+		batchSize = defaultReviewPruneBatch
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM review_items WHERE id IN (
+		SELECT id FROM review_items WHERE status <> 'pending' AND created_at < ? ORDER BY created_at LIMIT ?
+	)`, formatTime(before.UTC()), batchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *SQLiteStore) hasReview(ctx context.Context, siteID, category, payload, uri string, pendingOnly bool) (bool, error) {
@@ -115,6 +136,70 @@ func (s *SQLiteStore) SetReviewAIVerdict(ctx context.Context, id, verdict string
 	return err
 }
 
+// ClaimReviewItem reserves the item before any external rule/config mutation.
+// The conditional update is the serialization point shared by all processes.
+func (s *SQLiteStore) ClaimReviewItem(ctx context.Context, id, decision string) (*ReviewDecisionClaim, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(decision) == "" {
+		return nil, fmt.Errorf("review decision claim is required")
+	}
+	token := uuid.NewString()
+	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET decision_claim=?
+		WHERE id=? AND decision_claim='' AND (status='pending' OR
+		(status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint') AND
+			COALESCE(decision, '') <> ?))`, token, id, decision, decision)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, nil
+	}
+	item, err := s.GetReviewItem(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("review item disappeared after claim")
+	}
+	return &ReviewDecisionClaim{Item: item, Token: token}, nil
+}
+
+func (s *SQLiteStore) ReleaseReviewItem(ctx context.Context, id, token string) error {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(token) == "" {
+		return fmt.Errorf("review decision claim is required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET decision_claim='' WHERE id=? AND decision_claim=?`, id, token)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("review decision claim was lost")
+	}
+	return nil
+}
+
+// CompleteReviewItem can only finalize a decision held by its claim token.
+func (s *SQLiteStore) CompleteReviewItem(ctx context.Context, id, token string, decision ReviewDecision) (*ReviewItem, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(token) == "" || strings.TrimSpace(decision.Decision) == "" {
+		return nil, fmt.Errorf("review decision completion is required")
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET status=?, decision=?, applied_rule_id=?,
+		decided_by_subject=?, decided_by_name=?, decided_by_role=?, decided_at=?, decision_claim=''
+		WHERE id=? AND decision_claim=?`,
+		reviewStatusForDecision(decision.Decision), decision.Decision, decision.AppliedRuleID,
+		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, token)
+	if err != nil {
+		return nil, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, nil
+	}
+	return s.GetReviewItem(ctx, id)
+}
+
 func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision ReviewDecision) (*ReviewItem, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(decision.Decision) == "" {
 		return nil, fmt.Errorf("review decision is required")
@@ -122,9 +207,11 @@ func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision 
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET status=?, decision=?, applied_rule_id=?,
 		decided_by_subject=?, decided_by_name=?, decided_by_role=?, decided_at=?
-		WHERE id=? AND (status='pending' OR (status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`,
+		WHERE id=? AND decision_claim='' AND (status='pending' OR
+			(status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint') AND
+				COALESCE(decision, '') <> ?))`,
 		reviewStatusForDecision(decision.Decision), decision.Decision, decision.AppliedRuleID,
-		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, decision.Decision)
+		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, decision.Decision, decision.Decision)
 	if err != nil {
 		return nil, err
 	}
@@ -160,14 +247,65 @@ func reviewWhere(filter ReviewFilter) (string, []any) {
 		args = append(args, status)
 	}
 	if !filter.Start.IsZero() {
-		clauses = append(clauses, "created_at>=?")
-		args = append(args, formatTime(filter.Start))
+		clauses = append(clauses, reviewCreatedAtKeySQL+">=?")
+		args = append(args, formatReviewKeyTime(filter.Start))
 	}
 	if !filter.End.IsZero() {
-		clauses = append(clauses, "created_at<=?")
-		args = append(args, formatTime(filter.End))
+		clauses = append(clauses, reviewCreatedAtKeySQL+"<=?")
+		args = append(args, formatReviewKeyTime(filter.End))
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		pattern := "%" + escapeLike(search) + "%"
+		clauses = append(clauses, `LOWER(COALESCE(id,'') || ' ' || COALESCE(trace_id,'') || ' ' || COALESCE(site_id,'') || ' ' || COALESCE(client_ip,'') || ' ' || COALESCE(method,'') || ' ' || COALESCE(uri,'') || ' ' || COALESCE(category,'') || ' ' || COALESCE(severity,'') || ' ' || COALESCE(payload,'') || ' ' || COALESCE(status,'') || ' ' || COALESCE(source,'') || ' ' || COALESCE(param_name,'') || ' ' || COALESCE(fingerprint,'') || ' ' || COALESCE(ai_verdict,'') || ' ' || COALESCE(decision,'') || ' ' || COALESCE(applied_rule_id,'') || ' ' || COALESCE(decided_by_name,'')) LIKE LOWER(?) ESCAPE '\'`)
+		args = append(args, pattern)
+	}
+	if !filter.WatermarkTime.IsZero() {
+		clause, cursorArgs := reviewKeysetClause(filter.WatermarkTime, filter.WatermarkID, "<")
+		clauses = append(clauses, clause)
+		args = append(args, cursorArgs...)
+	} else if filter.WatermarkID != "" {
+		clauses = append(clauses, "id<?")
+		args = append(args, filter.WatermarkID)
+	}
+	if !filter.BeforeTime.IsZero() {
+		clause, cursorArgs := reviewKeysetClause(filter.BeforeTime, filter.BeforeID, "<")
+		clauses = append(clauses, clause)
+		args = append(args, cursorArgs...)
+	} else if filter.BeforeID != "" {
+		clauses = append(clauses, "id<?")
+		args = append(args, filter.BeforeID)
+	}
+	if !filter.AfterTime.IsZero() {
+		clause, cursorArgs := reviewKeysetClause(filter.AfterTime, filter.AfterID, ">")
+		clauses = append(clauses, clause)
+		args = append(args, cursorArgs...)
+	} else if filter.AfterID != "" {
+		clauses = append(clauses, "id>?")
+		args = append(args, filter.AfterID)
 	}
 	return strings.Join(clauses, " AND "), args
+}
+
+func formatReviewKeyTime(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
+
+func reviewKeysetClause(timestamp time.Time, id, direction string) (string, []any) {
+	if timestamp.IsZero() {
+		return "id" + direction + "?", []any{id}
+	}
+	stamp := formatReviewKeyTime(timestamp)
+	if id == "" {
+		return reviewCreatedAtKeySQL + direction + "?", []any{stamp}
+	}
+	return "(" + reviewCreatedAtKeySQL + direction + "? OR (" + reviewCreatedAtKeySQL + "=? AND id" + direction + "?))", []any{stamp, stamp, id}
+}
+
+func escapeLike(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, "%", `\%`)
+	value = strings.ReplaceAll(value, "_", `\_`)
+	return value
 }
 
 func formatReviewTime(t time.Time) string {

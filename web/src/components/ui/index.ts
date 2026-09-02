@@ -22,4 +22,5 @@ export * from './spinner';
 export * from './empty';
 export * from './sonner';
 export * from './popover';
+export * from './confirm-dialog';
 export { toast } from 'sonner';

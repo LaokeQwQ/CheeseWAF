@@ -15,12 +15,16 @@ import (
 )
 
 type SelfLearningOptions struct {
-	Config   config.AISelfLearningConfig
-	Client   *Client
-	Sink     storage.LogSink
-	Rules    storage.RuleStore
-	Language string
-	Now      func() time.Time
+	Config config.AISelfLearningConfig
+	Client *Client
+	Sink   storage.LogSink
+	Rules  storage.RuleStore
+	// ListCustomRules and ApplyCustomRule let callers use the live site rule
+	// service instead of the legacy rules table.
+	ListCustomRules func(context.Context) ([]storage.Rule, error)
+	ApplyCustomRule func(context.Context, *storage.Rule) error
+	Language        string
+	Now             func() time.Time
 	// CanWriteRules is checked before auto-applying rules. When it returns an
 	// error (cluster freeze, local config freeze, etc.), the run is forced to
 	// dry-run only so operators still get candidate reports without writes.
@@ -90,10 +94,21 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 	}
 	groups := groupSelfLearningEvents(entries)
 	candidates := deterministicSelfLearningCandidates(groups, cfg)
-	reviewOK := opts.Client == nil
+	// Automatic rule writes require an actual model review. A missing client is
+	// a deliberate dry-run state, never an implicit approval.
+	reviewOK := !cfg.AutoApply || opts.Client != nil
 	if opts.Client != nil && len(candidates) > 0 {
 		if reviewed, err := reviewSelfLearningCandidates(ctx, opts.Client, opts.Language, candidates); err == nil {
 			candidates = mergeReviewedSelfLearningCandidates(candidates, reviewed)
+			if cfg.AutoApply {
+				reviewedOnly := make([]SelfLearningCandidate, 0, len(candidates))
+				for _, candidate := range candidates {
+					if candidate.AIReviewed {
+						reviewedOnly = append(reviewedOnly, candidate)
+					}
+				}
+				candidates = reviewedOnly
+			}
 			reviewOK = true
 		} else {
 			// Fail closed: never auto-apply unreviewed candidates when LLM review is configured.
@@ -123,8 +138,13 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 		Groups:      len(groups),
 		Candidates:  candidates,
 	}
-	if opts.Rules != nil && autoApply {
-		existing, _ := opts.Rules.ListRules(ctx, "")
+	if autoApply && (opts.ApplyCustomRule != nil || opts.Rules != nil) {
+		var existing []storage.Rule
+		if opts.ListCustomRules != nil {
+			existing, _ = opts.ListCustomRules(ctx)
+		} else if opts.Rules != nil {
+			existing, _ = opts.Rules.ListRules(ctx, "")
+		}
 		seen := existingRulePatterns(existing)
 		for _, candidate := range candidates {
 			if len(report.Applied) >= cfg.MaxRulesPerRun {
@@ -147,8 +167,14 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 				Enabled:     true,
 				Priority:    180,
 			}
-			if err := opts.Rules.CreateRule(ctx, &rule); err != nil {
-				report.Skipped = append(report.Skipped, SelfLearningSkip{Candidate: candidate, Reason: err.Error()})
+			var applyErr error
+			if opts.ApplyCustomRule != nil {
+				applyErr = opts.ApplyCustomRule(ctx, &rule)
+			} else {
+				applyErr = opts.Rules.CreateRule(ctx, &rule)
+			}
+			if applyErr != nil {
+				report.Skipped = append(report.Skipped, SelfLearningSkip{Candidate: candidate, Reason: applyErr.Error()})
 				continue
 			}
 			seen[ruleKey(rule.SiteID, rule.Location, rule.Pattern)] = struct{}{}
@@ -371,6 +397,9 @@ func validateSelfLearningCandidate(candidate SelfLearningCandidate, cfg config.A
 	if candidate.EventCount < cfg.MinEvents {
 		return "not enough repeated evidence"
 	}
+	if cfg.AutoApply && !candidate.AIReviewed {
+		return "candidate has not passed AI review"
+	}
 	if candidate.Confidence < cfg.MinConfidence {
 		return "confidence below threshold"
 	}
@@ -411,7 +440,7 @@ func ruleKey(siteID, location, pattern string) string {
 
 func selfLearningEventEligible(entry storage.LogEntry) bool {
 	switch strings.ToLower(strings.TrimSpace(entry.Action)) {
-	case "block", "challenge", "log":
+	case "block":
 	default:
 		return false
 	}

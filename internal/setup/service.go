@@ -376,7 +376,7 @@ func completePaths(opts CompleteOptions) DefaultPaths {
 		paths.ConfigFile = opts.ConfigPath
 	}
 	if paths.ConfigFile == "" {
-		paths.ConfigFile = filepath.Join(paths.DataDir, DefaultConfigFile)
+		paths.ConfigFile = DefaultConfigPath(paths.DataDir)
 	}
 	defaults := ResolveDefaultPaths(DefaultOptions{DataDir: paths.DataDir, ConfigPath: paths.ConfigFile})
 	if paths.CertDir == "" {

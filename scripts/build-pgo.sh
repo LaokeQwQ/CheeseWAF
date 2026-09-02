@@ -22,7 +22,7 @@ echo ""
 
 # Step 3: Rebuild with PGO
 echo "3. Building optimized binary with PGO..."
-go build -trimpath -pgo=default.pgo -gcflags "-l=4" -ldflags "-s -w" \
+go build -trimpath -pgo=default.pgo -ldflags "-s -w" \
     -o bin/cheesewaf-pgo ./cmd/cheesewaf/
 echo "✓ PGO-optimized binary ready at bin/cheesewaf-pgo"
 echo ""

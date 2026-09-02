@@ -265,11 +265,6 @@ func openSliderToken(opts SliderOptions, raw string) (sliderTokenPayload, bool) 
 }
 
 func sliderKey(secret string) []byte {
-	if secret == "" {
-		// Never fall back to a hard-coded secret — callers must supply one.
-		sum := sha256.Sum256([]byte("cheesewaf-slider-v1\ninvalid-empty-secret"))
-		return sum[:]
-	}
 	sum := sha256.Sum256([]byte("cheesewaf-slider-v1\n" + secret))
 	return sum[:]
 }

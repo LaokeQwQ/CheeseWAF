@@ -1,7 +1,7 @@
 .captcha {
   width: min(100%, 520px);
   padding: 18px;
-  border: 1px solid var(--color-border-2, #d6dce4);
+  border: 1px solid var(--border, #d6dce4);
   border-radius: 8px;
   background: var(--color-bg-2, #fff);
   color: var(--color-text-1, #182230);
@@ -22,7 +22,7 @@
 .iconButton,
 .primary,
 .secondary {
-  border: 1px solid var(--color-border-2, #c8d0da);
+  border: 1px solid var(--border, #c8d0da);
   border-radius: 6px;
   background: var(--color-bg-2, #fff);
   color: var(--color-text-1, #243447);
@@ -79,7 +79,7 @@
   height: 100%;
   display: grid;
   place-items: center;
-  color: var(--color-danger-6, #a0322d);
+  color: var(--accent-danger, #a0322d);
   font-size: 13px;
 }
 .overlay {
@@ -178,8 +178,8 @@
   flex: 1 1 100%;
   padding: 10px;
   border-radius: 5px;
-  border: 1px solid var(--color-border-1, #dfe4ea);
-  background: var(--color-fill-1, #edf1f5);
+  border: 1px solid var(--border-subtle, #dfe4ea);
+  background: var(--surface-soft, #edf1f5);
   color: var(--color-text-1, #243447);
 }
 .pow .primary,
@@ -192,14 +192,14 @@
   width: min(100%, 420px);
   aspect-ratio: 20/11;
   gap: 2px;
-  background: var(--color-border-3, #263849);
-  border: 2px solid var(--color-border-3, #263849);
+  background: var(--border-strong, #263849);
+  border: 2px solid var(--border-strong, #263849);
 }
 .jigsaw button {
   min-width: 0;
   border: 0;
   border-radius: 0;
-  background-color: var(--color-fill-2, #dce3e9);
+  background-color: var(--surface-soft, #dce3e9);
   background-repeat: no-repeat;
   color: var(--color-text-1, #243447);
   font-weight: 800;
@@ -218,11 +218,11 @@
   font-size: 13px;
 }
 .success {
-  color: var(--color-success-6, #147a43);
+  color: var(--accent-success, #147a43);
 }
 .failure,
 .error {
-  color: var(--color-danger-6, #b42318);
+  color: var(--accent-danger, #b42318);
 }
 @media (prefers-reduced-motion: reduce) {
   .angleImage img {

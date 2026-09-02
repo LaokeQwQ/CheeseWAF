@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -180,6 +182,7 @@ func Default() Config {
 			},
 			Bot: BotProtectionConfig{
 				Enabled:                false,
+				ChallengeBackend:       "memory",
 				RiskLevel:              2,
 				RiskLowThreshold:       35,
 				RiskMediumThreshold:    55,
@@ -300,6 +303,7 @@ func Default() Config {
 			APIBase:             "https://api.openai.com/v1",
 			APIKeyHeader:        "authorization",
 			Model:               "gpt-4o-mini",
+			MaxTokens:           4096,
 			Async:               true,
 			AllowPrivateAPIBase: false,
 			Assistant:           AIModelConfig{},
@@ -402,6 +406,11 @@ func Load(path string) (*Config, error) {
 	if err := Validate(&cfg); err != nil {
 		return nil, err
 	}
+	if clean, err := SanitizeBlockPageHTML(cfg.BlockPage.CustomHTML); err != nil {
+		return nil, err
+	} else {
+		cfg.BlockPage.CustomHTML = clean
+	}
 	return &cfg, nil
 }
 
@@ -409,14 +418,20 @@ func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
-	contents, err := yaml.Marshal(cfg)
+	canonical := *cfg
+	clean, err := SanitizeBlockPageHTML(canonical.BlockPage.CustomHTML)
+	if err != nil {
+		return err
+	}
+	canonical.BlockPage.CustomHTML = clean
+	contents, err := yaml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	return writeFileAtomic(path, contents, 0o640)
+	return writeFileAtomic(path, contents, 0o600)
 }
 
 // Clone returns a deep copy of cfg using the same serialization contract used
@@ -434,6 +449,11 @@ func Clone(cfg *Config) (*Config, error) {
 	if err := yaml.Unmarshal(contents, &cloned); err != nil {
 		return nil, fmt.Errorf("unmarshal config clone: %w", err)
 	}
+	// Runtime-only fields are intentionally excluded from YAML persistence but
+	// remain part of an in-memory configuration snapshot.
+	cloned.AI.Assistant.AllowPrivateAPIBaseSet = cfg.AI.Assistant.AllowPrivateAPIBaseSet
+	cloned.AI.Reasoning.AllowPrivateAPIBaseSet = cfg.AI.Reasoning.AllowPrivateAPIBaseSet
+	cloned.APISec.Auth.JWKSCacheRoot = cfg.APISec.Auth.JWKSCacheRoot
 	return &cloned, nil
 }
 
@@ -530,11 +550,19 @@ func moveExistingFileAside(path, dir string) (string, error) {
 	return backupName, nil
 }
 
-func Watch(ctx context.Context, path string, interval time.Duration, onChange func(*Config)) error {
+// Watch polls path for content changes and reloads it. The content digest
+// catches atomic replacements even when the filesystem timestamp is reused.
+// Failed content is remembered so one bad file does not produce a log entry on
+// every tick; changing the file content retries the load automatically.
+func Watch(ctx context.Context, path string, interval time.Duration, onChange func(*Config) error) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
-	var lastMod time.Time
+	lastDigest := ""
+	if digest, err := configFileDigest(path); err == nil {
+		lastDigest = digest
+	}
+	failedDigest := ""
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -543,19 +571,38 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			info, err := os.Stat(path)
+			digest, err := configFileDigest(path)
 			if err != nil {
 				continue
 			}
-			if info.ModTime().After(lastMod) {
-				lastMod = info.ModTime()
-				cfg, err := Load(path)
-				if err == nil && onChange != nil {
-					onChange(cfg)
+			if digest == lastDigest || digest == failedDigest {
+				continue
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				log.Printf("config watch: load %s failed, keeping previous configuration: %v", path, err)
+				failedDigest = digest
+				continue
+			}
+			if onChange != nil {
+				if err := onChange(cfg); err != nil {
+					failedDigest = digest
+					continue
 				}
 			}
+			lastDigest = digest
+			failedDigest = ""
 		}
 	}
+}
+
+func configFileDigest(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", digest[:]), nil
 }
 
 func applyDefaults(cfg *Config) {
@@ -765,6 +812,9 @@ func applyDefaults(cfg *Config) {
 			cfg.AI.Model = def.AI.Model
 		}
 	}
+	if cfg.AI.MaxTokens == 0 {
+		cfg.AI.MaxTokens = def.AI.MaxTokens
+	}
 	applyAIModelDefaults(&cfg.AI.Assistant, cfg.AI.RuntimeModelConfig())
 	assistantRuntime := cfg.AI.AssistantRuntimeConfig().RuntimeModelConfig()
 	applyAIModelDefaults(&cfg.AI.Reasoning, assistantRuntime)
@@ -831,6 +881,9 @@ func applyDefaults(cfg *Config) {
 	cfg.Protection.Policy = cfg.Protection.Policy.WithDefaults(DefaultProtectionPolicy())
 	if cfg.Protection.Bot.ChallengeTTL == 0 {
 		cfg.Protection.Bot.ChallengeTTL = def.Protection.Bot.ChallengeTTL
+	}
+	if cfg.Protection.Bot.ChallengeBackend == "" {
+		cfg.Protection.Bot.ChallengeBackend = def.Protection.Bot.ChallengeBackend
 	}
 	if cfg.Protection.Bot.RiskLevel == 0 {
 		cfg.Protection.Bot.RiskLevel = def.Protection.Bot.RiskLevel
@@ -1054,6 +1107,9 @@ func applyAIModelDefaults(model *AIModelConfig, fallback AIModelConfig) {
 	}
 	if model.Model == "" {
 		model.Model = fallback.Model
+	}
+	if model.MaxTokens == 0 {
+		model.MaxTokens = fallback.MaxTokens
 	}
 	model.AllowPrivateAPIBase = model.AllowPrivateAPIBase || fallback.AllowPrivateAPIBase
 }

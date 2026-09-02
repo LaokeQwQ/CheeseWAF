@@ -9,7 +9,10 @@ if [[ ! -d "$ansible_root" ]]; then
   exit 0
 fi
 
-mapfile -d '' playbooks < <(
+playbooks=()
+while IFS= read -r -d '' file; do
+  playbooks+=("$file")
+done < <(
   find "$ansible_root" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 |
     while IFS= read -r -d '' file; do
       if grep -Eq '^[[:space:]]*-[[:space:]]*hosts:' "$file"; then

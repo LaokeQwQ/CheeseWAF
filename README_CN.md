@@ -44,6 +44,7 @@
 - [配置说明](#配置说明)
 - [技术栈](#技术栈)
 - [开发与测试](#开发与测试)
+- [语料治理](#语料治理)
 - [相关文档](#相关文档)
 - [开源协议](#开源协议)
 
@@ -56,7 +57,7 @@
 CheeseWAF 采用分层处理方案：
 
 1. **实时拦截（数据平面）**：内置语义分析引擎在毫秒级对输入参数完成多层解码与抽象语法树（AST）语法分析，对确定性攻击实施即时拦截。
-2. **异步复核（ALAP 机制）**：**ALAP（AI Large-Language-Model Auto Pilot，大语言模型自动领航）** 在请求响应返回客户端后，将可疑、边界模糊或带有攻击特征的样本放入后台队列，由大语言模型异步深度审查，全程自动值守，不占用业务转发延迟。
+2. **异步复核（ALAP 机制）**：**ALAP（AI Large-Language-Model Auto Pilot，大语言模型自动值守）** 在请求响应返回客户端后，将可疑、边界模糊或带有攻击特征的样本放入后台队列，由大语言模型异步深度审查，全程自动值守，不占用业务转发延迟。
 3. **动态规则生成**：大模型复核判定为高危（`high` 或 `critical`）的样本，在开启自动同意后可自动沉淀为长期的 IP、客户端指纹或特征规则，反哺数据平面进行拦截。
 
 系统以单个静态二进制程序交付，内置响应式 Web 控制台、命令行 TUI 工具与 RESTful 管理 API，无需安装外部复杂中间件即可独立运行。
@@ -116,6 +117,10 @@ flowchart TB
 
 站点防护等级通过参数 `waf.paranoia_level` 配置（合法范围为 **0～5**，默认值为 **3**）。
 
+> **两个彼此独立的开关。** `waf.paranoia_level`（0～5）驱动的是**语义分析引擎本身**——即引擎判定载荷形态的严格程度；代理层的拦截/挑战阈值来自**另一个**配置项 `protection_policy.web_attack`（`off` / `low` / `smart` / `high` / `strict`，默认 `smart`）。两者相互独立：`paranoia_level` 决定引擎有多敏感，`web_attack` 决定检出之后怎么处理（严重度/置信度门槛、聚合风险分，以及 100ms 检测预算耗尽时的失败策略）。
+>
+> 在日志元数据与控制台中，`waf_policy_decision.paranoia_level` 是站点配置的等级（0～5），`waf_policy_decision.policy_tier` 是 `web_attack` 策略的序号（0～4）。两者刻意分开，不要把其中一个当成另一个来读。
+
 检测对象为**单个参数解码后的值**（路径与参数名保持可见），检测引擎在语法分析时区分两种载荷形态：
 - **独立特征（Isolated）**：输入值几乎全部由攻击载荷构成（允许 `@`、结尾分号、`/{${...}}` 等微弱包装）。例如搜索框中直接输入 `UNION SELECT 1,2,3`。
 - **夹杂特征（Embedded）**：攻击特征混杂在长篇文章、正常业务说明或技术讨论等大段普通文本中。例如在技术论坛中发帖讨论代码片段。
@@ -154,27 +159,27 @@ CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
 
 #### 步骤 1：下载并解压发行包
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。按系统和 CPU 选：
+从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。版本字段在 `master` 为 `beta`、`canary` 为 `PreTest`、`dev` 为 `dev`；下列通配符覆盖全部渠道：
 
 | 文件 | 平台 |
 | --- | --- |
-| `cheesewaf-amd64-linux-*-PreTest.tar.gz` | Linux x86_64 |
-| `cheesewaf-arm64-linux-*-PreTest.tar.gz` | Linux ARM64 |
-| `cheesewaf-loong64-linux-*-PreTest.tar.gz` | Linux 龙芯 |
-| `cheesewaf-amd64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-arm64-darwin-*-PreTest.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-amd64-windows-*-PreTest.exe` | Windows x86_64 单文件 CLI |
-| `cheesewaf-arm64-windows-*-PreTest.exe` | Windows ARM64 单文件 CLI |
-| `cheesewaf-amd64-windows-*-PreTest.zip` | Windows x86_64 便携目录 |
-| `cheesewaf-arm64-windows-*-PreTest.zip` | Windows ARM64 便携目录 |
+| `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
+| `cheesewaf-arm64-linux-*.tar.gz` | Linux ARM64 |
+| `cheesewaf-loong64-linux-*.tar.gz` | Linux 龙芯 |
+| `cheesewaf-amd64-darwin-*.tar.gz` / `.dmg` | macOS Intel |
+| `cheesewaf-arm64-darwin-*.tar.gz` / `.dmg` | macOS Apple Silicon |
+| `cheesewaf-amd64-windows-*.exe` | Windows x86_64 单文件 CLI |
+| `cheesewaf-arm64-windows-*.exe` | Windows ARM64 单文件 CLI |
+| `cheesewaf-amd64-windows-*.zip` | Windows x86_64 便携目录 |
+| `cheesewaf-arm64-windows-*.zip` | Windows ARM64 便携目录 |
 
 ```bash
 # Linux x86_64 示例
-tar -xzf cheesewaf-amd64-linux-*-PreTest.tar.gz
+tar -xzf cheesewaf-amd64-linux-*.tar.gz
 cd cheesewaf-*
 ```
 
-Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*-PreTest.tar.gz` 或 `cheesewaf-loong64-linux-*-PreTest.tar.gz`，步骤相同。
+Linux ARM64、龙芯用 `cheesewaf-arm64-linux-*.tar.gz` 或 `cheesewaf-loong64-linux-*.tar.gz`，步骤相同。
 
 #### 步骤 2：安装程序文件与目录授权
 
@@ -214,6 +219,8 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
+systemd 单元保留 `ProtectSystem=strict`，但只允许服务写入 `/etc/cheesewaf`、`/var/lib/cheesewaf` 和 `/var/log/cheesewaf`。这样管理 API 可以保存已校验的配置修改，其他系统目录仍保持只读。
+
 默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。本机打开时向导会自己拿到初始化令牌。从别的机器访问时，令牌在 `journalctl -u cheesewaf` 或 `/var/lib/cheesewaf/setup.url`。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
 
 `GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
@@ -222,7 +229,7 @@ sudo systemctl status cheesewaf
 
 ### 2. Docker 部署（Docker Compose 容器化）
 
-Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 tar 包是给 systemd 用的，没有源码时不能直接 `docker compose`。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。运行时镜像装有系统 CA 证书，访问 HTTPS 源站时会校验证书。9443 只应暴露给可信网络；镜像里管理口监听全部接口，并开启管理 TLS。
+Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 tar 包是给 systemd 用的，没有源码时不能直接 `docker compose`。`docker compose build` 会按宿主机 CPU 编出 `linux/amd64` 或 `linux/arm64`。容器以非 root 用户（UID `10001`）运行，根文件系统只读。运行时镜像装有系统 CA 证书，访问 HTTPS 源站时会校验证书。Compose 会把管理 TLS 映射到宿主机回环地址（`127.0.0.1:9443`）；如果需要远程访问，请另行配置经过加固的反向代理或 SSH 隧道。
 
 #### 步骤 1：准备编排文件
 
@@ -289,7 +296,7 @@ docker compose logs -f cheesewaf
 2. 直接运行：
 
 ```powershell
-.\cheesewaf-*-windows-amd64.exe serve --config .\cheesewaf.yaml --data-dir .\data
+.\cheesewaf-*-windows-amd64.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
 .\cheesewaf-*-windows-amd64.exe status
 .\cheesewaf-*-windows-amd64.exe stop
 ```
@@ -325,17 +332,12 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 
 ### 4. macOS 部署（DMG）
 
-1. 下载 `cheesewaf-arm64-darwin-*-PreTest.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*-PreTest.dmg`（Intel）。
+1. 下载 `cheesewaf-arm64-darwin-*.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*.dmg`（Intel）。
 2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
 3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
-4. 若系统提示已损坏，是拦截了未公证的 PreTest 包。双击盘里的 **Fix Gatekeeper.command**，或在终端执行：
+4. 已签名并完成公证的发行包可以直接打开。只有本地 ad-hoc PreTest 开发包被系统拦截时，才在「应用程序」中对应用点按右键，选择「打开」并确认一次性提示。
 
-```bash
-xattr -dr com.apple.quarantine /Applications/CheeseWAF.app
-open /Applications/CheeseWAF.app
-```
-
-运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*-PreTest.tar.gz`。
+运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
 
 ---
 
@@ -378,13 +380,13 @@ CheeseWAF 提供三种互通的管理方式：
 
 ## 配置说明
 
-首次启动时，程序将在数据目录生成 `cheesewaf.yaml`（模板参见 [configs/cheesewaf.yaml](configs/cheesewaf.yaml)）。核心配置结构如下：
+首次启动时，程序将在数据目录生成 `data/config/cheesewaf.yaml`（模板参见 [configs/cheesewaf.yaml](configs/cheesewaf.yaml)）。核心配置结构如下：
 
 ```yaml
 server:
-  listen: "0.0.0.0:8080"         # 业务转发流量监听地址
-  admin_listen: "127.0.0.1:9443"   # 管理后台监听地址
-  admin_public: false            # 是否对公网开放管理端（开启需同时配置 TLS）
+  listen: "127.0.0.1:8080"       # 安全的本机默认值；仅在明确需要时对外监听
+  admin_listen: "127.0.0.1:9443" # 管理后台监听地址
+  admin_public: false             # 对公网开放管理端时还必须配置 TLS
 
 sites:
   - id: "site-demo"
@@ -394,27 +396,39 @@ sites:
       - address: "192.168.1.100:8080"
         weight: 1
     waf:
+      enabled: true
+      mode: "block"
       paranoia_level: 3          # 防护等级（0～5）
+      semantic_policy:
+        auto_agree: true         # 自动采纳高危研判结果
 
 protection:
-  rate_limit:
+  ratelimit:
     enabled: true
-    requests_per_second: 100
-  ip_block:
-    enabled: true
+    default:
+      requests: 100
+      window: 60s
+      burst: 20
+  ip:
+    blacklist: []
+    whitelist: ["127.0.0.1", "::1"]
 
 ai:
   enabled: true
   provider: "openai"
   api_base: "https://api.example.com/v1"
-  model: "gpt-4o-mini"
-
-sites:
-  - id: "site-demo"
-    waf:
-      semantic_policy:
-        auto_agree: true         # 自动采纳高危研判结果
+  model: "provider-default"
 ```
+
+站点自定义规则只写在 `sites[].waf.custom_rules` 里。控制台「WAF 拦截规则」页可以导入 YAML/JSON；导入会先校验、去重，再整批替换。失败时继续用当前正在工作的规则，并返回错误。命令行同样可以导入：
+
+```bash
+waf-cli --config ./data/config/cheesewaf.yaml rules example --format yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file custom_rules.yaml
+waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
+```
+
+改配置文件后，进程会监视 `cheesewaf.yaml` 的修改时间，也可以发 `SIGHUP` 立刻重载。加载或编译失败时仍使用原来的规则。
 
 ---
 
@@ -468,15 +482,28 @@ go vet ./cmd/... ./internal/...
 # 前端类型检查与单元测试
 cd web && npm run typecheck && npm test && cd ..
 
-# 运行内置安全攻击语料测试
-go run ./cmd/cheesewaf-corpus --mode analyzer
+# 生成并回放受治理安全语料
+make security-corpus
+```
+
+### 语料治理
+
+治理流程只读输入，并在运行时递归枚举 `internal/engine/semantic/testdata/` 下所有 `.jsonl` 和 `.jsonl.gz`。处理顺序为：全局去重 → 初筛 → 挑选/清洗 → 二次复核。`formal.jsonl`、`quarantine.jsonl` 和可审计的 `manifest.json` 均写入临时目录。被 `.gitignore` 忽略的大型语料即使缺失，也会作为 optional 输入记录在 manifest 中；嵌套或压缩副本也不会静默跳过。
+
+`make corpus-governance` 审计全部可用语料，并将记录保持在隔离快照中。`make security-corpus` 则从仓库内已整理的来源生成带哈希绑定的正式快照，固定输入哈希、来源/标签/类别精确覆盖、治理策略和正式产物哈希，并要求 hard reject 为零，然后只把该快照交给命令行回放器和语义评估器。畸形的 `pat-sqli-00119` 原始记录保留在明确钉死的隔离文件中，不会被静默替换、删除或缩小 attack 分母。CI 还要求应用比例指标前至少有 250 条 benign 和 10,000 条 attack，随后强制 FPR < 0.8%、TPR >= 99%。这是当前受治理回归快照的门禁，不代表独立盲测集或所有研究隔离语料已经达到同一指标。
+
+```bash
+make corpus-governance
+make security-corpus
 ```
 
 ---
 
 ## 相关文档
 
+- [ACME 证书重载方案（英文）](docs/acme.md)
 - [防护策略与技术路线](docs/protection-policy-roadmap.md)
+- [语料治理与检测评估实施计划](docs/semantic-corpus-governance.md)
 - [防护等级代码实现映射](docs/paranoia-level-implementation.md)
 - [性能优化与基准测试](docs/performance-optimization.md)
 - [Windows 打包说明](deploy/windows/README.md)

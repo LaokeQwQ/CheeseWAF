@@ -21,6 +21,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -694,6 +695,7 @@ func TestAIAssistantReturnsRealToolExecutions(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请读取系统状态和最近安全事件","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistant(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -799,6 +801,7 @@ func TestAIAssistantFetchesEventsOnlyAfterToolRequest(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistant(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -956,6 +959,7 @@ func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistantStream(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1060,6 +1064,7 @@ func TestAIAssistantStreamEmitsProviderReasoningBeforeDone(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant/stream", bytes.NewReader([]byte(`{"message":"请分析最近安全事件","language":"zh-CN","limit":10}`)))
+	request = withAIApprovalClaims(request, "ai-reader", "ai-reader-session", "admin")
 	handler.AIAssistantStream(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant stream ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1089,6 +1094,7 @@ func TestAIAssistantCreatesApprovalForConfigIntent(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/ai/assistant", bytes.NewReader([]byte(`{"message":"请帮我开启滑块验证码","limit":10}`)))
+	request = withAIApprovalClaims(request, "admin-id", "admin-session", "admin")
 	handler.AIAssistant(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected assistant ok, code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1330,7 +1336,7 @@ func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
 	handler := New(Options{Config: &cfg})
 
 	args := map[string]any{"area": "bot_cc", "level": "high"}
-	call, err := handler.executeAssistantTool(context.Background(), "set_protection_level", args, "")
+	call, err := handler.executeAssistantTool(ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "test-admin", SessionID: "test-session", Role: "admin"}), "set_protection_level", args, "")
 	if err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -1352,6 +1358,71 @@ func TestContinueAIApprovalDoesNotAutoApprovePendingRequest(t *testing.T) {
 		t.Fatalf("policy changed before explicit approval: %+v", cfg.Protection.Policy)
 	}
 }
+
+func TestRecentSecurityEventsToolRequiresReadLogsPermission(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg})
+	ctx := ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{
+		Subject:     "ai-user",
+		SessionID:   "ai-session",
+		Role:        "ai_user",
+		Permissions: []string{"use:ai"},
+	})
+	if _, err := handler.executeAssistantTool(ctx, "recent_security_events", map[string]any{"limit": 1}, ""); err == nil || !strings.Contains(err.Error(), "read:logs") {
+		t.Fatalf("log tool bypassed read:logs permission: %v", err)
+	}
+}
+
+func TestExecuteAssistantToolPublishesPendingApproval(t *testing.T) {
+	cfg := config.Default()
+	hub := realtime.NewHub()
+	messages := make(chan *realtime.Message, 1)
+	transport := &handlerRealtimeTransport{messages: messages}
+	hub.Add(transport)
+	t.Cleanup(func() { hub.Remove(transport) })
+	handler := New(Options{Config: &cfg, Realtime: hub})
+
+	requester := &middleware.Claims{Subject: "requester-id", ID: "requester-session", Username: "requester", Role: "admin"}
+	ctx := context.WithValue(context.Background(), middleware.UserContextKey, requester)
+	call, err := handler.executeAssistantTool(ctx, "set_protection_level", map[string]any{"area": "bot_cc", "level": "high"}, "")
+	if err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	select {
+	case msg := <-messages:
+		payload, ok := msg.Payload.(realtime.ApprovalEvent)
+		if msg.Type != realtime.MsgApproval || !ok || payload.Status != string(ai.ApprovalPending) {
+			t.Fatalf("unexpected realtime approval message: %+v", msg)
+		}
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal realtime approval message: %v", err)
+		}
+		for _, protected := range []string{call.Approval.ID, call.Approval.RequesterSubject, "bot_cc", "high"} {
+			if protected != "" && bytes.Contains(encoded, []byte(protected)) {
+				t.Fatalf("realtime approval event exposed object-scoped value %q: %s", protected, encoded)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending approval was not published")
+	}
+}
+
+type handlerRealtimeTransport struct {
+	messages chan *realtime.Message
+}
+
+func (t *handlerRealtimeTransport) Send(_ context.Context, msg *realtime.Message) error {
+	t.messages <- msg
+	return nil
+}
+
+func (*handlerRealtimeTransport) Receive(context.Context) (*realtime.Message, error) {
+	return nil, errors.New("receive unsupported")
+}
+
+func (*handlerRealtimeTransport) Close() error { return nil }
+func (*handlerRealtimeTransport) Type() string { return "test" }
 
 type recordingAISink struct {
 	items  []storage.LogEntry
@@ -1409,4 +1480,560 @@ func (s *filteringAISink) Close() error {
 
 func ptrConfig(cfg config.Config) *config.Config {
 	return &cfg
+}
+
+func TestRunAISelfLearningCannotDisableConfiguredDryRun(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.SelfLearning.Enabled = true
+	cfg.AI.SelfLearning.AutoApply = true
+	cfg.AI.SelfLearning.DryRun = true
+	h := New(Options{Config: &cfg, Sink: &filteringAISink{}})
+	body := []byte(`{"dry_run":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/self-learning", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.RunAISelfLearning(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data ai.SelfLearningReport `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Data.DryRun {
+		t.Fatalf("expected dry_run to stay true when the request tries to set it false, report=%+v", resp.Data)
+	}
+	if !cfg.AI.SelfLearning.DryRun {
+		t.Fatalf("configured dry_run was mutated by the request")
+	}
+}
+
+func TestSelfLearningRuleWriteRequiresRulesPermission(t *testing.T) {
+	cfg := config.Default()
+	h := New(Options{Config: &cfg})
+
+	withoutRules := httptest.NewRequest(http.MethodPost, "/api/ai/self-learning/run", nil)
+	withoutRules = withoutRules.WithContext(context.WithValue(withoutRules.Context(), middleware.UserContextKey, &middleware.Claims{
+		Role:   "operator",
+		Scopes: []string{"write:ai"},
+	}))
+	if err := h.selfLearningRuleWriteAllowed(withoutRules); err == nil {
+		t.Fatal("write:ai alone must not permit automatic rule creation")
+	}
+
+	withRules := httptest.NewRequest(http.MethodPost, "/api/ai/self-learning/run", nil)
+	withRules = withRules.WithContext(context.WithValue(withRules.Context(), middleware.UserContextKey, &middleware.Claims{
+		Role:   "operator",
+		Scopes: []string{"write:ai", "write:rules"},
+	}))
+	if err := h.selfLearningRuleWriteAllowed(withRules); err != nil {
+		t.Fatalf("write:rules should permit automatic rule creation: %v", err)
+	}
+}
+
+func TestUpdateAIConfigRequiresWriteSystemToEnableAutoApply(t *testing.T) {
+	cfg := config.Default()
+	h := New(Options{Config: &cfg})
+	body := []byte(`{"self_learning":{"auto_apply":true}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserContextKey, &middleware.Claims{Role: "operator", Scopes: []string{"read:ai"}}))
+	rec := httptest.NewRecorder()
+	h.UpdateAIConfig(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if cfg.AI.SelfLearning.AutoApply {
+		t.Fatalf("auto_apply must not be enabled without write:system/admin")
+	}
+
+	// Admin may enable auto-apply.
+	cfg2 := config.Default()
+	h2 := New(Options{Config: &cfg2})
+	req2 := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
+	req2 = req2.WithContext(context.WithValue(req2.Context(), middleware.UserContextKey, &middleware.Claims{Role: "admin"}))
+	rec2 := httptest.NewRecorder()
+	h2.UpdateAIConfig(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected admin 200, code=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+	if !cfg2.AI.SelfLearning.AutoApply {
+		t.Fatalf("admin should be able to enable auto_apply")
+	}
+}
+
+func TestSystemSummaryToolRedactsSiteIdentityAndAdminListener(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Sites = []config.SiteConfig{
+		{ID: "site-prod-1", WAF: config.WAFConfig{Mode: "block"}},
+		{ID: "site-prod-2", WAF: config.WAFConfig{Mode: "block"}},
+		{ID: "site-dev-1", WAF: config.WAFConfig{Mode: "observe"}},
+	}
+	result, err := (ai.SystemSummaryTool{Config: &cfg}).Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success")
+	}
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if _, ok := summary["admin_listener"]; ok {
+		t.Fatalf("admin_listener must not be exposed to the LLM: %+v", summary)
+	}
+	if v, ok := summary["sites"].(float64); !ok || v != 3 {
+		t.Fatalf("expected sites count 3, got %v", summary["sites"])
+	}
+	raw, _ := json.Marshal(summary)
+	if strings.Contains(string(raw), "site-prod-1") || strings.Contains(string(raw), "site-dev-1") || strings.Contains(string(raw), "0.0.0.0") {
+		t.Fatalf("summary leaked site id or admin listener: %s", raw)
+	}
+	modes, ok := summary["waf_modes"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected waf_modes as map, got %T", summary["waf_modes"])
+	}
+	if v, _ := modes["block"].(float64); v != 2 {
+		t.Fatalf("expected 2 sites in block mode, got %v", modes["block"])
+	}
+	if v, _ := modes["observe"].(float64); v != 1 {
+		t.Fatalf("expected 1 site in observe mode, got %v", modes["observe"])
+	}
+}
+
+func TestValidateAIAPIBaseFailsClosedOnDNSLookupError(t *testing.T) {
+	previous := lookupAIAPIBaseIP
+	lookupAIAPIBaseIP = func(string) ([]net.IP, error) {
+		return nil, errors.New("resolver unavailable")
+	}
+	t.Cleanup(func() { lookupAIAPIBaseIP = previous })
+
+	err := validateAIAPIBase("https://model.example.test/v1", false)
+	if err == nil || !strings.Contains(err.Error(), "lookup") {
+		t.Fatalf("DNS lookup failure was not rejected: %v", err)
+	}
+}
+
+type aiApprovalStreamFixture struct {
+	handler   *Handler
+	cfg       *config.Config
+	router    chi.Router
+	store     *ai.ApprovalStore
+	requester *middleware.Claims
+	approver  *middleware.Claims
+}
+
+func newAIApprovalStreamFixture(t *testing.T, mutate func(*config.Config)) aiApprovalStreamFixture {
+	t.Helper()
+	cfg := config.Default()
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store := ai.NewApprovalStore()
+	handler := New(Options{Config: &cfg, ConfigPath: configPath, AssistantApprovals: store})
+	router := chi.NewRouter()
+	router.Get("/tools", handler.AITools)
+	router.Post("/execute", handler.ExecuteAITool)
+	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
+	router.Post("/approvals/{id}/reject", handler.RejectAIApproval)
+	router.Post("/approvals/{id}/continue/stream", handler.ContinueAIApprovalStream)
+	return aiApprovalStreamFixture{
+		handler:   handler,
+		cfg:       &cfg,
+		router:    router,
+		store:     store,
+		requester: &middleware.Claims{Subject: "requester-id", ID: "requester-session", Username: "requester", Role: "admin"},
+		approver:  &middleware.Claims{Subject: "approver-id", ID: "approver-session", Username: "approver", Role: "admin"},
+	}
+}
+
+func (f aiApprovalStreamFixture) call(actor *middleware.Claims, method, target, body string) *httptest.ResponseRecorder {
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	request := httptest.NewRequest(method, target, reader)
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, actor))
+	recorder := httptest.NewRecorder()
+	f.router.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func (f aiApprovalStreamFixture) createApprovedProtectionApproval(t *testing.T) string {
+	t.Helper()
+	args := `{"area":"bot_cc","level":"high"}`
+	created := f.call(f.requester, http.MethodPost, "/execute", `{"name":"set_protection_level","args":`+args+`}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create approval: code=%d body=%s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Approval *struct {
+				ID string `json:"id"`
+			} `json:"approval"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if envelope.Data.Approval == nil || envelope.Data.Approval.ID == "" {
+		t.Fatalf("expected pending approval, body=%s", created.Body.String())
+	}
+	approved := f.call(f.approver, http.MethodPost, "/approvals/"+envelope.Data.Approval.ID+"/approve", "")
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approve: code=%d body=%s", approved.Code, approved.Body.String())
+	}
+	return envelope.Data.Approval.ID
+}
+
+// An approval id is visible to every holder of approve:ai through the list
+// endpoint, so a read-only call that carries somebody else's in-flight id must
+// not be able to finalize it.
+func TestExecuteAIToolReadOnlyCallCannotFinalizeAnotherRequestersApproval(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	approvalID := fixture.createApprovedProtectionApproval(t)
+
+	// Park the request in `executing`, exactly like an in-flight
+	// continue/stream call made by its owner.
+	preview, err := setProtectionLevelTool{Handler: fixture.handler}.Preview(context.Background(), map[string]any{"area": "bot_cc", "level": "high"})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	executing, err := fixture.store.BeginExecutionForWithPreview(
+		approvalID,
+		"set_protection_level",
+		map[string]any{"area": "bot_cc", "level": "high"},
+		preview,
+		ai.ApprovalActor{Subject: "requester-id", SessionID: "requester-session"},
+	)
+	if err != nil {
+		t.Fatalf("begin execution: %v", err)
+	}
+	if executing.Status != ai.ApprovalExecuting {
+		t.Fatalf("expected executing approval, got %s", executing.Status)
+	}
+
+	// Another console user calls a read-only tool while carrying that id.
+	intruder := &middleware.Claims{Subject: "intruder-id", ID: "intruder-session", Username: "intruder", Role: "admin"}
+	readonly := fixture.call(intruder, http.MethodPost, "/execute", `{"name":"knowledge_base","args":{"query":"waf"},"approval_id":"`+approvalID+`"}`)
+	if readonly.Code != http.StatusOK {
+		t.Fatalf("read-only tool should still execute: code=%d body=%s", readonly.Code, readonly.Body.String())
+	}
+	if strings.Contains(readonly.Body.String(), `"approval"`) {
+		t.Fatalf("read-only execution must not adopt an approval: %s", readonly.Body.String())
+	}
+	stored, ok := fixture.store.Get(approvalID)
+	if !ok {
+		t.Fatal("foreign approval disappeared from the store")
+	}
+	if stored.Status != ai.ApprovalExecuting {
+		t.Fatalf("read-only call finalized a foreign approval: status=%s", stored.Status)
+	}
+	// The owner must still be able to finalize its own request.
+	if _, err := fixture.store.MarkExecuted(approvalID, ai.ApprovalActor{Subject: "requester-id", SessionID: "requester-session"}); err != nil {
+		t.Fatalf("owner can no longer complete its own approval: %v", err)
+	}
+}
+
+// Dual control is only meaningful if the person who may execute an approved
+// change is the one who asked for it, from the same login.
+func TestContinueAIApprovalStreamRequiresOriginalRequesterSession(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	approvalID := fixture.createApprovedProtectionApproval(t)
+
+	sameUserNewSession := *fixture.requester
+	sameUserNewSession.ID = "requester-session-2"
+	for name, actor := range map[string]*middleware.Claims{
+		"same user on a new session": &sameUserNewSession,
+		"a different user":           fixture.approver,
+	} {
+		recorder := fixture.call(actor, http.MethodPost, "/approvals/"+approvalID+"/continue/stream", `{"message":"继续"}`)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s was allowed to continue: code=%d body=%s", name, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "AI_APPROVAL_CONTINUE_FORBIDDEN") {
+			t.Fatalf("%s returned an unexpected error: %s", name, recorder.Body.String())
+		}
+	}
+	if approval, _ := fixture.store.Get(approvalID); approval.Status != ai.ApprovalApproved {
+		t.Fatalf("rejected continuation must not consume the approval: %s", approval.Status)
+	}
+	if fixture.cfg.Protection.Policy.BotCC == "high" {
+		t.Fatalf("policy changed without a valid continuation: %+v", fixture.cfg.Protection.Policy)
+	}
+
+	// An unknown id must not be treated as an authorization failure.
+	missing := fixture.call(fixture.requester, http.MethodPost, "/approvals/does-not-exist/continue/stream", `{"message":"继续"}`)
+	if missing.Code != http.StatusOK || !strings.Contains(missing.Body.String(), "event: error") {
+		t.Fatalf("unknown approval should surface a stream error: code=%d body=%s", missing.Code, missing.Body.String())
+	}
+}
+
+func TestContinueAIApprovalStreamExecutesApprovedRequestAndEmitsDone(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	approvalID := fixture.createApprovedProtectionApproval(t)
+
+	recorder := fixture.call(fixture.requester, http.MethodPost, "/approvals/"+approvalID+"/continue/stream", `{"message":"继续执行刚才的变更","language":"zh-CN"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("continue stream: code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		"event: trace",
+		`"type":"stream_open"`,
+		`"type":"approval_approved"`,
+		`"type":"tool_call"`,
+		`"type":"tool_result"`,
+		"event: done",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("continue stream missing %q:\n%s", want, body)
+		}
+	}
+	if fixture.cfg.Protection.Policy.BotCC != "high" {
+		t.Fatalf("approved change was not applied: %+v", fixture.cfg.Protection.Policy)
+	}
+	stored, ok := fixture.store.Get(approvalID)
+	if !ok || stored.Status != ai.ApprovalExecuted {
+		t.Fatalf("expected executed approval, got %+v", stored)
+	}
+}
+
+// Replaying the continuation must not re-apply an already executed change.
+func TestContinueAIApprovalStreamRejectsReplayedExecution(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	approvalID := fixture.createApprovedProtectionApproval(t)
+
+	first := fixture.call(fixture.requester, http.MethodPost, "/approvals/"+approvalID+"/continue/stream", `{"message":"继续执行刚才的变更"}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first continue: code=%d body=%s", first.Code, first.Body.String())
+	}
+	second := fixture.call(fixture.requester, http.MethodPost, "/approvals/"+approvalID+"/continue/stream", `{"message":"再执行一次"}`)
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "already executed") {
+		t.Fatalf("replayed continuation was accepted: code=%d body=%s", second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), "event: error") {
+		t.Fatalf("replayed continuation should surface a stream error: %s", second.Body.String())
+	}
+	if stored, _ := fixture.store.Get(approvalID); stored.Status != ai.ApprovalExecuted {
+		t.Fatalf("replay moved the approval to %s", stored.Status)
+	}
+}
+
+// A non-flushing client must get the documented JSON fallback rather than a
+// silently truncated stream.
+func TestContinueAIApprovalStreamFallsBackToJSONWithoutFlusher(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	approvalID := fixture.createApprovedProtectionApproval(t)
+
+	writer := &nonFlushingAIStreamWriter{header: make(http.Header)}
+	request := httptest.NewRequest(http.MethodPost, "/approvals/"+approvalID+"/continue/stream", strings.NewReader(`{"message":"继续"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, fixture.requester))
+	fixture.router.ServeHTTP(writer, request)
+	// writeData relies on the implicit 200, so an unset code is expected here.
+	if writer.code != 0 && writer.code != http.StatusOK {
+		t.Fatalf("expected JSON fallback success, code=%d body=%s", writer.code, writer.body.String())
+	}
+	if writer.header.Get("X-CheeseWAF-Stream-Fallback") != "json" {
+		t.Fatalf("expected JSON fallback, code=%d header=%v body=%s", writer.code, writer.header, writer.body.String())
+	}
+	if !strings.Contains(writer.body.String(), "set_protection_level") {
+		t.Fatalf("fallback payload missing tool result: %s", writer.body.String())
+	}
+}
+
+// When the tool itself fails, the stream must report the error and the request
+// must land in `failed` instead of being stranded in `executing`.
+func TestContinueAIApprovalStreamReportsExecutionFailure(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, func(cfg *config.Config) {
+		*cfg = minimumHAHandlerConfig()
+	})
+	approvalID := fixture.createApprovedProtectionApproval(t)
+
+	recorder := fixture.call(fixture.requester, http.MethodPost, "/approvals/"+approvalID+"/continue/stream", `{"message":"继续执行刚才的变更"}`)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "event: error") {
+		t.Fatalf("expected stream error: code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "cluster protection mode") {
+		t.Fatalf("stream error should carry the tool failure: %s", recorder.Body.String())
+	}
+	if fixture.cfg.Protection.Policy.BotCC == "high" {
+		t.Fatalf("policy changed during a failed execution: %+v", fixture.cfg.Protection.Policy)
+	}
+	stored, ok := fixture.store.Get(approvalID)
+	if !ok || stored.Status != ai.ApprovalFailed {
+		t.Fatalf("failed execution should park the request in failed, got %+v", stored)
+	}
+}
+
+func TestRejectAIApprovalBlocksContinuation(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	args := `{"area":"bot_cc","level":"high"}`
+	created := fixture.call(fixture.requester, http.MethodPost, "/execute", `{"name":"set_protection_level","args":`+args+`}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create approval: code=%d body=%s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Approval *struct {
+				ID string `json:"id"`
+			} `json:"approval"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	approvalID := envelope.Data.Approval.ID
+
+	// The requester cannot decide its own modification request either way.
+	selfReject := fixture.call(fixture.requester, http.MethodPost, "/approvals/"+approvalID+"/reject", "")
+	if selfReject.Code != http.StatusForbidden {
+		t.Fatalf("self-reject was allowed: code=%d body=%s", selfReject.Code, selfReject.Body.String())
+	}
+
+	rejected := fixture.call(fixture.approver, http.MethodPost, "/approvals/"+approvalID+"/reject", "")
+	if rejected.Code != http.StatusOK {
+		t.Fatalf("reject: code=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	stored, _ := fixture.store.Get(approvalID)
+	if stored.Status != ai.ApprovalRejected || stored.RejectedBySubject != "approver-id" {
+		t.Fatalf("unexpected rejected approval: %+v", stored)
+	}
+
+	continueAfter := fixture.call(fixture.requester, http.MethodPost, "/approvals/"+approvalID+"/continue/stream", `{"message":"继续"}`)
+	if continueAfter.Code != http.StatusOK || !strings.Contains(continueAfter.Body.String(), "is rejected") {
+		t.Fatalf("rejected approval was continued: code=%d body=%s", continueAfter.Code, continueAfter.Body.String())
+	}
+	if fixture.cfg.Protection.Policy.BotCC == "high" {
+		t.Fatalf("rejected change was applied: %+v", fixture.cfg.Protection.Policy)
+	}
+}
+
+// Read-only requests do not need dual control: the requester may decide them
+// with write:ai, but a role without either permission must still be refused.
+func TestCanDecideAIApprovalScopesReadOnlySelfApproval(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["operator"] = []string{"use:ai", "write:ai"}
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+	})
+	request, err := fixture.store.CreateFor(
+		continueReadOnlyTestTool{},
+		map[string]any{"query": "waf"},
+		"",
+		ai.ApprovalActor{Subject: "operator-id", SessionID: "operator-session", Role: "operator"},
+	)
+	if err != nil {
+		t.Fatalf("create read-only approval: %v", err)
+	}
+
+	owner := &middleware.Claims{Subject: "operator-id", ID: "operator-session", Username: "operator", Role: "operator"}
+	if recorder := fixture.call(owner, http.MethodPost, "/approvals/"+request.ID+"/approve", ""); recorder.Code != http.StatusOK {
+		t.Fatalf("write:ai should decide its own read-only request: code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	stored, _ := fixture.store.Get(request.ID)
+	if stored.Status != ai.ApprovalApproved {
+		t.Fatalf("expected approved read-only request, got %+v", stored)
+	}
+
+	other, err := fixture.store.CreateFor(
+		continueReadOnlyTestTool{},
+		map[string]any{"query": "waf"},
+		"",
+		ai.ApprovalActor{Subject: "ai-user-id", SessionID: "ai-user-session", Role: "ai_user"},
+	)
+	if err != nil {
+		t.Fatalf("create second read-only approval: %v", err)
+	}
+	underprivileged := &middleware.Claims{Subject: "ai-user-id", ID: "ai-user-session", Username: "ai-user", Role: "ai_user"}
+	if recorder := fixture.call(underprivileged, http.MethodPost, "/approvals/"+other.ID+"/approve", ""); recorder.Code != http.StatusForbidden {
+		t.Fatalf("use:ai alone must not decide a request: code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAIToolsListsRegisteredToolsWithSensitivity(t *testing.T) {
+	fixture := newAIApprovalStreamFixture(t, nil)
+	recorder := fixture.call(fixture.requester, http.MethodGet, "/tools", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list tools: code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`"name":"set_protection_level"`,
+		`"sensitivity":"modify"`,
+		`"name":"knowledge_base"`,
+		`"sensitivity":"read_only"`,
+		`"parameters"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tool list missing %q:\n%s", want, body)
+		}
+	}
+}
+
+type continueReadOnlyTestTool struct{}
+
+func (continueReadOnlyTestTool) Name() string                    { return "continue_read_only_test" }
+func (continueReadOnlyTestTool) Description() string             { return "read-only approval decision test" }
+func (continueReadOnlyTestTool) Sensitivity() ai.ToolSensitivity { return ai.ReadOnly }
+func (continueReadOnlyTestTool) Parameters() map[string]any      { return map[string]any{"type": "object"} }
+func (continueReadOnlyTestTool) Execute(context.Context, map[string]any) (*ai.ToolResult, error) {
+	return &ai.ToolResult{Success: true, Output: "ok"}, nil
+}
+
+type nonFlushingAIStreamWriter struct {
+	header http.Header
+	code   int
+	body   bytes.Buffer
+}
+
+func (w *nonFlushingAIStreamWriter) Header() http.Header  { return w.header }
+func (w *nonFlushingAIStreamWriter) WriteHeader(code int) { w.code = code }
+func (w *nonFlushingAIStreamWriter) Write(payload []byte) (int, error) {
+	return w.body.Write(payload)
+}
+
+func TestAssistantSensitiveToolsRequireExplicitCommands(t *testing.T) {
+	h := &Handler{}
+	for _, message := range []string{
+		"How would disabling captcha affect false positives?",
+		"文档里提到开启验证码会增加一步验证",
+		"Why does setting the protection level to high increase false positives?",
+		"如果把防护等级设置为高，会发生什么？",
+	} {
+		for _, intent := range h.assistantToolIntents(message) {
+			if intent.Name == "set_bot_challenge" || intent.Name == "set_protection_level" {
+				t.Fatalf("informational message %q produced sensitive intent %+v", message, intent)
+			}
+		}
+	}
+
+	tests := []struct {
+		message string
+		name    string
+	}{
+		{message: "Please enable slider captcha", name: "set_bot_challenge"},
+		{message: "请关闭验证码", name: "set_bot_challenge"},
+		{message: "Set the web protection level to high", name: "set_protection_level"},
+		{message: "请把 API 防护等级设置为严格", name: "set_protection_level"},
+	}
+	for _, test := range tests {
+		intents := h.assistantToolIntents(test.message)
+		found := false
+		for _, intent := range intents {
+			found = found || intent.Name == test.name
+		}
+		if !found {
+			t.Fatalf("explicit command %q did not produce %s: %+v", test.message, test.name, intents)
+		}
+	}
 }

@@ -5,10 +5,13 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
 mode="${1:-all}"
-coverage_floor="${GO_COVERAGE_FLOOR:-20.0}"
+coverage_floor="${GO_COVERAGE_FLOOR:-50.0}"
 
 verify_format() {
-  mapfile -t unformatted < <(gofmt -l cmd internal)
+  local unformatted=()
+  while IFS= read -r path; do
+    [[ -n "$path" ]] && unformatted+=("$path")
+  done < <(gofmt -l cmd internal)
   if (( ${#unformatted[@]} > 0 )); then
     printf '::error::gofmt is required for:\n' >&2
     printf '%s\n' "${unformatted[@]}" >&2
@@ -24,7 +27,10 @@ verify_coverage() {
   local profile total
   profile="$(mktemp)"
   trap 'rm -f "$profile"' RETURN
-  bash scripts/ci/go-env.sh go test -count=1 -covermode=atomic -coverprofile="$profile" ./cmd/... ./internal/...
+  # Report-only corpus tests are intentionally skipped under instrumentation:
+  # their large security datasets make regex-heavy analysis exceed the CI
+  # coverage budget without improving the production statement floor.
+  bash scripts/ci/go-env.sh go test -short -count=1 -covermode=atomic -coverprofile="$profile" ./cmd/... ./internal/...
   total="$(go tool cover -func="$profile" | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')"
   [[ "$total" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
     echo "::error::unable to parse Go coverage" >&2

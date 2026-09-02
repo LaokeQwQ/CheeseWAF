@@ -84,6 +84,7 @@ func TestAdminEntryCookieSecureFollowsTLSAndForwardedProto(t *testing.T) {
 	}
 
 	proxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/__cheesewaf-entry", nil)
+	proxied.RemoteAddr = "10.0.0.5:1234" // private proxy peer; only trusted peers may flip Secure via XFP
 	proxied.Header.Set("X-Forwarded-Proto", "https")
 	proxyRec := httptest.NewRecorder()
 	if !issueAdminEntryCookieAt(proxyRec, proxied, "cw_entry", "test-secret", now) {
@@ -91,6 +92,18 @@ func TestAdminEntryCookieSecureFollowsTLSAndForwardedProto(t *testing.T) {
 	}
 	proxyCookies := proxyRec.Result().Cookies()
 	if len(proxyCookies) != 1 || !proxyCookies[0].Secure {
-		t.Fatalf("X-Forwarded-Proto=https entry cookie must set Secure, got %+v", proxyCookies)
+		t.Fatalf("X-Forwarded-Proto=https from a private peer must set Secure, got %+v", proxyCookies)
+	}
+
+	publicProxied := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9443/__cheesewaf-entry", nil)
+	publicProxied.RemoteAddr = "203.0.113.7:1234" // public peer must not flip Secure
+	publicProxied.Header.Set("X-Forwarded-Proto", "https")
+	publicRec := httptest.NewRecorder()
+	if !issueAdminEntryCookieAt(publicRec, publicProxied, "cw_entry", "test-secret", now) {
+		t.Fatal("issue public proxied entry cookie")
+	}
+	publicCookies := publicRec.Result().Cookies()
+	if len(publicCookies) != 1 || publicCookies[0].Secure {
+		t.Fatalf("public peer X-Forwarded-Proto=https must not set Secure, got %+v", publicCookies)
 	}
 }

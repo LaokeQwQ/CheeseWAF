@@ -107,6 +107,7 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 		{name: "create user", method: http.MethodPost, path: "/api/users", body: []byte(`{"username":"next","password":"Correct-Horse-9x!","role":"readonly"}`)},
 		{name: "update user", method: http.MethodPut, path: "/api/users/admin-id", body: []byte(`{"role":"admin"}`)},
 		{name: "disable 2fa", method: http.MethodPost, path: "/api/users/admin-id/2fa/disable", body: []byte(`{}`)},
+		{name: "recover 2fa", method: http.MethodPost, path: "/api/users/admin-id/2fa/recover", body: []byte(`{}`)},
 		{name: "ip tags", method: http.MethodPut, path: "/api/ip/tags", body: []byte(`{"tags":{}}`)},
 		{name: "threat providers", method: http.MethodPut, path: "/api/ip/threat-intel/providers", body: []byte(`{"providers":[]}`)},
 		{name: "threat import", method: http.MethodPost, path: "/api/ip/threat-intel/import", body: []byte(`{"entries":[]}`)},
@@ -148,6 +149,23 @@ func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {
 	}
 }
 
+func TestRouterReadonlyCannotMutateNotifications(t *testing.T) {
+	router, _, readerToken := newAuthzTestRouter(t)
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPatch, path: "/api/notifications/notification-1"},
+		{method: http.MethodPost, path: "/api/notifications/read-all"},
+		{method: http.MethodDelete, path: "/api/notifications"},
+	} {
+		recorder := perform(router, tc.method, tc.path, readerToken, []byte(`{"read":true}`))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("readonly notification mutation %s %s returned %d: %s", tc.method, tc.path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestRouterReadonlyCannotExecutePaidAI(t *testing.T) {
 	router, _, readerToken := newAuthzTestRouter(t)
 	response := perform(router, http.MethodPost, "/api/ai/analyze", readerToken, []byte(`{}`))
@@ -158,13 +176,25 @@ func TestRouterReadonlyCannotExecutePaidAI(t *testing.T) {
 
 func TestRouterExplicitAIUsePermissionPassesRBAC(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai", "read:logs"}
 	})
 	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
 	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
 	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
 	if response.Code == http.StatusForbidden || response.Code == http.StatusUnauthorized {
 		t.Fatalf("use:ai user should pass RBAC, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRouterAIAnalysisRequiresReadLogsPermission(t *testing.T) {
+	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["ai_user"] = []string{"use:ai"}
+	})
+	createAuthzUser(t, store, "ai-user-id", "ai-user", "ai-user-password", "ai_user")
+	token := loginAuthzUser(t, router, "ai-user", "ai-user-password")
+	response := perform(router, http.MethodPost, "/api/ai/analyze", token, []byte(`{}`))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("use:ai without read:logs should be denied, got %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -334,6 +364,20 @@ func TestRouterTwoFARecoveryAllowsAdminSessionAndRejectsAPIToken(t *testing.T) {
 	recovery := perform(router, http.MethodPost, "/api/users/reader-id/2fa/recover", adminToken, []byte(`{"password":"admin-password","confirm_username":"reader"}`))
 	if recovery.Code != http.StatusOK {
 		t.Fatalf("admin session should recover user 2fa, got %d: %s", recovery.Code, recovery.Body.String())
+	}
+}
+
+// Even a role with write:users passes the routes require("write:users") guard
+// but must still be rejected by the handler-admin check in RecoverUser2FA.
+func TestRouterTwoFARecoveryRejectsOperatorSessionEvenWithWriteUsers(t *testing.T) {
+	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
+		cfg.APISec.Permissions["operator"] = []string{"write:users"}
+	})
+	createAuthzUser(t, store, "operator-id", "operator", "operator-password", "operator")
+	operatorToken := loginAuthzUser(t, router, "operator", "operator-password")
+	recover := perform(router, http.MethodPost, "/api/users/reader-id/2fa/recover", operatorToken, []byte(`{"password":"operator-password","confirm_username":"reader"}`))
+	if recover.Code != http.StatusForbidden {
+		t.Fatalf("operator with write:users must not recover another user, got %d: %s", recover.Code, recover.Body.String())
 	}
 }
 
@@ -1311,8 +1355,7 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	}
 	var envelope struct {
 		Data struct {
-			Token string `json:"token"`
-			User  struct {
+			User struct {
 				Username string `json:"username"`
 				Role     string `json:"role"`
 			} `json:"user"`
@@ -1321,17 +1364,21 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	if err := json.NewDecoder(refreshed.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode refresh response: %v", err)
 	}
-	if envelope.Data.Token == "" {
-		t.Fatal("refresh response did not include token")
+	if strings.Contains(refreshed.Body.String(), `"token"`) {
+		t.Fatalf("refresh response leaked JWT: %s", refreshed.Body.String())
 	}
-	if envelope.Data.Token == adminToken {
+	refreshedToken := responseCookieValue(refreshed, middleware.SessionCookieName)
+	if refreshedToken == "" {
+		t.Fatal("refresh response did not set session cookie")
+	}
+	if refreshedToken == adminToken {
 		t.Fatal("refresh returned the same token; expected a rotated token id")
 	}
 	if envelope.Data.User.Username != "admin" || envelope.Data.User.Role != "admin" {
 		t.Fatalf("unexpected refresh user: %+v", envelope.Data.User)
 	}
 
-	system := perform(router, http.MethodGet, "/api/system", envelope.Data.Token, nil)
+	system := perform(router, http.MethodGet, "/api/system", refreshedToken, nil)
 	if system.Code != http.StatusOK {
 		t.Fatalf("refreshed token should access protected API, got %d: %s", system.Code, system.Body.String())
 	}
@@ -1339,6 +1386,20 @@ func TestRouterRefreshesBearerToken(t *testing.T) {
 	oldToken := perform(router, http.MethodGet, "/api/system", adminToken, nil)
 	if oldToken.Code != http.StatusUnauthorized {
 		t.Fatalf("old token should be revoked after refresh, got %d: %s", oldToken.Code, oldToken.Body.String())
+	}
+}
+
+func TestRouterBootstrapDoesNotReturnJWTInResponseBody(t *testing.T) {
+	router, _, _, adminToken, _ := newAuthzTestRouterState(t, nil)
+	recorder := perform(router, http.MethodPost, "/api/auth/session/bootstrap", adminToken, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), `"token"`) || strings.Contains(recorder.Body.String(), adminToken) {
+		t.Fatalf("bootstrap response leaked bearer JWT: %s", recorder.Body.String())
+	}
+	if got := responseCookieValue(recorder, middleware.SessionCookieName); got == "" {
+		t.Fatal("bootstrap did not issue an HTTP session cookie")
 	}
 }
 
@@ -1353,6 +1414,17 @@ func TestRouterLogoutRevokesBearerToken(t *testing.T) {
 	logout := perform(router, http.MethodPost, "/api/auth/logout", adminToken, []byte(`{}`))
 	if logout.Code != http.StatusOK {
 		t.Fatalf("expected logout to succeed, got %d: %s", logout.Code, logout.Body.String())
+	}
+	expired := make(map[string]bool)
+	for _, cookie := range logout.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			expired[cookie.Name] = true
+		}
+	}
+	for _, name := range []string{middleware.SessionCookieName, middleware.CSRFCookieName, middleware.SecureSessionCookieName, middleware.SecureCSRFCookieName} {
+		if !expired[name] {
+			t.Errorf("logout did not expire cookie %q", name)
+		}
 	}
 
 	system := perform(router, http.MethodGet, "/api/system", adminToken, nil)
@@ -1382,10 +1454,10 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 
 func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
-	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
+	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
 	createAuthzUser(t, store, "ai-approver-id", "ai-approver", "approver-password", "ai_approver")
 	writerToken := loginAuthzUser(t, router, "ai-writer", "writer-password")
 	approverToken := loginAuthzUser(t, router, "ai-approver", "approver-password")
@@ -1421,10 +1493,10 @@ func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 
 func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["ai_writer"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
-	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "ai_writer")
+	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
 	createAuthzUser(t, store, "ai-approver-id", "ai-approver", "approver-password", "ai_approver")
 	writerToken := loginAuthzUser(t, router, "ai-writer", "writer-password")
 	approverToken := loginAuthzUser(t, router, "ai-approver", "approver-password")
@@ -1450,7 +1522,7 @@ func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 }
 
 func TestRouterNotificationsContractAndIsolation(t *testing.T) {
-	router, _, store, adminToken, readerToken := newAuthzTestRouterState(t, nil)
+	router, _, store, adminToken, _ := newAuthzTestRouterState(t, nil)
 	ctx := context.Background()
 	for _, item := range []*storage.Notification{
 		{ID: "admin-unread", UserID: "admin-id", Title: "Admin unread"},
@@ -1498,7 +1570,7 @@ func TestRouterNotificationsContractAndIsolation(t *testing.T) {
 	if !updatedEnvelope.Data.Read || !updatedEnvelope.Data.Pinned || updatedEnvelope.Data.Type != "info" {
 		t.Fatalf("unexpected updated notification: %+v", updatedEnvelope.Data)
 	}
-	markAll := perform(router, http.MethodPost, "/api/notifications/read-all", readerToken, nil)
+	markAll := perform(router, http.MethodPost, "/api/notifications/read-all", adminToken, nil)
 	if markAll.Code != http.StatusOK {
 		t.Fatalf("reader mark all: %d %s", markAll.Code, markAll.Body.String())
 	}
@@ -1509,7 +1581,7 @@ func TestRouterNotificationsContractAndIsolation(t *testing.T) {
 	if envelope.Data.Total != 2 || envelope.Data.Unread != 0 {
 		t.Fatalf("reader action changed admin unread count: %+v", envelope.Data)
 	}
-	clear := perform(router, http.MethodDelete, "/api/notifications", readerToken, nil)
+	clear := perform(router, http.MethodDelete, "/api/notifications", adminToken, nil)
 	if clear.Code != http.StatusOK {
 		t.Fatalf("reader clear: %d %s", clear.Code, clear.Body.String())
 	}
@@ -1517,8 +1589,8 @@ func TestRouterNotificationsContractAndIsolation(t *testing.T) {
 	if err := json.NewDecoder(adminAfterClear.Body).Decode(&envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Data.Total != 2 {
-		t.Fatalf("reader clear changed admin notifications: %+v", envelope.Data)
+	if envelope.Data.Total != 0 {
+		t.Fatalf("admin clear did not remove admin notifications: %+v", envelope.Data)
 	}
 	for _, path := range []string{"/api/notifications?filter=invalid", "/api/notifications?limit=101"} {
 		bad := perform(router, http.MethodGet, path, adminToken, nil)
@@ -1655,18 +1727,26 @@ func loginAuthzUser(t *testing.T, router http.Handler, username, password string
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("login %s returned %d: %s", username, recorder.Code, recorder.Body.String())
 	}
-	var envelope struct {
-		Data struct {
-			Token string `json:"token"`
-		} `json:"data"`
+	if strings.Contains(recorder.Body.String(), `"token"`) {
+		t.Fatalf("login response leaked JWT: %s", recorder.Body.String())
 	}
-	if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
-		t.Fatalf("decode login response: %v", err)
+	token := responseCookieValue(recorder, middleware.SessionCookieName)
+	if token == "" {
+		t.Fatal("login response did not set session cookie")
 	}
-	if envelope.Data.Token == "" {
-		t.Fatal("login response did not include token")
+	return token
+}
+
+func responseCookieValue(recorder *httptest.ResponseRecorder, name string) string {
+	if recorder == nil {
+		return ""
 	}
-	return envelope.Data.Token
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == name {
+			return cookie.Value
+		}
+	}
+	return ""
 }
 
 type loginCAPTCHATestClient struct {

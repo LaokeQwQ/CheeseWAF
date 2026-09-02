@@ -37,6 +37,7 @@ type ApprovalRequest struct {
 	Args               map[string]any  `json:"args"`
 	ArgsSalt           string          `json:"-"`
 	ArgsDigest         string          `json:"-"`
+	PreviewDigest      string          `json:"-"`
 	Sensitivity        ToolSensitivity `json:"sensitivity"`
 	Diff               string          `json:"diff,omitempty"`
 	Status             ApprovalStatus  `json:"status"`
@@ -76,10 +77,11 @@ var (
 )
 
 type ApprovalActor struct {
-	Subject   string
-	SessionID string
-	Username  string
-	Role      string
+	Subject     string
+	SessionID   string
+	Username    string
+	Role        string
+	Permissions []string
 }
 
 type approvalActorContextKey struct{}
@@ -163,6 +165,13 @@ func (s *ApprovalStore) Create(tool Tool, args map[string]any, diff string) (App
 }
 
 func (s *ApprovalStore) CreateFor(tool Tool, args map[string]any, diff string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.CreateForWithPreview(tool, args, diff, "", actor)
+}
+
+// CreateForWithPreview binds the approval to the preview state observed when
+// the request was created. This prevents a later execution from applying the
+// approved change to a different configuration state.
+func (s *ApprovalStore) CreateForWithPreview(tool Tool, args map[string]any, diff, preview string, actor ApprovalActor) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -182,6 +191,10 @@ func (s *ApprovalStore) CreateFor(tool Tool, args map[string]any, diff string, a
 	if !ok {
 		return ApprovalRequest{}, fmt.Errorf("approval arguments cannot be normalized")
 	}
+	previewDigest, ok := approvalPreviewDigest(preview, salt)
+	if !ok {
+		return ApprovalRequest{}, fmt.Errorf("approval preview cannot be normalized")
+	}
 	safeDiff, err := sanitizeApprovalDiff(diff)
 	if err != nil {
 		return ApprovalRequest{}, err
@@ -192,6 +205,7 @@ func (s *ApprovalStore) CreateFor(tool Tool, args map[string]any, diff string, a
 		Args:               redactApprovalArgs(args),
 		ArgsSalt:           salt,
 		ArgsDigest:         digest,
+		PreviewDigest:      previewDigest,
 		Sensitivity:        tool.Sensitivity(),
 		Diff:               safeDiff,
 		Status:             ApprovalPending,
@@ -297,6 +311,10 @@ func (s *ApprovalStore) BeginExecution(id string, toolName string, args map[stri
 }
 
 func (s *ApprovalStore) BeginExecutionFor(id string, toolName string, args map[string]any, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.BeginExecutionForWithPreview(id, toolName, args, "", actor)
+}
+
+func (s *ApprovalStore) BeginExecutionForWithPreview(id string, toolName string, args map[string]any, preview string, actor ApprovalActor) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -321,6 +339,9 @@ func (s *ApprovalStore) BeginExecutionFor(id string, toolName string, args map[s
 	if !approvalArgsMatch(request.ArgsSalt, request.ArgsDigest, args) {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q arguments do not match", id)
 	}
+	if request.PreviewDigest != "" && !approvalPreviewMatches(request.ArgsSalt, request.PreviewDigest, preview) {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q preview is stale", id)
+	}
 	old := request
 	request.Status = ApprovalExecuting
 	request.ConsumedAt = s.now().UTC()
@@ -332,15 +353,22 @@ func (s *ApprovalStore) BeginExecutionFor(id string, toolName string, args map[s
 	return cloneApprovalRequest(request), nil
 }
 
-func (s *ApprovalStore) MarkExecuted(id string) (ApprovalRequest, error) {
-	return s.finishExecution(id, ApprovalExecuted)
+// MarkExecuted finalizes an executing request on behalf of actor. The actor
+// must be the requester that started the execution, from the same session;
+// otherwise the call is refused and the request is left untouched. This is the
+// second lock of the dual-control chain: the entry point already refuses to
+// start an execution it does not own, and this refuses to finish one it does
+// not own either, so a new call site that forgets the entry-point check still
+// cannot strand somebody else's in-flight change.
+func (s *ApprovalStore) MarkExecuted(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.finishExecution(id, ApprovalExecuted, actor)
 }
 
-func (s *ApprovalStore) MarkExecutionFailed(id string) (ApprovalRequest, error) {
-	return s.finishExecution(id, ApprovalFailed)
+func (s *ApprovalStore) MarkExecutionFailed(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.finishExecution(id, ApprovalFailed, actor)
 }
 
-func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus) (ApprovalRequest, error) {
+func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus, actor ApprovalActor) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -355,6 +383,9 @@ func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus) (Appro
 	}
 	if request.Status != ApprovalExecuting {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is %s, not executing", id, request.Status)
+	}
+	if !requesterMatches(request, actor) {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is bound to another requester", id)
 	}
 	old := request
 	request.Status = status
@@ -447,6 +478,25 @@ func approvalArgsDigest(args map[string]any, salt string) (string, bool) {
 	}
 	digest := sha256.Sum256([]byte(salt + "\x00" + normalized))
 	return fmt.Sprintf("sha256:%x", digest[:]), true
+}
+
+func approvalPreviewDigest(preview, salt string) (string, bool) {
+	if strings.TrimSpace(preview) == "" {
+		return "", true
+	}
+	if salt == "" || len(preview) > maxApprovalDiffBytes {
+		return "", false
+	}
+	digest := sha256.Sum256([]byte(salt + "\x00preview\x00" + preview))
+	return fmt.Sprintf("sha256:%x", digest[:]), true
+}
+
+func approvalPreviewMatches(salt, expected, preview string) bool {
+	digest, ok := approvalPreviewDigest(preview, salt)
+	if !ok || len(digest) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(digest), []byte(expected)) == 1
 }
 
 func newApprovalArgsSalt() (string, error) {
@@ -554,8 +604,9 @@ func sanitizeApprovalDiff(diff string) (string, error) {
 
 type approvalRequestDisk struct {
 	ApprovalRequest
-	ArgsSalt   string `json:"args_salt"`
-	ArgsDigest string `json:"args_digest"`
+	ArgsSalt      string `json:"args_salt"`
+	ArgsDigest    string `json:"args_digest"`
+	PreviewDigest string `json:"preview_digest,omitempty"`
 }
 
 type approvalStoreDisk struct {
@@ -596,6 +647,7 @@ func (s *ApprovalStore) loadLocked() error {
 		request := diskRequest.ApprovalRequest
 		request.ArgsSalt = diskRequest.ArgsSalt
 		request.ArgsDigest = diskRequest.ArgsDigest
+		request.PreviewDigest = diskRequest.PreviewDigest
 		if request.ID == "" {
 			changed = true
 			continue
@@ -665,6 +717,7 @@ func (s *ApprovalStore) persistLocked() error {
 			ApprovalRequest: cloned,
 			ArgsSalt:        request.ArgsSalt,
 			ArgsDigest:      request.ArgsDigest,
+			PreviewDigest:   request.PreviewDigest,
 		})
 	}
 	raw, err := json.MarshalIndent(approvalStoreDisk{Requests: items}, "", "  ")

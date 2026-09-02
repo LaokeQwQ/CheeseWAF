@@ -1,12 +1,15 @@
 import * as React from 'react';
 import { Toaster as Sonner } from 'sonner';
+import { useAppStore } from '../../stores';
 
 type ToasterProps = React.ComponentProps<typeof Sonner>;
 
 function Toaster({ ...props }: ToasterProps) {
+  const appTheme = useAppStore((state) => state.theme);
+  // Sonner only supports light/dark/system; map app themes to a real scheme.
+  const theme = appTheme === 'dark' || appTheme === 'blackGold' ? 'dark' : 'light';
   return (
     <Sonner
-      theme="system"
       className="toaster group"
       toastOptions={{
         classNames: {
@@ -17,6 +20,7 @@ function Toaster({ ...props }: ToasterProps) {
         },
       }}
       {...props}
+      theme={theme}
     />
   );
 }

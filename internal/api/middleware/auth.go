@@ -35,13 +35,14 @@ type TokenManager struct {
 var readTokenManagerSecret = rand.Read
 
 type Claims struct {
-	Subject  string   `json:"sub"`
-	ID       string   `json:"jti,omitempty"`
-	Username string   `json:"username"`
-	Role     string   `json:"role"`
-	Scopes   []string `json:"scope"`
-	IssuedAt int64    `json:"iat"`
-	Expires  int64    `json:"exp"`
+	Subject   string   `json:"sub"`
+	ID        string   `json:"jti,omitempty"`
+	Username  string   `json:"username"`
+	Role      string   `json:"role"`
+	Scopes    []string `json:"scope"`
+	IssuedAt  int64    `json:"iat"`
+	NotBefore int64    `json:"nbf,omitempty"`
+	Expires   int64    `json:"exp"`
 }
 
 func NewTokenManager(secret string, ttl time.Duration) *TokenManager {
@@ -105,6 +106,17 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 	if !hmac.Equal([]byte(parts[2]), []byte(m.sign(unsigned))) {
 		return nil, fmt.Errorf("invalid token signature")
 	}
+	headerPayload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid token header")
+	}
+	var header struct {
+		Algorithm string `json:"alg"`
+		Type      string `json:"typ"`
+	}
+	if err := json.Unmarshal(headerPayload, &header); err != nil || header.Algorithm != "HS256" || (header.Type != "" && header.Type != "JWT") {
+		return nil, fmt.Errorf("invalid token header")
+	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, err
@@ -113,8 +125,18 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, err
 	}
-	if m.nowUTC().Unix() >= claims.Expires {
+	now := m.nowUTC().Unix()
+	if claims.Expires <= 0 || now >= claims.Expires {
 		return nil, fmt.Errorf("token expired")
+	}
+	if claims.IssuedAt <= 0 || claims.IssuedAt > now+30 {
+		return nil, fmt.Errorf("token issued at invalid time")
+	}
+	if claims.NotBefore > now+30 {
+		return nil, fmt.Errorf("token not active")
+	}
+	if claims.Expires <= claims.IssuedAt {
+		return nil, fmt.Errorf("token lifetime is invalid")
 	}
 	return &claims, nil
 }
@@ -142,6 +164,9 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// ManagementAPITokenAuthenticator may return an after-request callback for
+// throttled bookkeeping that must run outside authentication/configuration
+// locks. The middleware runs it even when the downstream handler panics.
 type ManagementAPITokenAuthenticator func(raw string, at time.Time) (*Claims, func(), bool)
 
 func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, authenticate ManagementAPITokenAuthenticator) func(http.Handler) http.Handler {
@@ -158,16 +183,13 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 					writeUnauthorized(w)
 					return
 				}
-				claims, release, ok := authenticate(raw, now())
+				claims, afterRequest, ok := authenticate(raw, now())
 				if !ok {
 					writeUnauthorized(w)
 					return
 				}
-				// Authentication cleanup must finish before business handlers run. In
-				// particular, an authenticator must never carry a configuration read
-				// lock into a handler that may need the corresponding write lock.
-				if release != nil {
-					release()
+				if afterRequest != nil {
+					defer afterRequest()
 				}
 				ctx := context.WithValue(r.Context(), UserContextKey, claims)
 				// Keep the authenticated context on the request pointer as well as

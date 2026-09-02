@@ -3,7 +3,9 @@ package engine
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"sync"
 )
 
 // Action represents the action to take when a detection matches.
@@ -50,18 +52,30 @@ type DetectionResult struct {
 // through the detection pipeline.
 // 承载当前 HTTP 请求在检测流水线中流转的所有信息。
 type RequestContext struct {
-	Request     *http.Request     // 原始 HTTP 请求 / Original HTTP request
-	ClientIP    string            // 客户端真实 IP / Real client IP
-	TraceID     string            // 溯源 ID / Trace ID for block pages
-	SiteID      string            // 站点 ID / Site identifier
-	DecodedURI  string            // 解码后的 URI / Decoded URI
-	DecodedBody []byte            // 解码后的请求体 / Decoded request body
-	Results     []DetectionResult // 检测结果集合 / Detection results
-	Metadata    map[string]any    // 扩展元数据 / Extension metadata
+	Request  *http.Request // 原始 HTTP 请求 / Original HTTP request
+	ClientIP string        // 客户端真实 IP / Real client IP
+	TraceID  string        // 溯源 ID / Trace ID for block pages
+	SiteID   string        // 站点 ID / Site identifier
+	// HostValidated is true only after the caller has matched Request.Host to
+	// an allowed site/tenant. Request-aware same-origin optimizations must not
+	// trust a raw, attacker-controlled Host value without this provenance.
+	HostValidated bool
+	DecodedURI    string            // 解码后的 URI / Decoded URI
+	DecodedBody   []byte            // 解码后的请求体 / Decoded request body
+	Results       []DetectionResult // 检测结果集合 / Detection results
+	Metadata      map[string]any    // 扩展元数据 / Extension metadata
 
 	// Lazy body fields (hot path): body is not read until EnsureBody.
-	maxBodyBytes int64
-	bodyLoaded   bool
+	// bodyMu also protects the immutable snapshots used when semantic detector
+	// forks are created. Detectors must treat DecodedBody as read-only.
+	bodyMu        sync.Mutex
+	maxBodyBytes  int64
+	bodyLoaded    bool
+	rawBody       []byte
+	bodyErr       error
+	bodyReadDone  chan struct{}
+	bodyReadBody  io.ReadCloser
+	bodyCloseOnce *sync.Once
 }
 
 // Detector is the core interface for all WAF detection modules.
