@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -521,8 +522,10 @@ func TestConfigVersionRedactsSecretsUsesOwnerOnlyPermissionsAndPrunesHistory(t *
 		if err != nil {
 			t.Fatalf("stat version: %v", err)
 		}
-		if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
-			t.Fatalf("version mode = %o, want %o", got, want)
+		if runtime.GOOS != "windows" {
+			if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+				t.Fatalf("version mode = %o, want %o", got, want)
+			}
 		}
 		contents, err := os.ReadFile(path)
 		if err != nil {

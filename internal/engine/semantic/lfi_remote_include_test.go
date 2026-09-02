@@ -15,6 +15,7 @@ func TestLFIRemoteIncludeContextRequiresSinkEvidenceForGenericFilename(t *testin
 		{name: "language URL is a fetch value", field: "lang", value: "https://cdn.example.test/locales/en.json", want: false},
 		{name: "locale URL is a fetch value", field: "locale", value: "https://cdn.example.test/locales/en.json", want: false},
 		{name: "URL field remains SSRF-only", field: "url", value: "https://attacker.example.test/loader.php", want: false},
+		{name: "referrer telemetry remains SSRF-only", field: "page.referrer", value: "https://metrics.example.test/dashboard", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -22,6 +23,16 @@ func TestLFIRemoteIncludeContextRequiresSinkEvidenceForGenericFilename(t *testin
 				t.Fatalf("lfiRemoteIncludeContext(%q, %q) = %v, want %v", tc.field, tc.value, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLFIRemoteIncludeMultipartXMLNamespaceStaysClean(t *testing.T) {
+	value := `<svg xmlns="http://www.w3.org/2000/svg"><circle cx="1" cy="1"/></svg>`
+	if got := lfiRemoteIncludeContextForSource("body.multipart", "file", value); got {
+		t.Fatal("SVG namespace URL was treated as a remote file include")
+	}
+	if got := lfiRemoteIncludeContextForSource("body.multipart", "file", `<svg xmlns="http://www.w3.org/2000/svg"><include href="https://attacker.example.test/shell.php"/></svg>`); !got {
+		t.Fatal("executable remote include inside XML was suppressed")
 	}
 }
 

@@ -23,6 +23,23 @@ if (preloadBytes > preloadBudget) {
 }
 
 const cssAssets = readdirSync(path.join(distDir, 'assets')).filter((file) => file.endsWith('.css'));
+const jsAssets = readdirSync(path.join(distDir, 'assets')).filter((file) => file.endsWith('.js'));
+const jsChunkLimit = 500 * 1024;
+const lazyDependencyLimit = 1024 * 1024;
+const unexpectedOversizedChunks = jsAssets.filter((file) => {
+  const bytes = statSync(path.join(distDir, 'assets', file)).size;
+  return bytes > jsChunkLimit && !/^vendor-maplibre-/.test(file);
+});
+if (unexpectedOversizedChunks.length > 0) {
+  throw new Error(`Unexpected JavaScript chunks exceed the 500 KiB budget: ${unexpectedOversizedChunks.join(', ')}`);
+}
+const oversizedMapLibreChunks = jsAssets.filter((file) => {
+  const bytes = statSync(path.join(distDir, 'assets', file)).size;
+  return /^vendor-maplibre-/.test(file) && bytes > lazyDependencyLimit;
+});
+if (oversizedMapLibreChunks.length > 0) {
+  throw new Error(`The lazy MapLibre chunk exceeds the 1 MiB dependency budget: ${oversizedMapLibreChunks.join(', ')}`);
+}
 const themeAssets = cssAssets.filter((file) => /^(light|dark|black-gold|blue-white|pink-white|miku-green)-/.test(file));
 const normalizeAssetPath = (value) => value.replace(/\\/g, '/').replace(/^\//, '');
 const htmlCSSPaths = [...html.matchAll(/<link\s+rel="stylesheet"[^>]+href="([^"]+)"/g)].map((match) =>

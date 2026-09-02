@@ -385,20 +385,34 @@ func TestPipelineLatency(t *testing.T) {
 	req := httptest.NewRequest("GET", "/search?q=1'+or+1=1--", nil)
 	ctx := context.Background()
 
-	samples := 10000
+	// Measure short batches rather than individual calls. A single detector call
+	// is only tens of microseconds without -race, so scheduler preemption and
+	// timer quantization otherwise dominate the sample and make the gate track
+	// host noise instead of sustained request-path work.
+	samples := 1000
+	const batchSize = 10
 	var totalNs int64
 	maxNs := int64(0)
 	elapsedNs := make([]int64, 0, samples)
 
-	for i := 0; i < samples; i++ {
+	// Warm the immutable detector state and regex/cache paths before sampling.
+	for i := 0; i < batchSize; i++ {
 		reqCtx, _ := engine.NewRequestContext(req, "default")
-		start := time.Now()
 		_, _ = pipeline.Detect(ctx, reqCtx)
-		elapsed := time.Since(start).Nanoseconds()
-		totalNs += elapsed
-		elapsedNs = append(elapsedNs, elapsed)
-		if elapsed > maxNs {
-			maxNs = elapsed
+	}
+
+	for i := 0; i < samples; i++ {
+		start := time.Now()
+		for j := 0; j < batchSize; j++ {
+			reqCtx, _ := engine.NewRequestContext(req, "default")
+			_, _ = pipeline.Detect(ctx, reqCtx)
+		}
+		batchElapsed := time.Since(start).Nanoseconds()
+		perCall := batchElapsed / batchSize
+		totalNs += perCall
+		elapsedNs = append(elapsedNs, perCall)
+		if perCall > maxNs {
+			maxNs = perCall
 		}
 	}
 
@@ -414,7 +428,7 @@ func TestPipelineLatency(t *testing.T) {
 		t.Logf("race detector enabled: budgets scaled to avg=%.0fµs p99=%.0fµs (base %dµs/%dµs)",
 			avgBudget, p99Budget, pipelineLatencyAvgBudgetUs, pipelineLatencyP99BudgetUs)
 	}
-	t.Logf("Pipeline latency: avg=%.1fµs, p99=%.1fµs, max=%.1fµs over %d samples", avgUs, p99Us, maxUs, samples)
+	t.Logf("Pipeline latency: avg=%.1fµs, p99=%.1fµs, max=%.1fµs over %d batches (%d calls)", avgUs, p99Us, maxUs, samples, samples*batchSize)
 
 	// These used to be t.Logf warnings, so the test could never fail and a 10x
 	// slowdown shipped unnoticed. Budgets sit ~3x above the measured baseline

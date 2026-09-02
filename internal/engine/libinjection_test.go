@@ -67,3 +67,21 @@ func TestSQLLibinjectionKeepsBroadKeywordWordPairBenign(t *testing.T) {
 		t.Fatalf("broad keyword-word pair must remain benign; fingerprint=%q", fp)
 	}
 }
+
+func TestSQLTokenizerDoesNotTreatMIMEWildcardAsComment(t *testing.T) {
+	for _, input := range []string{
+		"Accept: */*;q=0.8",
+		"text/html, application/xhtml+xml;q=0.9, */*;q=0.8",
+		`{"accept":"*/*","q":0.8}`,
+	} {
+		fp := fingerprint(tokenizeSQL(input))
+		if strings.ContainsRune(fp, tkSQLComment) {
+			t.Fatalf("MIME wildcard was tokenized as SQL comment: input=%q fingerprint=%q", input, fp)
+		}
+	}
+	for _, input := range []string{"1*/*comment*/2", "1*/* comment */2"} {
+		if fp, detected := SQLLibinjectionFingerprint(input); !detected || !strings.ContainsRune(fp, tkSQLComment) {
+			t.Fatalf("real SQL block comment after multiplication was suppressed: input=%q fingerprint=%q detected=%v", input, fp, detected)
+		}
+	}
+}

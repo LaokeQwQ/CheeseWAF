@@ -19,6 +19,75 @@ def nums_add(a, b):
     return out
 
 
+def source_scope(src):
+    scope = src.get("scope", "request")
+    if scope not in ("request", "payload-only"):
+        raise ValueError(f"invalid source scope {scope!r}")
+    return scope
+
+
+def validate_source_metrics(src):
+    """Validate source counters before they participate in any aggregate."""
+    counter_names = ("benign_total", "benign_fp", "attack_total", "attack_hit")
+    for name in counter_names:
+        if name not in src:
+            continue
+        value = src[name]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"sources counter {name!r} must be a non-negative integer")
+    benign_total = src.get("benign_total", 0)
+    benign_fp = src.get("benign_fp", 0)
+    attack_total = src.get("attack_total", 0)
+    attack_hit = src.get("attack_hit", 0)
+    if benign_fp > benign_total:
+        raise ValueError("sources counter 'benign_fp' exceeds 'benign_total'")
+    if attack_hit > attack_total:
+        raise ValueError("sources counter 'attack_hit' exceeds 'attack_total'")
+    for name, value in src.items():
+        if name in ("scope", "metrics") or name in counter_names:
+            continue
+        if isinstance(value, (int, float)):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"sources counter {name!r} must be a non-negative integer")
+
+
+def request_scope_totals(sources):
+    """Return request-scope denominators used to bound primary diagnostics."""
+    totals = {"benign_total": 0, "benign_fp": 0, "attack_total": 0, "attack_hit": 0}
+    for src in sources.values():
+        if src.get("scope", "request") != "request":
+            continue
+        for key in totals:
+            value = src.get(key, 0)
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] += value
+    return totals
+
+
+def validate_primary_diagnostics(data):
+    """Reject non-integer/negative/oversized primary diagnostic counts."""
+    limits = request_scope_totals(data.get("sources", {}))
+    fields = {
+        "by_category": ("attack_total", "attack_hit"),
+        "by_paranoia_level": ("benign_total", "benign_fp", "attack_total", "attack_hit"),
+    }
+    for section, names in fields.items():
+        for label, metrics in data.get(section, {}).items():
+            for name in names:
+                if name not in metrics:
+                    continue
+                value = metrics[name]
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError(f"{section}[{label!r}].{name} must be an integer count")
+                if value < 0:
+                    raise ValueError(f"{section}[{label!r}].{name} must not be negative")
+                bound_name = {"benign_fp": "benign_total", "attack_hit": "attack_total"}.get(name, name)
+                if value > limits[bound_name]:
+                    raise ValueError(
+                        f"{section}[{label!r}].{name} exceeds request-scope total {limits[bound_name]}"
+                    )
+
+
 def failed_case_key(case):
     """Return a stable identity for one diagnostic failed-case entry."""
     try:
@@ -60,6 +129,15 @@ def add_confidence(metrics, benign_fp, benign_total, attack_hit, attack_total):
         metrics["tpr_lower_99_percent"] = round(tpr[0] * 100.0, 6)
 
 
+def f1_percent(attack_hit, benign_fp, attack_total):
+    """Return F1 as a percentage, or zero when precision/recall is undefined."""
+    precision = attack_hit / (attack_hit + benign_fp) if attack_hit + benign_fp else 0.0
+    recall = attack_hit / attack_total if attack_total else 0.0
+    if not precision + recall:
+        return 0.0
+    return round(2 * precision * recall / (precision + recall) * 100.0, 6)
+
+
 def main() -> int:
     files = sorted(Path(p) for p in sys.argv[1:])
     if not files:
@@ -71,7 +149,10 @@ def main() -> int:
         "sources": {},
         "by_category": {},
         "overall": {},
+        "all_sources": {},
         "by_paranoia_level": {},
+        "by_paranoia_level_all_sources": {},
+        "by_category_all_sources": {},
         "failed_cases": [],
     }
     source_totals = {}
@@ -84,16 +165,40 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"failed to read {path}: {exc}", file=sys.stderr)
             return 1
+        try:
+            validate_primary_diagnostics(data)
+            for source_name, src in data.get("sources", {}).items():
+                if not isinstance(src, dict):
+                    raise ValueError(f"sources[{source_name!r}] must be an object")
+                validate_source_metrics(src)
+        except ValueError as exc:
+            print(f"{path}: {exc}", file=sys.stderr)
+            return 1
         merged["timestamp"] = data.get("timestamp") or merged["timestamp"]
         for name, src in data.get("sources", {}).items():
-            source_totals.setdefault(name, {})
-            source_totals[name] = nums_add(source_totals[name], {k: v for k, v in src.items() if isinstance(v, (int, float))})
+            try:
+                scope = source_scope(src)
+            except ValueError as exc:
+                print(f"{path}: {exc}", file=sys.stderr)
+                return 1
+            current = source_totals.setdefault(name, {"scope": scope})
+            if current.get("scope", "request") != scope:
+                print(f"conflicting scope metadata for source {name!r}", file=sys.stderr)
+                return 1
+            current["scope"] = scope
+            source_totals[name] = nums_add(current, {k: v for k, v in src.items() if isinstance(v, int) and not isinstance(v, bool)})
         for name, cat in data.get("by_category", {}).items():
             category_totals.setdefault(name, {})
             category_totals[name] = nums_add(category_totals[name], cat)
+        for name, cat in data.get("by_category_all_sources", {}).items():
+            all_cat = merged["by_category_all_sources"].setdefault(name, {})
+            merged["by_category_all_sources"][name] = nums_add(all_cat, cat)
         for level, pm in data.get("by_paranoia_level", {}).items():
             paranoia_totals.setdefault(level, {})
             paranoia_totals[level] = nums_add(paranoia_totals[level], pm)
+        for level, pm in data.get("by_paranoia_level_all_sources", {}).items():
+            all_pm = merged["by_paranoia_level_all_sources"].setdefault(level, {})
+            merged["by_paranoia_level_all_sources"][level] = nums_add(all_pm, pm)
         for failed_case in data.get("failed_cases", []):
             key = failed_case_key(failed_case)
             if key in failed_case_keys:
@@ -111,7 +216,7 @@ def main() -> int:
             "fpr_percent": round(fp * 100 / b, 6) if b else 0.0,
             "tpr_percent": round(hit * 100 / a, 6) if a else 0.0,
             "precision_percent": round(hit * 100 / (hit + fp), 6) if hit + fp else 0.0,
-            "f1_score": round(2 * ((hit / (hit + fp)) * (hit / a)) / ((hit / (hit + fp)) + (hit / a)), 6) if a and hit + fp else 0.0,
+            "f1_score": f1_percent(hit, fp, a),
         }
         add_confidence(src["metrics"], fp, b, hit, a)
         merged["sources"][name] = src
@@ -120,17 +225,33 @@ def main() -> int:
         hit = cat.get("attack_hit", 0)
         cat["tpr_percent"] = round(hit * 100 / a, 6) if a else 0.0
         merged["by_category"][name] = cat
+    for name, cat in merged["by_category_all_sources"].items():
+        a = cat.get("attack_total", 0)
+        hit = cat.get("attack_hit", 0)
+        cat["tpr_percent"] = round(hit * 100 / a, 6) if a else 0.0
 
-    total_b = sum(s.get("benign_total", 0) for s in source_totals.values())
-    total_fp = sum(s.get("benign_fp", 0) for s in source_totals.values())
-    total_a = sum(s.get("attack_total", 0) for s in source_totals.values())
-    total_hit = sum(s.get("attack_hit", 0) for s in source_totals.values())
+    request_sources = [s for s in source_totals.values() if s.get("scope", "request") == "request"]
+    total_b = sum(s.get("benign_total", 0) for s in request_sources)
+    total_fp = sum(s.get("benign_fp", 0) for s in request_sources)
+    total_a = sum(s.get("attack_total", 0) for s in request_sources)
+    total_hit = sum(s.get("attack_hit", 0) for s in request_sources)
     fpr = round(total_fp * 100 / total_b, 6) if total_b else 0.0
     tpr = round(total_hit * 100 / total_a, 6) if total_a else 0.0
     precision = round(total_hit * 100 / (total_hit + total_fp), 6) if total_hit + total_fp else 0.0
-    f1 = round(2 * (precision * tpr) / (precision + tpr), 6) if precision + tpr else 0.0
-    merged["overall"] = {"fpr_percent": fpr, "tpr_percent": tpr, "precision_percent": precision, "f1_score": f1}
+    f1 = f1_percent(total_hit, total_fp, total_a)
+    merged["overall"] = {"benign_total": total_b, "benign_fp": total_fp, "attack_total": total_a, "attack_hit": total_hit, "fpr_percent": fpr, "tpr_percent": tpr, "precision_percent": precision, "f1_score": f1}
     add_confidence(merged["overall"], total_fp, total_b, total_hit, total_a)
+
+    all_b = sum(s.get("benign_total", 0) for s in source_totals.values())
+    all_fp = sum(s.get("benign_fp", 0) for s in source_totals.values())
+    all_a = sum(s.get("attack_total", 0) for s in source_totals.values())
+    all_hit = sum(s.get("attack_hit", 0) for s in source_totals.values())
+    all_fpr = round(all_fp * 100 / all_b, 6) if all_b else 0.0
+    all_tpr = round(all_hit * 100 / all_a, 6) if all_a else 0.0
+    all_precision = round(all_hit * 100 / (all_hit + all_fp), 6) if all_hit + all_fp else 0.0
+    all_f1 = f1_percent(all_hit, all_fp, all_a)
+    merged["all_sources"] = {"benign_total": all_b, "benign_fp": all_fp, "attack_total": all_a, "attack_hit": all_hit, "fpr_percent": all_fpr, "tpr_percent": all_tpr, "precision_percent": all_precision, "f1_score": all_f1}
+    add_confidence(merged["all_sources"], all_fp, all_b, all_hit, all_a)
 
     for level, pm in sorted(paranoia_totals.items(), key=lambda item: int(item[0])):
         b = pm.get("benign_total", 0)
@@ -141,6 +262,15 @@ def main() -> int:
         pm["tpr"] = round(hit * 100 / a, 6) if a else 0.0
         add_confidence(pm, fp, b, hit, a)
         merged["by_paranoia_level"][level] = pm
+
+    for level, pm in sorted(merged["by_paranoia_level_all_sources"].items(), key=lambda item: int(item[0])):
+        b = pm.get("benign_total", 0)
+        fp = pm.get("benign_fp", 0)
+        a = pm.get("attack_total", 0)
+        hit = pm.get("attack_hit", 0)
+        pm["fpr"] = round(fp * 100 / b, 6) if b else 0.0
+        pm["tpr"] = round(hit * 100 / a, 6) if a else 0.0
+        add_confidence(pm, fp, b, hit, a)
 
     print(json.dumps(merged, indent=2, ensure_ascii=False))
     return 0

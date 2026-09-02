@@ -50,6 +50,7 @@ func TestXPathInjectionDetected(t *testing.T) {
 		{"json-substring", "/api/v1/search", "application/json", `{"q":"' and substring(//authors/author[1]/concat(password,substring(//authors/author[1]/password,3,1)),4,1)='e'"}`},
 		{"query-substring", "/search?q=" + url.QueryEscape(`' and substring(//accounts/account[1]/phone,4,1)='7`), "", ""},
 		{"query-count", "/search?q=" + url.QueryEscape(`x' or count(//*) > 0 or ''='`), "", ""},
+		{"query-relative-path", "/xml_api/search_books?author_id=" + url.QueryEscape(`101' or string-length(user/password[1]) > 5 or 'a'='a`), "", ""},
 	}
 	a := NewAnalyzer("block", 2)
 	for _, tc := range cases {
@@ -117,6 +118,18 @@ func TestXPathInjectionShapeRequiresBothHalves(t *testing.T) {
 	}
 	if _, ok := xpathInjectionShape("' and substring(//users/user[1]/password,1,1)='a"); !ok {
 		t.Error("path plus function must be an injection shape")
+	}
+	if _, ok := xpathInjectionShape("101' or string-length(user/password[1]) > 5 or 'a'='a"); !ok {
+		t.Error("relative path plus quote breakout and comparison must be an injection shape")
+	}
+	for _, in := range []string{
+		"string-length(user/password[1]) is documented here",
+		"The user/password path is used by the parser.",
+		"https://example.com/string-length(user/password)",
+	} {
+		if step, ok := xpathInjectionShape(in); ok {
+			t.Errorf("relative XPath shape %q was too broad: %q", in, step)
+		}
 	}
 }
 

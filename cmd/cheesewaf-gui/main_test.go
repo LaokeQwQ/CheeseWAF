@@ -1,13 +1,29 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
+
+var (
+	guiBinaryOnce sync.Once
+	guiBinaryPath string
+	guiBinaryErr  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if guiBinaryPath != "" {
+		_ = os.RemoveAll(filepath.Dir(guiBinaryPath))
+	}
+	os.Exit(code)
+}
 
 func TestGUIRejectsNonLoopbackListen(t *testing.T) {
 	code := run([]string{
@@ -60,16 +76,25 @@ func TestGUIBinaryHelp(t *testing.T) {
 
 func buildGUIBinary(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "cheesewaf-gui")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+	guiBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "cheesewaf-gui-test-")
+		if err != nil {
+			guiBinaryErr = err
+			return
+		}
+		guiBinaryPath = filepath.Join(dir, "cheesewaf-gui")
+		if runtime.GOOS == "windows" {
+			guiBinaryPath += ".exe"
+		}
+		cmd := exec.Command("go", "build", "-o", guiBinaryPath, ".")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			guiBinaryErr = fmt.Errorf("go build gui: %w\n%s", err, out)
+		}
+	})
+	if guiBinaryErr != nil {
+		t.Fatal(guiBinaryErr)
 	}
-	cmd := exec.Command("go", "build", "-o", bin, ".")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go build gui: %v\n%s", err, out)
-	}
-	return bin
+	return guiBinaryPath
 }

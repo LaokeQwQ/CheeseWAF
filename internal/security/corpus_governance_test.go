@@ -642,6 +642,39 @@ func TestGovernanceRejectsSymlinkOutputOverlap(t *testing.T) {
 	}
 }
 
+func TestGovernanceRejectsSymlinkSource(t *testing.T) {
+	target := writeSource(t, benignLine)
+	alias := filepath.Join(t.TempDir(), "source-link.jsonl")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := RunGovernance(context.Background(), withGovernanceOutputs(t, GovernanceConfig{
+		Sources: []SourceSpec{allowedSource(alias)},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlinked corpus source unexpectedly accepted: %v", err)
+	}
+}
+
+func TestGovernanceRejectsSymlinkReviewFile(t *testing.T) {
+	source := writeSource(t, benignLine)
+	reviewTarget := filepath.Join(t.TempDir(), "reviews.jsonl")
+	if err := os.WriteFile(reviewTarget, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewAlias := filepath.Join(t.TempDir(), "reviews-link.jsonl")
+	if err := os.Symlink(reviewTarget, reviewAlias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := RunGovernance(context.Background(), withGovernanceOutputs(t, GovernanceConfig{
+		Sources:    []SourceSpec{allowedSource(source)},
+		ReviewPath: reviewAlias,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlinked review file unexpectedly accepted: %v", err)
+	}
+}
+
 // TestGovernanceDeduplicatesAcrossSources checks that identical rows from two
 // sources collapse to one, and that the duplicate is counted.
 func TestGovernanceDeduplicatesAcrossSources(t *testing.T) {
@@ -1041,6 +1074,18 @@ func TestGovernanceRejectsUnverifiedOrRestrictedProvenance(t *testing.T) {
 		if rep.Manifest.Formal != 0 || rep.Manifest.ByReason["source_access_gate"] != 1 {
 			t.Fatalf("unverified/restricted source entered formal: %+v", rep.Manifest)
 		}
+	}
+}
+
+func TestGovernanceAcceptsExplicitLocalGeneratedProvenance(t *testing.T) {
+	p := writeSource(t, benignLine)
+	src := SourceSpec{
+		Path: p, Name: "authorized-lab", License: "project-license",
+		Access: "local-generated", AllowFormal: true,
+	}
+	rep, _ := governTmp(t, GovernanceConfig{Sources: []SourceSpec{src}})
+	if rep.Manifest.Formal != 1 || rep.Manifest.Quarantine != 0 {
+		t.Fatalf("local-generated source was not admitted: %+v", rep.Manifest)
 	}
 }
 

@@ -122,6 +122,49 @@ func TestReviewDecisionClaimIsExclusiveAndReleasable(t *testing.T) {
 	}
 }
 
+func TestReviewDecisionClaimRejectsCompletedDuplicateButAllowsUpgrade(t *testing.T) {
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	item := &ReviewItem{SiteID: "site-a", URI: "/search", Payload: "eval", Status: "pending"}
+	if err := store.CreateReviewItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.ClaimReviewItem(ctx, item.ID, "block_payload")
+	if err != nil || claim == nil {
+		t.Fatalf("initial block claim failed: claim=%+v err=%v", claim, err)
+	}
+	completed, err := store.CompleteReviewItem(ctx, item.ID, claim.Token, ReviewDecision{
+		Decision:      "block_payload",
+		AppliedRuleID: "review-rule-1",
+	})
+	if err != nil || completed == nil || completed.Status != "blocked" {
+		t.Fatalf("complete block decision failed: item=%+v err=%v", completed, err)
+	}
+	duplicate, err := store.ClaimReviewItem(ctx, item.ID, "block_payload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate != nil {
+		t.Fatalf("completed block decision was claimable again: %+v", duplicate)
+	}
+
+	upgrade, err := store.ClaimReviewItem(ctx, item.ID, "block_fingerprint")
+	if err != nil || upgrade == nil {
+		t.Fatalf("blocked item should allow a different lasting intercept: claim=%+v err=%v", upgrade, err)
+	}
+	if err := store.ReleaseReviewItem(ctx, item.ID, upgrade.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReviewListUsesSearchAndStableKeysetBoundaries(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))
 	if err != nil {
@@ -266,6 +309,10 @@ func TestReviewItemBlockedAcceptsLastingDecision(t *testing.T) {
 	got, err := store.DecideReviewItem(ctx, item.ID, ReviewDecision{Decision: "block_fingerprint", AppliedRuleID: "fingerprint:aabb"})
 	if err != nil || got == nil || got.Decision != "block_fingerprint" || got.Status != "blocked" {
 		t.Fatalf("blocked item must accept lasting intercept: %+v err=%v", got, err)
+	}
+	duplicate, err := store.DecideReviewItem(ctx, item.ID, ReviewDecision{Decision: "block_fingerprint", AppliedRuleID: "fingerprint:duplicate"})
+	if err != nil || duplicate != nil {
+		t.Fatalf("completed lasting decision must not be applied again: %+v err=%v", duplicate, err)
 	}
 	denied, err := store.DecideReviewItem(ctx, item.ID, ReviewDecision{Decision: "allow"})
 	if err != nil || denied != nil {

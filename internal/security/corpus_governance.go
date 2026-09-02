@@ -248,7 +248,7 @@ func RunGovernance(ctx context.Context, cfg GovernanceConfig) (GovernanceReport,
 			return out, fmt.Errorf("corpus source must be a local file: %s", src.Path)
 		}
 		name := src.Name
-		f, err := os.Open(src.Path)
+		f, err := openGovernanceRegularFile(src.Path, "corpus source")
 		if err != nil {
 			if src.Optional && errors.Is(err, os.ErrNotExist) {
 				out.Manifest.MissingOptional = append(out.Manifest.MissingOptional, src.Path)
@@ -1028,18 +1028,11 @@ func validateGovernanceLimits(l GovernanceLimits) error {
 }
 
 func hashRegularFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := openGovernanceRegularFile(path, "regular file")
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file", path)
-	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
@@ -1156,7 +1149,7 @@ func sourceProvenanceOK(src SourceSpec) bool {
 	}
 	access := strings.ToLower(strings.TrimSpace(src.Access))
 	switch access {
-	case "local-file", "public-direct", "public-direct-download", "public-repository":
+	case "local-file", "local-generated", "public-direct", "public-direct-download", "public-repository":
 		return true
 	default:
 		return false
@@ -1268,7 +1261,7 @@ func requiresReview(r governanceRecord) bool {
 }
 
 func loadReviews(path string) ([]ReviewEntry, error) {
-	f, err := os.Open(path)
+	f, err := openGovernanceRegularFile(path, "review file")
 	if err != nil {
 		return nil, err
 	}
@@ -1299,6 +1292,44 @@ func loadReviews(path string) ([]ReviewEntry, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// openGovernanceRegularFile keeps corpus and review inputs inside the
+// explicitly declared file identity. Following a final-component symlink
+// would allow a caller to swap in an unrelated file while retaining the
+// original path, which makes a manifest's provenance ambiguous. The initial
+// Lstat/Open/SameFile check closes the common race before any bytes are
+// parsed or hashed; the open descriptor then remains stable for the read.
+func openGovernanceRegularFile(path, label string) (*os.File, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("%s path is required", label)
+	}
+	lstat, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("lstat %s: %w", label, err)
+	}
+	if !lstat.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat %s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	if !os.SameFile(lstat, info) {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s changed while opening: %s", label, path)
+	}
+	return f, nil
 }
 
 func screen(c Case, src SourceSpec) ([]string, bool) {

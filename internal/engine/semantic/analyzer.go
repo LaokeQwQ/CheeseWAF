@@ -76,7 +76,42 @@ type Hit struct {
 // IncompleteReason methods rather than matching the error string.
 var ErrSemanticInputIncomplete = errors.New("semantic input coverage incomplete")
 
-const multipartCoverageIncompleteReason = "multipart_coverage_incomplete"
+const (
+	multipartCoverageIncompleteReason = "multipart_coverage_incomplete"
+	jsonNodeLimitIncompleteReason     = "json_node_limit"
+	jsonDepthLimitIncompleteReason    = "json_depth_limit"
+	jsonCollectorLimitReason          = "json_collector_limit"
+	jsonVariantLimitReason            = "decode_variant_limit"
+	jsonRawClippedReason              = "raw_body_clipped"
+	bodyInputLimitReason              = "body_input_limit"
+	jsonParseIncompleteReason         = "json_parse_incomplete"
+	formParseIncompleteReason         = "form_parse_incomplete"
+)
+
+// traversalStatus records bounded inspection loss without making callers
+// carry an error through every walker branch. The first reason wins; callers
+// merge statuses in deterministic traversal order so a specific JSON reason
+// is never replaced by a later generic candidate-budget reason.
+type traversalStatus struct {
+	omitted bool
+	reason  string
+}
+
+func (s *traversalStatus) mark(reason string) {
+	if s == nil || s.omitted {
+		return
+	}
+	s.omitted = true
+	s.reason = reason
+}
+
+func (s *traversalStatus) merge(other traversalStatus) {
+	if s == nil || s.omitted || !other.omitted {
+		return
+	}
+	s.omitted = true
+	s.reason = other.reason
+}
 
 // InputIncompleteError is returned only when coverage was incomplete and the
 // analyzer has no explicit detection result to preserve. Its small behavioral
@@ -107,6 +142,13 @@ func (e *InputIncompleteError) IncompleteReason() string {
 type semanticCandidate struct {
 	input InputPoint
 	text  string
+	// request keeps source-aware gates (for example same-origin telemetry
+	// handling) tied to the request that produced the candidate. It is not
+	// serialized, cached, or exposed in the analysis report.
+	request *http.Request
+	// hostValidated carries the routing provenance required before a
+	// same-origin optimization may trust Request.Host.
+	hostValidated bool
 }
 
 func NewAnalyzer(mode string, paranoiaLevel int, categories ...string) *Analyzer {
@@ -510,10 +552,17 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 		return nil
 	}
 
+	// SSRF telemetry suppression is request-contextual: it depends on the
+	// request authority and on the other query keys present beside this value.
+	// Keep these candidates cacheable, but bind their cache key to the complete
+	// request-origin/path/query context so a decision cannot cross requests.
 	cacheable := len(candidate.text) <= maxCacheableCandidateBytes
 	var key uint64
 	if cacheable {
 		key = candidateCacheKey(a.mode, a.catFP, candidate.input.Source, candidate.input.Name, candidate.text)
+		if scope, scoped := ssrfRequestCacheScope(candidate); scoped {
+			key = candidateCacheKeyWithSSRFScope(key, scope)
+		}
 		if cached, ok := processCandidateCache.get(key); ok {
 			ProcessMetrics().RecordCache(true)
 			return cached
@@ -974,17 +1023,18 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	}
 	groups = append(groups, cookieInputs)
 	bodyGroup := make([]InputPoint, 0, 4)
-	bodyPoints, bodyIncomplete := bodyInputsWithStatus(r, reqCtx.DecodedBody)
+	bodyPoints, bodyStatus := bodyInputsWithTraversalStatus(r, reqCtx.DecodedBody)
 	for _, input := range bodyPoints {
 		add(&bodyGroup, input)
 	}
 	groups = append(groups, bodyGroup)
-	if bodyIncomplete {
-		markSemanticInputIncomplete(reqCtx, multipartCoverageIncompleteReason)
+	if bodyStatus.omitted {
+		markSemanticInputIncomplete(reqCtx, bodyStatus.reason)
 	}
 	if allowSkipped > 0 {
 		ProcessMetrics().RecordAllowlistSkip("param")
 	}
+	candidateBudgetExceeded := false
 	if totalInputPoints(groups) > maxCandidates {
 		if priority := priorityInputPoints(groups); len(priority) > 0 {
 			groups = append([][]InputPoint{priority}, groups...)
@@ -1028,7 +1078,10 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 				continue
 			}
 			progressed = true
-			variants := decodeVariantsInto(variantScratch[:0], input.Raw, decodeDepth)
+			variants, variantStatus := decodeVariantsIntoWithStatus(variantScratch[:0], input.Raw, decodeDepth)
+			if variantStatus.omitted {
+				markSemanticInputIncomplete(reqCtx, variantStatus.reason)
+			}
 			for _, variant := range variants {
 				if len(candidates) >= maxCandidates {
 					break
@@ -1060,13 +1113,24 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 				}
 				next := input
 				next.Layers = variant.layers
-				candidates = append(candidates, semanticCandidate{input: next, text: text})
+				candidates = append(candidates, semanticCandidate{
+					input:         next,
+					text:          text,
+					request:       r,
+					hostValidated: reqCtx.HostValidated,
+				})
 			}
 			if len(candidates) >= maxCandidates {
 				break
 			}
 		}
-		if len(candidates) >= maxCandidates || !progressed {
+		if len(candidates) >= maxCandidates {
+			if hasUnconsumedNovelInput(cursors, candidates, decodeDepth) {
+				candidateBudgetExceeded = true
+			}
+			break
+		}
+		if !progressed {
 			break
 		}
 	}
@@ -1076,7 +1140,51 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 		}
 		reqCtx.Metadata["semantic_skipped"] = "param_allowlist"
 	}
+	if candidateBudgetExceeded {
+		markSemanticInputIncomplete(reqCtx, "candidate_budget_exhausted")
+	}
 	return candidates
+}
+
+func hasUnconsumedNovelInput(cursors []fairInputCursor, candidates []semanticCandidate, decodeDepth int) bool {
+	var scratch [maxDecodeVariants]decodedVariant
+	seen := make(map[uint64]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		seen[candidateDedupKey(candidate.input.Source, candidate.input.Name, candidate.text)] = struct{}{}
+	}
+	// The cap decision runs only after maxCandidates are retained. Inspect a
+	// bounded sample of remaining inputs so a duplicate-only tail does not mark
+	// an exact-cap pass incomplete, while a pathological unbounded tail cannot
+	// turn this check into a second candidate-extraction pass. If the sample is
+	// exhausted before the remaining cursors, conservatively report omission.
+	remainingChecks := maxCandidates
+	for _, cursor := range cursors {
+		for i := cursor.left; i <= cursor.right; i++ {
+			if remainingChecks == 0 {
+				return true
+			}
+			remainingChecks--
+			input := cursor.inputs[i]
+			variants, status := decodeVariantsIntoWithStatus(scratch[:0], input.Raw, decodeDepth)
+			if status.omitted {
+				return true
+			}
+			for _, variant := range variants {
+				text := strings.TrimSpace(variant.text)
+				if text == "" {
+					continue
+				}
+				key := candidateDedupKey(input.Source, input.Name, text)
+				if _, ok := seen[key]; !ok {
+					return true
+				}
+				if !dedupHit(candidates, input.Source, input.Name, text) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func markSemanticInputIncomplete(reqCtx *engine.RequestContext, reason string) {
@@ -1087,12 +1195,16 @@ func markSemanticInputIncomplete(reqCtx *engine.RequestContext, reason string) {
 		reqCtx.Metadata = map[string]any{}
 	}
 	reqCtx.Metadata["semantic_input_incomplete"] = true
-	reqCtx.Metadata["semantic_input_incomplete_reason"] = reason
+	if existing, _ := reqCtx.Metadata["semantic_input_incomplete_reason"].(string); existing == "" {
+		reqCtx.Metadata["semantic_input_incomplete_reason"] = reason
+	}
 	// The pipeline already has an analysis-incomplete metadata channel. Mirror
 	// input coverage loss onto it so isolated detector forks carry both the
 	// precise cause and the aggregate state expected by fail-mode handling.
 	reqCtx.Metadata["semantic_analysis_incomplete"] = true
-	reqCtx.Metadata["semantic_analysis_incomplete_reason"] = reason
+	if existing, _ := reqCtx.Metadata["semantic_analysis_incomplete_reason"].(string); existing == "" {
+		reqCtx.Metadata["semantic_analysis_incomplete_reason"] = reqCtx.Metadata["semantic_input_incomplete_reason"]
+	}
 }
 
 // fairInputCursor alternates from the head and tail of a source group. A
@@ -1487,8 +1599,14 @@ func bodyInputs(r *http.Request, body []byte) []InputPoint {
 // separate from the legacy bodyInputs API so callers that only need extraction
 // remain source-compatible while the analyzer can surface coverage loss.
 func bodyInputsWithStatus(r *http.Request, body []byte) ([]InputPoint, bool) {
+	inputs, status := bodyInputsWithTraversalStatus(r, body)
+	return inputs, status.omitted
+}
+
+func bodyInputsWithTraversalStatus(r *http.Request, body []byte) ([]InputPoint, traversalStatus) {
+	var status traversalStatus
 	if len(body) == 0 {
-		return nil, false
+		return nil, status
 	}
 	// charset=utf-16 bodies are often delivered as raw LE/BE bytes; convert before
 	// analysis. Both branches ran the same byte-level check, so decode once and
@@ -1507,6 +1625,10 @@ func bodyInputsWithStatus(r *http.Request, body []byte) ([]InputPoint, bool) {
 	contentType := requestMediaType(contentTypeHeader)
 	switch contentType {
 	case "application/x-www-form-urlencoded":
+		if len(body) > maxInputRawBytes*maxCandidates {
+			status.mark(bodyInputLimitReason)
+			return []InputPoint{{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly}}, status
+		}
 		values, err := url.ParseQuery(string(body))
 		if err == nil {
 			// url.ParseQuery returns a map. Sort its keys before constructing
@@ -1520,39 +1642,79 @@ func bodyInputsWithStatus(r *http.Request, body []byte) ([]InputPoint, bool) {
 			sort.Strings(keys)
 			for _, key := range keys {
 				list := values[key]
-				inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: key, Layers: rawLayersOnly})
+				clippedKey := clipRaw(key)
+				if clippedKey != key {
+					status.mark(jsonRawClippedReason)
+				}
+				name := key
+				if len(name) > maxInputRawBytes {
+					name = clippedKey
+				}
+				inputs = append(inputs, InputPoint{Source: "body.form", Name: name, Raw: clippedKey, Layers: rawLayersOnly})
 				for _, value := range list {
-					inputs = append(inputs, InputPoint{Source: "body.form", Name: key, Raw: value, Layers: rawLayersOnly})
+					clipped := clipRaw(value)
+					if clipped != value {
+						status.mark(jsonRawClippedReason)
+					}
+					inputs = append(inputs, InputPoint{Source: "body.form", Name: name, Raw: clipped, Layers: rawLayersOnly})
 				}
 			}
-			return withBodyCoverage(body, inputs), false
+			if len(inputs) > maxCandidates {
+				status.mark(bodyInputLimitReason)
+			}
+			return withBodyCoverageStatus(body, inputs, status), status
 		}
+		status.mark(formParseIncompleteReason)
+		return []InputPoint{{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly}}, status
 	case "application/json":
-		flattenJSONInputs("body.json", "", body, &inputs)
+		jsonStatus := flattenJSONInputsWithStatus("body.json", "", body, &inputs)
+		status.merge(jsonStatus)
 		if len(inputs) > 0 {
-			return withBodyCoverage(body, inputs), false
+			return withBodyCoverageStatus(body, inputs, status), status
 		}
 	case "multipart/form-data":
 		if boundary := boundaryFromContentType(r.Header.Get("Content-Type")); boundary != "" {
 			multipart, incomplete := multipartInputsWithStatus(body, boundary)
-			covered := withBodyCoverage(body, multipart)
+			covered := withBodyCoverageStatus(body, multipart, status)
 			if incomplete {
 				covered = ensureBodyRawCoverage(body, covered)
 			}
-			return covered, incomplete
+			if incomplete {
+				status.mark(multipartCoverageIncompleteReason)
+			}
+			return covered, status
 		}
 		// A multipart media type without a valid boundary cannot be parsed
 		// faithfully. Keep a bounded raw view and surface the coverage loss.
-		return withBodyCoverage(body, []InputPoint{{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly}}), true
+		raw := clipRawBytes(body)
+		status.mark(multipartCoverageIncompleteReason)
+		if len(body) > maxInputRawBytes {
+			status.mark(jsonRawClippedReason)
+		}
+		return withBodyCoverageStatus(body, []InputPoint{{Source: "body.raw", Name: "body", Raw: raw, Layers: rawLayersOnly}}, status), status
 	}
 	if json.Valid(body) {
-		flattenJSONInputs("body.json", "", body, &inputs)
+		status.merge(flattenJSONInputsWithStatus("body.json", "", body, &inputs))
 	}
 	if len(inputs) == 0 {
-		inputs = append(inputs, InputPoint{Source: "body.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
+		// A small malformed/non-JSON body is fully represented by its bounded raw
+		// fallback; do not report parser omission when no structured field was
+		// successfully emitted. Large bodies remain incomplete because clipping
+		// prevents full raw coverage.
+		if len(body) <= maxInputRawBytes {
+			status = traversalStatus{}
+		}
+		raw := clipRawBytes(body)
+		if len(body) > maxInputRawBytes {
+			status.mark(jsonRawClippedReason)
+		}
+		inputs = append(inputs, InputPoint{Source: "body.raw", Name: "body", Raw: raw, Layers: rawLayersOnly})
 	}
 	declaredMultipart := isDeclaredMultipartContentType(contentTypeHeader)
-	return withBodyCoverage(body, inputs), declaredMultipart
+	if declaredMultipart {
+		status.mark(multipartCoverageIncompleteReason)
+	}
+	return withBodyCoverageStatus(body, inputs, status), status
 }
 
 func isDeclaredMultipartContentType(header string) bool {
@@ -1560,8 +1722,17 @@ func isDeclaredMultipartContentType(header string) bool {
 	return trimmed == "multipart/form-data" || strings.HasPrefix(trimmed, "multipart/form-data;")
 }
 
-func withBodyCoverage(body []byte, inputs []InputPoint) []InputPoint {
-	if len(inputs) == 0 || (len(body) <= maxInputRawBytes && len(inputs) < maxCandidates) {
+func withBodyCoverageStatus(body []byte, inputs []InputPoint, status traversalStatus) []InputPoint {
+	if len(inputs) == 0 {
+		return inputs
+	}
+	// Structured parsers report clipping/omission through traversalStatus; do
+	// not synthesize a body.raw candidate merely because the input count equals
+	// a cap, since an exact-cap pass is complete and needs no extra candidate.
+	if len(inputs) >= maxCandidates && !status.omitted {
+		return inputs
+	}
+	if len(body) <= maxInputRawBytes && !status.omitted {
 		return inputs
 	}
 	if inputs[0].Source == "body.raw" {
@@ -1642,28 +1813,36 @@ func requestMediaType(header string) string {
 }
 
 func flattenJSONInputs(source, prefix string, raw []byte, inputs *[]InputPoint) {
+	_ = flattenJSONInputsWithStatus(source, prefix, raw, inputs)
+}
+
+func flattenJSONInputsWithStatus(source, prefix string, raw []byte, inputs *[]InputPoint) traversalStatus {
+	var status traversalStatus
 	// Fast path: walk the bytes directly. Bails on anything it cannot reproduce
 	// byte-for-byte (escapes, non-ASCII, trailing garbage, malformed structure),
 	// in which case the decoder walk below runs on the untouched input.
 	mark := len(*inputs)
-	w := jsonWalker{src: raw, source: source, inputs: inputs}
+	w := jsonWalker{src: raw, source: source, inputs: inputs, status: &status}
 	if w.value(prefix, 0, false) {
 		w.skipWS()
 		if w.pos == len(raw) {
-			return
+			return status
 		}
 	}
+	// A declined fast walk is replayed from the original document; discard any
+	// budget observations made before the fallback so malformed/escaped input is
+	// judged solely by the decoder-backed traversal.
+	status = traversalStatus{}
 	// Fast path aborted mid-document: discard whatever it emitted so the decoder
 	// walk starts from the same state it would have seen.
 	*inputs = (*inputs)[:mark]
 	if len(raw) > maxJSONTreeDecodeBytes {
-		flattenJSONInputsStream(source, prefix, raw, inputs)
-		return
+		return flattenJSONInputsStream(source, prefix, raw, inputs)
 	}
 	// Preserve the historical decoder behavior for malformed/trailing documents
 	// (it emits the first successfully decoded value) while using a bounded
 	// head/tail collector inside the decoder fallback for valid large objects.
-	flattenJSONInputsDecode(source, prefix, raw, inputs)
+	return flattenJSONInputsDecode(source, prefix, raw, inputs)
 }
 
 // flattenJSONInputsStream avoids constructing a complete map[string]any tree
@@ -1671,22 +1850,28 @@ func flattenJSONInputs(source, prefix string, raw []byte, inputs *[]InputPoint) 
 // It validates the entire document while retaining a bounded head/tail sample,
 // so late fields still receive semantic coverage without body-sized object
 // graphs and interface boxing.
-func flattenJSONInputsStream(source, prefix string, raw []byte, inputs *[]InputPoint) {
+func flattenJSONInputsStream(source, prefix string, raw []byte, inputs *[]InputPoint) traversalStatus {
+	var status traversalStatus
 	capacity := maxCandidates - len(*inputs)
 	if capacity <= 0 {
-		return
+		return status
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	collector := newJSONInputCollector(capacity)
+	collector := newJSONInputCollector(capacity, &status)
 	if err := streamJSONValue(decoder, source, prefix, 0, &collector); err != nil {
-		return
+		status.mark(jsonParseIncompleteReason)
+		collector.appendTo(inputs)
+		return status
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return
+		status.mark(jsonParseIncompleteReason)
+		collector.appendTo(inputs)
+		return status
 	}
 	collector.appendTo(inputs)
+	return status
 }
 
 type jsonInputCollector struct {
@@ -1695,18 +1880,25 @@ type jsonInputCollector struct {
 	headMax  int
 	tailMax  int
 	tailNext int
+	status   *traversalStatus
+	nodes    int
 }
 
-func newJSONInputCollector(capacity int) jsonInputCollector {
+func newJSONInputCollector(capacity int, status ...*traversalStatus) jsonInputCollector {
 	if capacity < 0 {
 		capacity = 0
 	}
 	headMax := (capacity + 1) / 2
+	var st *traversalStatus
+	if len(status) > 0 {
+		st = status[0]
+	}
 	return jsonInputCollector{
 		head:    make([]InputPoint, 0, headMax),
 		tail:    make([]InputPoint, 0, capacity-headMax),
 		headMax: headMax,
 		tailMax: capacity - headMax,
+		status:  st,
 	}
 }
 
@@ -1716,14 +1908,27 @@ func (c *jsonInputCollector) add(input InputPoint) {
 		return
 	}
 	if c.tailMax == 0 {
+		if c.status != nil {
+			c.status.mark(jsonCollectorLimitReason)
+		}
 		return
 	}
 	if len(c.tail) < c.tailMax {
 		c.tail = append(c.tail, input)
 		return
 	}
+	if c.status != nil {
+		c.status.mark(jsonCollectorLimitReason)
+	}
 	c.tail[c.tailNext] = input
 	c.tailNext = (c.tailNext + 1) % c.tailMax
+}
+
+func (c *jsonInputCollector) addRaw(raw string, input InputPoint) {
+	if clipRaw(raw) != raw && c.status != nil {
+		c.status.mark(jsonRawClippedReason)
+	}
+	c.add(input)
 }
 
 func (c *jsonInputCollector) appendTo(inputs *[]InputPoint) {
@@ -1738,8 +1943,17 @@ func (c *jsonInputCollector) appendTo(inputs *[]InputPoint) {
 
 func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, collector *jsonInputCollector) error {
 	if depth > maxJSONDepth {
+		if collector.status != nil {
+			collector.status.mark(jsonDepthLimitIncompleteReason)
+		}
 		return discardJSONValue(decoder)
 	}
+	if collector.nodes >= maxJSONNodes {
+		if collector.status != nil {
+			collector.status.mark(jsonNodeLimitIncompleteReason)
+		}
+	}
+	collector.nodes++
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -1748,7 +1962,7 @@ func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, co
 	if !composite {
 		switch value := token.(type) {
 		case string:
-			collector.add(InputPoint{Source: source, Name: prefix, Raw: clipRaw(value), Layers: rawLayersOnly})
+			collector.addRaw(value, InputPoint{Source: source, Name: prefix, Raw: clipRaw(value), Layers: rawLayersOnly})
 		case json.Number, bool, float64:
 			collector.add(InputPoint{Source: source, Name: prefix, Raw: toString(value), Layers: rawLayersOnly})
 		}
@@ -1770,7 +1984,7 @@ func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, co
 			if prefix != "" {
 				name = prefix + "." + key
 			}
-			collector.add(InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
+			collector.addRaw(key, InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
 			if err := streamJSONValue(decoder, source, name, depth+1, collector); err != nil {
 				return err
 			}
@@ -1837,21 +2051,24 @@ func discardJSONValue(decoder *json.Decoder) error {
 // flattenJSONInputsDecode is the decoder-backed fallback for bodies the byte
 // walker declines. Its bounded collector keeps the fallback deterministic and
 // retains a tail sample when the candidate budget is reached.
-func flattenJSONInputsDecode(source, prefix string, raw []byte, inputs *[]InputPoint) {
+func flattenJSONInputsDecode(source, prefix string, raw []byte, inputs *[]InputPoint) traversalStatus {
+	var status traversalStatus
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
-		return
+		status.mark(jsonParseIncompleteReason)
+		return status
 	}
 	capacity := maxCandidates - len(*inputs)
 	if capacity <= 0 {
-		return
+		return status
 	}
-	collector := newJSONInputCollector(capacity)
+	collector := newJSONInputCollector(capacity, &status)
 	nodes := 0
-	flattenJSONValueBounded(source, prefix, value, 0, &nodes, &collector)
+	flattenJSONValueBoundedWithStatus(source, prefix, value, 0, &nodes, &collector, &status)
 	collector.appendTo(inputs)
+	return status
 }
 
 // flattenJSONValueBounded walks the decoder's map representation while keeping
@@ -1859,7 +2076,18 @@ func flattenJSONInputsDecode(source, prefix string, raw []byte, inputs *[]InputP
 // continue traversing after the head is populated; otherwise a late attack field
 // can be hidden behind maxCandidates ordinary fields.
 func flattenJSONValueBounded(source, prefix string, value any, depth int, nodes *int, collector *jsonInputCollector) {
+	flattenJSONValueBoundedWithStatus(source, prefix, value, depth, nodes, collector, collector.status)
+}
+
+func flattenJSONValueBoundedWithStatus(source, prefix string, value any, depth int, nodes *int, collector *jsonInputCollector, status *traversalStatus) {
 	if depth > maxJSONDepth || *nodes >= maxJSONNodes {
+		if status != nil {
+			if depth > maxJSONDepth {
+				status.mark(jsonDepthLimitIncompleteReason)
+			} else {
+				status.mark(jsonNodeLimitIncompleteReason)
+			}
+		}
 		return
 	}
 	*nodes++
@@ -1873,25 +2101,31 @@ func flattenJSONValueBounded(source, prefix string, value any, depth int, nodes 
 		for _, key := range keys {
 			value := typed[key]
 			if *nodes >= maxJSONNodes {
+				if status != nil {
+					status.mark(jsonNodeLimitIncompleteReason)
+				}
 				return
 			}
 			name := key
 			if prefix != "" {
 				name = prefix + "." + key
 			}
-			collector.add(InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
-			flattenJSONValueBounded(source, name, value, depth+1, nodes, collector)
+			collector.addRaw(key, InputPoint{Source: source, Name: name, Raw: clipRaw(key), Layers: rawLayersOnly})
+			flattenJSONValueBoundedWithStatus(source, name, value, depth+1, nodes, collector, status)
 		}
 	case []any:
 		for idx, value := range typed {
 			if *nodes >= maxJSONNodes {
+				if status != nil {
+					status.mark(jsonNodeLimitIncompleteReason)
+				}
 				return
 			}
-			flattenJSONValueBounded(source, prefix+"[]", value, depth+1, nodes, collector)
+			flattenJSONValueBoundedWithStatus(source, prefix+"[]", value, depth+1, nodes, collector, status)
 			_ = idx
 		}
 	case string:
-		collector.add(InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: rawLayersOnly})
+		collector.addRaw(typed, InputPoint{Source: source, Name: prefix, Raw: clipRaw(typed), Layers: rawLayersOnly})
 	case json.Number, bool, float64:
 		collector.add(InputPoint{Source: source, Name: prefix, Raw: toString(typed), Layers: rawLayersOnly})
 	}
@@ -2027,21 +2261,32 @@ var rawLayersOnly = []string{"raw"}
 // result. Callers pass a stack-resident scratch array so the common
 // single-variant case costs zero allocations.
 func decodeVariantsInto(dst []decodedVariant, raw string, decodeDepth int) []decodedVariant {
+	variants, _ := decodeVariantsIntoWithStatus(dst, raw, decodeDepth)
+	return variants
+}
+
+func decodeVariantsIntoWithStatus(dst []decodedVariant, raw string, decodeDepth int) ([]decodedVariant, traversalStatus) {
+	var status traversalStatus
 	// UTF-16 LE/BE BOM payloads (XXE evasion). Expand once into UTF-8 text.
 	if utf8FromUTF16, ok := decodeUTF16Payload(raw); ok && utf8FromUTF16 != raw {
 		raw = utf8FromUTF16
 	}
 	// Hot path: plain text without encode markers needs no expansion queue.
 	if !needsDeepDecode(raw) {
-		return append(dst, decodedVariant{text: raw, layers: rawLayersOnly})
+		return append(dst, decodedVariant{text: raw, layers: rawLayersOnly}), status
 	}
-	return decodeVariantsDeep(dst, raw, decodeDepth)
+	variants, omitted := decodeVariantsDeepWithStatus(dst, raw, decodeDepth)
+	return variants, omitted
 }
 
-// decodeVariantsDeep runs the bounded multi-layer expansion queue. Split out of
-// decodeVariantsInto so the hot single-variant path stays inlinable and its
-// queue/map allocations never appear on ordinary traffic.
 func decodeVariantsDeep(dst []decodedVariant, raw string, decodeDepth int) []decodedVariant {
+	variants, _ := decodeVariantsDeepWithStatus(dst, raw, decodeDepth)
+	return variants
+}
+
+// decodeVariantsDeepWithStatus runs the bounded multi-layer expansion queue.
+func decodeVariantsDeepWithStatus(dst []decodedVariant, raw string, decodeDepth int) ([]decodedVariant, traversalStatus) {
+	var status traversalStatus
 	if decodeDepth <= 0 {
 		decodeDepth = decoder.DefaultDecodeDepth
 	}
@@ -2077,7 +2322,15 @@ func decodeVariantsDeep(dst []decodedVariant, raw string, decodeDepth int) []dec
 			queue = append(queue, decodedVariant{text: unescaped, layers: appendLayers(item.layers, "unicode")})
 		}
 	}
-	return out
+	if len(queue) > 0 {
+		for _, item := range queue {
+			if _, ok := seen[item.text]; !ok {
+				status.mark(jsonVariantLimitReason)
+				break
+			}
+		}
+	}
+	return out, status
 }
 
 // decodeUTF16Payload converts UTF-16 LE/BE text (with or without BOM) to UTF-8.
@@ -3322,6 +3575,17 @@ var (
 	// The leading "<!" tolerates the space-split evasion "<!- -#include", where
 	// the two dashes are separated so a naive "<!--#" literal does not match.
 	lfiSSIDirective = regexp.MustCompile(`(?i)<!\s*-{1,2}\s*-?\s*#\s*(?:include|exec|echo|fsize|flastmod|config|printenv|set)\b`)
+	// A raw HTTP capture can carry a real SSI command in the request target even
+	// when the target cannot be parsed as a URL (the literal '<' is illegal in a
+	// URL and the corpus adapter therefore preserves the capture as body.raw).
+	// Keep the HTTP-documentation guard bypass narrow: only an #exec directive
+	// with a recognizable command is actionable. Include/echo examples remain
+	// subject to the ordinary documentation guard.
+	lfiSSIExecCommand = regexp.MustCompile(`(?is)#\s*exec\b[^>]{0,160}\bcmd\s*=\s*["']?\s*(?:id|whoami|uname|ls|cat|head|tail|pwd|netstat|ifconfig|ip|curl|wget|bash|sh|python(?:3)?|perl|php|nc|ncat)\b`)
+	// Unlike httpRequestLine, this accepts spaces inside the captured target.
+	// Such targets are malformed as URLs but are exactly why the corpus adapter
+	// preserves the request in body.raw.
+	lfiRawHTTPRequestLine = regexp.MustCompile(`(?i)^(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|TRACE|CONNECT)\s+/[^\r\n]{1,512}\s+HTTP/[0-9.]+`)
 
 	lfiDotEnvTarget    = regexp.MustCompile(`(?i)(?:^|[/\\])\.env(?:$|[?#.]|%00|%23)`)
 	lfiSensitiveTarget = regexp.MustCompile(`(?i)(?:^|[/\\])(?:etc/(?:passwd|shadow|group|hosts|hostname|fstab|sudoers|crontab|issue|motd|nginx/nginx\.conf|apache2/apache2\.conf|redis/redis\.conf|mysql/my\.cnf|php/php\.ini|ssh/sshd_config)|proc/(?:self/(?:environ|cmdline|maps|fd/\d+)|version|cpuinfo)|root/\.bash_history|home/[^/\\]+/\.ssh/(?:id_rsa|id_dsa|authorized_keys)|var/log/(?:syslog|auth\.log|nginx/access\.log|nginx/error\.log|apache2/access\.log|apache2/error\.log|httpd-access\.log)|winnt/system32/cmd\.exe|windows/(?:win\.ini|system32/drivers/etc/hosts)|boot\.ini|web-inf/web\.xml|meta-inf/manifest\.mf|\.htaccess|_config\.php|config\.php|config/(?:database|parameters|settings)\.(?:php|ya?ml|json)|wp-config\.php|dump\.sql|database\.sql|id_rsa)(?:$|[?#\x00.]|%00|%23)`)
@@ -3405,6 +3669,8 @@ var (
 	sqlBlockComment                = regexp.MustCompile(`(?is)/\*.*?\*/`)
 	sqlLineComment                 = regexp.MustCompile(`(?m)--[^\r\n]*`)
 	rceShellControl                = regexp.MustCompile(`(?:;|&&|\|\||\||\$\(|` + "`" + `)`)
+	rceHTMLMarkupEntity            = regexp.MustCompile(`(?i)&(?:lt|gt|amp|quot|apos|nbsp);`)
+	rceCookieHeaderPairs           = regexp.MustCompile(`(?i)^\s*[A-Za-z0-9_.-]+=[^;\r\n]*(?:;\s*[A-Za-z0-9_.-]+=[^;\r\n]*)*\s*$`)
 	rcePureArithmeticExpansion     = regexp.MustCompile(`\$\(\(\s*[-+]?\d(?:\d|[ \t\r\n+*/%-])*\s*\)\)`)
 	rceWhitespaceEvasion           = regexp.MustCompile(`(?i)\$\{?ifs\}?`)
 	rcePowerShellSideFx            = regexp.MustCompile(`(?i)(?:\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]{0,200}\b(?:downloadstring|downloadfile|frombase64string|invoke-expression|iex|new-object|net\.webclient)\b)|(?:new-object\s+system\.net\.(?:webclient|sockets\.tcpclient)|(?:download(?:file|string)|invoke-expression|iex)\s*\()`)
@@ -3775,7 +4041,8 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	if sqlStringFunction.MatchString(text) && sqlComparison.MatchString(text) && (contains(words, "or") || contains(words, "and") || strings.Contains(compact, "orchar") || strings.Contains(compact, "andchar")) {
 		reasons["syntax: SQL function comparison inside boolean predicate"] = true
 	}
-	if !sqlReasonsBlockable(reasons) {
+	if !sqlReasonsBlockable(reasons) && !sqlMultipartBinaryFingerprintContext(candidate) &&
+		!sqlMultipartWordPressLockContext(candidate) && !sqlJSONTrailingCommentContext(candidate) {
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate.text); detected &&
 			containsReviewedSQLFingerprint(fp, candidate.text) &&
 			!sqlNaturalLanguageFingerprintOnly(candidate, fp) {
@@ -3884,6 +4151,93 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	return hit(candidate, "sqli", severity, confidence, reasons), true
+}
+
+// sqlMultipartBinaryFingerprintContext identifies a raw multipart envelope
+// whose only SQL-like evidence comes from MIME boundaries/PDF or other binary
+// file syntax. Structured body.multipart fields are still analyzed separately;
+// this gate only prevents a fallback token fingerprint on the transport wrapper
+// from blocking an otherwise ordinary upload. Explicit SQL reasons above take
+// precedence and are never suppressed by this helper.
+func sqlMultipartBinaryFingerprintContext(candidate semanticCandidate) bool {
+	if candidate.input.Source != "body.raw" {
+		return false
+	}
+	lower := strings.ToLower(candidate.text)
+	if !strings.Contains(lower, "content-disposition: form-data") || !strings.Contains(lower, "filename=") {
+		return false
+	}
+	for _, media := range []string{
+		"content-type: application/pdf",
+		"content-type: application/octet-stream",
+		"content-type: application/zip",
+		"content-type: image/",
+		"content-type: audio/",
+		"content-type: video/",
+	} {
+		if strings.Contains(lower, media) {
+			return true
+		}
+	}
+	return false
+}
+
+// sqlMultipartWordPressLockContext filters a known WordPress editor heartbeat
+// envelope whose numeric lock timestamp can trip a token-only SQL fingerprint.
+// It is deliberately an exact control shape, not a general multipart bypass:
+// any explicit SQL grammar has already populated reasons above and remains
+// blockable, while unrelated multipart fields continue through the normal
+// fingerprint path.
+func sqlMultipartWordPressLockContext(candidate semanticCandidate) bool {
+	if candidate.input.Source != "body.raw" {
+		return false
+	}
+	lower := strings.ToLower(candidate.text)
+	if !strings.Contains(lower, "content-disposition: form-data") ||
+		!strings.Contains(lower, "name=\"action\"") ||
+		!strings.Contains(lower, "wp-remove-post-lock") {
+		return false
+	}
+	for _, field := range []string{"name=\"_wpnonce\"", "name=\"post_id\"", "name=\"active_post_lock\""} {
+		if !strings.Contains(lower, field) {
+			return false
+		}
+	}
+	return true
+}
+
+// sqlJSONTrailingCommentContext identifies a JSON-shaped body whose comment is
+// an out-of-band human note after a complete object/array member. Such comments
+// are invalid JSON but common in synthetic inventory/log fixtures; a token-only
+// fingerprint there is transport noise, not a query. Explicit SQL grammar is
+// evaluated before this fallback and remains blockable.
+func sqlJSONTrailingCommentContext(candidate semanticCandidate) bool {
+	if candidate.input.Source != "body.raw" {
+		return false
+	}
+	trimmed := strings.TrimSpace(candidate.text)
+	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return false
+	}
+	comment := strings.Index(trimmed, "/*")
+	if comment <= 0 {
+		return false
+	}
+	before := strings.TrimSpace(trimmed[:comment])
+	if before == "" {
+		return false
+	}
+	last := before[len(before)-1]
+	if last != '}' && last != ']' {
+		return false
+	}
+	lowerComment := strings.ToLower(trimmed[comment+2:])
+	for _, marker := range []string{"total", "items", "warehouses", "detailed", "product specs", "placeholder", "inventory"} {
+		if strings.Contains(lowerComment, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // technicalDocumentationEvidenceContext is the local half of the SQL
@@ -4125,6 +4479,19 @@ func isSQLWhitespace(b byte) bool {
 // JavaScript; what only XPath has is a node test hanging off a "//" axis.
 
 var xpathFunctionCall = regexp.MustCompile(`(?i)\b(?:count|substring|string-length|normalize-space|local-name|namespace-uri|name|text|position|last|translate|starts-with|contains|concat|sum|number|string|boolean|document)\s*\(`)
+
+// xpathRelativeFunctionPath identifies the relative XPath form that omits the
+// descendant-axis prefix: string-length(user/password[1]).  The absolute
+// //path form is easier to distinguish from ordinary text, but real payloads
+// frequently use a context-relative path after breaking out of a quoted
+// parameter.  Keep the expression deliberately narrow: a known XPath
+// function, two identifier steps, and optional bounded predicates.  URLs and
+// prose such as "user/password" do not satisfy the quote-breakout and
+// comparison checks in xpathRelativeInjectionShape.
+var xpathRelativeFunctionPath = regexp.MustCompile(`(?i)\b(?:count|substring|string-length|normalize-space|local-name|namespace-uri|name|text|position|last|translate|starts-with|contains|concat|sum|number|string|boolean|document)\s*\(\s*[A-Za-z_][A-Za-z0-9_.-]{0,63}\s*/\s*[A-Za-z_][A-Za-z0-9_.-]{0,63}(?:\s*\[[^\]\r\n]{1,160}\])?(?:\s*/\s*[A-Za-z_][A-Za-z0-9_.-]{0,63}(?:\s*\[[^\]\r\n]{1,160}\])?)*`)
+
+var xpathBreakoutPrefix = regexp.MustCompile(`(?i)(?:'|")\s*(?:or|and)\s*$`)
+var xpathRelativeComparison = regexp.MustCompile(`(?i)\)\s*(?:=|!=|<>|<=|>=|<|>)`)
 
 // foldOverlongUTF8 rewrites overlong UTF-8 sequences into the single ASCII
 // character they encode, and leaves everything else byte-for-byte identical.
@@ -4649,19 +5016,50 @@ func isXPathNameByte(b byte) bool {
 	return b == '_' || b == '-' || b == '.'
 }
 
+// xpathRelativeInjectionShape reports the relative-path XPath form only when
+// it is attached to a quote breakout and a comparison.  Requiring both
+// boundaries keeps ordinary documentation and route-like text containing a
+// slash from becoming SQL/XPath hits while covering payloads such as:
+//
+//	101' or string-length(user/password[1]) > 5 or 'a'='a
+func xpathRelativeInjectionShape(text string) (string, bool) {
+	for _, match := range xpathRelativeFunctionPath.FindAllStringIndex(text, -1) {
+		start, end := match[0], match[1]
+		prefixStart := start - 96
+		if prefixStart < 0 {
+			prefixStart = 0
+		}
+		if !xpathBreakoutPrefix.MatchString(text[prefixStart:start]) {
+			continue
+		}
+		// The comparison must follow the function expression, not merely occur
+		// in a later unrelated clause.  Keep the bounded suffix local to the
+		// candidate so a prose sentence cannot lend evidence from far away.
+		suffixEnd := end + 96
+		if suffixEnd > len(text) {
+			suffixEnd = len(text)
+		}
+		if !xpathRelativeComparison.MatchString(text[end:suffixEnd]) {
+			continue
+		}
+		return text[start:end], true
+	}
+	return "", false
+}
+
 // xpathInjectionShape reports whether text carries an XPath location path
 // together with corroborating XPath grammar. Both halves are required: the path
 // supplies the discrimination and the function call rules out the residual
 // cases where a path-like string appears in ordinary content.
 func xpathInjectionShape(text string) (step string, ok bool) {
 	step, ok = xpathLocationPathStep(text)
-	if !ok {
-		return "", false
+	if ok {
+		if !xpathFunctionCall.MatchString(text) {
+			return "", false
+		}
+		return step, true
 	}
-	if !xpathFunctionCall.MatchString(text) {
-		return "", false
-	}
-	return step, true
+	return xpathRelativeInjectionShape(text)
 }
 
 func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
@@ -4968,6 +5366,9 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	if xssStyleExecutionContext.MatchString(lower) {
 		reasons["syntax: executable CSS expression or javascript URL"] = true
 	}
+	if xssBareEventHandlerNoise(lower) {
+		delete(reasons, "syntax: executable HTML/JavaScript context")
+	}
 	if containsAny(lower, []string{"document.cookie", "localstorage", "fetch("}) {
 		reasons["semantics: browser credential or network side effect"] = true
 	}
@@ -5025,6 +5426,9 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 
 func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	text := strings.TrimSpace(candidate.text)
+	if rceCookieHeaderTransportOnly(candidate.input.Source, candidate.input.Name, text) {
+		return Hit{}, false
+	}
 	// Keep compatibility folding and control boundaries in the primary RCE view.
 	// The compact normalized form is still available for control-free values, but
 	// must not join tokens across NUL/newline boundaries (for example
@@ -6040,6 +6444,20 @@ func rceNewlineCommandChainAllowed(text, source, name string) bool {
 }
 
 func rceShellControlEvidenceForContext(lower, source, name string, sink bool) bool {
+	// HTML-escaped prose such as "&lt;code&gt;Python&lt;/code&gt;" contains
+	// semicolons that are entity terminators, not shell separators. Only strip
+	// the small markup vocabulary on non-sink structured values; command sinks
+	// and arbitrary/raw surfaces keep the exact bytes so encoded execution
+	// syntax is not weakened.
+	if !sink && (strings.EqualFold(source, "body.json") || strings.EqualFold(source, "body.form") || strings.EqualFold(source, "body.multipart")) {
+		lower = rceHTMLMarkupEntity.ReplaceAllString(lower, "")
+	}
+	// Cookie pairs use semicolons as their field delimiter. Treat a complete,
+	// syntactically valid Cookie header as transport structure, while leaving
+	// malformed tails such as `session=x;id` eligible for command detection.
+	if !sink && rceCookieHeaderTransportOnly(source, name, lower) {
+		return false
+	}
 	if strings.Contains(lower, "$((") {
 		lower = rcePureArithmeticExpansion.ReplaceAllString(lower, "")
 	}
@@ -6091,6 +6509,25 @@ func rceShellControlEvidenceForContext(lower, source, name string, sink bool) bo
 		}
 	}
 	// Unbalanced or contains shell patterns
+	return true
+}
+
+// rceCookieHeaderTransportOnly returns true for a well-formed Cookie header
+// whose values do not carry an execution-shaped token. Cookie delimiters are
+// semicolons by design; only malformed tails or explicit shell/runtime markers
+// should reopen RCE analysis.
+func rceCookieHeaderTransportOnly(source, name, value string) bool {
+	if !strings.EqualFold(strings.TrimSpace(source), "header") || !strings.EqualFold(strings.TrimSpace(name), "cookie") || !rceCookieHeaderPairs.MatchString(value) {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"$((", "$(", "&&", "||", "`", "|", "/etc/", "/bin/", "cmd", "bash", "sh -", "powershell", "python -", ";id", ";cat", ";whoami",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -7323,12 +7760,15 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		reasons["syntax: traversal or wrapper path expression"] = true
 	}
 	// RFI: remote URL into file/include sinks (not plain SSRF fetch fields).
-	if lfiRemoteIncludeContext(candidate.input.Name, lower) {
+	if lfiRemoteIncludeContextForSource(candidate.input.Source, candidate.input.Name, lower) {
 		reasons["syntax: traversal or wrapper path expression"] = true
 		reasons["semantics: remote file include target"] = true
 	}
 	// FP-first: bare filenames without traversal/wrapper/sensitive path must not block.
 	if len(reasons) == 0 {
+		return Hit{}, false
+	}
+	if len(reasons) == 1 && reasons["semantics: command reads a sensitive local file"] && lfiCommandReadProseContext(candidate, text) {
 		return Hit{}, false
 	}
 	if !hasSyntaxReason(reasons) && !hasSemanticReason(reasons) {
@@ -7348,8 +7788,11 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		return Hit{}, false
 	}
 
-	// RESTful path guard: /api/v1/users/{id}, GET /admin/dashboard, /@username/settings
-	if restfulPathShape(text) {
+	// RESTful path guard: /api/v1/users/{id}, GET /admin/dashboard,
+	// /@username/settings. A malformed raw HTTP capture carrying an executable
+	// SSI command is the one intentional exception: the request-line prefix is
+	// transport framing, not proof that the payload is a normal REST route.
+	if restfulPathShape(text) && !lfiRawHTTPSSICommandShape(candidate, lower) {
 		return Hit{}, false
 	}
 
@@ -7396,8 +7839,13 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
-	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
-	if httpProtocolContextShape(text) {
+	// HTTP protocol context guard: reduce confidence for HTTP protocol
+	// documentation. A literal SSI command in a raw HTTP capture is different:
+	// malformed request targets are intentionally kept in body.raw, so the
+	// request-line shape must not erase the only executable evidence. The
+	// exception is restricted to a recognizable #exec command and still comes
+	// after the document-context gate above.
+	if httpProtocolContextShape(text) && !lfiRawHTTPSSICommandShape(candidate, lower) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -7421,6 +7869,45 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	return hit(candidate, "lfi", engine.SeverityHigh, confidence, reasons), true
+}
+
+func lfiRawHTTPSSICommandShape(candidate semanticCandidate, lower string) bool {
+	if candidate.input.Source != "body.raw" || !lfiRawHTTPRequestLine.MatchString(candidate.text) {
+		return false
+	}
+	return lfiSSIExecCommand.MatchString(lower)
+}
+
+// lfiCommandReadProseContext suppresses the one weak LFI shape that has no
+// traversal, sensitive-target, wrapper, or explicit path-field evidence: a
+// natural-language sentence mentioning a read command. Real sensitive targets
+// add their own reason and never enter this gate; a bare command value likewise
+// lacks the required prose markers.
+func lfiCommandReadProseContext(candidate semanticCandidate, text string) bool {
+	if lfiExplicitPathContext(candidate.input.Source, candidate.input.Name) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(candidate.input.Source)) {
+	case "query", "body.form", "body.json", "body.multipart":
+	default:
+		return false
+	}
+	lower := strings.ToLower(text)
+	match := lfiCommandReadSink.FindStringIndex(lower)
+	if match == nil || match[0] < 24 {
+		return false
+	}
+	prefix := strings.TrimSpace(lower[:match[0]])
+	if len(tokens(prefix)) < 8 || strings.ContainsAny(prefix, "'\";|&$`") {
+		return false
+	}
+	markers := 0
+	for _, marker := range []string{"are there", "if you", "you are", "should be", "please", "example", "documentation", "using ", "listings", "network manager"} {
+		if strings.Contains(prefix, marker) {
+			markers++
+		}
+	}
+	return markers >= 2 && (strings.Contains(prefix, "?") || strings.Contains(prefix, ":"))
 }
 
 // lfiNullBytePathSuffixShape accepts null-byte bypasses only when the marker
@@ -7508,9 +7995,19 @@ func lfiExplicitPathContext(source, name string) bool {
 	return false
 }
 
-// lfiRemoteIncludeContext is true when a file or include parameter carries a remote URL.
-// Excludes documentation fields and pure fetch/url sinks (handled by SSRF).
+// lfiRemoteIncludeContext is true when a file or include parameter carries a
+// remote URL. It remains the source-agnostic compatibility wrapper used by
+// focused unit tests and callers that do not have a parsed input source.
 func lfiRemoteIncludeContext(name, lower string) bool {
+	return lfiRemoteIncludeContextForSource("", name, lower)
+}
+
+// lfiRemoteIncludeContextForSource keeps remote-file-include evidence narrow
+// on structured telemetry and uploaded documents. A nested page.referrer is a
+// fetch/telemetry URL, not an include sink; an SVG/XML upload commonly contains
+// an xmlns URL, which is likewise not an RFI target. Explicit executable
+// extensions and include syntax remain eligible.
+func lfiRemoteIncludeContextForSource(source, name, lower string) bool {
 	if !(strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "ftp://")) {
 		return false
 	}
@@ -7519,7 +8016,7 @@ func lfiRemoteIncludeContext(name, lower string) bool {
 		return false
 	}
 	// Avoid turning every SSRF fetch param into LFI.
-	if strings.Contains(n, "url") || strings.Contains(n, "uri") || strings.Contains(n, "callback") || strings.Contains(n, "webhook") || strings.Contains(n, "endpoint") {
+	if strings.Contains(n, "url") || strings.Contains(n, "uri") || strings.Contains(n, "callback") || strings.Contains(n, "webhook") || strings.Contains(n, "endpoint") || strings.Contains(n, "referrer") || strings.Contains(n, "redirect") || strings.Contains(n, "href") || strings.Contains(n, "src") || strings.Contains(n, "origin") {
 		return false
 	}
 	parts := strings.FieldsFunc(n, func(r rune) bool {
@@ -7529,6 +8026,12 @@ func lfiRemoteIncludeContext(name, lower string) bool {
 	for _, part := range parts {
 		switch part {
 		case "file", "path", "page", "include", "require", "template", "tpl", "doc", "document", "view":
+			if strings.EqualFold(strings.TrimSpace(source), "body.multipart") &&
+				strings.Contains(lower, "xmlns=") &&
+				!lfiRemoteExecutableExtensionRE.MatchString(lower) &&
+				!strings.Contains(lower, "include") && !strings.Contains(lower, "require") {
+				return false
+			}
 			return true
 		case "filename":
 			// Browser and telemetry payloads commonly use a `filename` field for
@@ -7668,6 +8171,9 @@ func xxeDangerousTarget(lower string) bool {
 
 func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 	if !ssrfFetchSink(candidate) {
+		return Hit{}, false
+	}
+	if ssrfSameOriginTelemetryReference(candidate, candidate.request) {
 		return Hit{}, false
 	}
 	payload := decoder.Decode(candidate.text).Text

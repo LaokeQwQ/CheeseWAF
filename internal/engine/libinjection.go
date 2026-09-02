@@ -90,6 +90,16 @@ func tokenizeSQL(input string) string {
 			i++
 			continue
 		}
+		// HTTP media-type wildcards such as `Accept: */*;q=0.8` contain the
+		// byte sequence `/*`, but it is not an SQL block comment.  Keep the
+		// exception deliberately boundary-aware: a real SQL expression such as
+		// `1*/*comment*/2` has non-delimiter bytes after the second `*` and still
+		// tokenizes as a comment.  The wildcard is skipped one byte at a time so
+		// the surrounding header/value tokens remain available to the fingerprint.
+		if isMIMEWildcardAt(input, i) {
+			i++
+			continue
+		}
 		if consumed := consumeTautology(input[i:]); consumed > 0 {
 			tokens.WriteByte(tkSQLTautology)
 			i += consumed
@@ -102,6 +112,96 @@ func tokenizeSQL(input string) string {
 		i += consumed
 	}
 	return tokens.String()
+}
+
+func isMIMEWildcardAt(input string, slash int) bool {
+	if slash <= 0 || slash+1 >= len(input) || input[slash] != '/' || input[slash-1] != '*' || input[slash+1] != '*' {
+		return false
+	}
+	// A wildcard is safe to ignore when it is anchored to an HTTP media-type
+	// header or an explicitly named JSON accept field.  Looking for the field
+	// context prevents a SQL expression such as `1*/* comment */2` from being
+	// rewritten merely because a space follows the opening comment marker.
+	lineStart := strings.LastIndexAny(input[:slash], "\r\n") + 1
+	line := input[lineStart:slash]
+	lowerLine := strings.ToLower(line)
+	if strings.Contains(lowerLine, "accept:") || strings.Contains(lowerLine, "content-type:") {
+		return true
+	}
+	if mimeJSONAcceptContext(lowerLine) {
+		return true
+	}
+
+	// Header values are also passed to the engine without their field name.
+	// Recognise only a comma-separated media-type list (text/html,*/*), never a
+	// generic `*/*` sequence embedded in an expression or source document.
+	star := slash - 1
+	boundary := star - 1
+	for boundary >= lineStart && (line[boundary-lineStart] == ' ' || line[boundary-lineStart] == '\t') {
+		boundary--
+	}
+	if boundary >= lineStart && input[boundary] == ',' {
+		segmentStart := boundary - 1
+		for segmentStart >= lineStart && input[segmentStart] != ',' {
+			segmentStart--
+		}
+		if looksLikeMIMEType(strings.TrimSpace(input[segmentStart+1 : boundary])) {
+			return true
+		}
+	}
+
+	// A standalone wildcard value is common in an Accept header after the
+	// header name has been stripped.  Require either a quality parameter or the
+	// complete value; an opening SQL comment followed by prose must not match.
+	if boundary < lineStart {
+		rest := strings.TrimSpace(input[slash+2:])
+		if rest == "" || strings.HasPrefix(strings.ToLower(rest), ";q=") {
+			return true
+		}
+	}
+	return false
+}
+
+func mimeJSONAcceptContext(lowerLine string) bool {
+	for offset := 0; ; {
+		index := strings.Index(lowerLine[offset:], `"accept"`)
+		if index < 0 {
+			return false
+		}
+		index += offset + len(`"accept"`)
+		for index < len(lowerLine) && (lowerLine[index] == ' ' || lowerLine[index] == '\t') {
+			index++
+		}
+		if index < len(lowerLine) && lowerLine[index] == ':' {
+			return true
+		}
+		offset = index
+		if offset >= len(lowerLine) {
+			return false
+		}
+	}
+}
+
+func looksLikeMIMEType(value string) bool {
+	if semi := strings.IndexByte(value, ';'); semi >= 0 {
+		value = strings.TrimSpace(value[:semi])
+	}
+	slash := strings.IndexByte(value, '/')
+	if slash <= 0 || slash == len(value)-1 || strings.IndexByte(value[slash+1:], '/') >= 0 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if i == slash {
+			continue
+		}
+		c := value[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || strings.ContainsRune("!#$&^_.+-", rune(c)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func nextToken(s string) (byte, int) {

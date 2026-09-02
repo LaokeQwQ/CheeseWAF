@@ -256,7 +256,8 @@ func TestResolveSetupPathsFollowsDataDir(t *testing.T) {
 
 	dataDir = "/srv/cheesewaf"
 	directory, file = resolveSetupPaths(cmd)
-	if directory != "/srv/cheesewaf" || file != "/srv/cheesewaf/config/cheesewaf.yaml" {
+	wantFile := filepath.Join(dataDir, "config", "cheesewaf.yaml")
+	if directory != dataDir || file != wantFile {
 		t.Fatalf("--data-dir must relocate the config: dir=%q file=%q", directory, file)
 	}
 

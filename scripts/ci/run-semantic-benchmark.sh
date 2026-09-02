@@ -13,8 +13,23 @@ bench_count="${SEMANTIC_BENCH_COUNT:-5}"
 bench_cpu="${SEMANTIC_BENCH_CPU:-1,4}"
 output_path="${SEMANTIC_BENCH_OUTPUT:-}"
 
-if [[ -n "$output_path" && "$output_path" != /* ]]; then
-  output_path="$caller_dir/$output_path"
+if [[ -n "$output_path" ]]; then
+  if [[ "$output_path" != /* ]]; then
+    output_path="$caller_dir/$output_path"
+  fi
+  output_parent="$(dirname "$output_path")"
+  output_base="$(basename "$output_path")"
+  output_parent_abs="$(cd "$output_parent" 2>/dev/null && pwd -P)" || {
+    echo "SEMANTIC_BENCH_OUTPUT parent must name an existing directory" >&2
+    exit 2
+  }
+  output_path="$output_parent_abs/$output_base"
+  case "$output_path" in
+    "$repo_root"|"$repo_root"/*)
+      echo "SEMANTIC_BENCH_OUTPUT must not point inside the repository" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 tmp_parent="${TMPDIR:-/tmp}"

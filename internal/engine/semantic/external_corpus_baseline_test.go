@@ -92,6 +92,7 @@ func TestExternalCorpusBaseline(t *testing.T) {
 			m.Capped = true
 		}
 		m.SkippedUnadaptable = stats.SkippedUnadaptable
+		m.SkippedOverlong = stats.SkippedOverlong
 		m.EvalMetrics = computeMetrics(m.BenignTotal, m.BenignFP, m.AttackTotal, m.AttackHit)
 	}
 
@@ -102,6 +103,7 @@ func TestExternalCorpusBaseline(t *testing.T) {
 		report.OverallAttackHit += m.AttackHit
 		report.SkippedUnadaptable += m.SkippedUnadaptable
 		report.SkippedUnbuildable += m.SkippedUnbuildable
+		report.SkippedOverlong += m.SkippedOverlong
 		report.AnalysisIncomplete += m.AnalysisIncomplete
 		report.AnalysisErrors += m.AnalysisErrors
 		report.UnexpectedTotal += m.UnexpectedTotal
@@ -138,6 +140,9 @@ func TestExternalCorpusBaseline(t *testing.T) {
 	}
 	if report.AnalysisErrors > 0 {
 		t.Errorf("external baseline encountered %d semantic analysis errors", report.AnalysisErrors)
+	}
+	if report.SkippedOverlong > 0 {
+		t.Errorf("external baseline omitted %d overlong records; refusing incomplete coverage", report.SkippedOverlong)
 	}
 
 	logBaselineReport(t, report)
@@ -205,10 +210,12 @@ type baselineSource struct {
 	SourceMetrics
 	// SkippedUnadaptable counts records the adapter could not turn into a
 	// request at all (unparseable targets). SkippedUnbuildable counts records
-	// the engine refused (oversized bodies). Both are reported because dropping
-	// attack samples without counting them inflates TPR.
+	// the engine refused (oversized bodies). SkippedOverlong counts physical
+	// JSONL records rejected by the bounded loader. All are reported because
+	// dropping attack samples without counting them inflates TPR.
 	SkippedUnadaptable int `json:"skipped_unadaptable"`
 	SkippedUnbuildable int `json:"skipped_unbuildable"`
+	SkippedOverlong    int `json:"skipped_overlong"`
 	// AnalysisIncomplete is distinct from adapter/build skips: the request was
 	// constructed, but the analyzer could not cover its input completely. It is
 	// never included in a quality denominator. AnalysisErrors are unexpected
@@ -258,6 +265,7 @@ type baselineReport struct {
 	OverallAttackHit   int                         `json:"overall_attack_hit"`
 	SkippedUnadaptable int                         `json:"skipped_unadaptable"`
 	SkippedUnbuildable int                         `json:"skipped_unbuildable"`
+	SkippedOverlong    int                         `json:"skipped_overlong"`
 	AnalysisIncomplete int                         `json:"analysis_incomplete"`
 	AnalysisErrors     int                         `json:"analysis_errors"`
 	UnexpectedTotal    int                         `json:"upstream_unexpected_total"`
@@ -586,10 +594,10 @@ func logBaselineReport(t *testing.T, report *baselineReport) {
 	sort.Strings(names)
 	for _, name := range names {
 		m := report.Sources[name]
-		t.Logf("%-26s benign %6d (FP %5d, FPR %6.3f%%)  attack %6d (hit %5d, TPR %6.2f%%)  skipped: adapt=%d build=%d  repaired=%d capped=%v",
+		t.Logf("%-26s benign %6d (FP %5d, FPR %6.3f%%)  attack %6d (hit %5d, TPR %6.2f%%)  skipped: adapt=%d build=%d overlong=%d  repaired=%d capped=%v",
 			name, m.BenignTotal, m.BenignFP, m.EvalMetrics.FPR,
 			m.AttackTotal, m.AttackHit, m.EvalMetrics.TPR,
-			m.SkippedUnadaptable, m.SkippedUnbuildable, m.Repaired+m.RepairedToBody, m.Capped)
+			m.SkippedUnadaptable, m.SkippedUnbuildable, m.SkippedOverlong, m.Repaired+m.RepairedToBody, m.Capped)
 		if m.AnalysisIncomplete > 0 || m.AnalysisErrors > 0 {
 			t.Logf("%-26s   ↳ omitted from rates: incomplete=%d errors=%d", "", m.AnalysisIncomplete, m.AnalysisErrors)
 		}
@@ -646,9 +654,9 @@ func logBaselineReport(t *testing.T, report *baselineReport) {
 	t.Logf("OVERALL benign %d (FP %d, FPR %.3f%%)  attack %d (hit %d, TPR %.2f%%)",
 		report.OverallBenignTotal, report.OverallBenignFP, report.OverallMetrics.FPR,
 		report.OverallAttackTotal, report.OverallAttackHit, report.OverallMetrics.TPR)
-	if report.SkippedUnadaptable > 0 || report.SkippedUnbuildable > 0 {
-		t.Logf("DROPPED (not counted in any rate above): unadaptable=%d unbuildable=%d — these make the headline look BETTER than reality",
-			report.SkippedUnadaptable, report.SkippedUnbuildable)
+	if report.SkippedUnadaptable > 0 || report.SkippedUnbuildable > 0 || report.SkippedOverlong > 0 {
+		t.Logf("DROPPED (not counted in any rate above): unadaptable=%d unbuildable=%d overlong=%d — these make the headline look BETTER than reality",
+			report.SkippedUnadaptable, report.SkippedUnbuildable, report.SkippedOverlong)
 	}
 	if report.AnalysisIncomplete > 0 || report.AnalysisErrors > 0 {
 		t.Logf("OMITTED (not counted in any rate above): incomplete=%d errors=%d — coverage failures are not clean outcomes",

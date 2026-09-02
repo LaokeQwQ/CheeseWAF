@@ -182,6 +182,7 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 		// Admission failure did not consume the source, so leave Request.Body and
 		// ContentLength exactly as supplied by the caller.
 		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
+		closeBodyReadSource(originalBody, closeOnce)
 		return ErrRequestBodyReadOverload
 	}
 }

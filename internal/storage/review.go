@@ -145,7 +145,8 @@ func (s *SQLiteStore) ClaimReviewItem(ctx context.Context, id, decision string) 
 	token := uuid.NewString()
 	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET decision_claim=?
 		WHERE id=? AND decision_claim='' AND (status='pending' OR
-		(status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`, token, id, decision)
+		(status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint') AND
+			COALESCE(decision, '') <> ?))`, token, id, decision, decision)
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +207,11 @@ func (s *SQLiteStore) DecideReviewItem(ctx context.Context, id string, decision 
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `UPDATE review_items SET status=?, decision=?, applied_rule_id=?,
 		decided_by_subject=?, decided_by_name=?, decided_by_role=?, decided_at=?
-		WHERE id=? AND decision_claim='' AND (status='pending' OR (status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint')))`,
+		WHERE id=? AND decision_claim='' AND (status='pending' OR
+			(status='blocked' AND ? IN ('block_payload','block_uri','block_ip','block_fingerprint') AND
+				COALESCE(decision, '') <> ?))`,
 		reviewStatusForDecision(decision.Decision), decision.Decision, decision.AppliedRuleID,
-		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, decision.Decision)
+		decision.DecidedBySubject, decision.DecidedByName, decision.DecidedByRole, formatTime(now), id, decision.Decision, decision.Decision)
 	if err != nil {
 		return nil, err
 	}
