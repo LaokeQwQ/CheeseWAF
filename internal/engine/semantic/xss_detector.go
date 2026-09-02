@@ -299,10 +299,10 @@ func xssStandaloneJavascriptURLContext(candidate semanticCandidate) bool {
 	return false
 }
 
-func hasXSSObjectParamJavascriptURL(text string) bool {
+func hasXSSObjectParamExecutableURL(text string) bool {
 	for _, tag := range xssObjectParamTag.FindAllString(text, -1) {
 		urlSink := false
-		javascriptValue := false
+		executableURLValue := false
 		for _, attr := range xssObjectParamAttribute.FindAllStringSubmatch(tag, -1) {
 			value := attr[2]
 			if value == "" {
@@ -319,10 +319,10 @@ func hasXSSObjectParamJavascriptURL(text string) bool {
 					urlSink = true
 				}
 			case "value":
-				javascriptValue = javascriptValue || strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "javascript:")
+				executableURLValue = executableURLValue || xssExecutableURLSchemeTarget(value)
 			}
 		}
-		if urlSink && javascriptValue {
+		if urlSink && executableURLValue {
 			return true
 		}
 	}
@@ -569,7 +569,7 @@ func executableXSSContext(normalized string) bool {
 		}
 	}
 	if javascriptURLContext.MatchString(normalized) ||
-		hasXSSObjectParamJavascriptURL(normalized) ||
+		hasXSSObjectParamExecutableURL(normalized) ||
 		xssCSSExpression.MatchString(normalized) ||
 		xssDataURLContext.MatchString(normalized) ||
 		xssSrcdocContext.MatchString(normalized) ||

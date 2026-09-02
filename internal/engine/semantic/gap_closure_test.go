@@ -326,11 +326,13 @@ func TestXSSValueAndExpressionLookalikesStayClean(t *testing.T) {
 func TestXSSObjectParamNameRequiresExactSink(t *testing.T) {
 	positive := []string{
 		`<object><param name="url" value="javascript:alert(1)"></object>`,
+		`<object><param name="url" value="vbscript:msgbox(1)"></object>`,
+		`<object><param name="src" value="data:text/javascript,alert(1)"></object>`,
 		`<object><param value='javascript:alert(1)' name='code'></object>`,
 		`<param name=movie value=javascript:alert(1)>`,
 	}
 	for _, payload := range positive {
-		if !hasXSSObjectParamJavascriptURL(normalize(payload)) {
+		if !hasXSSObjectParamExecutableURL(normalize(payload)) {
 			t.Errorf("exact object parameter sink was not recognized: %q", payload)
 		}
 	}
@@ -340,10 +342,11 @@ func TestXSSObjectParamNameRequiresExactSink(t *testing.T) {
 		`<object><param value='javascript:alert(1)' name='codebase'></object>`,
 		`<param name=srcset value=javascript:alert(1)>`,
 		`<param name=database value=javascript:alert(1)>`,
+		`<param name="url" value="data:text/plain,alert(1)">`,
 	}
 	for _, payload := range negative {
 		normalized := normalize(payload)
-		if hasXSSObjectParamJavascriptURL(normalized) {
+		if hasXSSObjectParamExecutableURL(normalized) {
 			t.Errorf("object parameter name prefix was treated as an exact sink: %q", payload)
 		}
 		if executableXSSContext(normalized) {
