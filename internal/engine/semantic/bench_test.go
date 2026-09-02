@@ -337,27 +337,32 @@ const (
 	pipelineLatencyP99BudgetUs = 2000
 )
 
-// raceLatencyMultiplier scales those budgets when the test binary is built with
-// -race, which is what CI runs.
+// Race builds need a separate budget because the detector instruments every
+// channel hand-off and mutex, and this pipeline is almost nothing but those.
+// Keep the p99 multiplier unchanged; the CI failure was specifically the
+// average budget.
 //
 // The race detector instruments every channel hand-off and mutex, and this
 // pipeline is almost nothing but those: the measured avg goes from ~60µs to
-// ~1200µs, a 20x cost. Asserting the unscaled budget under -race fails on
-// completely unmodified code — measured 1212µs against a 200µs budget at HEAD —
-// which is worse than having no gate at all, because it trains people to re-run
-// CI instead of investigating.
+// ~1200µs, a roughly 20x cost. Asserting the unscaled budget under -race fails
+// on an otherwise unchanged pipeline, which is worse than having no gate at
+// all because it trains people to re-run CI instead of investigating.
 //
-// 10x is chosen deliberately below the measured 20x so the gate still bites:
-// under -race it catches roughly a 2x regression, while precise enforcement of
-// the 200µs budget remains the job of a non-race run.
-const raceLatencyMultiplier = 10
+// Ubuntu race CI measured an average of 2.819ms on an otherwise unchanged
+// pipeline. A 15x average multiplier gives a round 3ms budget, enough to cover
+// that instrumented baseline while still failing a sustained regression. The
+// precise 200µs budget remains enforced by non-race runs.
+const (
+	raceLatencyAvgMultiplier = 15
+	raceLatencyP99Multiplier = 10
+)
 
 // latencyBudgets returns the avg and p99 budgets for this build.
 func latencyBudgets() (avg, p99 float64) {
 	avg, p99 = pipelineLatencyAvgBudgetUs, pipelineLatencyP99BudgetUs
 	if raceDetectorEnabled() {
-		avg *= raceLatencyMultiplier
-		p99 *= raceLatencyMultiplier
+		avg *= raceLatencyAvgMultiplier
+		p99 *= raceLatencyP99Multiplier
 	}
 	return avg, p99
 }

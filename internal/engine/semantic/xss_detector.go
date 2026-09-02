@@ -3,6 +3,7 @@ package semantic
 import (
 	"context"
 	"encoding/base64"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -60,11 +61,105 @@ var (
 	xssJavascriptURLField = regexp.MustCompile(`(?is)^\s*(?:<>\s*)?javascript\s*:\s*(?:(?:/{2}|/\*.*?\*/\s*)?)(?:\s|%[0-9a-f]{2})*(?:[a-z_][a-z0-9_]*\s*\(|void\s*\()`)
 )
 
+// xssExecutableURLSchemeTarget validates a complete URL scheme before it is
+// treated as an executable request target. Checking a raw prefix (for example
+// strings.HasPrefix(raw, "javascript:")) is incomplete: it misses equivalent
+// dangerous schemes and can accidentally make scheme-looking text executable
+// without first proving that the input is a URL. The request-surface gate is
+// applied by xssStandaloneExecutableURLContext; this helper only answers
+// whether the parsed URL's scheme and payload are dangerous.
+func xssExecutableURLSchemeTarget(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || len(trimmed) > maxInputRawBytes {
+		return false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if len(parsed.Scheme)+1 >= len(trimmed) {
+		return false
+	}
+	payload := strings.TrimSpace(trimmed[len(parsed.Scheme)+1:])
+	switch scheme {
+	case "javascript", "vbscript":
+		// Both schemes execute their opaque payload directly. The URL surface
+		// provides the context, so even a non-call expression is meaningful.
+		return payload != ""
+	case "data":
+		return xssExecutableDataURLPayload(payload)
+	default:
+		return false
+	}
+}
+
+func xssExecutableDataURLPayload(payload string) bool {
+	metadata, encoded, ok := strings.Cut(payload, ",")
+	if !ok {
+		return false
+	}
+	metadata = strings.ToLower(strings.TrimSpace(metadata))
+	parts := strings.Split(metadata, ";")
+	mediaType := strings.TrimSpace(parts[0])
+	base64Payload := false
+	for _, part := range parts[1:] {
+		if strings.TrimSpace(part) == "base64" {
+			base64Payload = true
+		}
+	}
+	switch mediaType {
+	case "text/javascript", "application/javascript", "application/ecmascript", "text/ecmascript":
+		return strings.TrimSpace(encoded) != ""
+	case "text/html", "application/xhtml+xml", "image/svg+xml":
+		var decoded string
+		if base64Payload {
+			for _, encoding := range []*base64.Encoding{
+				base64.StdEncoding, base64.RawStdEncoding,
+				base64.URLEncoding, base64.RawURLEncoding,
+			} {
+				bytes, err := encoding.DecodeString(strings.TrimSpace(encoded))
+				if err == nil && len(bytes) > 0 {
+					decoded = string(bytes)
+					break
+				}
+			}
+		} else if unescaped, err := url.PathUnescape(encoded); err == nil {
+			decoded = unescaped
+		}
+		return decoded != "" && executableXSSContext(normalize(decoded))
+	default:
+		return false
+	}
+}
+
 func xssJavascriptURLFieldContext(candidate semanticCandidate) bool {
 	if !xssJavascriptURLField.MatchString(candidate.text) {
 		return false
 	}
 	return xssURLSinkFieldName(candidate.input.Name)
+}
+
+// xssStandaloneExecutableURLContext ties a complete dangerous URL scheme to a
+// request surface that can execute it. Free-text fields may mention these
+// schemes without navigation or script execution, so they remain data unless
+// their field name is an explicit URL sink.
+func xssStandaloneExecutableURLContext(candidate semanticCandidate) bool {
+	if !xssExecutableURLSchemeTarget(candidate.text) {
+		return false
+	}
+	switch strings.ToLower(candidate.input.Source) {
+	case "body.raw":
+		return true
+	case "uri":
+		switch strings.ToLower(candidate.input.Name) {
+		case "path", "target":
+			return true
+		}
+	case "query", "form", "json", "cookie", "multipart", "body.form", "body.json", "body.multipart":
+		return xssURLSinkFieldName(candidate.input.Name)
+	}
+	return false
 }
 
 func xssURLSinkFieldName(rawName string) bool {
@@ -346,6 +441,12 @@ func (d *XSSDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 			Message: "XSS payload pattern matched", Confidence: 0.86, Payload: strings.TrimSpace(surface),
 		}, nil
 	}
+	if surface, ok := standaloneExecutableURLSurface(reqCtx); ok {
+		return &engine.DetectionResult{
+			Detected: true, DetectorID: d.ID(), Category: "xss", Severity: engine.SeverityHigh, Action: actionForMode(d.mode),
+			Message: "XSS executable URL scheme matched", Confidence: 0.88, Payload: strings.TrimSpace(surface),
+		}, nil
+	}
 	if surface, ok := standaloneDataURLSurface(reqCtx); ok {
 		return &engine.DetectionResult{
 			Detected: true, DetectorID: d.ID(), Category: "xss", Severity: engine.SeverityHigh, Action: actionForMode(d.mode),
@@ -378,6 +479,17 @@ func (d *XSSDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		}
 	}
 	return nil, nil
+}
+
+func standaloneExecutableURLSurface(reqCtx *engine.RequestContext) (string, bool) {
+	if reqCtx == nil || reqCtx.Request == nil || reqCtx.Request.URL == nil || reqCtx.Request.URL.Scheme == "" {
+		return "", false
+	}
+	target := reqCtx.Request.URL.String()
+	if xssExecutableURLSchemeTarget(target) {
+		return target, true
+	}
+	return "", false
 }
 
 func standaloneJavascriptURLSurface(reqCtx *engine.RequestContext) (string, bool) {

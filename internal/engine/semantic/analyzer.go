@@ -611,6 +611,18 @@ func (a *Analyzer) analyzeCandidate(candidate semanticCandidate) []Hit {
 			guesses = append(guesses, "xss")
 		}
 	}
+	if xssStandaloneExecutableURLContext(candidate) {
+		seenXSS := false
+		for _, category := range guesses {
+			if category == "xss" {
+				seenXSS = true
+				break
+			}
+		}
+		if !seenXSS {
+			guesses = append(guesses, "xss")
+		}
+	}
 	if len(guesses) == 0 {
 		if cacheable {
 			processCandidateCache.put(key, nil)
@@ -968,7 +980,10 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	} else if targetRaw == "" {
 		targetRaw = r.URL.String()
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(targetRaw)), "javascript:") {
+	// Preserve only complete, executable custom-scheme targets. The helper parses
+	// the URL and validates javascript/data/vbscript payloads; ordinary paths and
+	// prose mentioning a scheme are intentionally not promoted to URI targets.
+	if r.URL.Scheme != "" && xssExecutableURLSchemeTarget(targetRaw) {
 		add(&uriInputs, InputPoint{Source: "uri", Name: "target", Raw: clipRaw(targetRaw), Layers: rawLayersOnly})
 	}
 	// url.Query() allocates a url.Values map even for an empty RawQuery, and the
@@ -5353,6 +5368,10 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	standaloneCandidate.text = lower
 	if xssStandaloneJavascriptURLContext(standaloneCandidate) {
 		reasons["syntax: standalone javascript URL in executable request surface"] = true
+	}
+	if xssStandaloneExecutableURLContext(candidate) {
+		reasons["syntax: dangerous URL scheme in executable request surface"] = true
+		reasons["semantics: request URL accepts an executable script or HTML scheme"] = true
 	}
 	if xssDataURLContext.MatchString(lower) {
 		reasons["syntax: executable data URI in HTML attribute"] = true
