@@ -1,10 +1,18 @@
-# Repo override: org UI currently includes no paths, so every file is
-# "excluded by none and included by none" and reviews are skipped.
+# Keep automated reviews enabled for every protected promotion branch. The
+# repository default branch is included automatically; these entries extend
+# coverage to the development and canary promotion stages as well.
 language: en-US
 reviews:
   profile: chill
   high_level_summary: true
   review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "^dev$"
+      - "^canary$"
+      - "^master$"
   path_filters:
     - "**"
     - "!**/*.lock"
