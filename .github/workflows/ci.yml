@@ -429,8 +429,8 @@ jobs:
         env:
           WINDOWS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_P12 || '' }}
         run: |
-          signing_mode=warn
-          if [[ -n "$WINDOWS_CERT_P12" ]]; then signing_mode=1; fi
+          signing_mode=1
+          if [[ "${{ github.ref_type }}" != "tag" ]]; then signing_mode=warn; fi
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=windows \
             bash scripts/ci/verify-release.sh release
       - name: Upload branch release artifacts
@@ -476,11 +476,8 @@ jobs:
           APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
         run: |
-          signing_mode=warn
-          if [[ -n "$APPLE_API_KEY" && -n "$APPLE_API_KEY_ID" && -n "$APPLE_API_ISSUER" ]] && \
-             [[ -n "$MACOS_P12_BASE64" || -n "$MACOS_CODESIGN_IDENTITY" ]]; then
-            signing_mode=1
-          fi
+          signing_mode=1
+          if [[ "${{ github.ref_type }}" != "tag" ]]; then signing_mode=warn; fi
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=macos \
             bash scripts/ci/verify-release.sh release
       - name: Upload macOS disk images
@@ -542,6 +539,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

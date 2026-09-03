@@ -58,7 +58,7 @@ CheeseWAF 采用分层处理方案：
 
 1. **实时拦截（数据平面）**：内置语义分析引擎在毫秒级对输入参数完成多层解码与抽象语法树（AST）语法分析，对确定性攻击实施即时拦截。
 2. **异步复核（ALAP 机制）**：**ALAP（AI Large-Language-Model Auto Pilot，大语言模型自动值守）** 在请求响应返回客户端后，将可疑、边界模糊或带有攻击特征的样本放入后台队列，由大语言模型异步深度审查，全程自动值守，不占用业务转发延迟。
-3. **动态规则生成**：大模型复核判定为高危（`high` 或 `critical`）的样本，在开启自动同意后可自动沉淀为长期的 IP、客户端指纹或特征规则，反哺数据平面进行拦截。
+3. **动态规则生成**：在站点开启自动采纳后，大模型复核判定为高危（`high` 或 `critical`）的样本可沉淀为该站点的长期自定义载荷规则，反哺数据平面进行拦截。全局 IP 黑名单与客户端指纹封禁仍需操作者明确执行。
 
 系统以单个静态二进制程序交付，内置响应式 Web 控制台、命令行 TUI 工具与 RESTful 管理 API，无需安装外部复杂中间件即可独立运行。
 
@@ -69,7 +69,7 @@ CheeseWAF 采用分层处理方案：
 - **语义分析检测**：通过多阶段解码与语法树评估识别 SQL 注入、XSS、命令执行等攻击，不依赖庞大且脆弱的正则表达式。
 - **ALAP 异步审查**：支持对接任意兼容 OpenAI 协议的大模型接口或私有模型，后台异步运行，不阻塞线上请求。
 - **0～5 级防护策略**：支持针对站点分别配置防护级别，区分独立攻击载荷与长文本中夹杂的特征，支持基于时间的临时升档（`promote_seconds`）。
-- **访问控制与防刷**：内置 IP 黑白名单、地理位置封禁、客户端软指纹识别、滑动验证码挑战、令牌桶限流与排队等待室。
+- **访问控制与防刷**：内置 IP 黑白名单、地理位置封禁、客户端软指纹识别、滑动验证码挑战、分片滑动窗口限流与排队等待室。
 - **三端统一管理**：Web 控制台（桌面与移动端自适应）、终端交互工具（`waf-cli`）与 RESTful API 共享同一套权限体系、会话管理与审计日志。
 - **轻量独立交付**：纯 Go 语言编写，内置 SQLite 存储（无 CGO 依赖），支持单机运行与容器化编排。
 
@@ -98,9 +98,9 @@ flowchart TB
   Sem -.->|5 级拦截样本| Queue
   Queue --> LLM[调用配置的大语言模型]
   LLM --> Review{威胁研判决策}
-  Review -->|高危判定| Rule[自动生成长期防护规则]
+  Review -->|高危判定| Rule[自动生成站点载荷规则]
   Review -->|低危或误报| Dismiss[归档或添加白名单]
-  Rule -.->|动态热更新| IP
+  Rule -.->|动态热更新站点规则| Sem
 ```
 
 ### 默认网络监听
@@ -109,7 +109,7 @@ flowchart TB
 | :--- | :--- | :--- |
 | **数据平面** | `http://127.0.0.1:8080` | 接收 Web 业务流量并执行安全检测与反向代理 |
 | **管理平面** | `http://127.0.0.1:9443` | 承载 Web 控制台、REST API 与初始化向导（Docker 默认为 HTTPS） |
-| **集群平面** | `http://127.0.0.1:9444` | 多节点集群模式下的状态同步与节点通信 |
+| **集群平面** | `https://127.0.0.1:9444` | 用于节点身份、健康/心跳、拓扑与编排的 TLS/mTLS 互联，不是通用站点/策略状态复制通道 |
 
 ---
 
@@ -221,7 +221,7 @@ sudo systemctl status cheesewaf
 
 systemd 单元保留 `ProtectSystem=strict`，但只允许服务写入 `/etc/cheesewaf`、`/var/lib/cheesewaf` 和 `/var/log/cheesewaf`。这样管理 API 可以保存已校验的配置修改，其他系统目录仍保持只读。
 
-默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。本机打开时向导会自己拿到初始化令牌。从别的机器访问时，令牌在 `journalctl -u cheesewaf` 或 `/var/lib/cheesewaf/setup.url`。初始化里选了对外管理策略之后，才能用服务器 IP 访问 9443。
+默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。所有初始化修改（包括回环请求）都必须提供 `X-CheeseWAF-Setup-Token`；请使用启动日志或受保护的 `/var/lib/cheesewaf/setup.url` 片段中的令牌（也可设置 `CHEESEWAF_SETUP_TOKEN`）。初始化明确选择对外管理策略之前，远程 `SERVER_IP:9443` 不会开放。
 
 `GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
 
@@ -238,7 +238,7 @@ Docker 镜像要从 git 仓库里的 `deploy/docker/Dockerfile` 构建。发行 
 ```yaml
 services:
   cheesewaf:
-    image: cheesewaf:latest
+    image: cheesewaf:dev
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile
@@ -253,7 +253,7 @@ services:
       - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
     ports:
       - "8080:8080"
-      - "9443:9443"
+      - "127.0.0.1:9443:9443"
     volumes:
       - cheesewaf-data:/var/lib/cheesewaf
       - cheesewaf-logs:/var/log/cheesewaf
@@ -271,7 +271,7 @@ volumes:
 #### 步骤 2：启动容器
 
 ```bash
-# 启动服务
+# 启动服务（在保存该 compose 文件的仓库根目录执行）
 docker compose up -d
 
 # 查看运行日志与初始 Token
@@ -280,7 +280,7 @@ docker compose logs -f cheesewaf
 
 #### 步骤 3：访问管理端
 
-- 访问 `https://<宿主机IP>:9443/setup` 进行初始化设置（容器环境默认使用自签名证书）。
+- 在 Docker 宿主机访问 `https://127.0.0.1:9443/setup` 进行初始化设置（容器环境默认使用自签名证书）。从其他机器访问时，先执行 `ssh -N -L 9443:127.0.0.1:9443 <用户>@<服务器>` 建立隧道，再访问同一回环地址；只有在明确修改绑定并配置访问控制后才使用远程地址。
 - 首次初始化所需的令牌可在启动日志中获取。
 - 业务数据保存在 `cheesewaf-data` 卷中，执行 `docker compose down` 不会丢失配置数据。
 
@@ -292,32 +292,35 @@ docker compose logs -f cheesewaf
 
 #### 方式 A：单文件 CLI
 
-1. 下载 `cheesewaf-*-windows-amd64.exe` 或 `cheesewaf-*-windows-arm64.exe`。
+1. 下载 `cheesewaf-amd64-windows-*.exe` 或 `cheesewaf-arm64-windows-*.exe`。
 2. 直接运行：
 
 ```powershell
-.\cheesewaf-*-windows-amd64.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
-.\cheesewaf-*-windows-amd64.exe status
-.\cheesewaf-*-windows-amd64.exe stop
+$exe = (Get-ChildItem .\cheesewaf-amd64-windows-*.exe | Where-Object { $_.Name -notlike '*-setup.exe' } | Select-Object -First 1).FullName  # ARM64 Windows 使用 arm64 文件名
+& $exe setup
+& $exe serve --data-dir .\data
+& $exe status
+& $exe stop
 ```
 
-转发面不依赖安装器。管理界面在 zip / DMG / tar 包里，放在可执行文件旁边的 `web/dist`。
+正式发布流水线会将 Web 控制台嵌入单文件可执行程序，但该文件不包含外置 `configs/`、`web/` 或 GUI 控制器。需要这些配套文件时请使用便携 ZIP 或 NSIS 安装包；从源码构建时必须先执行 `bash scripts/ci/build-web.sh` 再 `go build`，否则 `/setup` 会返回 404。
 
 #### 方式 B：便携目录（Zip）
 
-1. 下载 `cheesewaf-*-windows-amd64.zip` 或 `cheesewaf-*-windows-arm64.zip`，解压到目标目录（如 `D:\CheeseWAF`）。
+1. 下载 `cheesewaf-amd64-windows-*.zip` 或 `cheesewaf-arm64-windows-*.zip`，解压到目标目录（如 `D:\CheeseWAF`）。
 2. 运行：
 
 ```powershell
-.\cheesewaf.exe serve --config .\configs\cheesewaf.yaml --data-dir .\data
+.\cheesewaf.exe setup
+.\cheesewaf.exe serve --config .\data\config\cheesewaf.yaml --data-dir .\data
 .\cheesewaf.exe status
 .\cheesewaf.exe stop
 ```
 
 #### 方式 C：NSIS 图形安装器
 
-1. 运行 `CheeseWAF-*-windows-amd64-setup.exe` 或 `CheeseWAF-*-windows-arm64-setup.exe`。
-2. 按向导安装。安装器会注册 Windows 服务 `CheeseWAF`。`cheesewaf.exe serve` 会响应服务控制管理器的停止指令。
+1. 运行 `cheesewaf-amd64-windows-*-setup.exe` 或 `cheesewaf-arm64-windows-*-setup.exe`。
+2. 按向导安装。安装器会注册 Windows 服务 `CheeseWAF`，默认采用手动启动（`start= demand`）；需要时可通过服务控制管理器或 `sc.exe` 显式启动/停止。`cheesewaf.exe serve` 会响应服务控制管理器的停止指令。
 3. 卸载时默认保留 `data\`。
 
 #### 本地控制器（`cheesewaf-gui`）
@@ -401,6 +404,8 @@ sites:
       paranoia_level: 3          # 防护等级（0～5）
       semantic_policy:
         auto_agree: true         # 自动采纳高危研判结果
+      access_control:
+        trusted_cidrs: []
 
 protection:
   ratelimit:
@@ -428,6 +433,10 @@ waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file
 waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
 ```
 
+默认可信 CIDR 列表为空。若部署在可信代理之后，仅应添加明确受控的网段，例如 `127.0.0.1/32` 或 `::1/128`。配置 `CHEESEWAF_ADAPTER_TOKEN` 后，适配器必须通过专用的 `X-CheeseWAF-Adapter-Token` 请求头认证；它不是 Bearer Token，不得放在 `Authorization: Bearer ...` 中。
+
+当请求体超过 `max_body_bytes` 配置上限时，请求会直接返回 HTTP `413 Request Entity Too Large`。WAF 模式支持 `block`、`monitor` 和 `off`；`log` 仅作为兼容别名接受，并会归一化为 `monitor`。
+
 改配置文件后，进程会监视 `cheesewaf.yaml` 的修改时间，也可以发 `SIGHUP` 立刻重载。加载或编译失败时仍使用原来的规则。
 
 ---
@@ -437,7 +446,7 @@ waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --form
 | 模块 | 选型 |
 | :--- | :--- |
 | **核心转发** | Go 1.26、`chi` 路由、quic-go（支持 HTTP/3） |
-| **检测引擎** | 进程内 AST 语法分析器、客户端软指纹、令牌桶限流算法 |
+| **检测引擎** | 进程内 AST 语法分析器、客户端软指纹、分片滑动窗口限流算法 |
 | **异步审查** | 内存与持久化队列、标准 Chat Completions / Messages 协议适配 |
 | **数据存储** | 内嵌 SQLite（`modernc.org/sqlite`，纯 Go 实现）、支持对接 PostgreSQL |
 | **前端架构** | React 18、TypeScript、Vite、Tailwind CSS、shadcn/ui、TanStack Query |
@@ -464,6 +473,7 @@ cd web
 npm ci
 npm run build
 cd ..
+cp -R web/dist/. internal/webui/dist/
 
 # 3. 构建后端二进制
 go build -o bin/cheesewaf ./cmd/cheesewaf

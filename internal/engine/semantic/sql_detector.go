@@ -38,31 +38,34 @@ func (d *SQLDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 		}
 		// Deep tokenization first (fast, high precision; libinjection-compatible)
 		if fp, detected := engine.SQLLibinjectionFingerprint(candidate); detected {
+			fingerprintAllowed := true
 			// The nc token also describes ordinary numeric URL slugs such as
 			// "123--phone". Require a SQL-shaped line-comment terminator before
 			// treating this low-context fingerprint as executable input.
 			if strings.Contains(fp, "nc") && strings.Contains(candidate, "--") && !hasSQLNCSemanticContext(candidate) {
-				continue
+				fingerprintAllowed = false
 			}
 			if strings.Contains(fp, "o(") && !hasSQLOperatorSubqueryContext(candidate) {
-				continue
+				fingerprintAllowed = false
 			}
 			// EXEC/Ef fingerprints are useful for real stored-procedure payloads,
 			// but the short token window also appears in SQL Server documentation.
 			// Keep the same statement-boundary guard used by the staged analyzer.
 			if (strings.Contains(fp, "Ew") || strings.Contains(fp, "Ef")) && !hasSQLExecFingerprintContext(candidate) {
-				continue
+				fingerprintAllowed = false
 			}
-			return &engine.DetectionResult{
-				Detected:   true,
-				DetectorID: d.ID(),
-				Category:   "sqli",
-				Severity:   engine.SeverityHigh,
-				Action:     actionForMode(d.mode),
-				Message:    "SQL injection token fingerprint matched: " + truncate(fp, 40),
-				Confidence: 0.92,
-				Payload:    truncate(candidate, maxSQLPayloadBytes),
-			}, nil
+			if fingerprintAllowed {
+				return &engine.DetectionResult{
+					Detected:   true,
+					DetectorID: d.ID(),
+					Category:   "sqli",
+					Severity:   engine.SeverityHigh,
+					Action:     actionForMode(d.mode),
+					Message:    "SQL injection token fingerprint matched: " + truncate(fp, 40),
+					Confidence: 0.92,
+					Payload:    truncate(candidate, maxSQLPayloadBytes),
+				}, nil
+			}
 		}
 		// Fallback to signature-based detection
 		if detected, reason := looksLikeSQLi(candidate); detected {

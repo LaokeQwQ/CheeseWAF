@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -150,7 +151,7 @@ func ssrfRawRedirectForm(text string) bool {
 }
 
 func ssrfSameOriginHTTPURL(candidate semanticCandidate, req *http.Request) bool {
-	requestScheme := ssrfRequestScheme(req)
+	requestScheme := ssrfRequestScheme(req, candidate.trustedProxyCIDRs)
 	authority := req.Host
 	if strings.TrimSpace(authority) == "" {
 		authority = req.URL.Host
@@ -178,7 +179,7 @@ func ssrfSameOriginHTTPURL(candidate semanticCandidate, req *http.Request) bool 
 	return canonicalSSRFAuthority(parsed.Host, scheme) == authority
 }
 
-func ssrfRequestScheme(req *http.Request) string {
+func ssrfRequestScheme(req *http.Request, trustedCIDRs []string) string {
 	if req == nil {
 		return ""
 	}
@@ -188,7 +189,43 @@ func ssrfRequestScheme(req *http.Request) string {
 	if req.TLS != nil {
 		return "https"
 	}
+	// The edge terminates TLS before the WAF in the common reverse-proxy
+	// deployment. Trust X-Forwarded-Proto only when the socket peer is covered
+	// by the same configured proxy CIDRs used by the request pipeline.
+	if trustedProxyRemote(req.RemoteAddr, trustedCIDRs) {
+		proto := strings.TrimSpace(strings.Split(req.Header.Get("X-Forwarded-Proto"), ",")[0])
+		if strings.EqualFold(proto, "https") {
+			return "https"
+		}
+		if strings.EqualFold(proto, "http") {
+			return "http"
+		}
+	}
 	return "http"
+}
+
+func trustedProxyRemote(remoteAddr string, cidrs []string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return false
+	}
+	for _, raw := range cidrs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(raw); err == nil && prefix.Contains(addr) {
+			return true
+		}
+		if exact, err := netip.ParseAddr(raw); err == nil && exact == addr {
+			return true
+		}
+	}
+	return false
 }
 
 // ssrfRequestContextSensitive identifies candidates whose SSRF result can vary
@@ -218,7 +255,7 @@ func ssrfRequestCacheScope(candidate semanticCandidate) (ssrfCacheScope, bool) {
 	return ssrfCacheScope{
 		hostValidated: candidate.hostValidated,
 		tls:           req.TLS != nil,
-		scheme:        req.URL.Scheme,
+		scheme:        ssrfRequestScheme(req, candidate.trustedProxyCIDRs),
 		requestHost:   req.Host,
 		urlHost:       req.URL.Host,
 		path:          req.URL.Path,

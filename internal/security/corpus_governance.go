@@ -1355,7 +1355,7 @@ func screen(c Case, src SourceSpec) ([]string, bool) {
 	}
 	if c.Label == "attack" {
 		f := FidelityOf(c)
-		if c.Category != "" && !f.InClass {
+		if c.Category != "" && c.Category != CategoryGeneric && !f.InClass {
 			appendReason(&rs, "label_fidelity_mismatch")
 		}
 		if f.NoEvidence {
@@ -1527,16 +1527,25 @@ func sensitiveCookieHeader(value string) bool {
 
 func sanitizeCookieHeader(value string) string {
 	parts := strings.Split(value, ";")
+	changed := false
 	for i, part := range parts {
-		part = strings.TrimSpace(part)
-		name, _, ok := strings.Cut(part, "=")
+		original := part
+		trimmed := strings.TrimSpace(part)
+		name, _, ok := strings.Cut(trimmed, "=")
 		if ok && sensitiveCookieName(name) {
-			parts[i] = strings.TrimSpace(name) + "=[REDACTED]"
+			leading := part[:len(part)-len(strings.TrimLeft(part, " \t\r\n"))]
+			trailing := part[len(strings.TrimRight(part, " \t\r\n")):]
+			parts[i] = leading + strings.TrimSpace(name) + "=[REDACTED]" + trailing
+			changed = true
 		} else {
 			parts[i] = sanitizeCorpusText(part)
+			changed = changed || parts[i] != original
 		}
 	}
-	return strings.Join(parts, "; ")
+	if !changed {
+		return value
+	}
+	return strings.Join(parts, ";")
 }
 
 func sensitiveCookieName(name string) bool {

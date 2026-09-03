@@ -290,7 +290,9 @@ func AdaptRawHTTPCase(raw RawHTTPCase, name string, defaultTruth string) (Case, 
 		// ("javascript://%0d%0aalert(1)"). The body accepts arbitrary bytes, so
 		// moving it there measures the payload instead of dropping the sample.
 		// raw.URL is passed untrimmed: a trailing CRLF is part of the payload.
-		body = firstNonEmpty(raw.Data, raw.URL)
+		// Prefer it when present so an unparseable target is not silently replaced
+		// by a separate data field; raw.Data remains the compatibility fallback.
+		body = firstNonEmpty(raw.URL, raw.Data)
 		method, target, rationale = http.MethodPost, "/", RationaleRepairedToBody
 	}
 

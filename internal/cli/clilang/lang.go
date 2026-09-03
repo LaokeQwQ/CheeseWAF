@@ -314,7 +314,7 @@ var messages = map[string]map[string]string{
 		"setup.write.done":          "Setup complete.",
 		"setup.write.failed":        "setup failed: %v",
 		"setup.write.next":          "Start CheeseWAF with: cheesewaf serve",
-		"setup.write.panel":         "Admin panel: https://%s",
+		"setup.write.panel":         "Admin panel: %s://%s",
 		"setup.yes.needCredentials": "--yes requires --password-stdin (password must satisfy the policy)",
 	},
 	"zh-CN": {
@@ -439,7 +439,7 @@ var messages = map[string]map[string]string{
 		"setup.write.done":          "安装完成。",
 		"setup.write.failed":        "安装失败：%v",
 		"setup.write.next":          "启动 CheeseWAF：cheesewaf serve",
-		"setup.write.panel":         "管理面板：https://%s",
-		"setup.yes.needCredentials": "--yes 需要配合 --password-stdin（密码须满足策略）",
+		"setup.write.panel":         "管理面板：%s://%s",
+		"setup.yes.needCredentials": "--yes 需要同时指定 --password-stdin（密码必须符合策略）",
 	},
 }

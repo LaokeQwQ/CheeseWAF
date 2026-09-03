@@ -11,6 +11,20 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
+func TestSSRFRequestSchemeHonorsTrustedForwardedProto(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/?url=https://192.168.171.131/admin", nil)
+	req.Host = "192.168.171.131"
+	req.RemoteAddr = "10.0.0.2:443"
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	if got := ssrfRequestScheme(req, []string{"10.0.0.0/8"}); got != "https" {
+		t.Fatalf("trusted forwarded proto scheme = %q, want https", got)
+	}
+	req.RemoteAddr = "198.51.100.2:443"
+	if got := ssrfRequestScheme(req, []string{"10.0.0.0/8"}); got != "http" {
+		t.Fatalf("untrusted forwarded proto scheme = %q, want http", got)
+	}
+}
+
 func sameOriginTelemetryRequest(t *testing.T, path string) *engine.RequestContext {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "http://192.168.171.131"+path, nil)

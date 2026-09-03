@@ -145,7 +145,8 @@ type semanticCandidate struct {
 	// request keeps source-aware gates (for example same-origin telemetry
 	// handling) tied to the request that produced the candidate. It is not
 	// serialized, cached, or exposed in the analysis report.
-	request *http.Request
+	request           *http.Request
+	trustedProxyCIDRs []string
 	// hostValidated carries the routing provenance required before a
 	// same-origin optimization may trust Request.Host.
 	hostValidated bool
@@ -1129,10 +1130,11 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 				next := input
 				next.Layers = variant.layers
 				candidates = append(candidates, semanticCandidate{
-					input:         next,
-					text:          text,
-					request:       r,
-					hostValidated: reqCtx.HostValidated,
+					input:             next,
+					text:              text,
+					request:           r,
+					hostValidated:     reqCtx.HostValidated,
+					trustedProxyCIDRs: reqCtx.TrustedProxyCIDRs,
 				})
 			}
 			if len(candidates) >= maxCandidates {
@@ -7718,12 +7720,12 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	pathSuffix := lfiNullBytePathSuffixShape(text)
 	explicitPathContext := lfiExplicitPathContext(candidate.input.Source, candidate.input.Name)
 	reasons := map[string]bool{}
-	for index, pattern := range lfiPatterns {
+	for _, pattern := range lfiPatterns {
 		// Patterns 3 and 6 are sensitive-target signatures. When a decoded NUL
 		// sits inside a command word (c\x00at /etc/passwd), those signatures are
 		// documentation evidence rather than a path request. Keep them enabled for
 		// explicit file/path fields and for a genuine null-byte path suffix.
-		if controlBoundary && !explicitPathContext && !pathSuffix && (index == 3 || index == 6) {
+		if controlBoundary && !explicitPathContext && !pathSuffix && (pattern == lfiSensitiveAbsolutePattern || pattern == lfiSensitiveRelativePattern) {
 			continue
 		}
 		if pattern.MatchString(text) {
