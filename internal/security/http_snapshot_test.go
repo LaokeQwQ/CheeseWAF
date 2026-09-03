@@ -56,6 +56,23 @@ func TestValidateHTTPTransactionAndProjection(t *testing.T) {
 	}
 }
 
+func TestHTTPTransactionProjectionNormalizesOracleLabels(t *testing.T) {
+	tx := validSnapshot(t)
+	tx.ExpectedOracleLabel.Label = "  BENIGN  "
+	tx.ExpectedOracleLabel.Category = "  Form-Login  "
+	resealSnapshot(t, &tx)
+	if err := ValidateHTTPTransaction(tx); err != nil {
+		t.Fatal(err)
+	}
+	c, err := tx.ToCase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Label != "benign" || c.Category != "form-login" {
+		t.Fatalf("oracle labels were not normalized: %+v", c)
+	}
+}
+
 func TestHTTPTransactionRejectsOracleAndSensitiveData(t *testing.T) {
 	tests := []struct {
 		name   string

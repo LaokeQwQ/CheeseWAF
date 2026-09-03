@@ -75,6 +75,36 @@ func TestParseNginxServerBlockAcceptsOneLineServer(t *testing.T) {
 	}
 }
 
+func TestParseNginxServerBlockDoesNotParseQuotedDirectiveText(t *testing.T) {
+	sites, err := ParseNginxServerBlock([]byte(`server { server_name quoted.example.test; set $note "proxy_pass http://quoted.invalid;"; proxy_pass http://127.0.0.1:9001; }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 || len(sites[0].Upstreams) != 1 || sites[0].Upstreams[0].Address != "http://127.0.0.1:9001" {
+		t.Fatalf("quoted directive text was parsed as configuration: %+v", sites)
+	}
+}
+
+func TestParseNginxServerBlockIgnoresQuotedServerText(t *testing.T) {
+	sites, err := ParseNginxServerBlock([]byte(`server { server_name quoted.example.test; set $note "server { proxy_pass http://quoted.invalid; }"; proxy_pass http://127.0.0.1:9001; }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 || len(sites[0].Upstreams) != 1 || sites[0].Upstreams[0].Address != "http://127.0.0.1:9001" {
+		t.Fatalf("quoted server text was parsed as configuration: %+v", sites)
+	}
+}
+
+func TestParseNginxServerBlockAcceptsMultipleInlineServers(t *testing.T) {
+	sites, err := ParseNginxServerBlock([]byte(`server { listen 8081; server_name one.example.test; proxy_pass http://one; } server { listen 8082; server_name two.example.test; proxy_pass http://two; }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 2 || sites[0].ListenPort != 8081 || sites[1].ListenPort != 8082 {
+		t.Fatalf("multiple inline servers were not isolated: %+v", sites)
+	}
+}
+
 func TestParseNginxServerBlockAcceptsBoundedMultiMiBLine(t *testing.T) {
 	contents := "server {\n#" + strings.Repeat("x", 128<<10) + "\nserver_name long.example.test;\nproxy_pass http://127.0.0.1:9000;\n}\n"
 	sites, err := ParseNginxServerBlock([]byte(contents))

@@ -624,5 +624,5 @@ func (tx HTTPTransaction) ToCase() (Case, error) {
 	for _, h := range tx.Request.Headers {
 		header[h.Name] = strings.Join(h.Values, ", ")
 	}
-	return Case{Name: tx.Assertion, SourceFamily: tx.Source, Label: strings.ToLower(tx.ExpectedOracleLabel.Label), Category: tx.ExpectedOracleLabel.Category, Method: tx.Request.Method, Target: tx.Request.Target, Body: string(tx.Request.Body), Header: header}, nil
+	return Case{Name: tx.Assertion, SourceFamily: tx.Source, Label: strings.ToLower(strings.TrimSpace(tx.ExpectedOracleLabel.Label)), Category: strings.ToLower(strings.TrimSpace(tx.ExpectedOracleLabel.Category)), Method: tx.Request.Method, Target: tx.Request.Target, Body: string(tx.Request.Body), Header: header}, nil
 }
