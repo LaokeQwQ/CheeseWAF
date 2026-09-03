@@ -398,8 +398,7 @@ const xssSchemeNoise = `(?:\s|<!--|-->|<!\[cdata\[|]]>)*`
 // attribute with scheme-splitting noise interleaved between the letters.
 //
 // The pattern is assembled from the word rather than written out, because
-// "jav ascript" does not contain the substring "java" — so neither a cheap
-// substring gate nor a naive strip-then-match can find it. Stripping noise from
+// "jav ascript" does not contain the contiguous scheme spelling. Stripping noise from
 // the whole text first does not work either: it removes the space after the tag
 // name too, and "imgsrc" has no word boundary before "src", so \b(?:href|src…)
 // stops matching.
@@ -588,12 +587,9 @@ func executableXSSContext(normalized string) bool {
 		xssCSSInjectionPattern.MatchString(normalized) {
 		return true
 	}
-	// Scheme-splitting evasion. Gated on "java" because the cleanup allocates:
-	// every obfuscated javascript: URL has to contain that stem somewhere,
-	// including the CDATA-split form ("javas]]><![cdata[cript:").
-	if !strings.Contains(normalized, "jav") && !strings.Contains(normalized, "script") {
-		return false
-	}
+	// Scheme-splitting evasion. Do not add a contiguous-substring prefilter:
+	// xssNoisyWord also intentionally recognizes forms such as "j a v a s c r i p t:"
+	// where no "jav" or "script" sequence remains.
 	return xssObfuscatedJavascriptURL.MatchString(normalized)
 }
 
