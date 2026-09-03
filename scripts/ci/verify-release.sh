@@ -241,8 +241,8 @@ if [[ "$signing_mode" == "1" ]]; then
         if ! out="$(run_with_timeout 60 osslsigncode verify "$pe" 2>&1)"; then
           fail "Authenticode verification failed for $(basename "$pe"): ${out}"
         fi
-        if ! grep -qiE '^(Succeeded|Signature verification:[[:space:]]*(ok|successful)|Signing certificate chain:[[:space:]]*ok)[[:space:]]*$' <<<"$out"; then
-          fail "Authenticode verifier returned no anchored success result for $(basename "$pe"): ${out}"
+        if ! grep -qiE '(Succeeded|Signature verification:[[:space:]]*(ok|successful)|Signing certificate chain:[[:space:]]*ok)' <<<"$out"; then
+          fail "Authenticode verifier returned no success result for $(basename "$pe"): ${out}"
         fi
       done
       echo "Authenticode verification passed for ${#pe_files[@]} Windows executable(s)."

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -343,7 +344,7 @@ func Default() Config {
 				Enabled: true,
 				Rules: []AlertRuleConfig{
 					{ID: "high-block-rate", Name: "High block rate", Metric: "cheesewaf_blocked_total", Operator: ">", Threshold: 100, For: 5 * time.Minute, Severity: "high", Enabled: true},
-					{ID: "disk-usage", Name: "Disk usage high", Metric: "cheesewaf_disk_usage_percent", Operator: ">", Threshold: 85, For: 10 * time.Minute, Severity: "medium", Enabled: true},
+					{ID: "disk-usage", Name: "Disk usage high", Metric: "cheesewaf_disk_usage_bytes:data", Operator: ">", Threshold: 1.073741824e+10, For: 10 * time.Minute, Severity: "medium", Enabled: true},
 				},
 			},
 			Notifiers: []NotifierConfig{
@@ -586,6 +587,7 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 			}
 			if onChange != nil {
 				if err := onChange(cfg); err != nil {
+					log.Printf("config watch: apply %s failed, keeping previous configuration: %v", path, err)
 					failedDigest = digest
 					continue
 				}
@@ -597,12 +599,20 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 }
 
 func configFileDigest(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256(raw)
-	return fmt.Sprintf("%x", digest[:]), nil
+	defer file.Close()
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(file, MaxConfigFileBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if size > MaxConfigFileBytes {
+		return "", fmt.Errorf("config file exceeds max size (%d bytes > %d bytes)", size, MaxConfigFileBytes)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func applyDefaults(cfg *Config) {

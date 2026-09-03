@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,22 @@ server {
 	}
 	if got := sites[0].WAF.Rewrite; len(got) != 2 || got[0].RedirectCode != 301 || got[1].RedirectCode != 302 {
 		t.Fatalf("rewrite status flags were not preserved: %+v", got)
+	}
+}
+
+func TestParseNginxServerBlockAcceptsOneLineServer(t *testing.T) {
+	sites, err := ParseNginxServerBlock([]byte(`server { listen 8081; server_name inline.example.test; location / { proxy_pass http://127.0.0.1:9001; } rewrite ^/old$ /new permanent; }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 {
+		t.Fatalf("expected one inline server, got %d", len(sites))
+	}
+	if sites[0].ListenPort != 8081 || sites[0].Name != "inline.example.test" || len(sites[0].Upstreams) != 1 {
+		t.Fatalf("inline directives not parsed: %+v", sites[0])
+	}
+	if len(sites[0].WAF.Rewrite) != 1 || sites[0].WAF.Rewrite[0].RedirectCode != http.StatusMovedPermanently {
+		t.Fatalf("inline rewrite not parsed: %+v", sites[0].WAF.Rewrite)
 	}
 }
 

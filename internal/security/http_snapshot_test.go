@@ -130,6 +130,16 @@ func TestHTTPTransactionRejectsBodyDigestSizeVersionAndHash(t *testing.T) {
 	}
 }
 
+func TestHTTPTransactionAllowsLargeNonSensitiveUTF8Body(t *testing.T) {
+	body := strings.Repeat("payload=ok&", 500)
+	tx := validSnapshot(t)
+	tx.Request.Body, tx.Request.BodySHA256, tx.Request.BodyBytes = snapshotBody(body)
+	resealSnapshot(t, &tx)
+	if err := ValidateHTTPTransaction(tx); err != nil {
+		t.Fatalf("body below 1 MiB should not use metadata field limit: %v", err)
+	}
+}
+
 func TestHTTPTransactionRejectsQuotedSecrets(t *testing.T) {
 	for _, body := range []string{
 		`{"token":"s3cr3t"}`,

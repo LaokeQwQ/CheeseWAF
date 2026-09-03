@@ -481,8 +481,8 @@ grep -Fq '"127.0.0.1:9443:9443"' deploy/docker/docker-compose.yml ||
 if grep -Fq '"9443:9443"' deploy/docker/docker-compose.yml; then
   fail "Docker admin TLS must not bind to all host interfaces"
 fi
-grep -Fq 'ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
-	fail "systemd must allow CheeseWAF to update its own configuration directory"
+grep -Fq 'ReadWritePaths=/etc/cheesewaf/cheesewaf.yaml /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
+	fail "systemd must restrict CheeseWAF configuration writes to its config file"
 if [[ -e deploy/macos/fix-gatekeeper.command ]]; then
   fail "signed macOS release media must not ship a Gatekeeper quarantine helper"
 fi

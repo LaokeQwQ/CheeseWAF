@@ -91,6 +91,16 @@ func TestGovernanceSourcesNotAllowedFormalStayQuarantined(t *testing.T) {
 	}
 }
 
+func TestSanitizeCookieHeaderPreservesUnchangedDelimiters(t *testing.T) {
+	raw := "a=1;  b=2\t; c=3"
+	if got := sanitizeCookieHeader(raw); got != raw {
+		t.Fatalf("unchanged cookie formatting was normalized: %q", got)
+	}
+	if got := sanitizeCookieHeader("a=1;  session=secret\t; c=3"); got != "a=1;  session=[REDACTED]\t; c=3" {
+		t.Fatalf("sensitive cookie redaction changed delimiters unexpectedly: %q", got)
+	}
+}
+
 // TestGovernanceApprovePromotesRow checks the happy path: an approving review
 // for the row's exact fingerprint moves it to formal.
 func TestGovernanceApprovePromotesRow(t *testing.T) {

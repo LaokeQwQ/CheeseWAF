@@ -472,8 +472,35 @@ func validateBody(body []byte, digest string, count int64) error {
 		return errors.New("body_sha256 does not match body")
 	}
 	if utf8.Valid(body) && len(body) > 0 {
-		if err := validateSafeText("body", string(body)); err != nil {
+		if err := validateBodySafeText("body", string(body)); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// Body payloads are bounded separately by MaxHTTPSnapshotBodyBytes. Reusing
+// the metadata field limit here incorrectly rejected legitimate 1 MiB bodies.
+func validateBodySafeText(field, value string) error {
+	if emailPattern.MatchString(value) || secretPattern.MatchString(value) {
+		return fmt.Errorf("%s contains sensitive data", field)
+	}
+	if strings.Contains(value, "@") {
+		if u, err := url.Parse(value); err == nil && u.User != nil {
+			return fmt.Errorf("%s contains URI userinfo", field)
+		}
+	}
+	if u, err := url.Parse(value); err == nil && u.Hostname() != "" {
+		if net.ParseIP(strings.Trim(u.Hostname(), "[]")) != nil {
+			return fmt.Errorf("%s contains an unredacted IP address", field)
+		}
+	}
+	if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil {
+		return fmt.Errorf("%s contains an unredacted IP address", field)
+	}
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool { return strings.ContainsRune("/?:,#[]() \t\r\n", r) }) {
+		if net.ParseIP(part) != nil {
+			return fmt.Errorf("%s contains an unredacted IP address", field)
 		}
 	}
 	return nil

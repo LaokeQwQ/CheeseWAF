@@ -30,6 +30,11 @@ go_satisfies() {
 # Reuse it instead of requiring a network download and shared tool-cache write.
 if go_satisfies; then
   go version
+  existing_goroot="$(go env GOROOT)"
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    echo "GOROOT=$existing_goroot" >>"$GITHUB_ENV"
+    echo "$(go env GOPATH)/bin" >>"${GITHUB_PATH:-/dev/null}"
+  fi
   if [[ -n "${GITHUB_ENV:-}" ]]; then
     echo "GOTOOLCHAIN=local" >>"$GITHUB_ENV"
     if [[ -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${http_proxy:-}${https_proxy:-}" ]]; then

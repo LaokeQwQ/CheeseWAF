@@ -34,7 +34,7 @@ for (( i = 0; i < shards; i++ )); do
     SEMANTIC_EVAL_SHARDS="$shards" \
     SEMANTIC_EVAL_SHARD_INDEX="$i" \
     EVAL_REPORT_PATH="${log_dir}/report-shard-${i}.json" \
-      go test -run TestEvaluationPlatform -count=1 -timeout "$timeout" ./internal/engine/semantic/ >"$log" 2>&1
+      bash scripts/ci/go-env.sh go test -run TestEvaluationPlatform -count=1 -timeout "$timeout" ./internal/engine/semantic/ >"$log" 2>&1
   ) &
   pids="$pids $!"
 done

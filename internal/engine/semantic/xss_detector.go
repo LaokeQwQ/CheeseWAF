@@ -262,6 +262,14 @@ func decodeXSSDataURL(raw string) (string, bool) {
 		return "", false
 	}
 	encoded := strings.ReplaceAll(match[1], " ", "+")
+	encoded = strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\r', '\n', '\f':
+			return -1
+		default:
+			return r
+		}
+	}, encoded)
 	for _, encoding := range []*base64.Encoding{
 		base64.StdEncoding, base64.RawStdEncoding,
 		base64.URLEncoding, base64.RawURLEncoding,
@@ -360,11 +368,11 @@ var xssModernPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:importScripts|postMessage)\s*\(\s*['"]\s*(?:data|javascript):`),                                                                 // Worker-based XSS
 	regexp.MustCompile(`(?i)set\s*\(\s*['"]?(?:innerHTML|outerHTML)\s*['"]?\s*,\s*`),                                                                           // DOM manipulation XSS
 	regexp.MustCompile(`(?i)(?:\{\s*\}\s*=\s*alert|_\s*=\s*alert|call\s*\(\s*alert\s*\))`),                                                                     // JS shorthand execution
-	regexp.MustCompile(`(?i)(?:\/\*\*\/|\\u[0-9a-f]{4}\\u[0-9a-f]{4})`),                                                                                        // JS comment/unicode obfuscation
+	regexp.MustCompile(`(?i)(?:\/\*\*\/\s*)+(?:alert|prompt|confirm|eval|write|open)\s*\(`),                                                                    // JS comment obfuscation in an executable call
 	regexp.MustCompile(`(?i)<\s*[a-z0-9]+\b[^>]*\bxlink:href\s*=\s*['"]?data\s*:\s*text\/html`),                                                                // SVG xlink data URI XSS
 	regexp.MustCompile(`(?i)<\s*(?:frame|iframe)\b[^>]*\bsrc\s*=\s*['"]?\s*(?:javascript|data):`),                                                              // frame/iframe XSS
 	regexp.MustCompile(`(?i)\b(?:\\u[0-9a-f]{4}|\\x[0-9a-f]{2}){2,}\b(?:alert|eval|prompt|confirm|write|open)\b`),                                              // unicode-encoded function name
-	regexp.MustCompile(`(?i)(?:&#\d{2,3};){4,}`),                                                                                                               // decimal HTML entity encoding chain
+	regexp.MustCompile(`(?i)(?:&#\d{2,3};){4,}\s*(?:<|on[a-z0-9_-]{3,}\s*=|javascript\s*:)`),                                                                   // decimal entities at an executable sink
 	// A quoted JS string terminated and followed by a call: an injection into a
 	// <script> string literal or an inline handler, e.g. `";alert('xss');//`.
 	regexp.MustCompile(`(?i)["']\s*;\s*(?:alert|prompt|confirm|eval|document\s*\.\s*(?:cookie|write))\s*\(`),
@@ -500,7 +508,9 @@ func standaloneJavascriptURLSurface(reqCtx *engine.RequestContext) (string, bool
 	if path == "" {
 		path = reqCtx.Request.URL.Path
 	}
-	if path != "" && xssStandaloneJavascriptURL.MatchString(normalize(path)) {
+	// A leading slash makes this an ordinary HTTP path, not a javascript: URL
+	// scheme; do not turn routes such as /javascript:alert(1) into an XSS hit.
+	if path != "" && !strings.HasPrefix(path, "/") && xssStandaloneJavascriptURL.MatchString(normalize(path)) {
 		return path, true
 	}
 	if reqCtx.Request.URL.Scheme != "" {
@@ -569,7 +579,7 @@ func executableXSSContext(normalized string) bool {
 		}
 	}
 	if javascriptURLContext.MatchString(normalized) ||
-		hasXSSObjectParamExecutableURL(normalized) ||
+		(strings.Contains(normalized, "param") && hasXSSObjectParamExecutableURL(normalized)) ||
 		xssCSSExpression.MatchString(normalized) ||
 		xssDataURLContext.MatchString(normalized) ||
 		xssSrcdocContext.MatchString(normalized) ||
@@ -581,6 +591,9 @@ func executableXSSContext(normalized string) bool {
 	// Scheme-splitting evasion. Gated on "java" because the cleanup allocates:
 	// every obfuscated javascript: URL has to contain that stem somewhere,
 	// including the CDATA-split form ("javas]]><![cdata[cript:").
+	if !strings.Contains(normalized, "jav") && !strings.Contains(normalized, "script") {
+		return false
+	}
 	return xssObfuscatedJavascriptURL.MatchString(normalized)
 }
 

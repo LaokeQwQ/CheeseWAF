@@ -528,17 +528,18 @@ func forkRequestContextWithContext(src *RequestContext, detectorCtx context.Cont
 	rawBody, decodedBody, bodyLoaded, bodyPresent, bodyErr := src.detectionBodySnapshot()
 	request := cloneRequestForDetection(src.Request, rawBody, decodedBody, bodyLoaded, bodyPresent, detectorCtx)
 	dst := &RequestContext{
-		Request:       request,
-		ClientIP:      src.ClientIP,
-		TraceID:       src.TraceID,
-		SiteID:        src.SiteID,
-		HostValidated: src.HostValidated,
-		DecodedURI:    src.DecodedURI,
-		DecodedBody:   decodedBody,
-		maxBodyBytes:  src.maxBodyBytes,
-		bodyLoaded:    bodyLoaded,
-		rawBody:       rawBody,
-		bodyErr:       bodyErr,
+		Request:           request,
+		ClientIP:          src.ClientIP,
+		TraceID:           src.TraceID,
+		SiteID:            src.SiteID,
+		HostValidated:     src.HostValidated,
+		TrustedProxyCIDRs: append([]string(nil), src.TrustedProxyCIDRs...),
+		DecodedURI:        src.DecodedURI,
+		DecodedBody:       decodedBody,
+		maxBodyBytes:      src.maxBodyBytes,
+		bodyLoaded:        bodyLoaded,
+		rawBody:           rawBody,
+		bodyErr:           bodyErr,
 	}
 	dst.Metadata = cloneMetadata(src.Metadata)
 	return dst

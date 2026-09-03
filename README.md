@@ -253,7 +253,7 @@ services:
       - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
     ports:
       - "8080:8080"
-      - "9443:9443"
+      - "127.0.0.1:9443:9443"
     volumes:
       - cheesewaf-data:/var/lib/cheesewaf
       - cheesewaf-logs:/var/log/cheesewaf

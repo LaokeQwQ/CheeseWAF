@@ -152,3 +152,10 @@ func TestExampleCustomRulesFilesMatchEncoder(t *testing.T) {
 		}
 	}
 }
+
+func TestCustomRuleFilenameSanitizesHeaderAndPathSyntax(t *testing.T) {
+	got := CustomRuleFilename("../evil\r\nContent-Disposition: attachment", "json")
+	if strings.ContainsAny(got, "/\\\r\n") || !strings.HasSuffix(got, ".json") || strings.Contains(got, "Content-Disposition: ") {
+		t.Fatalf("unsafe custom rule filename: %q", got)
+	}
+}
