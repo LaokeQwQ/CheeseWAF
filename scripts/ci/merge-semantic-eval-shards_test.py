@@ -70,6 +70,22 @@ class MergeSemanticEvalShardsTests(unittest.TestCase):
             rejected = subprocess.run([sys.executable, str(SCRIPT), str(path)], capture_output=True, text=True)
         self.assertNotEqual(0, rejected.returncode)
 
+    def test_malformed_report_shapes_are_rejected_without_traceback(self):
+        invalid_reports = [
+            [],
+            {"sources": [], "by_category": {}, "by_paranoia_level": {}},
+            {"sources": {"requests": []}, "by_category": {}, "by_paranoia_level": {}},
+            {"sources": {}, "by_category": [], "by_paranoia_level": {}},
+            {"sources": {}, "by_category": {"sqli": []}, "by_paranoia_level": {}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            for report in invalid_reports:
+                path.write_text(json.dumps(report), encoding="utf-8")
+                rejected = subprocess.run([sys.executable, str(SCRIPT), str(path)], capture_output=True, text=True)
+                self.assertNotEqual(0, rejected.returncode, msg=report)
+                self.assertNotIn("Traceback", rejected.stderr, msg=rejected.stderr)
+
     def test_source_counters_must_be_non_negative_integers_and_consistent(self):
         base = {
             "sources": {"requests": {"scope": "request", "benign_total": 10, "benign_fp": 2, "attack_total": 10, "attack_hit": 7}},

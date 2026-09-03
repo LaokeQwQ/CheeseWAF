@@ -71,8 +71,29 @@ def request_scope_totals(sources):
 
 def validate_primary_diagnostics(data):
     """Reject non-integer/negative/oversized primary diagnostic counts."""
-    request_limits = request_scope_totals(data.get("sources", {}))
-    all_limits = scope_totals(data.get("sources", {}))
+    if not isinstance(data, dict):
+        raise ValueError("report root must be an object")
+    sources = data.get("sources", {})
+    if not isinstance(sources, dict):
+        raise ValueError("sources must be an object")
+    for source_name, src in sources.items():
+        if not isinstance(src, dict):
+            raise ValueError(f"sources[{source_name!r}] must be an object")
+    diagnostic_sections = (
+        "by_category",
+        "by_paranoia_level",
+        "by_category_all_sources",
+        "by_paranoia_level_all_sources",
+    )
+    for section in diagnostic_sections:
+        values = data.get(section, {})
+        if not isinstance(values, dict):
+            raise ValueError(f"{section} must be an object")
+        for label, metrics in values.items():
+            if not isinstance(metrics, dict):
+                raise ValueError(f"{section}[{label!r}] must be an object")
+    request_limits = request_scope_totals(sources)
+    all_limits = scope_totals(sources)
     fields = {
         "by_category": (("attack_total", "attack_hit"), request_limits),
         "by_paranoia_level": (("benign_total", "benign_fp", "attack_total", "attack_hit"), request_limits),
@@ -91,8 +112,9 @@ def validate_primary_diagnostics(data):
                     raise ValueError(f"{section}[{label!r}].{name} must not be negative")
                 bound_name = {"benign_fp": "benign_total", "attack_hit": "attack_total"}.get(name, name)
                 if value > limits[bound_name]:
+                    limit_scope = "source" if section.endswith("_all_sources") else "request-scope"
                     raise ValueError(
-                        f"{section}[{label!r}].{name} exceeds request-scope total {limits[bound_name]}"
+                        f"{section}[{label!r}].{name} exceeds {limit_scope} total {limits[bound_name]}"
                     )
 
 
