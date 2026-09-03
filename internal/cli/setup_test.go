@@ -341,8 +341,37 @@ func TestSetupStateCommitWritesConfigAndAdmin(t *testing.T) {
 		t.Fatalf("admin user not created: %+v", user)
 	}
 
+	if !strings.Contains(out.String(), "http://127.0.0.1:9443") {
+		t.Fatalf("expected http admin URL, got: %s", out.String())
+	}
+
 	// A second commit must be rejected so the wizard cannot re-initialise.
 	if err := state.commit(out); !errors.Is(err, setup.ErrSetupAlreadyComplete) {
 		t.Fatalf("second commit = %v", err)
+	}
+}
+
+func TestSetupProfileAliases(t *testing.T) {
+	aliases := map[string]setup.HardwareProfile{
+		"minimal":     setup.ProfileLow,
+		"balanced":    setup.ProfileMedium,
+		"performance": setup.ProfileHigh,
+		"smart":       setup.ProfileSmart,
+		"custom":      setup.ProfileCustom,
+	}
+	for raw, want := range aliases {
+		rawLower := strings.ToLower(raw)
+		switch rawLower {
+		case "minimal":
+			rawLower = string(setup.ProfileLow)
+		case "balanced":
+			rawLower = string(setup.ProfileMedium)
+		case "performance":
+			rawLower = string(setup.ProfileHigh)
+		}
+		profile := setup.HardwareProfile(rawLower)
+		if profile != want {
+			t.Fatalf("alias %q resolved to %q, want %q", raw, profile, want)
+		}
 	}
 }

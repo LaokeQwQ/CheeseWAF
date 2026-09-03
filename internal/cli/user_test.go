@@ -3,13 +3,48 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 )
+
+func TestCLISQLitePathFollowsEffectiveDataDir(t *testing.T) {
+	originalConfigPath := configPath
+	originalDataDir := dataDir
+	t.Cleanup(func() {
+		configPath = originalConfigPath
+		dataDir = originalDataDir
+	})
+
+	root := t.TempDir()
+	configPath = filepath.Join(root, "config", "cheesewaf.yaml")
+	dataDir = filepath.Join(root, "runtime")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Setup.DataDir = "./data"
+	cfg.Setup.RuntimeDir = "./data/run"
+	cfg.Storage.SQLite.Path = "./data/cheesewaf.db"
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save test config: %v", err)
+	}
+
+	got, err := cliSQLitePath()
+	if err != nil {
+		t.Fatalf("cliSQLitePath() error = %v", err)
+	}
+	want := filepath.Join(dataDir, "cheesewaf.db")
+	if got != want {
+		t.Fatalf("cliSQLitePath() = %q, want %q", got, want)
+	}
+}
 
 func TestChangeUserPasswordPreserves2FAByDefault(t *testing.T) {
 	t.Parallel()

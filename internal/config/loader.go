@@ -1045,6 +1045,8 @@ func applyDefaults(cfg *Config) {
 		}
 		if site.WAF.Mode == "" {
 			site.WAF.Mode = "block"
+		} else if site.WAF.Mode == "log" {
+			site.WAF.Mode = "monitor"
 		}
 		if site.WAF.Performance.MaxBodyBytes == 0 {
 			site.WAF.Performance.MaxBodyBytes = 8 << 20

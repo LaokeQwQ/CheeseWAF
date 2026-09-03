@@ -339,6 +339,11 @@ func cliSQLitePath() (string, error) {
 			if err != nil {
 				return "", err
 			}
+			// Keep CLI database operations aligned with serve: packaged YAML
+			// stores relative paths under the effective --data-dir root.
+			if err := applyCLIDataDir(cfg, dataDir); err != nil {
+				return "", err
+			}
 			if strings.TrimSpace(cfg.Storage.SQLite.Path) != "" {
 				return cfg.Storage.SQLite.Path, nil
 			}

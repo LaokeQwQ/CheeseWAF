@@ -96,7 +96,16 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 		state.adminListen = listen
 	}
 	if raw := strings.TrimSpace(setupOpts.profile); raw != "" {
-		profile := setup.HardwareProfile(strings.ToLower(raw))
+		rawLower := strings.ToLower(raw)
+		switch rawLower {
+		case "minimal":
+			rawLower = string(setup.ProfileLow)
+		case "balanced":
+			rawLower = string(setup.ProfileMedium)
+		case "performance":
+			rawLower = string(setup.ProfileHigh)
+		}
+		profile := setup.HardwareProfile(rawLower)
 		switch profile {
 		case setup.ProfileLow, setup.ProfileMedium, setup.ProfileSmart, setup.ProfileHigh, setup.ProfileCustom:
 			state.profile = profile
@@ -530,8 +539,12 @@ func (s *setupState) commit(out io.Writer) error {
 			fmt.Fprintf(out, "  %s\n", clilang.T("setup.lang.failed", langErr))
 		}
 	}
+	adminScheme := "http"
+	if cfg.Server.AdminTLS.Enabled {
+		adminScheme = "https"
+	}
 	fmt.Fprintf(out, "\n%s\n", clilang.T("setup.write.done"))
-	fmt.Fprintf(out, "  %s\n", clilang.T("setup.write.panel", s.adminListen))
+	fmt.Fprintf(out, "  %s\n", clilang.T("setup.write.panel", adminScheme, s.adminListen))
 	fmt.Fprintf(out, "  %s\n", clilang.T("setup.write.next"))
 	return nil
 }

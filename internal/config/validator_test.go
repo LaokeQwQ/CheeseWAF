@@ -288,6 +288,17 @@ func TestValidatorTrustedProxyProviderBindings(t *testing.T) {
 	}
 }
 
+func TestValidatorNormalizesLegacyWAFLogMode(t *testing.T) {
+	cfg := Default()
+	cfg.Sites[0].WAF.Mode = "log"
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := cfg.Sites[0].WAF.Mode; got != "monitor" {
+		t.Fatalf("legacy waf mode was not persisted as monitor: %q", got)
+	}
+}
+
 func TestValidateAdminTLSRequiredWhenAdminPublic(t *testing.T) {
 	cfg := Default()
 	cfg.Server.AdminPublic = true

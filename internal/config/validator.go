@@ -218,7 +218,8 @@ func Validate(cfg *Config) error {
 	if err := validateProtectionPolicy("protection.policy", cfg.Protection.Policy, false); err != nil {
 		return err
 	}
-	for _, site := range cfg.Sites {
+	for i := range cfg.Sites {
+		site := &cfg.Sites[i]
 		if !site.Enabled {
 			continue
 		}
@@ -255,6 +256,9 @@ func Validate(cfg *Config) error {
 		if totalWeight > 10000 {
 			return fmt.Errorf("site %q total upstream weight %d exceeds maximum 10000", site.Name, totalWeight)
 		}
+		if site.WAF.Mode == "log" {
+			site.WAF.Mode = "monitor"
+		}
 		if site.WAF.Mode != "" && site.WAF.Mode != "block" && site.WAF.Mode != "monitor" && site.WAF.Mode != "off" {
 			return fmt.Errorf("site %q has invalid waf.mode %q", site.Name, site.WAF.Mode)
 		}
@@ -275,7 +279,7 @@ func Validate(cfg *Config) error {
 		if site.WAF.Performance.MaxHeaderBytes < 0 || site.WAF.Performance.MaxHeaderBytes > http.DefaultMaxHeaderBytes {
 			return fmt.Errorf("site %q waf.performance.max_header_bytes must be between 0 and %d", site.Name, http.DefaultMaxHeaderBytes)
 		}
-		if err := validateSiteCertificate(site); err != nil {
+		if err := validateSiteCertificate(*site); err != nil {
 			return err
 		}
 		if err := validateProtectionPolicy("site "+site.Name+" waf.protection_policy", site.WAF.ProtectionPolicy, true); err != nil {
