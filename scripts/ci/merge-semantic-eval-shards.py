@@ -51,11 +51,11 @@ def validate_source_metrics(src):
                 raise ValueError(f"sources counter {name!r} must be a non-negative integer")
 
 
-def request_scope_totals(sources):
-    """Return request-scope denominators used to bound primary diagnostics."""
+def scope_totals(sources, scope_filter=None):
+    """Return denominators used to bound diagnostic counters."""
     totals = {"benign_total": 0, "benign_fp": 0, "attack_total": 0, "attack_hit": 0}
     for src in sources.values():
-        if src.get("scope", "request") != "request":
+        if scope_filter is not None and src.get("scope", "request") != scope_filter:
             continue
         for key in totals:
             value = src.get(key, 0)
@@ -64,14 +64,22 @@ def request_scope_totals(sources):
     return totals
 
 
+def request_scope_totals(sources):
+    """Return request-scope denominators used by primary diagnostics."""
+    return scope_totals(sources, "request")
+
+
 def validate_primary_diagnostics(data):
     """Reject non-integer/negative/oversized primary diagnostic counts."""
-    limits = request_scope_totals(data.get("sources", {}))
+    request_limits = request_scope_totals(data.get("sources", {}))
+    all_limits = scope_totals(data.get("sources", {}))
     fields = {
-        "by_category": ("attack_total", "attack_hit"),
-        "by_paranoia_level": ("benign_total", "benign_fp", "attack_total", "attack_hit"),
+        "by_category": (("attack_total", "attack_hit"), request_limits),
+        "by_paranoia_level": (("benign_total", "benign_fp", "attack_total", "attack_hit"), request_limits),
+        "by_category_all_sources": (("attack_total", "attack_hit"), all_limits),
+        "by_paranoia_level_all_sources": (("benign_total", "benign_fp", "attack_total", "attack_hit"), all_limits),
     }
-    for section, names in fields.items():
+    for section, (names, limits) in fields.items():
         for label, metrics in data.get(section, {}).items():
             for name in names:
                 if name not in metrics:
