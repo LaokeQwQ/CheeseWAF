@@ -1,0 +1,191 @@
+---
+# Pigsty is deliberately an external, operator-reviewed checkout. This task
+# verifies its immutable revision and invokes its entrypoint once; it never
+# clones, downloads, vendors, or edits Pigsty source.
+- name: Inspect the Pigsty adapter checkout on the controller
+  ansible.builtin.stat:
+    path: "{{ cheesewaf_pigsty_checkout }}"
+    follow: false
+    get_checksum: false
+  delegate_to: localhost
+  register: cheesewaf_pigsty_checkout_stat
+  check_mode: false
+  run_once: true
+  no_log: true
+
+- name: Refuse a missing or symlinked Pigsty adapter checkout
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_pigsty_checkout_stat.stat.exists | default(false)
+      - cheesewaf_pigsty_checkout_stat.stat.isdir | default(false)
+      - not (cheesewaf_pigsty_checkout_stat.stat.islnk | default(false))
+    fail_msg: Pigsty adapter checkout must be a controller-local directory
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Inspect the fixed Pigsty adapter entrypoint on the controller
+  ansible.builtin.stat:
+    path: "{{ cheesewaf_pigsty_checkout }}/{{ cheesewaf_pigsty_entrypoint }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  register: cheesewaf_pigsty_entrypoint_stat
+  check_mode: false
+  run_once: true
+  no_log: true
+
+- name: Verify the adapter checkout is the requested immutable revision
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ cheesewaf_pigsty_checkout }}"
+      - rev-parse
+      - HEAD
+  delegate_to: localhost
+  register: cheesewaf_pigsty_head
+  changed_when: false
+  check_mode: false
+  run_once: true
+  no_log: true
+
+- name: Verify the adapter checkout has no uncommitted files
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ cheesewaf_pigsty_checkout }}"
+      - status
+      - --porcelain
+      - --untracked-files=all
+  delegate_to: localhost
+  register: cheesewaf_pigsty_status
+  changed_when: false
+  failed_when: cheesewaf_pigsty_status.rc != 0 or cheesewaf_pigsty_status.stdout | length > 0
+  check_mode: false
+  run_once: true
+  no_log: true
+
+- name: Verify the entrypoint is tracked and regular
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ cheesewaf_pigsty_checkout }}"
+      - ls-files
+      - --error-unmatch
+      - "{{ cheesewaf_pigsty_entrypoint }}"
+  delegate_to: localhost
+  register: cheesewaf_pigsty_tracked
+  changed_when: false
+  check_mode: false
+  run_once: true
+  no_log: true
+
+- name: Refuse to invoke a changed or floating Pigsty adapter
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_pigsty_head.stdout | trim == cheesewaf_pigsty_ref
+      - cheesewaf_pigsty_entrypoint_stat.stat.exists | default(false)
+      - cheesewaf_pigsty_entrypoint_stat.stat.isreg | default(false)
+      - not (cheesewaf_pigsty_entrypoint_stat.stat.islnk | default(false))
+    fail_msg: Pigsty requires a fixed version, immutable commit and local files
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Inspect the externally managed Pigsty inventory and variables
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  delegate_to: localhost
+  register: cheesewaf_pigsty_input_files
+  loop:
+    - "{{ cheesewaf_pigsty_inventory }}"
+    - "{{ cheesewaf_pigsty_vars_file }}"
+  check_mode: false
+  run_once: true
+  no_log: true
+
+- name: Refuse missing external Pigsty input files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false)
+      - item.stat.isreg | default(false)
+      - not (item.stat.islnk | default(false))
+    fail_msg: Pigsty inventory and extra-vars must be existing controller-local files
+  loop: "{{ cheesewaf_pigsty_input_files.results }}"
+  run_once: true
+  no_log: true
+
+- name: Explain that check-mode skips external Pigsty execution
+  ansible.builtin.debug:
+    msg: >-
+      check-mode: fixed Pigsty adapter revision validated; external adapter
+      execution is skipped so no repository, database or service is contacted.
+  when: ansible_check_mode
+
+- name: Execute the fixed Pigsty adapter with an explicit offline contract
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -m
+      - ansible.cli.playbook
+      - --inventory
+      - "{{ cheesewaf_pigsty_inventory }}"
+      - --extra-vars
+      - "@{{ cheesewaf_pigsty_vars_file }}"
+      - --extra-vars
+      - >-
+        cheesewaf_offline={{ cheesewaf_offline | bool }}
+        cheesewaf_pigsty_version={{ cheesewaf_pigsty_version }}
+        cheesewaf_pigsty_ref={{ cheesewaf_pigsty_ref }}
+      - "{{ cheesewaf_pigsty_checkout }}/{{ cheesewaf_pigsty_entrypoint }}"
+  delegate_to: localhost
+  register: cheesewaf_pigsty_run
+  changed_when: cheesewaf_pigsty_run.stdout is search('changed=[1-9][0-9]*')
+  failed_when: cheesewaf_pigsty_run.rc != 0
+  when:
+    - not ansible_check_mode
+    - cheesewaf_pigsty_limit | default('') | length == 0
+  run_once: true
+  no_log: true
+
+- name: Execute the fixed Pigsty adapter with an explicit host limit
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -m
+      - ansible.cli.playbook
+      - --inventory
+      - "{{ cheesewaf_pigsty_inventory }}"
+      - --extra-vars
+      - "@{{ cheesewaf_pigsty_vars_file }}"
+      - --extra-vars
+      - >-
+        cheesewaf_offline={{ cheesewaf_offline | bool }}
+        cheesewaf_pigsty_version={{ cheesewaf_pigsty_version }}
+        cheesewaf_pigsty_ref={{ cheesewaf_pigsty_ref }}
+      - --limit
+      - "{{ cheesewaf_pigsty_limit }}"
+      - "{{ cheesewaf_pigsty_checkout }}/{{ cheesewaf_pigsty_entrypoint }}"
+  delegate_to: localhost
+  register: cheesewaf_pigsty_run_limited
+  changed_when: cheesewaf_pigsty_run_limited.stdout is search('changed=[1-9][0-9]*')
+  failed_when: cheesewaf_pigsty_run_limited.rc != 0
+  when:
+    - not ansible_check_mode
+    - cheesewaf_pigsty_limit | default('') | length > 0
+  run_once: true
+  no_log: true
+
+- name: Confirm Pigsty adapter ownership boundary
+  ansible.builtin.debug:
+    msg: >-
+      fixed Pigsty adapter completed; CheeseWAF Ansible did not install Pigsty
+      source or push CRP/plugins. CWEDP remains the only extension distributor.
+  when: not ansible_check_mode
+  run_once: true

@@ -1,0 +1,21 @@
+---
+# Test-only placeholders. They contain no credential and deliberately point at
+# non-routable documentation names; the playbooks only validate the contract.
+cheesewaf_management_postgresql_dsn: postgres://control.example.invalid/cheesewaf?sslmode=verify-full
+cheesewaf_control_postgresql_dsn: postgres://control-plane.example.invalid/cheesewaf-control?sslmode=verify-full
+cheesewaf_redis_address: redis.example.invalid:6380
+cheesewaf_redis_instance_id: cheesesec-prod-1/redis-a
+cheesewaf_redis_ca_file: /etc/ssl/cheesewaf/redis-ca.pem
+cheesewaf_native_raft_endpoints:
+  - https://raft-1.example.invalid:9445
+cheesewaf_native_raft_ca_file: /etc/ssl/cheesewaf/raft-ca.pem
+cheesewaf_native_raft_cert_file: /etc/ssl/cheesewaf/raft-node.crt
+cheesewaf_native_raft_key_file: /etc/ssl/cheesewaf/raft-node.key
+cheesewaf_native_raft_data_dir: /var/lib/cheesewaf/native-raft
+cheesewaf_native_raft_listen: 127.0.0.1:9451
+cheesewaf_native_raft_mode: join
+cheesewaf_cluster_id: cheesesec-prod-1
+cheesewaf_management_acl:
+  - 10.0.0.0/8
+cheesewaf_management_audit_sink: https://audit.example.invalid/cheesewaf
+cheesewaf_management_rollback_ref: crp://control-plane/last-known-good

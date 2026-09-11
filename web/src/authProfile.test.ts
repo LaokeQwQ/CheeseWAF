@@ -4,12 +4,12 @@ import { cacheAccount, currentAccount, filterNavigation, hasScope } from './auth
 describe('account permissions', () => {
   afterEach(() => sessionStorage.clear());
 
-  it('normalizes and reads the authenticated account cache', () => {
+  it('preserves the server-issued username exactly in the authenticated account cache', () => {
     cacheAccount({ id: ' account-1 ', username: ' admin ', role: 'custom', scopes: [' read:logs ', '', 'read:logs', 'read:users'] });
 
     expect(currentAccount()).toEqual({
       subject: 'account-1',
-      username: 'admin',
+      username: ' admin ',
       role: 'custom',
       scopes: ['read:logs', 'read:users'],
     });

@@ -1,0 +1,10 @@
+{
+  "sites": [
+    {
+      "id": "default",
+      "mode": "observe",
+      "upstreams": ["http://127.0.0.1:9000"]
+    }
+  ],
+  "policy_epoch": 1
+}

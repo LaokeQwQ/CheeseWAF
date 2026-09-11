@@ -96,7 +96,7 @@ func sanitizeBlockPageStyleText(node *html.Node) bool {
 func sanitizeBlockPageCSSRules(value string) (string, bool) {
 	changed := false
 	for {
-		start := strings.Index(strings.ToLower(value), "@import")
+		start := asciiFoldIndex(value, "@import")
 		if start < 0 {
 			break
 		}
@@ -149,6 +149,8 @@ func sanitizeBlockPageAttrs(node *html.Node, tag string) bool {
 				changed = true
 				continue
 			}
+			attrs = append(attrs, html.Attribute{Key: key, Val: value})
+			continue
 		}
 		if strings.HasPrefix(key, "aria-") || strings.HasPrefix(key, "data-") || blockPageGlobalAttrs[key] || (tag == "img" && key == "alt") || (tag == "a" && key == "target") {
 			attrs = append(attrs, html.Attribute{Key: key, Val: value})
@@ -158,6 +160,37 @@ func sanitizeBlockPageAttrs(node *html.Node, tag string) bool {
 	}
 	node.Attr = attrs
 	return changed
+}
+
+func asciiFoldIndex(value, needle string) int {
+	if needle == "" || len(value) < len(needle) {
+		return -1
+	}
+	for i := 0; i <= len(value)-len(needle); i++ {
+		if asciiFoldEqual(value[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+func asciiFoldEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		l, r := left[i], right[i]
+		if l >= 'A' && l <= 'Z' {
+			l += 'a' - 'A'
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		if l != r {
+			return false
+		}
+	}
+	return true
 }
 
 func unsafeBlockPageCSS(value string) bool {

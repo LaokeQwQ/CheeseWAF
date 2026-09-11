@@ -35,7 +35,7 @@ var ErrRequestBodyTooLarge = errors.New("request body exceeds configured limit")
 var ErrRequestBodyReadOverload = errors.New("request body inspection overloaded")
 
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit, true)
+	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit, true, nil)
 }
 
 func NewRequestContextWithTrustedProxies(r *http.Request, siteID string, trustedCIDRs []string) (*RequestContext, error) {
@@ -44,12 +44,12 @@ func NewRequestContextWithTrustedProxies(r *http.Request, siteID string, trusted
 
 // NewRequestContextWithLimits builds a context and eagerly reads the body.
 func NewRequestContextWithLimits(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, true)
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, true, trustedCIDRs)
 }
 
 // NewRequestContextDeferredBody skips body I/O until EnsureBody (hot-path lazy-once).
 func NewRequestContextDeferredBody(r *http.Request, siteID string, trustedCIDRs []string, maxBodyBytes int64) (*RequestContext, error) {
-	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, false)
+	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, false, trustedCIDRs)
 }
 
 // TrustedProxyPolicy is an immutable compiled client-IP trust policy.
@@ -65,21 +65,26 @@ func NewTrustedProxyPolicy(trustedCIDRs []string, providerCIDRs map[string][]str
 // NewRequestContextDeferredBodyWithTrustedProxyPolicy uses a precompiled proxy
 // policy and skips body I/O until EnsureBody.
 func NewRequestContextDeferredBodyWithTrustedProxyPolicy(r *http.Request, siteID string, policy *TrustedProxyPolicy, maxBodyBytes int64) (*RequestContext, error) {
-	return newRequestContext(r, siteID, clientIPFromPolicy(r, policy), maxBodyBytes, false)
+	var trustedCIDRs []string
+	if policy != nil {
+		trustedCIDRs = policy.AllTrustedCIDRs()
+	}
+	return newRequestContext(r, siteID, clientIPFromPolicy(r, policy), maxBodyBytes, false, trustedCIDRs)
 }
 
-func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64, readBody bool) (*RequestContext, error) {
+func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes int64, readBody bool, trustedCIDRs []string) (*RequestContext, error) {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = defaultRequestBodyLimit
 	}
 	reqCtx := &RequestContext{
-		Request:      r,
-		ClientIP:     clientIP,
-		TraceID:      blockpage.NewTraceID(),
-		SiteID:       siteID,
-		Results:      make([]DetectionResult, 0, 8),
-		Metadata:     map[string]any{},
-		maxBodyBytes: maxBodyBytes,
+		Request:           r,
+		ClientIP:          clientIP,
+		TraceID:           blockpage.NewTraceID(),
+		SiteID:            siteID,
+		TrustedProxyCIDRs: append([]string(nil), trustedCIDRs...),
+		Results:           make([]DetectionResult, 0, 8),
+		Metadata:          map[string]any{},
+		maxBodyBytes:      maxBodyBytes,
 	}
 	if r != nil && r.URL != nil {
 		reqCtx.DecodedURI = r.URL.RequestURI()

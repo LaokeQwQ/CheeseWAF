@@ -279,6 +279,7 @@ func TestSQLCommentTruncationSkipsWhitespace(t *testing.T) {
 func TestXSSSchemeSplittingEvasion(t *testing.T) {
 	cases := []struct{ name, payload string }{
 		{"space", `<img src="jav ascript:alert(1);">`},
+		{"every-letter-space", `<img src="j a v a s c r i p t:alert(1);">`},
 		{"html-comment", `<img src="java<!-- -->script:alert(1);">`},
 		{"cdata", `<img src="javas]]><![cdata[cript:alert(1);">`},
 		{"dynsrc", `<img dynsrc="javascript:document.cookie=true;">`},
@@ -460,6 +461,7 @@ func TestXSSNoisyWordMatchesPlainAndSplitForms(t *testing.T) {
 	positive := []string{
 		`<img src="javascript:alert(1)">`,
 		`<img src="jav ascript:alert(1)">`,
+		`<img src="j a v a s c r i p t:alert(1)">`,
 		`<img src="java<!-- -->script:alert(1)">`,
 		`<img src="javas]]><![cdata[cript:alert(1)">`,
 		`<img dynsrc="java script:alert(1)">`,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"golang.org/x/crypto/bcrypt"
@@ -103,8 +104,8 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err != nil {
 		return nil, err
 	}
-	if len(users) > 1 || (len(users) == 1 && !strings.EqualFold(users[0].Username, payload.Username)) {
-		return nil, ErrSetupAlreadyComplete
+	if len(users) > 0 {
+		return nil, setupExistingAccountError(users)
 	}
 
 	cfg, err := setupConfig(opts.Config, paths.ConfigFile)
@@ -120,11 +121,6 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 		return nil, err
 	}
 	committed := false
-	var previousUser *storage.User
-	if len(users) == 1 {
-		copy := users[0]
-		previousUser = &copy
-	}
 	defer func() {
 		if !committed {
 			*cfg = *previousConfig
@@ -158,23 +154,29 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 			return store.CreateUser(ctx, user)
 		}
 	}
-	if len(users) == 1 {
-		user.ID = users[0].ID
-		if err := persistUser(ctx, store, user, true); err != nil {
-			return nil, rollbackSetup(ctx, store, cfg, previousConfig, previousUser, nil, fileState, err)
-		}
-	} else if err := persistUser(ctx, store, user, false); err != nil {
-		return nil, rollbackSetup(ctx, store, cfg, previousConfig, nil, nil, fileState, err)
+	if err := persistUser(ctx, store, user, false); err != nil {
+		return nil, rollbackSetup(ctx, store, cfg, previousConfig, nil, fileState, err)
 	}
 	markComplete := opts.markComplete
 	if markComplete == nil {
 		markComplete = MarkComplete
 	}
 	if err := markComplete(paths.DataDir); err != nil {
-		return nil, rollbackSetup(ctx, store, cfg, previousConfig, previousUser, user, fileState, err)
+		return nil, rollbackSetup(ctx, store, cfg, previousConfig, user, fileState, err)
 	}
 	committed = true
 	return &CompleteResult{User: user, Config: cfg, Paths: paths}, nil
+}
+
+func setupExistingAccountError(users []storage.User) error {
+	if len(users) == 1 {
+		user := users[0]
+		if identity.ValidateUsername(user.Username) == nil {
+			return fmt.Errorf("%w: account %s already exists; recover it with waf-cli user ensure-admin %s --password-stdin", ErrSetupAlreadyComplete, user.Username, user.Username)
+		}
+		return fmt.Errorf("%w: account ID %q already exists with a non-canonical username; repair it with waf-cli user repair-username %q NEW_USERNAME --reason 'repair historical username'", ErrSetupAlreadyComplete, user.ID, user.ID)
+	}
+	return fmt.Errorf("%w: %d accounts already exist; recover an administrator with waf-cli user ensure-admin USERNAME --password-stdin or repair a historical account by ID with waf-cli user repair-username USER_ID NEW_USERNAME --reason 'repair historical username'", ErrSetupAlreadyComplete, len(users))
 }
 
 type setupFileSnapshot struct {
@@ -253,15 +255,10 @@ func restoreSetupFiles(snapshots []setupFileSnapshot) error {
 	return restoreErr
 }
 
-func rollbackSetup(ctx context.Context, store storage.Store, cfg, previousConfig *config.Config, previousUser, persistedUser *storage.User, files []setupFileSnapshot, cause error) error {
+func rollbackSetup(ctx context.Context, store storage.Store, cfg, previousConfig *config.Config, persistedUser *storage.User, files []setupFileSnapshot, cause error) error {
 	*cfg = *previousConfig
 	var rollbackErr error
-	if previousUser != nil {
-		copy := *previousUser
-		if err := store.UpdateUser(ctx, &copy); err != nil {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore administrator: %w", err))
-		}
-	} else if persistedUser != nil && persistedUser.ID != "" {
+	if persistedUser != nil && persistedUser.ID != "" {
 		if err := store.DeleteUser(ctx, persistedUser.ID); err != nil {
 			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove newly created administrator: %w", err))
 		}
@@ -299,11 +296,10 @@ func SetupErrorStatus(err error) int {
 }
 
 func normalizeSetupPayload(payload SetupPayload, defaultAdminListen string) (SetupPayload, error) {
-	payload.Username = strings.TrimSpace(payload.Username)
 	payload.AdminListen = strings.TrimSpace(payload.AdminListen)
 	payload.AdminStrategy = strings.TrimSpace(payload.AdminStrategy)
-	if payload.Username == "" || len(payload.Username) < 3 {
-		return payload, fmt.Errorf("%w: username must contain at least 3 characters", ErrSetupValidation)
+	if err := identity.ValidateUsername(payload.Username); err != nil {
+		return payload, fmt.Errorf("%w: %s", ErrSetupValidation, err)
 	}
 	if err := passpolicy.Validate(payload.Password, payload.Username); err != nil {
 		return payload, fmt.Errorf("%w: %s", ErrSetupValidation, err.Error())

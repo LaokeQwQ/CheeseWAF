@@ -44,15 +44,41 @@ func TestReceiptVerifiesClientModeAndExpiry(t *testing.T) {
 	if VerifyReceipt(otherSubject, receipt, "slider") {
 		t.Fatal("receipt verified for a different username")
 	}
-	sameSubject := opts
-	sameSubject.Subject = "  cheese  "
-	if !VerifyReceipt(sameSubject, receipt, "slider") {
-		t.Fatal("normalized username should verify")
+	for name, subject := range map[string]string{
+		"different case":      "cheese",
+		"surrounding spaces":  "  Cheese  ",
+		"embedded space":      "Che ese",
+		"control character":   "Cheese\t",
+		"invisible character": "Cheese\u200b",
+	} {
+		t.Run(name, func(t *testing.T) {
+			otherSubject := opts
+			otherSubject.Subject = subject
+			if VerifyReceipt(otherSubject, receipt, "slider") {
+				t.Fatalf("receipt verified for non-exact subject %q", subject)
+			}
+		})
 	}
 	expired := opts
 	expired.Now = func() time.Time { return now.Add(2 * time.Minute) }
 	if VerifyReceipt(expired, receipt, "slider") {
 		t.Fatal("expired receipt verified")
+	}
+}
+
+func TestReceiptWithoutSubjectRemainsValid(t *testing.T) {
+	opts := ReceiptOptions{Secret: "receipt-test-secret", ClientKey: "client"}
+	receipt, _, err := NewReceipt(opts, "slider")
+	if err != nil {
+		t.Fatalf("issue receipt without subject: %v", err)
+	}
+	if !VerifyReceipt(opts, receipt, "slider") {
+		t.Fatal("receipt without subject did not verify")
+	}
+	withSubject := opts
+	withSubject.Subject = "admin"
+	if VerifyReceipt(withSubject, receipt, "slider") {
+		t.Fatal("receipt without subject verified against a subject-bound request")
 	}
 }
 

@@ -8,7 +8,9 @@ import { BACKEND_PROXY_PATTERN } from './vite.proxy';
 
 const sourcemap = process.env.VITE_SOURCEMAP === 'true';
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
-const enableAgentEyes = process.env.NODE_ENV !== 'production' && process.env.CHEESEWAF_AGENT_EYES !== '0';
+// Agent Eyes is an explicit local-development opt-in. Production and normal
+// builds must never register the inspector plugin or emit its runtime hooks.
+const enableAgentEyes = process.env.NODE_ENV !== 'production' && process.env.CHEESEWAF_AGENT_EYES === '1';
 
 export default defineConfig({
   resolve: {

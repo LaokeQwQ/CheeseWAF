@@ -36,9 +36,12 @@ trap cleanup EXIT
     exit 1
   }
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "${files[@]}"
+    sha256sum -- "${files[@]}"
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -- "${files[@]}"
   else
-    shasum -a 256 "${files[@]}"
+    echo "sha256sum or shasum is required" >&2
+    exit 1
   fi
 ) >"$checksum_tmp"
 

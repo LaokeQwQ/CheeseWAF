@@ -31,6 +31,7 @@ import type { AuditEntry, TOTPSetup, User } from '../../types/api';
 import { currentAccount } from '../../authProfile';
 import type { AccountProfile } from '../../authProfile';
 import { passwordPolicyErrorKey } from '../../utils/passwordPolicy';
+import { USERNAME_MAX, USERNAME_MIN, usernameErrorKey } from '../../utils/username';
 
 type UserDraft = {
   username: string;
@@ -287,8 +288,9 @@ export default function UsersPage() {
 
   function validateUserDraft(values: UserDraft, passwordOptional: boolean) {
     const errors: Partial<Record<keyof UserDraft, string>> = {};
-    if (!values.username.trim()) {
-      errors.username = t('users.usernameRequired');
+    const usernameKey = usernameErrorKey(values.username, 'users');
+    if (usernameKey) {
+      errors.username = t(usernameKey, { min: USERNAME_MIN, max: USERNAME_MAX });
     }
     if (!values.role) {
       errors.role = t('users.role');

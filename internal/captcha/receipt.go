@@ -49,7 +49,7 @@ func NewReceipt(opts ReceiptOptions, mode string) (string, time.Time, error) {
 		Purpose:   opts.Purpose,
 		ClientKey: opts.ClientKey,
 		Path:      opts.Path,
-		Subject:   normalizeReceiptSubject(opts.Subject),
+		Subject:   opts.Subject,
 		Mode:      normalizeReceiptMode(mode),
 		ExpiresMS: expires.UnixMilli(),
 		Nonce:     nonce,
@@ -91,7 +91,7 @@ func VerifyReceipt(opts ReceiptOptions, receipt string, mode string) bool {
 	if err := json.Unmarshal(rawPayload, &payload); err != nil {
 		return false
 	}
-	if payload.Purpose != opts.Purpose || payload.ClientKey != opts.ClientKey || payload.Path != opts.Path || payload.Subject != normalizeReceiptSubject(opts.Subject) {
+	if payload.Purpose != opts.Purpose || payload.ClientKey != opts.ClientKey || payload.Path != opts.Path || payload.Subject != opts.Subject {
 		return false
 	}
 	if payload.Mode != normalizeReceiptMode(mode) {
@@ -128,13 +128,9 @@ func normalizeReceiptMode(mode string) string {
 	return mode
 }
 
-func normalizeReceiptSubject(subject string) string {
-	return strings.ToLower(strings.TrimSpace(subject))
-}
-
 func signReceipt(opts ReceiptOptions, encodedPayload string) string {
 	mac := hmac.New(sha256.New, []byte(opts.Secret))
-	for _, item := range []string{opts.Purpose, opts.ClientKey, opts.Path, normalizeReceiptSubject(opts.Subject), encodedPayload} {
+	for _, item := range []string{opts.Purpose, opts.ClientKey, opts.Path, opts.Subject, encodedPayload} {
 		_, _ = mac.Write([]byte(item))
 		_, _ = mac.Write([]byte{'\n'})
 	}

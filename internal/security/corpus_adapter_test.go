@@ -144,6 +144,7 @@ func TestAdaptRawHTTPCaseMovesCRLFTargetToBody(t *testing.T) {
 	tc, err := AdaptRawHTTPCase(RawHTTPCase{
 		Method: "POST",
 		URL:    "0\r\n\r\nGET /admin HTTP/1.1\r\nHost: x\r\n\r\n",
+		Data:   "separate data must not replace the target payload",
 		Label:  "smuggling",
 	}, "smuggling", "attack")
 	if err != nil {

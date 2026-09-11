@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -121,14 +122,56 @@ func TestConsumeTOTPReleaseAllowsReuse(t *testing.T) {
 	}
 }
 
+func TestConsumeTOTPReleaseDoesNotDeleteDurableClaim(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := hotp(secret, now.Unix()/totpPeriod)
+	if err != nil {
+		t.Fatalf("hotp: %v", err)
+	}
+	store := &fakeTOTPStore{}
+	state := newTwoFAStateWithStore(store)
+	counter, ok := state.consumeTOTPCounter("user-1", secret, code, now)
+	if !ok {
+		t.Fatal("first consume must succeed")
+	}
+	state.releaseConsumedTOTP("user-1", counter)
+	second := newTwoFAStateWithStore(store)
+	if second.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("release must not delete the durable replay claim")
+	}
+}
+
 type fakeTOTPStore struct {
-	mu       sync.Mutex
-	consumed map[string]time.Time
+	mu          sync.Mutex
+	consumed    map[string]time.Time
+	atomicCalls int
+	legacyCalls int
+	atomicErr   error
+}
+
+func (f *fakeTOTPStore) ConsumeTOTP(_ context.Context, userID string, counter int64, expiresAt, now time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.atomicCalls++
+	if f.atomicErr != nil {
+		return false, f.atomicErr
+	}
+	if f.consumed == nil {
+		f.consumed = map[string]time.Time{}
+	}
+	key := totpConsumeKey(userID, counter)
+	if prior, ok := f.consumed[key]; ok && prior.After(now) {
+		return false, nil
+	}
+	f.consumed[key] = expiresAt
+	return true, nil
 }
 
 func (f *fakeTOTPStore) MarkTOTPConsumed(_ context.Context, userID string, counter int64, expiresAt time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.legacyCalls++
 	if f.consumed == nil {
 		f.consumed = map[string]time.Time{}
 	}
@@ -139,6 +182,7 @@ func (f *fakeTOTPStore) MarkTOTPConsumed(_ context.Context, userID string, count
 func (f *fakeTOTPStore) IsTOTPConsumed(_ context.Context, userID string, counter int64, now time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.legacyCalls++
 	expiresAt, ok := f.consumed[totpConsumeKey(userID, counter)]
 	return ok && expiresAt.After(now), nil
 }
@@ -178,6 +222,47 @@ func TestConsumeTOTPRefusesReplayAfterRestart(t *testing.T) {
 	second := newTwoFAStateWithStore(store)
 	if second.consumeTOTP("user-1", secret, code, now) {
 		t.Fatal("same code must be rejected after restart replay")
+	}
+}
+
+func TestConsumeTOTPUsesAtomicStore(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := hotp(secret, now.Unix()/totpPeriod)
+	if err != nil {
+		t.Fatalf("hotp: %v", err)
+	}
+	store := &fakeTOTPStore{}
+	state := newTwoFAStateWithStore(store)
+	if !state.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("first consume of a valid code must succeed")
+	}
+	store.mu.Lock()
+	atomicCalls, legacyCalls := store.atomicCalls, store.legacyCalls
+	store.mu.Unlock()
+	if atomicCalls != 1 {
+		t.Fatalf("atomic consume calls=%d, want 1", atomicCalls)
+	}
+	if legacyCalls != 0 {
+		t.Fatalf("legacy check/write calls=%d, want 0", legacyCalls)
+	}
+}
+
+func TestConsumeTOTPStorageErrorFailsClosed(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	now := time.Unix(1_700_000_000, 0).UTC()
+	code, err := hotp(secret, now.Unix()/totpPeriod)
+	if err != nil {
+		t.Fatalf("hotp: %v", err)
+	}
+	storeErr := errors.New("storage offline")
+	store := &fakeTOTPStore{atomicErr: storeErr}
+	state := newTwoFAStateWithStore(store)
+	if state.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("storage error must reject TOTP consumption")
+	}
+	if state.consumeTOTP("user-1", secret, code, now) {
+		t.Fatal("storage error must keep the local burn fail-closed")
 	}
 }
 

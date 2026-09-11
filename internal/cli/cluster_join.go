@@ -105,6 +105,7 @@ func newClusterJoinCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opts.AdvertiseAddr, "advertise-addr", "", "Node interconnect advertise address, for example 10.0.0.11:9444")
 	cmd.Flags().StringVar(&opts.Listen, "listen", "", "Node interconnect listen address; defaults to advertise address")
 	cmd.Flags().StringVar(&opts.CAFile, "ca-file", "", "Controller CA certificate file")
+	cmd.Flags().StringVar(&opts.CAFile, "ca-cert", "", "Alias for --ca-file")
 	cmd.Flags().BoolVar(&opts.InsecureSkipVerify, "insecure-skip-verify", false, "Skip controller TLS certificate verification")
 	cmd.Flags().BoolVar(&opts.AllowInsecureHTTP, "allow-insecure-http", false, "Allow cleartext HTTP for isolated lab bootstrap only. Join tokens are exposed on the network")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Validate local join inputs and CSR generation without contacting the controller or consuming the token")

@@ -1,7 +1,7 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AISelfLearningReport, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AIProviderOpsResponse, AISelfLearningReport, AIUsageSnapshot, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { ScheduledTaskHistoryEntry, TimeSyncStatus } from '../types/api';
 import { cacheAccount, clearAccount } from '../authProfile';
 
@@ -79,34 +79,23 @@ export function isAuthenticatedFlag(): boolean {
 type SetupLocation = Pick<Location, 'hash' | 'pathname' | 'search'>;
 type SetupHistory = Pick<History, 'replaceState' | 'state'>;
 
+/**
+ * Backward-compatible hydration hook for setup mutations. The status endpoint
+ * intentionally cannot return credentials, so this only accepts an existing
+ * in-memory value or captures the current URL fragment.
+ */
 export async function hydrateSetupTokenFromStatus(
   fetcher: typeof fetch = fetch,
 ): Promise<string> {
+  void fetcher;
   clearLegacySetupTokenStorage();
   const existing = setupToken() || captureSetupTokenFromFragment();
   if (existing) {
     return existing;
   }
-  try {
-    const res = await fetcher('/api/setup/status', { credentials: 'same-origin' });
-    if (!res.ok) {
-      return '';
-    }
-    const body = (await res.json()) as { data?: { setup_url?: string } };
-    const page = (body.data?.setup_url ?? '').trim();
-    if (!page) {
-      return '';
-    }
-    const hash = page.includes('#') ? page.slice(page.indexOf('#') + 1) : '';
-    const token = (new URLSearchParams(hash).get('setup_token') ?? '').trim();
-    if (!token) {
-      return '';
-    }
-    setupTokenValue = token;
-    return token;
-  } catch {
-    return '';
-  }
+  // The server deliberately never exposes setup credentials through status.
+  // A bare /setup page must use the explicit in-memory input instead.
+  return '';
 }
 
 export function captureSetupTokenFromFragment(
@@ -131,6 +120,10 @@ function setupToken(): string {
   return setupTokenValue;
 }
 
+export function hasSetupToken(): boolean {
+  return setupToken() !== '';
+}
+
 function clearSetupToken() {
   setupTokenValue = '';
   clearLegacySetupTokenStorage();
@@ -138,6 +131,16 @@ function clearSetupToken() {
 
 export function resetSetupTokenForTest() {
   clearSetupToken();
+}
+
+/**
+ * Installs a manually entered first-install token for this browser session.
+ * The value intentionally lives only in memory and is attached by the request
+ * interceptor to setup mutations; it is never persisted to browser storage.
+ */
+export function setSetupTokenForSession(token: string) {
+  clearLegacySetupTokenStorage();
+  setupTokenValue = token.trim();
 }
 
 function clearLegacySetupTokenStorage() {
@@ -1273,11 +1276,19 @@ export function updateAIConfig(config: AIConfig) {
   return unwrap<AIConfig>(apiClient.put('/ai/config', config));
 }
 
-export function fetchAIModels(config?: Pick<AIModelConfig, 'provider' | 'api_base'> & { api_key?: string; allow_private_api_base?: boolean; target?: 'assistant' | 'reasoning' | string }) {
+export function fetchAIModels(config?: Pick<AIModelConfig, 'provider' | 'api_base'> & { api_key?: string; allow_private_api_base?: boolean; model_list_path?: string; target?: 'assistant' | 'reasoning' | string }) {
   if (config) {
     return unwrap<{ items: AIModelInfo[]; total: number }>(apiClient.post('/ai/models', config, { timeout: 60_000 }));
   }
   return unwrap<{ items: AIModelInfo[]; total: number }>(apiClient.get('/ai/models', { timeout: 60_000 }));
+}
+
+export function fetchAIOpsUsage(query: { range: '1d' | '7d' | '30d' | '90d' | 'custom'; start?: string; end?: string }) {
+  return unwrap<AIUsageSnapshot>(apiClient.get('/ai/ops/usage', { params: query }));
+}
+
+export function fetchAIOpsProviders() {
+  return unwrap<AIProviderOpsResponse>(apiClient.get('/ai/ops/providers'));
 }
 
 export function testAIConnection(config: Pick<AIModelConfig, 'provider' | 'api_base' | 'model'> & { api_key?: string; allow_private_api_base?: boolean; target?: 'assistant' | 'reasoning' | string }) {

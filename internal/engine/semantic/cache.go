@@ -204,7 +204,7 @@ func (c *candidateCache) put(key uint64, hits []Hit) {
 	now := time.Now()
 	expires := now.Add(c.ttl).UnixNano()
 	if jitter := c.ttl / 8; jitter > 0 {
-		expires = now.Add(cacheTTLWithJitter(c.ttl, rand.Int63n(int64(2*jitter)+1))).UnixNano()
+		expires = now.Add(cacheTTLWithJitter(c.ttl, rand.Int63n(int64(jitter)+1))).UnixNano()
 	}
 	stored := cloneHits(hits)
 	s := c.shard(key)

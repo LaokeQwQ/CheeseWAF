@@ -14,6 +14,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/tokens"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -219,4 +220,237 @@ func blockedManagementAPITokenConfigPath(t *testing.T) string {
 		t.Fatalf("create config path blocker: %v", err)
 	}
 	return filepath.Join(blocker, "cheesewaf.yaml")
+}
+
+func TestCreateManagementAPITokenUsesSafeDefaultAndRejectsOverlongLifetime(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		check      func(*testing.T, config.ManagementAPITokenConfig)
+	}{
+		{name: "default", body: "{\"name\":\"default\",\"scopes\":[\"read:system\"]}", wantStatus: http.StatusOK, check: func(t *testing.T, item config.ManagementAPITokenConfig) {
+			if item.NeverExpire || !item.ExpiresAt.Equal(now.Add(tokens.DefaultTTL)) {
+				t.Fatalf("default lifetime = never=%v expires=%v", item.NeverExpire, item.ExpiresAt)
+			}
+		}},
+		{name: "overlong", body: "{\"name\":\"overlong\",\"scopes\":[\"read:system\"],\"ttl\":\"366d\"}", wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.APISec.ManagementAPI.Enabled = true
+			h := New(Options{Config: &cfg})
+			h.now = func() time.Time { return now }
+			recorder := httptest.NewRecorder()
+			h.CreateManagementAPIToken(recorder, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", tc.body))
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status=%d body=%s, want %d", recorder.Code, recorder.Body.String(), tc.wantStatus)
+			}
+			if tc.check != nil {
+				if len(cfg.APISec.ManagementAPI.Tokens) != 1 {
+					t.Fatalf("token count=%d", len(cfg.APISec.ManagementAPI.Tokens))
+				}
+				tc.check(t, cfg.APISec.ManagementAPI.Tokens[0])
+			}
+		})
+	}
+}
+
+func TestCreateManagementAPITokenNeverExpireNeedsExplicitConfirmation(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	h := New(Options{Config: &cfg})
+	h.now = func() time.Time { return now }
+	without := httptest.NewRecorder()
+	h.CreateManagementAPIToken(without, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", "{\"name\":\"forever\",\"scopes\":[\"read:system\"],\"never_expire\":true}"))
+	if without.Code != http.StatusBadRequest || !strings.Contains(without.Body.String(), "API_TOKEN_CONFIRMATION_REQUIRED") {
+		t.Fatalf("missing confirmation status=%d body=%s", without.Code, without.Body.String())
+	}
+	if len(cfg.APISec.ManagementAPI.Tokens) != 0 {
+		t.Fatalf("unconfirmed request mutated config: %+v", cfg.APISec.ManagementAPI.Tokens)
+	}
+	confirmed := httptest.NewRecorder()
+	h.CreateManagementAPIToken(confirmed, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", "{\"name\":\"forever\",\"scopes\":[\"read:system\"],\"never_expire\":true,\"confirm_never_expire\":true,\"confirmation_id\":\"confirm-1\"}"))
+	if confirmed.Code != http.StatusNotImplemented || !strings.Contains(confirmed.Body.String(), "API_TOKEN_CONFIRMATION_UNAVAILABLE") {
+		t.Fatalf("confirmation-unavailable status=%d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	if len(cfg.APISec.ManagementAPI.Tokens) != 0 {
+		t.Fatalf("unavailable confirmation mutated config: %+v", cfg.APISec.ManagementAPI.Tokens)
+	}
+}
+
+func TestCreateManagementAPITokenNeverExpireConfirmationIDCannotReplay(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	h := New(Options{Config: &cfg})
+	h.now = func() time.Time { return now }
+	used := false
+	h.managementTokenConfirmationVerifier = func(_ *http.Request, confirmation ManagementTokenConfirmation, _ time.Time) error {
+		if confirmation.ConfirmationID != "confirm-replay" {
+			return fmt.Errorf("unexpected confirmation id")
+		}
+		if used {
+			return errManagementAPITokenConfirmationReplay
+		}
+		used = true
+		return nil
+	}
+	body := `{"name":"forever","scopes":["read:system"],"never_expire":true,"confirm_never_expire":true,"confirmation_id":"confirm-replay"}`
+	first := httptest.NewRecorder()
+	h.CreateManagementAPIToken(first, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", body))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first confirmed create status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := httptest.NewRecorder()
+	h.CreateManagementAPIToken(second, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", body))
+	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), "API_TOKEN_CONFIRMATION_REPLAY") {
+		t.Fatalf("replayed confirmation status=%d body=%s", second.Code, second.Body.String())
+	}
+	if len(cfg.APISec.ManagementAPI.Tokens) != 1 {
+		t.Fatalf("replay created another token: %+v", cfg.APISec.ManagementAPI.Tokens)
+	}
+}
+
+func TestManagementAPITokenCleanupHonorsCoalescedDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	old := now.Add(-time.Minute)
+	cfg.APISec.ManagementAPI.Tokens = []config.ManagementAPITokenConfig{{
+		ID: "inactive", Name: "inactive", Prefix: "cwapi_inactive", Hash: middleware.HashManagementAPIToken("cwapi_inactive-secret"),
+		Scopes: []string{"read:system"}, Enabled: true, CreatedAt: old, LastUsedAt: old, ExpiresAt: now.Add(-time.Second),
+	}}
+	h := New(Options{Config: &cfg})
+	if removed, err := h.CleanupManagementAPITokens(now); err != nil || removed != 0 {
+		t.Fatalf("cleanup before deadline removed=%d err=%v", removed, err)
+	}
+	if due := h.NextManagementAPITokenCleanupAt(); due.IsZero() {
+		t.Fatal("cleanup deadline was not initialized")
+	} else if !due.After(now) {
+		t.Fatalf("new token deadline=%v should be after now=%v", due, now)
+	}
+	if removed, err := h.CleanupManagementAPITokens(now.Add(tokens.CleanupDelay)); err != nil || removed != 1 {
+		t.Fatalf("cleanup at deadline removed=%d err=%v", removed, err)
+	}
+}
+
+func TestManagementAPITokenCleanupRemovesExpiredAndInactiveWithAudit(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	old := now.Add(-tokens.InactivityTTL - time.Hour)
+	cfg.APISec.ManagementAPI.Tokens = []config.ManagementAPITokenConfig{{
+		ID: "inactive", Name: "inactive", Prefix: "cwapi_inactive", Hash: middleware.HashManagementAPIToken("cwapi_inactive-secret"),
+		Scopes: []string{"read:system"}, Enabled: true, CreatedAt: old, LastUsedAt: old, NeverExpire: true,
+	}}
+	h := New(Options{Config: &cfg, Auditor: middleware.NewAuditor(auditPath)})
+	h.now = func() time.Time { return now }
+	removed, err := h.CleanupManagementAPITokens(now)
+	if err != nil || removed != 1 {
+		t.Fatalf("cleanup removed=%d err=%v", removed, err)
+	}
+	if len(cfg.APISec.ManagementAPI.Tokens) != 0 {
+		t.Fatalf("inactive token remains: %+v", cfg.APISec.ManagementAPI.Tokens)
+	}
+	entries, err := h.Auditor.Query(10)
+	if err != nil || len(entries) != 1 || entries[0].Subject != "api-token:inactive" || !strings.Contains(entries[0].Message, "inactive") {
+		t.Fatalf("cleanup audit=%+v err=%v", entries, err)
+	}
+}
+
+func TestCreateManagementAPITokenPreservesDisplayTextSpaces(t *testing.T) {
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	h := New(Options{Config: &cfg})
+	recorder := httptest.NewRecorder()
+	body := "{\"name\":\"  deploy bot  \",\"notes\":\"  owned by ops  \",\"scopes\":[\"read:system\"]}"
+	h.CreateManagementAPIToken(recorder, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", body))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want %d", recorder.Code, recorder.Body.String(), http.StatusOK)
+	}
+	if got := cfg.APISec.ManagementAPI.Tokens[0]; got.Name != "  deploy bot  " || got.Notes != "  owned by ops  " {
+		t.Fatalf("display text was rewritten: name=%q notes=%q", got.Name, got.Notes)
+	}
+}
+
+func TestCreateManagementAPITokenRejectsNonCanonicalScopes(t *testing.T) {
+	for _, scope := range []string{" read:system", "read:system ", "read:\tsystem", "read:system\u200b", "read:system\x00"} {
+		t.Run(scope, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.APISec.ManagementAPI.Enabled = true
+			h := New(Options{Config: &cfg})
+			recorder := httptest.NewRecorder()
+			body := fmt.Sprintf("{\"name\":\"deploy\",\"scopes\":[%q]}", scope)
+			h.CreateManagementAPIToken(recorder, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", body))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want %d", recorder.Code, recorder.Body.String(), http.StatusBadRequest)
+			}
+			if len(cfg.APISec.ManagementAPI.Tokens) != 0 {
+				t.Fatalf("invalid scope created token: %+v", cfg.APISec.ManagementAPI.Tokens)
+			}
+		})
+	}
+}
+
+func TestCreateManagementAPITokenRejectsNonCanonicalConfirmationID(t *testing.T) {
+	for _, id := range []string{" confirm-1", "confirm-1 ", "confirm-\t1", "confirm-1\u200b", "confirm-1\x00"} {
+		t.Run(id, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.APISec.ManagementAPI.Enabled = true
+			h := New(Options{Config: &cfg})
+			h.managementTokenConfirmationVerifier = func(_ *http.Request, _ ManagementTokenConfirmation, _ time.Time) error { return nil }
+			recorder := httptest.NewRecorder()
+			body := fmt.Sprintf("{\"name\":\"forever\",\"scopes\":[\"read:system\"],\"never_expire\":true,\"confirm_never_expire\":true,\"confirmation_id\":%q}", id)
+			h.CreateManagementAPIToken(recorder, managementAPITokenRequest(http.MethodPost, "/api/system/api-tokens", body))
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want %d", recorder.Code, recorder.Body.String(), http.StatusBadRequest)
+			}
+			if len(cfg.APISec.ManagementAPI.Tokens) != 0 {
+				t.Fatalf("invalid confirmation id created token: %+v", cfg.APISec.ManagementAPI.Tokens)
+			}
+		})
+	}
+}
+
+func TestRevokeManagementAPITokenRejectsNonCanonicalID(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := config.Default()
+	cfg.APISec.ManagementAPI.Enabled = true
+	cfg.APISec.ManagementAPI.Tokens = []config.ManagementAPITokenConfig{{
+		ID: "token-1", Name: "deploy", Prefix: "cwapi_token-1", Hash: middleware.HashManagementAPIToken("cwapi_token-1-secret"),
+		Scopes: []string{"read:system"}, Enabled: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}}
+	h := New(Options{Config: &cfg})
+	for _, id := range []string{" token-1", "token-1 ", "token-\t1", "token-1\u200b", "token-1\x00"} {
+		t.Run(id, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := withManagementAPITokenID(managementAPITokenRequest(http.MethodDelete, "/api/system/api-tokens/token-1", ""), id)
+			h.RevokeManagementAPIToken(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want %d", recorder.Code, recorder.Body.String(), http.StatusBadRequest)
+			}
+		})
+	}
+	if !cfg.APISec.ManagementAPI.Tokens[0].Enabled || !cfg.APISec.ManagementAPI.Tokens[0].RevokedAt.IsZero() {
+		t.Fatalf("invalid id changed token state: %+v", cfg.APISec.ManagementAPI.Tokens[0])
+	}
+}
+
+func TestPermissionMatchesRejectsNonCanonicalSelectors(t *testing.T) {
+	for _, tc := range []struct{ permission, required string }{
+		{permission: " read:system", required: "read:system"},
+		{permission: "read:system ", required: "read:system"},
+		{permission: "read:system", required: " read:system"},
+		{permission: "read:\tsystem", required: "read:system"},
+		{permission: "read:system\u200b", required: "read:system"},
+	} {
+		if permissionMatches(tc.permission, tc.required) {
+			t.Fatalf("permissionMatches(%q, %q) accepted non-canonical selector", tc.permission, tc.required)
+		}
+	}
 }

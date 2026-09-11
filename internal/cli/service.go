@@ -26,11 +26,14 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	climigration "github.com/LaokeQwQ/CheeseWAF/internal/cli/migration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
@@ -99,6 +102,22 @@ func runServe(ctx context.Context) error {
 	if err := applyCLIDataDir(cfg, dataDir); err != nil {
 		return err
 	}
+	if err := ensureNoPendingMigration(cfg.Setup.DataDir); err != nil {
+		return err
+	}
+	var store storage.Store
+	var productionDeps *ProductionDependencies
+	if strings.EqualFold(strings.TrimSpace(cfg.Storage.Profile), config.StorageProfileProduction) {
+		// Open and fully validate every production dependency before creating the
+		// runtime directory or PID lease. A failed control-plane, Redis, approval,
+		// or wiring check must leave no serving-process side effect behind.
+		productionDeps, err = openProductionServeDependencies(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer productionDeps.Close()
+		store = productionDeps.Management
+	}
 	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
 		return err
 	}
@@ -127,6 +146,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("configure application clock: %w", err)
 	}
+	defer timeSync.Stop()
 	clock := timeSync.Clock()
 	if err := ensureAdminTLSCertificate(cfg); err != nil {
 		return err
@@ -135,13 +155,15 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	store, err := storage.OpenSQLite(cfg.Storage.SQLite.Path)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	if err := store.Migrate(ctx); err != nil {
-		return err
+	if !strings.EqualFold(strings.TrimSpace(cfg.Storage.Profile), config.StorageProfileProduction) {
+		store, err = openConfiguredManagementStore(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if err := store.Migrate(ctx); err != nil {
+			return err
+		}
 	}
 	if err := validateStartupUsers(ctx, cfg.Setup.DataDir, store); err != nil {
 		return err
@@ -276,29 +298,36 @@ func runServe(ctx context.Context) error {
 	}
 	if setupPending {
 		page := setupBrowserURL(adminScheme, cfg.Server.AdminListen, setupToken)
-		fmt.Printf("Complete first-install setup: %s\n", page)
-		if err := setup.WriteURL(cfg.Setup.DataDir, page); err != nil {
+		// The token is delivered through the protected runtime URL file and the
+		// setup page's fragment. Never print the fragment to stdout, where it
+		// can enter service logs, terminal history, or process collectors.
+		fmt.Printf("Complete first-install setup at: %s\n", setupBrowserDisplayURL(page))
+		receipt, err := setup.WriteURLWithReceipt(cfg.Setup.DataDir, page)
+		if err != nil {
 			return err
 		}
+		fmt.Printf("The one-time setup URL is stored in the protected runtime file: %s (receipt %s)\n", filepath.Join(cfg.Setup.DataDir, setup.URLFileName), receipt)
 	}
 	adminRouter := api.NewRouter(api.Options{
-		Config:              cfg,
-		IsolateConfig:       true,
-		ConfigPath:          loadedConfigPath,
-		Store:               store,
-		Sink:                sink,
-		Hub:                 hub,
-		Secret:              authSecret,
-		SetupToken:          setupToken,
-		Clock:               clock,
-		TimeSync:            timeSync,
-		ClusterIdentity:     clusterIdentityService,
-		ClusterHeartbeats:   clusterHeartbeats,
-		OnSitesChanged:      reloadSites,
-		OnEdgeChanged:       proxyServer.UpdateEdge,
-		OnProtectionChanged: proxyServer.UpdateProtection,
-		OnAPISecChanged:     proxyServer.UpdateAPISec,
-		OnBlockPageChanged:  proxyServer.UpdateBlockPage,
+		Config:                        cfg,
+		IsolateConfig:                 true,
+		ConfigPath:                    loadedConfigPath,
+		Store:                         store,
+		Sink:                          sink,
+		Hub:                           hub,
+		Secret:                        authSecret,
+		SetupToken:                    setupToken,
+		Clock:                         clock,
+		ManagementTokenCleanupContext: runtimeCtx,
+		ApprovalHTTP:                  productionApprovalHTTP(productionDeps),
+		TimeSync:                      timeSync,
+		ClusterIdentity:               clusterIdentityService,
+		ClusterHeartbeats:             clusterHeartbeats,
+		OnSitesChanged:                reloadSites,
+		OnEdgeChanged:                 proxyServer.UpdateEdge,
+		OnProtectionChanged:           proxyServer.UpdateProtection,
+		OnAPISecChanged:               proxyServer.UpdateAPISec,
+		OnBlockPageChanged:            proxyServer.UpdateBlockPage,
 		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
 		},
@@ -329,7 +358,6 @@ func runServe(ctx context.Context) error {
 	if err := timeSync.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start application clock: %w", err)
 	}
-	defer timeSync.Stop()
 
 	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
 	if tlsServer != nil {
@@ -414,6 +442,53 @@ func runServe(ctx context.Context) error {
 	return serveErr
 }
 
+// ensureNoPendingMigration is checked before any service listener, PID lease,
+// or backend is opened. A leftover cutover fence represents an ambiguous
+// management state; serving either profile would risk accepting stale
+// credentials or silently reverting to temporary mode.
+func ensureNoPendingMigration(dataDir string) error {
+	if err := climigration.CheckPendingCutover(dataDir); err != nil {
+		return fmt.Errorf("migration recovery is required before serving: %w", err)
+	}
+	return nil
+}
+
+func productionApprovalHTTP(deps *ProductionDependencies) *handler.ApprovalHTTPHandler {
+	if deps == nil {
+		return nil
+	}
+	return deps.ApprovalHTTP
+}
+
+// openProductionManagementStore is retained for embedded callers and legacy
+// unit tests that exercise only the management-store boundary. The main
+// runServe production path uses openProductionServeDependencies so control
+// PostgreSQL, native-raft, Redis and approval lifetimes cannot be split.
+var openProductionManagementStore = func(context.Context, config.ManagementPostgreSQLConfig) (storage.Store, error) {
+	return nil, config.ErrProductionStorageUnavailable
+}
+
+func openConfiguredManagementStore(ctx context.Context, cfg *config.Config) (storage.Store, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Storage.Profile)) {
+	case "", config.StorageProfileTemporary:
+		return storage.OpenSQLite(cfg.Storage.SQLite.Path)
+	case config.StorageProfileProduction:
+		store, err := openProductionManagementStore(ctx, cfg.Storage.ManagementPostgreSQL)
+		if err != nil {
+			return nil, err
+		}
+		if store == nil {
+			return nil, config.ErrProductionStorageUnavailable
+		}
+		return store, nil
+	default:
+		return nil, fmt.Errorf("storage.profile must be temporary or production (got %q)", cfg.Storage.Profile)
+	}
+}
+
 type reviewRetentionStore interface {
 	PruneReviewItems(context.Context, time.Time, int) (int64, error)
 }
@@ -449,18 +524,41 @@ func setupBrowserURL(scheme, adminListen, token string) string {
 	return setup.BrowserURL(scheme, adminListen, token)
 }
 
+func setupBrowserDisplayURL(page string) string {
+	if index := strings.IndexByte(page, '#'); index >= 0 {
+		return page[:index]
+	}
+	return page
+}
+
 func validateStartupUsers(ctx context.Context, dataDir string, store storage.UserStore) error {
 	users, err := store.ListUsers(ctx)
 	if err != nil {
 		return fmt.Errorf(`startup user integrity check: %w`, err)
 	}
-	if setup.NeedsSetup(dataDir) {
+	if setup.NeedsSetup(dataDir) && len(users) == 0 {
 		return nil
 	}
+	var dirtyAdministrators []storage.User
+	usableAdministrator := false
 	for _, user := range users {
-		if strings.EqualFold(strings.TrimSpace(user.Role), `admin`) {
-			return nil
+		if err := identity.ValidateUsername(user.Username); err != nil {
+			log.Printf("startup user integrity warning: user ID %q has a non-canonical username (%v); run waf-cli user repair-username %q NEW_USERNAME --reason 'repair historical username'", user.ID, err, user.ID)
+			if user.Role == "admin" {
+				dirtyAdministrators = append(dirtyAdministrators, user)
+			}
+			continue
 		}
+		if user.Role == "admin" {
+			usableAdministrator = true
+		}
+	}
+	if usableAdministrator {
+		return nil
+	}
+	if len(dirtyAdministrators) > 0 {
+		user := dirtyAdministrators[0]
+		return fmt.Errorf("startup user integrity check failed: no usable administrator exists; user ID %q has a non-canonical username; run waf-cli user repair-username %q NEW_USERNAME --reason 'repair historical username'", user.ID, user.ID)
 	}
 	return fmt.Errorf(`startup user integrity check failed: setup is complete but no administrator exists; run waf-cli user ensure-admin USERNAME --password-stdin before starting the service`)
 }

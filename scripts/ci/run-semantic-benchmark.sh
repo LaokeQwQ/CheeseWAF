@@ -145,7 +145,7 @@ with open(raw_path, encoding="utf-8") as stream:
         raw_output.append(output)
 for match in pattern.finditer("".join(raw_output)):
     name, cpu_suffix, ns, bytes_per_op, allocs_per_op = match.groups()
-    cpu = int(cpu_suffix) if cpu_suffix is not None else requested_cpus[0]
+    cpu = int(cpu_suffix) if cpu_suffix is not None else 1
     runs[name].append({
                 "cpu": cpu,
                 "ns_per_op": float(ns),
