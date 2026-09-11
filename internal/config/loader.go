@@ -406,9 +406,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config file %s exceeds max size (%d bytes > %d bytes)", path, info.Size(), MaxConfigFileBytes)
 	}
 
-	contents, err := os.ReadFile(path)
+	file, err := openConfigFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	contents, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read config %s: %w", path, readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close config %s: %w", path, closeErr)
 	}
 	if err := yaml.Unmarshal(contents, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
@@ -609,7 +617,7 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 }
 
 func configFileDigest(path string) (string, error) {
-	file, err := os.Open(path)
+	file, err := openConfigFile(path)
 	if err != nil {
 		return "", err
 	}
