@@ -1,0 +1,212 @@
+---
+- name: Inspect the operator-supplied CWEDP artifact on the controller
+  ansible.builtin.stat:
+    path: "{{ cheesewaf_cwedp_agent_src }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: cheesewaf_cwedp_artifact_stat
+  check_mode: false
+  when: cheesewaf_cwedp_agent_enabled | bool
+
+- name: Refuse an unverified CWEDP artifact before changing any host
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_cwedp_artifact_stat.stat.exists | default(false)
+      - cheesewaf_cwedp_artifact_stat.stat.isreg | default(false)
+      - not (cheesewaf_cwedp_artifact_stat.stat.islnk | default(false))
+      - (cheesewaf_cwedp_artifact_stat.stat.checksum | default('') | lower) == (cheesewaf_cwedp_agent_sha256 | lower)
+    fail_msg: CWEDP artifact is missing, not a regular file, or does not match its SHA-256
+  when: cheesewaf_cwedp_agent_enabled | bool
+  no_log: true
+
+- name: Describe check-mode host bootstrap without mutating the node
+  ansible.builtin.debug:
+    msg: >-
+      check-mode: host account, runtime directory, CWEDP artifact installation
+      and systemd changes are intentionally skipped; only the deployment
+      contract is validated.
+  when: ansible_check_mode
+
+- name: Apply host preparation and CWEDP bootstrap
+  when: not ansible_check_mode
+  become: true
+  block:
+    - name: Ensure CheeseWAF service group exists
+      ansible.builtin.group:
+        name: "{{ cheesewaf_service_group }}"
+        system: true
+        state: present
+      when: cheesewaf_prepare_host | bool or cheesewaf_cwedp_agent_enabled | bool
+
+    - name: Ensure CheeseWAF service account exists
+      ansible.builtin.user:
+        name: "{{ cheesewaf_service_user }}"
+        group: "{{ cheesewaf_service_group }}"
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+        state: present
+      when: cheesewaf_prepare_host | bool or cheesewaf_cwedp_agent_enabled | bool
+
+    - name: Create runtime hand-off directory
+      ansible.builtin.file:
+        path: "{{ cheesewaf_runtime_dir }}"
+        state: directory
+        owner: "{{ cheesewaf_service_user }}"
+        group: "{{ cheesewaf_service_group }}"
+        mode: '0750'
+      when: cheesewaf_prepare_host | bool
+
+    - name: Record non-secret deployment contract
+      ansible.builtin.copy:
+        dest: "{{ cheesewaf_runtime_dir }}/deployment-contract.yml"
+        owner: "{{ cheesewaf_service_user }}"
+        group: "{{ cheesewaf_service_group }}"
+        mode: '0640'
+        content: |
+          deployment_entrypoint: {{ cheesewaf_deployment_entrypoint }}
+          storage_profile: {{ cheesewaf_storage_profile }}
+          management_postgresql_mode: {{ cheesewaf_management_postgresql_mode }}
+          redis_mode: {{ cheesewaf_redis_mode }}
+          consensus_backend: {{ cheesewaf_consensus_backend }}
+          native_raft_tls_enabled: {{ cheesewaf_native_raft_tls_enabled | bool }}
+          offline: {{ cheesewaf_offline | bool }}
+          pigsty_enabled: {{ cheesewaf_pigsty_enabled | bool }}
+          cwedp_agent_enabled: {{ cheesewaf_cwedp_agent_enabled | bool }}
+          crp_push_by_ansible: false
+      when: cheesewaf_prepare_host | bool
+
+    - name: Create versioned CWEDP release directory
+      ansible.builtin.file:
+        path: "{{ cheesewaf_cwedp_agent_dir }}/releases/{{ cheesewaf_cwedp_agent_sha256 | lower }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      when: cheesewaf_cwedp_agent_enabled | bool
+
+    - name: Install the verified CWEDP binary without downloading it
+      ansible.builtin.copy:
+        src: "{{ cheesewaf_cwedp_agent_src }}"
+        dest: "{{ cheesewaf_cwedp_agent_dir }}/releases/{{ cheesewaf_cwedp_agent_sha256 | lower }}/cwedp-agent"
+        owner: root
+        group: root
+        mode: '0755'
+      when: cheesewaf_cwedp_agent_enabled | bool
+      notify:
+        - Reload systemd after CheeseWAF unit changes
+        - Restart CWEDP pull agent after an intentional change
+
+    - name: Verify the installed CWEDP binary digest before activation
+      ansible.builtin.stat:
+        path: "{{ cheesewaf_cwedp_agent_dir }}/releases/{{ cheesewaf_cwedp_agent_sha256 | lower }}/cwedp-agent"
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: cheesewaf_cwedp_installed_stat
+      when: cheesewaf_cwedp_agent_enabled | bool
+
+    - name: Refuse to activate a CWEDP binary changed during staging
+      ansible.builtin.assert:
+        that:
+          - cheesewaf_cwedp_installed_stat.stat.exists | default(false)
+          - cheesewaf_cwedp_installed_stat.stat.isreg | default(false)
+          - not (cheesewaf_cwedp_installed_stat.stat.islnk | default(false))
+          - (cheesewaf_cwedp_installed_stat.stat.checksum | default('') | lower) == (cheesewaf_cwedp_agent_sha256 | lower)
+        fail_msg: staged CWEDP binary failed the SHA-256 verification
+      when: cheesewaf_cwedp_agent_enabled | bool
+      no_log: true
+
+    - name: Point the CWEDP current release at the verified artifact
+      ansible.builtin.file:
+        src: "{{ cheesewaf_cwedp_agent_dir }}/releases/{{ cheesewaf_cwedp_agent_sha256 | lower }}"
+        dest: "{{ cheesewaf_cwedp_agent_dir }}/current"
+        state: link
+        owner: root
+        group: root
+      when: cheesewaf_cwedp_agent_enabled | bool
+      notify:
+        - Reload systemd after CheeseWAF unit changes
+        - Restart CWEDP pull agent after an intentional change
+
+    - name: Create CWEDP data directory
+      ansible.builtin.file:
+        path: "{{ cheesewaf_cwedp_data_dir }}"
+        state: directory
+        owner: "{{ cheesewaf_service_user }}"
+        group: "{{ cheesewaf_service_group }}"
+        mode: '0750'
+      when: cheesewaf_cwedp_agent_enabled | bool
+
+    - name: Verify the external CWEDP environment file before starting
+      ansible.builtin.stat:
+        path: "{{ cheesewaf_cwedp_environment_file }}"
+        follow: false
+        get_checksum: false
+      register: cheesewaf_cwedp_environment_stat
+      when: cheesewaf_cwedp_agent_enabled | bool and cheesewaf_cwedp_agent_start | bool
+
+    - name: Refuse to start CWEDP without an operator-managed environment file
+      ansible.builtin.assert:
+        that:
+          - cheesewaf_cwedp_environment_stat.stat.exists | default(false)
+          - cheesewaf_cwedp_environment_stat.stat.isreg | default(false)
+          - not (cheesewaf_cwedp_environment_stat.stat.islnk | default(false))
+          - (cheesewaf_cwedp_environment_stat.stat.mode | default('')) in ['0600', '0640']
+        fail_msg: CWEDP start requires an external 0600/0640 environment file; secrets are never managed here
+      when: cheesewaf_cwedp_agent_enabled | bool and cheesewaf_cwedp_agent_start | bool
+
+    - name: Install the pull-only CWEDP systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/cheesewaf-cwedp-agent.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=CheeseWAF CWEDP pull agent
+          After=network-online.target
+          {% if not cheesewaf_offline | bool %}
+          Wants=network-online.target
+          {% endif %}
+
+          [Service]
+          Type=simple
+          User={{ cheesewaf_service_user }}
+          Group={{ cheesewaf_service_group }}
+          Environment=CHEESEWAF_OFFLINE={{ '1' if cheesewaf_offline | bool else '0' }}
+          {% if cheesewaf_cwedp_agent_start | bool %}
+          EnvironmentFile={{ cheesewaf_cwedp_environment_file }}
+          {% endif %}
+          ExecStart={{ cheesewaf_cwedp_agent_dir }}/current/cwedp-agent --data-dir {{ cheesewaf_cwedp_data_dir }} --pull-only
+          Restart=on-failure
+          RestartSec=5s
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+          {% if cheesewaf_offline | bool %}
+          RestrictAddressFamilies=AF_UNIX
+          IPAddressDeny=any
+          {% else %}
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          {% endif %}
+          ReadWritePaths={{ cheesewaf_cwedp_data_dir }}
+
+          [Install]
+          WantedBy=multi-user.target
+      when: cheesewaf_cwedp_agent_enabled | bool
+      notify:
+        - Reload systemd after CheeseWAF unit changes
+        - Restart CWEDP pull agent after an intentional change
+
+    - name: Enable and start CWEDP only after explicit operator opt-in
+      ansible.builtin.systemd_service:
+        name: cheesewaf-cwedp-agent
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: cheesewaf_cwedp_agent_enabled | bool and cheesewaf_cwedp_agent_start | bool

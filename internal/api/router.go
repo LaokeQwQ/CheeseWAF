@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -19,27 +20,36 @@ import (
 )
 
 type Options struct {
-	Config              *config.Config
-	ConfigPath          string
-	Store               storage.Store
-	Sink                storage.LogSink
-	Hub                 *realtime.Hub
-	Secret              string
-	SetupToken          string
-	OnSitesChanged      func([]config.SiteConfig) error
-	OnEdgeChanged       func(config.EdgeConfig) error
-	OnProtectionChanged func(config.ProtectionConfig) error
-	OnAPISecChanged     func(config.APISecConfig) error
-	OnBlockPageChanged  func(config.BlockPageConfig) error
-	OnTimeSyncChanged   func(config.TimeSyncConfig) error
-	ACMEIssuer          acme.Issuer
-	AuthState           *handler.AuthState
-	AssistantApprovals  *ai.ApprovalStore
-	ClusterIdentity     *identity.MemoryIdentityService
-	ClusterHeartbeats   *cluster.HeartbeatRegistry
-	CAPTCHAAssets       captchaassets.Store
-	Clock               timekeeper.Clock
-	TimeSync            handler.TimeSyncService
+	Config                              *config.Config
+	ConfigPath                          string
+	Store                               storage.Store
+	Sink                                storage.LogSink
+	Hub                                 *realtime.Hub
+	Secret                              string
+	SetupToken                          string
+	OnSitesChanged                      func([]config.SiteConfig) error
+	OnEdgeChanged                       func(config.EdgeConfig) error
+	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnAPISecChanged                     func(config.APISecConfig) error
+	OnBlockPageChanged                  func(config.BlockPageConfig) error
+	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	ACMEIssuer                          acme.Issuer
+	AuthState                           *handler.AuthState
+	AssistantApprovals                  *ai.ApprovalStore
+	ClusterIdentity                     *identity.MemoryIdentityService
+	ClusterHeartbeats                   *cluster.HeartbeatRegistry
+	CAPTCHAAssets                       captchaassets.Store
+	Clock                               timekeeper.Clock
+	TimeSync                            handler.TimeSyncService
+	ManagementTokenConfirmationVerifier handler.ManagementTokenConfirmationVerifier
+	// ApprovalHTTP is an optional, fully configured high-risk ApprovalGate
+	// transport. It is mounted only inside the authenticated management API
+	// group; leaving it nil keeps the route absent rather than exposing an
+	// incomplete approval implementation.
+	ApprovalHTTP *handler.ApprovalHTTPHandler
+	// ManagementTokenCleanupContext enables the service-owned, single cleanup
+	// worker. Leave nil for embedded/test routers that manage cleanup explicitly.
+	ManagementTokenCleanupContext context.Context
 	// IsolateConfig makes the router own a deep-cloned configuration graph.
 	// The serve command enables it so background readers never alias API writes.
 	IsolateConfig bool
@@ -88,30 +98,32 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		hub = realtime.NewHub()
 	}
 	h := handler.New(handler.Options{
-		Config:              routerConfig,
-		ConfigSnapshot:      requestConfig,
-		ConfigPath:          opts.ConfigPath,
-		Store:               opts.Store,
-		Sink:                opts.Sink,
-		Tokens:              tokens,
-		Secret:              opts.Secret,
-		SetupToken:          opts.SetupToken,
-		Auditor:             auditor,
-		AssistantApprovals:  approvals,
-		Realtime:            hub,
-		ClusterIdentity:     opts.ClusterIdentity,
-		ClusterHeartbeats:   opts.ClusterHeartbeats,
-		ACMEIssuer:          opts.ACMEIssuer,
-		OnSitesChanged:      opts.OnSitesChanged,
-		OnEdgeChanged:       opts.OnEdgeChanged,
-		OnProtectionChanged: opts.OnProtectionChanged,
-		OnAPISecChanged:     opts.OnAPISecChanged,
-		OnBlockPageChanged:  opts.OnBlockPageChanged,
-		OnTimeSyncChanged:   opts.OnTimeSyncChanged,
-		CAPTCHAAssets:       opts.CAPTCHAAssets,
-		Clock:               clock,
-		TimeSync:            opts.TimeSync,
+		Config:                              routerConfig,
+		ConfigSnapshot:                      requestConfig,
+		ConfigPath:                          opts.ConfigPath,
+		Store:                               opts.Store,
+		Sink:                                opts.Sink,
+		Tokens:                              tokens,
+		Secret:                              opts.Secret,
+		SetupToken:                          opts.SetupToken,
+		Auditor:                             auditor,
+		AssistantApprovals:                  approvals,
+		Realtime:                            hub,
+		ClusterIdentity:                     opts.ClusterIdentity,
+		ClusterHeartbeats:                   opts.ClusterHeartbeats,
+		ACMEIssuer:                          opts.ACMEIssuer,
+		OnSitesChanged:                      opts.OnSitesChanged,
+		OnEdgeChanged:                       opts.OnEdgeChanged,
+		OnProtectionChanged:                 opts.OnProtectionChanged,
+		OnAPISecChanged:                     opts.OnAPISecChanged,
+		OnBlockPageChanged:                  opts.OnBlockPageChanged,
+		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		CAPTCHAAssets:                       opts.CAPTCHAAssets,
+		Clock:                               clock,
+		TimeSync:                            opts.TimeSync,
+		ManagementTokenConfirmationVerifier: opts.ManagementTokenConfirmationVerifier,
 	})
+	h.StartManagementAPITokenCleanup(opts.ManagementTokenCleanupContext)
 	if opts.AuthState != nil {
 		handler.ApplyAuthState(h, opts.AuthState)
 	}
@@ -276,6 +288,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(require("read:ai"), h.ConfigReadMiddleware).Get("/ai/config", h.AIConfig)
 			r.With(require("write:ai")).Put("/ai/config", h.UpdateAIConfig)
 			r.With(require("read:ai"), h.ConfigReadMiddleware).Get("/ai/models", h.AIModels)
+			r.With(require("read:ai"), h.ConfigReadMiddleware).Get("/ai/ops/providers", h.AIOpsProviders)
+			r.With(require("read:ai"), h.ConfigReadMiddleware).Get("/ai/ops/usage", h.AIOpsUsage)
 			r.With(require("write:ai"), aiUseLimit).Post("/ai/models", h.AIModels)
 			r.With(require("write:ai"), aiUseLimit).Post("/ai/test", h.TestAIConnection)
 			r.With(require("use:ai"), require("read:logs"), aiUseLimit).Post("/ai/analyze", h.AnalyzeLog)
@@ -292,6 +306,16 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(requireAny("use:ai", "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
 			r.With(require("use:ai"), aiUseLimit).Post("/ai/tools/approvals/{id}/continue/stream", h.ContinueAIApprovalStream)
 			r.With(requireAny("use:ai", "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
+			// The strict ApprovalGate transport is injected by a production
+			// wiring layer. Mounting it here keeps authentication, session
+			// validation, RBAC, CSRF and audit middleware identical to the rest
+			// of the management API. API-token callers are rejected by the
+			// handler's session boundary and cannot satisfy an interactive gate.
+			if opts.ApprovalHTTP != nil {
+				r.With(require("approve:ai")).Post("/approvals", opts.ApprovalHTTP.SubmitApproval)
+				r.With(require("approve:ai")).Post("/approvals/{id}/confirmation/start", opts.ApprovalHTTP.StartApprovalConfirmation)
+				r.With(require("approve:ai")).Post("/approvals/{id}/confirmation", opts.ApprovalHTTP.ConfirmApproval)
+			}
 			r.With(require("read:storage"), h.ConfigReadMiddleware).Get("/storage", h.StorageStats)
 			r.With(require("write:storage")).Post("/storage/cleanup", h.CleanupStorage)
 			r.With(require("write:system")).Post("/system/reclaim", h.ReclaimSystemResources)

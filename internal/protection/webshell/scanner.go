@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"math"
 	"regexp"
 	"strings"
 	"unicode"
@@ -378,8 +379,37 @@ func stripPHPComments(src string) string {
 }
 
 func highEntropySuspicious(src string) bool {
-	// Look for long base64-like blobs often used by one-liner webshells.
-	return highEntropyPattern.MatchString(src)
+	// A long Base64-looking token is only a candidate. Measure the actual byte
+	// distribution so repeated characters, JWT-like identifiers, and ordinary
+	// minified source do not trigger merely because they are long. The caller
+	// already requires a PHP execution primitive and external input, so this is
+	// an additional obfuscation signal rather than a standalone verdict.
+	for _, token := range highEntropyPattern.FindAllString(src, maxBase64Tokens) {
+		if shannonEntropy(token) >= 5.2 {
+			return true
+		}
+	}
+	return false
+}
+
+func shannonEntropy(src string) float64 {
+	if len(src) == 0 {
+		return 0
+	}
+	var counts [256]int
+	for i := 0; i < len(src); i++ {
+		counts[src[i]]++
+	}
+	length := float64(len(src))
+	var entropy float64
+	for _, count := range counts {
+		if count == 0 {
+			continue
+		}
+		p := float64(count) / length
+		entropy -= p * math.Log2(p)
+	}
+	return entropy
 }
 
 var (
@@ -388,7 +418,7 @@ var (
 	phpExternalVariableAssignmentPattern = regexp.MustCompile(`(?i)\$([a-z_][a-z0-9_]*)\s*=\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[`)
 	phpStringAssignmentPattern           = regexp.MustCompile(`(?i)\$([a-z_][a-z0-9_]*)\s*=\s*((?:['"][a-z_]+['"]\s*\.?\s*)+)\s*;`)
 	phpOpenTagPattern                    = regexp.MustCompile(`(?i)<\?(?:php\b|=|\s)`)
-	highEntropyPattern                   = regexp.MustCompile(`[A-Za-z0-9+/]{80,}={0,2}`)
+	highEntropyPattern                   = regexp.MustCompile(`[A-Za-z0-9+/_-]{80,}={0,2}`)
 	dangerousPHPFunctions                = map[string]struct{}{
 		"assert": {}, "create_function": {}, "eval": {}, "exec": {}, "passthru": {}, "popen": {}, "proc_open": {}, "shell_exec": {}, "system": {},
 	}

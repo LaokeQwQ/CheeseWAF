@@ -285,7 +285,7 @@ ai:
 update:
   ota:
     enabled: false
-    server: "https://ota.waf.laoker.cc/"
+    server: "https://ota.cheesesec.com/"
     channel: "stable"
     check_interval: "6h"
     auto_update_rules: true

@@ -8,10 +8,12 @@ import (
 	"io"
 	"math/big"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -22,6 +24,7 @@ import (
 var (
 	passwordOptions    cliPasswordOptions
 	ensureAdminOptions cliPasswordOptions
+	repairUsernameOpts repairUsernameOptions
 )
 
 var userCmd = &cobra.Command{
@@ -104,12 +107,39 @@ var userEnsureAdminCmd = &cobra.Command{
 	},
 }
 
+var userRepairUsernameCmd = &cobra.Command{
+	Use:   "repair-username USER_ID NEW_USERNAME",
+	Short: "按用户 ID 修复历史非法用户名",
+	Long:  "Repair one historical non-canonical username by immutable user ID. The existing runtime database records the rename, all-session revocation, current OS user ID, and required reason in one transaction. Canonical usernames must use user rename; no username is trimmed or merged.",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sqlitePath, err := cliSQLitePath()
+		if err != nil {
+			return err
+		}
+		actor, err := currentRepairActor()
+		if err != nil {
+			return err
+		}
+		repair, err := repairUserUsername(cmd.Context(), sqlitePath, args[0], args[1], actor, repairUsernameOpts.Reason)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Repaired user ID %q from %q to %q; revoked %d sessions; audit ID %s\n", repair.UserID, repair.OldUsername, repair.NewUsername, repair.RevokedSessions, repair.ID)
+		return err
+	},
+}
+
 type cliPasswordOptions struct {
 	Password      string
 	PasswordStdin bool
 	Generate      bool
 	Reset2FA      bool
 	Input         io.Reader
+}
+
+type repairUsernameOptions struct {
+	Reason string
 }
 
 func init() {
@@ -124,12 +154,14 @@ func init() {
 	userEnsureAdminCmd.Flags().BoolVar(&ensureAdminOptions.Generate, "generate", false, "Generate and print a strong temporary password")
 	userEnsureAdminCmd.Flags().BoolVar(&ensureAdminOptions.Reset2FA, "reset-2fa", false, "Disable two-factor authentication when updating an existing admin")
 	userCmd.AddCommand(userEnsureAdminCmd)
+	userRepairUsernameCmd.Flags().StringVar(&repairUsernameOpts.Reason, "reason", "", "Required audit reason for repairing the historical username")
+	_ = userRepairUsernameCmd.MarkFlagRequired("reason")
+	userCmd.AddCommand(userRepairUsernameCmd)
 }
 
 func ensureAdminUser(ctx context.Context, sqlitePath, username string, opts cliPasswordOptions) (string, error) {
-	username = strings.TrimSpace(username)
-	if len(username) < 3 {
-		return "", errors.New("username must contain at least 3 characters")
+	if err := identity.ValidateUsername(username); err != nil {
+		return "", err
 	}
 	password, generated, err := resolvePassword(opts)
 	if err != nil {
@@ -172,9 +204,6 @@ func ensureAdminUser(ctx context.Context, sqlitePath, username string, opts cliP
 	if err != nil {
 		return "", err
 	}
-	if err := store.RevokeUserSessions(ctx, user.ID, ""); err != nil {
-		return "", err
-	}
 	if generated {
 		return password, nil
 	}
@@ -182,9 +211,8 @@ func ensureAdminUser(ctx context.Context, sqlitePath, username string, opts cliP
 }
 
 func changeUserPassword(ctx context.Context, sqlitePath, username string, opts cliPasswordOptions) (string, error) {
-	username = strings.TrimSpace(username)
-	if username == "" {
-		return "", errors.New("username is required")
+	if err := identity.ValidateUsername(username); err != nil {
+		return "", err
 	}
 	password, generated, err := resolvePassword(opts)
 	if err != nil {
@@ -229,13 +257,14 @@ func changeUserPassword(ctx context.Context, sqlitePath, username string, opts c
 }
 
 func renameUser(ctx context.Context, sqlitePath, oldUsername, newUsername string) (*storage.User, error) {
-	oldUsername = strings.TrimSpace(oldUsername)
-	newUsername = strings.TrimSpace(newUsername)
-	if oldUsername == "" {
+	if strings.TrimSpace(oldUsername) == "" {
 		return nil, errors.New("old username is required")
 	}
-	if len(newUsername) < 3 {
-		return nil, errors.New("new username must contain at least 3 characters")
+	if err := identity.ValidateUsername(oldUsername); err != nil {
+		return nil, err
+	}
+	if err := identity.ValidateUsername(newUsername); err != nil {
+		return nil, err
 	}
 	if oldUsername == newUsername {
 		return nil, errors.New("new username must be different from old username")
@@ -266,10 +295,40 @@ func renameUser(ctx context.Context, sqlitePath, oldUsername, newUsername string
 	if err := store.UpdateUser(ctx, user); err != nil {
 		return nil, err
 	}
-	if err := store.RevokeUserSessions(ctx, user.ID, ""); err != nil {
+	return user, nil
+}
+
+func repairUserUsername(ctx context.Context, sqlitePath, userID, newUsername, actor, reason string) (*storage.UserUsernameRepair, error) {
+	if err := identity.ValidateUsername(newUsername); err != nil {
 		return nil, err
 	}
-	return user, nil
+	info, err := os.Stat(sqlitePath)
+	if err != nil {
+		return nil, fmt.Errorf("repair requires an existing SQLite database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("repair requires an existing SQLite database that is a regular file")
+	}
+	store, err := storage.OpenSQLite(sqlitePath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		return nil, err
+	}
+	return store.RepairUserUsername(ctx, userID, newUsername, actor, reason)
+}
+
+func currentRepairActor() (string, error) {
+	operator, err := osuser.Current()
+	if err != nil {
+		return "", fmt.Errorf("identify current OS user for repair audit: %w", err)
+	}
+	if operator.Uid == "" {
+		return "", errors.New("identify current OS user for repair audit: OS user ID is empty")
+	}
+	return "os-user:" + operator.Uid, nil
 }
 
 func resolvePassword(opts cliPasswordOptions) (string, bool, error) {
@@ -337,6 +396,11 @@ func cliSQLitePath() (string, error) {
 		if _, err := os.Stat(configPath); err == nil {
 			cfg, err := config.Load(configPath)
 			if err != nil {
+				return "", err
+			}
+			// Keep CLI database operations aligned with serve: packaged YAML
+			// stores relative paths under the effective --data-dir root.
+			if err := applyCLIDataDir(cfg, dataDir); err != nil {
 				return "", err
 			}
 			if strings.TrimSpace(cfg.Storage.SQLite.Path) != "" {

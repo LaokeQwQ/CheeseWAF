@@ -5,12 +5,13 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:60eac759739651111db372c07be6786381
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party ./third_party
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 ARG TARGETOS
 ARG TARGETARCH
-ARG VERSION=0.1.0-dev
+ARG VERSION=0.3.9-dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 ARG CHANNEL=container
@@ -26,13 +27,13 @@ FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 # Skip lifecycle scripts: @agent-eyes postinstall needs pnpm and is dev-only for source maps.
-RUN npm ci --no-audit --no-fund --ignore-scripts
+RUN CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts
 COPY web/index.html web/tsconfig.json web/tsconfig.app.json web/tsconfig.node.json web/vite.config.ts web/vite.proxy.ts ./
 COPY web/public ./public
 COPY web/scripts ./scripts
 COPY web/src ./src
 COPY web/types ./types
-RUN npm run build
+RUN CHEESEWAF_AGENT_EYES=0 npm run build
 
 FROM ${RUNTIME_IMAGE}
 # Pin UID/GID so CI tmpfs mounts and compose can match the non-root runtime user.
@@ -57,6 +58,7 @@ COPY --from=backend /out/cheesewaf /usr/local/bin/cheesewaf
 COPY --from=web /src/web/dist/ /usr/share/cheesewaf/web/
 COPY configs/cheesewaf.yaml /usr/share/cheesewaf/config/cheesewaf.yaml
 COPY deploy/docker/entrypoint.sh /usr/local/bin/cheesewaf-entrypoint
+RUN chmod 0644 /usr/share/cheesewaf/config/cheesewaf.yaml
 RUN sed -i \
   -e 's#listen: "127.0.0.1:8080"#listen: "0.0.0.0:8080"#' \
   -e 's#admin_listen: "127.0.0.1:9443"#admin_listen: "0.0.0.0:9443"#' \
@@ -83,6 +85,7 @@ RUN sed -i \
   && grep -Fq 'path: "/var/log/cheesewaf/access.log"' /usr/share/cheesewaf/config/cheesewaf.yaml \
   && grep -Fq 'target: "/var/log/cheesewaf"' /usr/share/cheesewaf/config/cheesewaf.yaml \
   && grep -Fq 'path: "/var/log/cheesewaf/audit.log"' /usr/share/cheesewaf/config/cheesewaf.yaml \
+  && chmod 0644 /usr/share/cheesewaf/config/cheesewaf.yaml \
   && chmod 0555 /usr/local/bin/cheesewaf-entrypoint
 ENV CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
 ENV CHEESEWAF_CONFIG=/var/lib/cheesewaf/config/cheesewaf.yaml

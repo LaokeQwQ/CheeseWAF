@@ -49,6 +49,41 @@ func TestProfileDefaultsSmartBetweenLowAndMedium(t *testing.T) {
 	}
 }
 
+func TestClassifyHardwareUsesConservativeBoundaries(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe ProbeResult
+		want  HardwareProfile
+	}{
+		{name: "two cores and two gib low", probe: ProbeResult{CPULogical: 2, MemoryTotalMB: 2048, DiskOK: true, DiskWriteMBps: 100}, want: ProfileLow},
+		{name: "two cores and four gib still low", probe: ProbeResult{CPULogical: 2, MemoryTotalMB: 4096, DiskOK: true, DiskWriteMBps: 100}, want: ProfileLow},
+		{name: "three cores and four gib medium", probe: ProbeResult{CPULogical: 3, MemoryTotalMB: 4096, DiskOK: true, DiskWriteMBps: 20}, want: ProfileMedium},
+		{name: "four cores eight gib fast disk high", probe: ProbeResult{CPULogical: 4, MemoryTotalMB: 8192, DiskOK: true, DiskWriteMBps: 50}, want: ProfileHigh},
+		{name: "slow disk low", probe: ProbeResult{CPULogical: 4, MemoryTotalMB: 8192, DiskOK: false, DiskWriteMBps: 5}, want: ProfileLow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyHardware(tt.probe); got != tt.want {
+				t.Fatalf("classifyHardware() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEstimateHostMemoryMBIsPositive(t *testing.T) {
+	if got := estimateHostMemoryMB(); got == 0 {
+		t.Fatal("estimateHostMemoryMB() returned zero")
+	}
+}
+
+func TestEstimateHostMemoryHonorsExplicitOverride(t *testing.T) {
+	t.Setenv("CHEESEWAF_PROBE_MEMORY_MB", "2048")
+	total, available := estimateHostMemory()
+	if total != 2048 || available != 1024 {
+		t.Fatalf("estimateHostMemory() = total=%d available=%d, want 2048/1024", total, available)
+	}
+}
+
 func TestDraftStoreLifecycle(t *testing.T) {
 	s := NewDraftStore(time.Minute)
 	d, err := s.Create()

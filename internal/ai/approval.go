@@ -236,6 +236,14 @@ func (s *ApprovalStore) Approve(id string) (ApprovalRequest, error) {
 }
 
 func (s *ApprovalStore) ApproveFor(id string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.approveFor(id, actor, false)
+}
+
+// approveFor is shared by the legacy compatibility path and the gate-backed
+// high-risk adapter. Destructive requests can only be approved after the
+// adapter has obtained an internal/approval AuthorizationCommit; callers must
+// not be able to opt into that bypass through the historical API.
+func (s *ApprovalStore) approveFor(id string, actor ApprovalActor, gateAuthorized bool) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -247,6 +255,9 @@ func (s *ApprovalStore) ApproveFor(id string, actor ApprovalActor) (ApprovalRequ
 	}
 	if approvalExpired(request, s.now().UTC()) {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is expired", id)
+	}
+	if request.Sensitivity == Destructive && !gateAuthorized {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q requires gate-backed high-risk confirmation", id)
 	}
 	if request.Status == ApprovalApproved {
 		return cloneApprovalRequest(request), nil
@@ -315,6 +326,10 @@ func (s *ApprovalStore) BeginExecutionFor(id string, toolName string, args map[s
 }
 
 func (s *ApprovalStore) BeginExecutionForWithPreview(id string, toolName string, args map[string]any, preview string, actor ApprovalActor) (ApprovalRequest, error) {
+	return s.beginExecutionForWithPreview(id, toolName, args, preview, actor, false)
+}
+
+func (s *ApprovalStore) beginExecutionForWithPreview(id string, toolName string, args map[string]any, preview string, actor ApprovalActor, gateAuthorized bool) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -329,6 +344,9 @@ func (s *ApprovalStore) BeginExecutionForWithPreview(id string, toolName string,
 	}
 	if request.Status != ApprovalApproved {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is %s, not approved", id, request.Status)
+	}
+	if request.Sensitivity == Destructive && !gateAuthorized {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q requires gate-backed high-risk execution", id)
 	}
 	if !requesterMatches(request, actor) {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is bound to another requester", id)
@@ -361,14 +379,14 @@ func (s *ApprovalStore) BeginExecutionForWithPreview(id string, toolName string,
 // not own either, so a new call site that forgets the entry-point check still
 // cannot strand somebody else's in-flight change.
 func (s *ApprovalStore) MarkExecuted(id string, actor ApprovalActor) (ApprovalRequest, error) {
-	return s.finishExecution(id, ApprovalExecuted, actor)
+	return s.finishExecution(id, ApprovalExecuted, actor, false)
 }
 
 func (s *ApprovalStore) MarkExecutionFailed(id string, actor ApprovalActor) (ApprovalRequest, error) {
-	return s.finishExecution(id, ApprovalFailed, actor)
+	return s.finishExecution(id, ApprovalFailed, actor, false)
 }
 
-func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus, actor ApprovalActor) (ApprovalRequest, error) {
+func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus, actor ApprovalActor, gateAuthorized bool) (ApprovalRequest, error) {
 	if s == nil {
 		return ApprovalRequest{}, fmt.Errorf("approval store is nil")
 	}
@@ -383,6 +401,9 @@ func (s *ApprovalStore) finishExecution(id string, status ApprovalStatus, actor 
 	}
 	if request.Status != ApprovalExecuting {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is %s, not executing", id, request.Status)
+	}
+	if request.Sensitivity == Destructive && !gateAuthorized {
+		return cloneApprovalRequest(request), fmt.Errorf("approval request %q requires gate-backed high-risk completion", id)
 	}
 	if !requesterMatches(request, actor) {
 		return cloneApprovalRequest(request), fmt.Errorf("approval request %q is bound to another requester", id)

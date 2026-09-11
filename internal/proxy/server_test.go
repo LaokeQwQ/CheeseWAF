@@ -984,6 +984,29 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 		}
 	})
 
+	t.Run("custom rule medium severity block action is preserved under smart policy", func(t *testing.T) {
+		ruleBlock := *result
+		ruleBlock.Action = engine.ActionBlock
+		ruleBlock.Category = "custom_rule"
+		ruleBlock.Severity = engine.SeverityMedium
+		ruleBlock.Confidence = 0.8
+		server, sink, cleanup := newPolicyTestServer(t, config.ProtectionLevelSmart, &ruleBlock)
+		defer cleanup()
+
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected block response, code=%d", recorder.Code)
+		}
+		if len(sink.entries) != 1 || sink.entries[0].Action != "block" || sink.entries[0].Category != "custom_rule" {
+			t.Fatalf("unexpected block entries: %#v", sink.entries)
+		}
+		decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+		if !ok || decision.Action != engine.ActionBlock.String() {
+			t.Fatalf("unexpected decision: %#v", sink.entries[0].Metadata)
+		}
+	})
+
 	t.Run("smart uses aggregate evidence when single result is below direct threshold", func(t *testing.T) {
 		sqli := *result
 		sqli.DetectorID = "semantic.sqli"

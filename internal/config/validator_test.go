@@ -209,6 +209,19 @@ func TestValidatorBoundsManagementAPITokensAndRequiresUniquePrefixes(t *testing.
 			t.Fatalf("expected duplicate prefix error, got %v", err)
 		}
 	})
+	t.Run("explicit non-expiring token cannot carry expiry", func(t *testing.T) {
+		cfg := Default()
+		cfg.APISec.ManagementAPI.Enabled = true
+		cfg.APISec.ManagementAPI.Tokens = []ManagementAPITokenConfig{{
+			ID: "forever", Name: "forever", Prefix: "cwapi_forever", Hash: "sha256:" + strings.Repeat("0", 64),
+			Scopes: []string{"read:system"}, Enabled: true, NeverExpire: true,
+			CreatedAt: time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC),
+			ExpiresAt: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
+		}}
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "never_expire") {
+			t.Fatalf("expected explicit lifetime consistency error, got %v", err)
+		}
+	})
 }
 
 func TestValidatorTrustedProxyProviderBindings(t *testing.T) {
@@ -285,6 +298,17 @@ func TestValidatorTrustedProxyProviderBindings(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestValidatorNormalizesLegacyWAFLogMode(t *testing.T) {
+	cfg := Default()
+	cfg.Sites[0].WAF.Mode = "log"
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := cfg.Sites[0].WAF.Mode; got != "monitor" {
+		t.Fatalf("legacy waf mode was not persisted as monitor: %q", got)
 	}
 }
 

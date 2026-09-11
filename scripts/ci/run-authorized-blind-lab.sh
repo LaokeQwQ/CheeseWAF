@@ -92,7 +92,14 @@ run_logged "$tmp_dir/split.log" bash scripts/ci/go-env.sh go run ./cmd/cheesewaf
   --governance-manifest "$tmp_dir/manifest.json" --governance-formal "$tmp_dir/formal.jsonl" \
   --output "$tmp_dir/evaluation-split.json"
 
-artifact_hash="$(shasum -a 256 "$tmp_dir/evaluation-split.json" | awk '{print $1}')"
+if command -v sha256sum >/dev/null 2>&1; then
+	artifact_hash="$(sha256sum -- "$tmp_dir/evaluation-split.json" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  artifact_hash="$(shasum -a 256 -- "$tmp_dir/evaluation-split.json" | awk '{print $1}')"
+else
+  echo "sha256sum or shasum is required" >&2
+  exit 1
+fi
 run_logged "$tmp_dir/replay.log" bash scripts/ci/go-env.sh go run ./cmd/cheesewaf-corpus --mode evaluate-split \
   --corpus "$tmp_dir/evaluation-split.json" --governance-manifest "$tmp_dir/manifest.json" \
   --expected-artifact-sha256 "$artifact_hash" --evaluation-split blind --output "$tmp_dir/blind-report.json"

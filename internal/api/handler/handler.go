@@ -35,6 +35,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/traffic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
+	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -45,76 +46,89 @@ import (
 )
 
 type Handler struct {
-	Config                       *config.Config
-	configCurrent                atomic.Pointer[config.Config]
-	ConfigPath                   string
-	Store                        storage.Store
-	Sink                         storage.LogSink
-	Tokens                       *middleware.TokenManager
-	Secret                       string
-	Auditor                      *middleware.Auditor
-	AssistantApprovals           *ai.ApprovalStore
-	Realtime                     *realtime.Hub
-	approvalStoreError           error
-	TwoFAState                   *twoFAState
-	ClusterIdentity              *identity.MemoryIdentityService
-	ClusterDeployTasks           *deploy.TaskManager
-	ClusterDeployAuth            *deploy.AuthorizationStore
-	ClusterDeployRunner          deploy.TaskRunner
-	ClusterHeartbeats            *cluster.HeartbeatRegistry
-	clusterRolling               *orchestrate.RollingManager
-	clusterTraffic               *traffic.Scheduler
-	clusterTrafficMu             sync.Mutex
-	clusterJoinLimiter           *simpleRateLimiter
-	clusterJoinLimiterMu         sync.Mutex
-	clusterConsensus             *consensus.Coordinator
-	clusterConsensusMu           sync.Mutex
-	ACMEIssuer                   acme.Issuer
-	TimeSync                     TimeSyncService
-	LoginCAPTCHAState            *loginCAPTCHAState
-	CAPTCHAAssets                captchaassets.Store
-	CAPTCHAAssetReferences       *captchaassets.ReferenceManager
-	CAPTCHAAssetInitError        error
-	captchaAssetRuntime          atomic.Pointer[captchaAssetRuntime]
-	behaviorCAPTCHAOnce          sync.Once
-	behaviorCAPTCHAState         *botChallengeStore
-	loginCAPTCHASecretMu         sync.Mutex
-	loginCAPTCHASecret           string
-	clusterIdentityMu            sync.Mutex
-	clusterDeployTasksMu         sync.Mutex
-	clusterDeployAuthMu          sync.Mutex
-	clusterDeployPending         map[string]deploy.AuthorizationTarget
-	clusterHeartbeatsMu          sync.Mutex
-	configMutationMu             sync.RWMutex
-	configPersistMu              sync.Mutex
-	siteMutationMu               sync.Mutex
-	managementTokenFlushInterval time.Duration
-	configWriteFrozen            bool
-	configFreezeReason           string
-	userMutationMu               sync.Mutex
-	now                          func() time.Time
-	StartedAt                    time.Time
-	SetupToken                   string
-	SetupDrafts                  *setup.DraftStore
-	runSetupProbe                func(context.Context, string) setup.ProbeResult
-	geoipMu                      sync.Mutex
-	geoipCacheKey                string
-	geoipPolicy                  *protectionip.GeoIPPolicy
-	geoipErrorKey                string
-	geoipRetryAfter              time.Time
-	diskUsageMu                  sync.Mutex
-	diskUsageCache               map[string]cachedDirSize
-	memoryStatsMu                sync.Mutex
-	memoryAlloc                  uint64
-	memoryStatsAt                time.Time
-	sessionPruneMu               sync.Mutex
-	nextSessionPrune             time.Time
-	OnSitesChanged               func([]config.SiteConfig) error
-	OnEdgeChanged                func(config.EdgeConfig) error
-	OnProtectionChanged          func(config.ProtectionConfig) error
-	OnAPISecChanged              func(config.APISecConfig) error
-	OnBlockPageChanged           func(config.BlockPageConfig) error
-	OnTimeSyncChanged            func(config.TimeSyncConfig) error
+	Config                         *config.Config
+	configCurrent                  atomic.Pointer[config.Config]
+	ConfigPath                     string
+	Store                          storage.Store
+	Sink                           storage.LogSink
+	Tokens                         *middleware.TokenManager
+	Secret                         string
+	Auditor                        *middleware.Auditor
+	AssistantApprovals             *ai.ApprovalStore
+	Realtime                       *realtime.Hub
+	approvalStoreError             error
+	TwoFAState                     *twoFAState
+	ClusterIdentity                *identity.MemoryIdentityService
+	ClusterDeployTasks             *deploy.TaskManager
+	ClusterDeployAuth              *deploy.AuthorizationStore
+	ClusterDeployRunner            deploy.TaskRunner
+	ClusterHeartbeats              *cluster.HeartbeatRegistry
+	clusterRolling                 *orchestrate.RollingManager
+	clusterTraffic                 *traffic.Scheduler
+	clusterTrafficMu               sync.Mutex
+	clusterJoinLimiter             *simpleRateLimiter
+	clusterJoinLimiterMu           sync.Mutex
+	clusterConsensus               *consensus.Coordinator
+	clusterConsensusMu             sync.Mutex
+	ACMEIssuer                     acme.Issuer
+	TimeSync                       TimeSyncService
+	LoginCAPTCHAState              *loginCAPTCHAState
+	CAPTCHAAssets                  captchaassets.Store
+	CAPTCHAAssetReferences         *captchaassets.ReferenceManager
+	CAPTCHAAssetInitError          error
+	captchaAssetRuntime            atomic.Pointer[captchaAssetRuntime]
+	behaviorCAPTCHAOnce            sync.Once
+	behaviorCAPTCHAState           *botChallengeStore
+	loginCAPTCHASecretMu           sync.Mutex
+	loginCAPTCHASecret             string
+	clusterIdentityMu              sync.Mutex
+	clusterDeployTasksMu           sync.Mutex
+	clusterDeployAuthMu            sync.Mutex
+	clusterDeployPending           map[string]deploy.AuthorizationTarget
+	clusterHeartbeatsMu            sync.Mutex
+	configCompatMu                 sync.RWMutex
+	configMutationMu               sync.RWMutex
+	configPersistMu                sync.Mutex
+	siteMutationMu                 sync.Mutex
+	managementTokenFlushInterval   time.Duration
+	managementTokenScheduleMu      sync.Mutex
+	managementTokenCleanupAt       time.Time
+	managementTokenFirstCreation   time.Time
+	managementTokenLastCreation    time.Time
+	managementTokenCleanupRunning  bool
+	managementTokenCleanupStarted  bool
+	managementTokenConfirmationsMu sync.Mutex
+	managementTokenConfirmations   map[string]time.Time
+	// managementTokenConfirmationVerifier is intentionally nil in the current
+	// runtime. A production wiring layer must provide password/TOTP, warning
+	// delay and local-session checks before non-expiring tokens are enabled.
+	managementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
+	configWriteFrozen                   bool
+	configFreezeReason                  string
+	userMutationMu                      sync.Mutex
+	now                                 func() time.Time
+	StartedAt                           time.Time
+	SetupToken                          string
+	SetupDrafts                         *setup.DraftStore
+	runSetupProbe                       func(context.Context, string) setup.ProbeResult
+	geoipMu                             sync.Mutex
+	geoipCacheKey                       string
+	geoipPolicy                         *protectionip.GeoIPPolicy
+	geoipErrorKey                       string
+	geoipRetryAfter                     time.Time
+	diskUsageMu                         sync.Mutex
+	diskUsageCache                      map[string]cachedDirSize
+	memoryStatsMu                       sync.Mutex
+	memoryAlloc                         uint64
+	memoryStatsAt                       time.Time
+	sessionPruneMu                      sync.Mutex
+	nextSessionPrune                    time.Time
+	OnSitesChanged                      func([]config.SiteConfig) error
+	OnEdgeChanged                       func(config.EdgeConfig) error
+	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnAPISecChanged                     func(config.APISecConfig) error
+	OnBlockPageChanged                  func(config.BlockPageConfig) error
+	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
 }
 
 type captchaAssetRuntime struct {
@@ -314,35 +328,55 @@ const (
 )
 
 type Options struct {
-	Config              *config.Config
-	ConfigSnapshot      *config.Config
-	ConfigPath          string
-	Store               storage.Store
-	Sink                storage.LogSink
-	Tokens              *middleware.TokenManager
-	Secret              string
-	Auditor             *middleware.Auditor
-	AssistantApprovals  *ai.ApprovalStore
-	Realtime            *realtime.Hub
-	ClusterIdentity     *identity.MemoryIdentityService
-	ClusterDeployTasks  *deploy.TaskManager
-	ClusterDeployAuth   *deploy.AuthorizationStore
-	ClusterDeployRunner deploy.TaskRunner
-	ClusterHeartbeats   *cluster.HeartbeatRegistry
-	ACMEIssuer          acme.Issuer
-	TimeSync            TimeSyncService
-	SetupToken          string
-	SetupDrafts         *setup.DraftStore
-	RunSetupProbe       func(context.Context, string) setup.ProbeResult
-	OnSitesChanged      func([]config.SiteConfig) error
-	OnEdgeChanged       func(config.EdgeConfig) error
-	OnProtectionChanged func(config.ProtectionConfig) error
-	OnAPISecChanged     func(config.APISecConfig) error
-	OnBlockPageChanged  func(config.BlockPageConfig) error
-	OnTimeSyncChanged   func(config.TimeSyncConfig) error
-	CAPTCHAAssets       captchaassets.Store
-	Clock               timekeeper.Clock
+	Config                              *config.Config
+	ConfigSnapshot                      *config.Config
+	ConfigPath                          string
+	Store                               storage.Store
+	Sink                                storage.LogSink
+	Tokens                              *middleware.TokenManager
+	Secret                              string
+	Auditor                             *middleware.Auditor
+	AssistantApprovals                  *ai.ApprovalStore
+	Realtime                            *realtime.Hub
+	ClusterIdentity                     *identity.MemoryIdentityService
+	ClusterDeployTasks                  *deploy.TaskManager
+	ClusterDeployAuth                   *deploy.AuthorizationStore
+	ClusterDeployRunner                 deploy.TaskRunner
+	ClusterHeartbeats                   *cluster.HeartbeatRegistry
+	ACMEIssuer                          acme.Issuer
+	TimeSync                            TimeSyncService
+	SetupToken                          string
+	SetupDrafts                         *setup.DraftStore
+	RunSetupProbe                       func(context.Context, string) setup.ProbeResult
+	OnSitesChanged                      func([]config.SiteConfig) error
+	OnEdgeChanged                       func(config.EdgeConfig) error
+	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnAPISecChanged                     func(config.APISecConfig) error
+	OnBlockPageChanged                  func(config.BlockPageConfig) error
+	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	CAPTCHAAssets                       captchaassets.Store
+	Clock                               timekeeper.Clock
+	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
 }
+
+// ManagementTokenConfirmation carries the transient proof for an exceptional
+// non-expiring management token. Password/TOTP values are never persisted or
+// logged; the verifier must consume them synchronously and discard them.
+type ManagementTokenConfirmation struct {
+	ConfirmationID     string
+	WarningReadAt      time.Time
+	Password           string
+	TOTPCode           string
+	SecondConfirmation bool
+	ConfirmationPhrase string
+}
+
+// ManagementTokenConfirmationVerifier is the security boundary for exceptional
+// non-expiring management tokens. A production implementation must bind the
+// confirmation to the current local Session, verify password/TOTP and the
+// language confirmation phrase after the server-side warning delay, and reject
+// replayed IDs. A nil verifier keeps the operation fail-closed.
+type ManagementTokenConfirmationVerifier func(*http.Request, ManagementTokenConfirmation, time.Time) error
 
 var newPersistentApprovalStore = ai.NewPersistentApprovalStore
 
@@ -369,43 +403,45 @@ func New(opts Options) *Handler {
 		runSetupProbe = setup.RunProbe
 	}
 	h := &Handler{
-		Config:                       opts.Config,
-		ConfigPath:                   opts.ConfigPath,
-		Store:                        opts.Store,
-		Sink:                         opts.Sink,
-		Tokens:                       opts.Tokens,
-		Secret:                       opts.Secret,
-		Auditor:                      opts.Auditor,
-		AssistantApprovals:           approvals,
-		Realtime:                     opts.Realtime,
-		approvalStoreError:           approvalStoreError,
-		TwoFAState:                   newTwoFAState(),
-		ClusterIdentity:              opts.ClusterIdentity,
-		ClusterDeployTasks:           opts.ClusterDeployTasks,
-		ClusterDeployAuth:            opts.ClusterDeployAuth,
-		ClusterDeployRunner:          opts.ClusterDeployRunner,
-		clusterDeployPending:         map[string]deploy.AuthorizationTarget{},
-		ClusterHeartbeats:            opts.ClusterHeartbeats,
-		ACMEIssuer:                   opts.ACMEIssuer,
-		TimeSync:                     opts.TimeSync,
-		LoginCAPTCHAState:            newLoginCAPTCHAState(),
-		CAPTCHAAssets:                assetStore,
-		CAPTCHAAssetReferences:       assetRefs,
-		CAPTCHAAssetInitError:        assetErr,
-		loginCAPTCHASecret:           loginSecret,
-		now:                          now,
-		StartedAt:                    now().UTC(),
-		SetupToken:                   strings.TrimSpace(opts.SetupToken),
-		SetupDrafts:                  opts.SetupDrafts,
-		runSetupProbe:                runSetupProbe,
-		managementTokenFlushInterval: time.Minute,
-		diskUsageCache:               map[string]cachedDirSize{},
-		OnSitesChanged:               opts.OnSitesChanged,
-		OnEdgeChanged:                opts.OnEdgeChanged,
-		OnProtectionChanged:          opts.OnProtectionChanged,
-		OnAPISecChanged:              opts.OnAPISecChanged,
-		OnBlockPageChanged:           opts.OnBlockPageChanged,
-		OnTimeSyncChanged:            opts.OnTimeSyncChanged,
+		Config:                              opts.Config,
+		ConfigPath:                          opts.ConfigPath,
+		Store:                               opts.Store,
+		Sink:                                opts.Sink,
+		Tokens:                              opts.Tokens,
+		Secret:                              opts.Secret,
+		Auditor:                             opts.Auditor,
+		AssistantApprovals:                  approvals,
+		Realtime:                            opts.Realtime,
+		approvalStoreError:                  approvalStoreError,
+		TwoFAState:                          newTwoFAState(),
+		ClusterIdentity:                     opts.ClusterIdentity,
+		ClusterDeployTasks:                  opts.ClusterDeployTasks,
+		ClusterDeployAuth:                   opts.ClusterDeployAuth,
+		ClusterDeployRunner:                 opts.ClusterDeployRunner,
+		clusterDeployPending:                map[string]deploy.AuthorizationTarget{},
+		ClusterHeartbeats:                   opts.ClusterHeartbeats,
+		ACMEIssuer:                          opts.ACMEIssuer,
+		TimeSync:                            opts.TimeSync,
+		LoginCAPTCHAState:                   newLoginCAPTCHAState(),
+		CAPTCHAAssets:                       assetStore,
+		CAPTCHAAssetReferences:              assetRefs,
+		CAPTCHAAssetInitError:               assetErr,
+		loginCAPTCHASecret:                  loginSecret,
+		now:                                 now,
+		StartedAt:                           now().UTC(),
+		SetupToken:                          strings.TrimSpace(opts.SetupToken),
+		SetupDrafts:                         opts.SetupDrafts,
+		runSetupProbe:                       runSetupProbe,
+		managementTokenFlushInterval:        time.Minute,
+		managementTokenConfirmations:        make(map[string]time.Time),
+		managementTokenConfirmationVerifier: opts.ManagementTokenConfirmationVerifier,
+		diskUsageCache:                      map[string]cachedDirSize{},
+		OnSitesChanged:                      opts.OnSitesChanged,
+		OnEdgeChanged:                       opts.OnEdgeChanged,
+		OnProtectionChanged:                 opts.OnProtectionChanged,
+		OnAPISecChanged:                     opts.OnAPISecChanged,
+		OnBlockPageChanged:                  opts.OnBlockPageChanged,
+		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
 	}
 	if opts.ConfigSnapshot != nil {
 		h.configCurrent.Store(opts.ConfigSnapshot)
@@ -425,7 +461,16 @@ func (h *Handler) currentConfig() *config.Config {
 	if current := h.configCurrent.Load(); current != nil {
 		return current
 	}
-	return h.Config
+	h.configCompatMu.RLock()
+	defer h.configCompatMu.RUnlock()
+	if h.Config == nil {
+		return nil
+	}
+	snapshot, err := config.Clone(h.Config)
+	if err != nil {
+		return nil
+	}
+	return snapshot
 }
 
 // publishConfig atomically replaces the request-facing snapshot. A separate
@@ -443,9 +488,11 @@ func (h *Handler) publishConfig(candidate *config.Config) error {
 	if err != nil {
 		return err
 	}
-	// Publish the immutable request snapshot before updating the compatibility
-	// view. New readers cannot retain the object that is updated below.
+	// Publish the immutable request snapshot before replacing the compatibility
+	// view. New readers cannot retain the object that is replaced below.
 	h.configCurrent.Store(published)
+	h.configCompatMu.Lock()
+	defer h.configCompatMu.Unlock()
 	if h.Config == nil {
 		h.Config = compatibility
 	} else {
@@ -708,7 +755,7 @@ func (h *Handler) VerifyLoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptional(w, r, &payload, loginCAPTCHAJSONBodyLimit, "invalid captcha payload") {
 		return
 	}
-	if strings.TrimSpace(payload.Username) == "" {
+	if accountidentity.ValidateUsername(payload.Username) != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
@@ -758,6 +805,12 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many failed login attempts")
 		return
 	}
+	if accountidentity.ValidateUsername(req.Username) != nil {
+		tracker.recordLoginFailure(rateLimitKeys, now)
+		h.auditLoginFailure(r, req.Username, "invalid_username")
+		writeError(w, http.StatusBadRequest, "USERNAME_INVALID", "invalid username or password")
+		return
+	}
 	if req.CAPTCHA != nil {
 		req.CAPTCHA.Username = req.Username
 	}
@@ -800,7 +853,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
 			return
 		}
-		if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims)); err != nil {
+		if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
+			if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+				tracker.recordLoginFailure(rateLimitKeys, now)
+				h.auditLoginFailure(r, req.Username, "credential_changed")
+				writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 			return
 		}
@@ -820,7 +879,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
 		return
 	}
-	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims)); err != nil {
+	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
+		if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+			tracker.recordLoginFailure(rateLimitKeys, now)
+			h.auditLoginFailure(r, req.Username, "credential_changed")
+			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 		return
 	}
@@ -840,7 +905,10 @@ func (h *Handler) auditLoginFailure(r *http.Request, username, reason string) {
 	if h == nil || h.Auditor == nil || r == nil {
 		return
 	}
-	user := strings.TrimSpace(username)
+	// Preserve the exact attempted identity in the audit record. Login rejects
+	// non-canonical usernames before authentication; trimming here would hide
+	// the input that triggered the rejection and make forensic review ambiguous.
+	user := username
 	if len(user) > 64 {
 		user = user[:64]
 	}
@@ -1235,15 +1303,23 @@ func loginRateLimitKeys(r *http.Request, username string, adminPublic bool) []st
 	if client == "" {
 		client = peer
 	}
-	username = strings.ToLower(strings.TrimSpace(username))
 	keys := []string{"peer:" + peer}
 	if client != peer {
 		keys = append(keys, "client:"+client)
 	}
 	if username != "" {
-		keys = append(keys, "account-source:"+loginCAPTCHAFingerprint(username, client))
+		keys = append(keys, "account-source:"+loginIdentityFingerprint(username, client))
 	}
 	return keys
+}
+
+func loginIdentityFingerprint(username, client string) string {
+	hash := sha256.New()
+	for _, part := range []string{username, client} {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
+	}
+	return base64.RawURLEncoding.EncodeToString(hash.Sum(nil))
 }
 
 func (h *Handler) adminPublic() bool {
@@ -1317,7 +1393,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", err.Error())
 		return
 	}
-	if err := h.Store.RotateSession(r.Context(), claims.ID, user.ID, sessionFromClaims(nextClaims)); err != nil {
+	if err := h.Store.RotateSession(r.Context(), claims.ID, user.ID, sessionFromClaims(nextClaims, user.CredentialEpoch)); err != nil {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
@@ -1381,7 +1457,7 @@ func (h *Handler) BootstrapSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", err.Error())
 		return
 	}
-	if err := h.Store.RotateSession(r.Context(), claims.ID, user.ID, sessionFromClaims(nextClaims)); err != nil {
+	if err := h.Store.RotateSession(r.Context(), claims.ID, user.ID, sessionFromClaims(nextClaims, user.CredentialEpoch)); err != nil {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
@@ -1422,17 +1498,18 @@ func (h *Handler) pruneExpiredSessions(r *http.Request) {
 	}()
 }
 
-func sessionFromClaims(claims *middleware.Claims) *storage.Session {
+func sessionFromClaims(claims *middleware.Claims, credentialEpoch uint64) *storage.Session {
 	if claims == nil {
 		return nil
 	}
 	return &storage.Session{
-		ID:        claims.ID,
-		UserID:    claims.Subject,
-		Username:  claims.Username,
-		Role:      claims.Role,
-		IssuedAt:  time.Unix(claims.IssuedAt, 0).UTC(),
-		ExpiresAt: time.Unix(claims.Expires, 0).UTC(),
+		ID:              claims.ID,
+		UserID:          claims.Subject,
+		Username:        claims.Username,
+		Role:            claims.Role,
+		IssuedAt:        time.Unix(claims.IssuedAt, 0).UTC(),
+		ExpiresAt:       time.Unix(claims.Expires, 0).UTC(),
+		CredentialEpoch: credentialEpoch,
 	}
 }
 

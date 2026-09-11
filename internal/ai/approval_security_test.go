@@ -123,6 +123,30 @@ func TestApprovalDigestRejectsNestedArgumentTampering(t *testing.T) {
 	}
 }
 
+// Destructive AI tools are the high-risk path. The historical ApproveFor API
+// has no server-held warning timer, confirmation phrase, or final-click
+// checkpoint, so it must never turn one of these requests into executable
+// state on its own. A GateApprovalAdapter is the only supported path.
+func TestApprovalStoreDestructiveApprovalFailsClosedWithoutGateAdapter(t *testing.T) {
+	store := NewApprovalStore()
+	requester := ApprovalActor{Subject: "requester", SessionID: "requester-session"}
+	request, err := store.CreateFor(fakeTool{sensitivity: Destructive}, nil, "", requester)
+	if err != nil {
+		t.Fatalf("create destructive approval: %v", err)
+	}
+	approved, err := store.ApproveFor(request.ID, ApprovalActor{Subject: "approver", SessionID: "approver-session"})
+	if err == nil || !strings.Contains(err.Error(), "gate-backed high-risk confirmation") {
+		t.Fatalf("ApproveFor() error = %v, want gate-backed high-risk rejection", err)
+	}
+	if approved.Status != ApprovalPending {
+		t.Fatalf("ApproveFor() changed destructive request to %s", approved.Status)
+	}
+	stored, ok := store.Get(request.ID)
+	if !ok || stored.Status != ApprovalPending {
+		t.Fatalf("destructive approval was not left pending: %+v", stored)
+	}
+}
+
 func TestApprovalStoreCapacityEvictsOldestCompletedRequest(t *testing.T) {
 	store := NewApprovalStore()
 	store.capacity = 2

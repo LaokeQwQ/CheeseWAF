@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -91,12 +93,11 @@ func RunProbe(ctx context.Context, dataDir string) ProbeResult {
 		CPULogical: runtime.NumCPU(),
 		Notes:      []string{},
 	}
-	// Memory (best-effort via runtime stats; OS-specific total left as heuristic).
+	// Memory is read from the host where the platform exposes it. The fallback
+	// remains conservative and is covered by the incomplete-probe path.
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	// Sys is process-related; use a conservative synthetic total from host heuristics.
-	res.MemoryTotalMB = estimateHostMemoryMB()
-	res.MemoryAvailMB = res.MemoryTotalMB / 2
+	res.MemoryTotalMB, res.MemoryAvailMB = estimateHostMemory()
 	if res.MemoryAvailMB == 0 {
 		res.MemoryAvailMB = 512
 	}
@@ -129,31 +130,97 @@ func RunProbe(ctx context.Context, dataDir string) ProbeResult {
 
 func classifyHardware(r ProbeResult) HardwareProfile {
 	// Barrel principle (locked): low ≤2 logical cores OR RAM≤2G OR weak disk;
-	// medium ≥2C and RAM≥4G; high ≥4C and RAM≥8G and disk sequential write OK.
+	// medium ≥3C and RAM≥4G; high ≥4C and RAM≥8G and disk sequential write OK.
 	if r.CPULogical <= 2 || r.MemoryTotalMB <= 2048 || !r.DiskOK {
 		return ProfileLow
 	}
 	if r.CPULogical >= 4 && r.MemoryTotalMB >= 8192 && r.DiskOK && r.DiskWriteMBps >= 50 {
 		return ProfileHigh
 	}
-	if r.CPULogical >= 2 && r.MemoryTotalMB >= 4096 {
+	if r.CPULogical >= 3 && r.MemoryTotalMB >= 4096 {
 		return ProfileMedium
 	}
 	return ProfileLow
 }
 
 func estimateHostMemoryMB() uint64 {
-	// Cross-platform floor: use a conservative default when OS APIs are not wired.
-	// Operators on real hardware still get classification via CPU + disk + this floor.
+	total, _ := estimateHostMemory()
+	return total
+}
+
+func estimateHostMemory() (totalMB, availableMB uint64) {
 	if v := os.Getenv("CHEESEWAF_PROBE_MEMORY_MB"); v != "" {
 		var n uint64
 		_, _ = fmt.Sscanf(v, "%d", &n)
 		if n > 0 {
-			return n
+			return n, n / 2
 		}
 	}
-	// Assume at least 2 GiB for modern hosts; low tier still applies when CPU weak.
-	return 4096
+
+	// Linux exposes host-visible totals through procfs. Prefer a cgroup limit
+	// when one is smaller, so a constrained container is not treated as a full
+	// host.
+	if raw, err := os.ReadFile("/proc/meminfo"); err == nil {
+		var procTotal, procAvailable uint64
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[0] != "MemTotal:" {
+				if len(fields) >= 2 && fields[0] == "MemAvailable:" {
+					if kib, parseErr := strconv.ParseUint(fields[1], 10, 64); parseErr == nil {
+						procAvailable = kib / 1024
+					}
+				}
+				continue
+			}
+			kib, err := strconv.ParseUint(fields[1], 10, 64)
+			if err == nil && kib > 0 {
+				procTotal = kib / 1024
+			}
+		}
+		if procTotal > 0 {
+			totalMB = procTotal
+			availableMB = procAvailable
+		}
+	}
+
+	if limitMB := readCgroupMemoryLimitMB(); limitMB > 0 && (totalMB == 0 || limitMB < totalMB) {
+		totalMB = limitMB
+		if availableMB > totalMB {
+			availableMB = totalMB / 2
+		}
+	}
+	if totalMB > 0 {
+		if availableMB == 0 {
+			availableMB = totalMB / 2
+		}
+		return totalMB, availableMB
+	}
+
+	// Other platforms keep the previous conservative floor until a native
+	// memory provider is available.
+	return 4096, 2048
+}
+
+func readCgroupMemoryLimitMB() uint64 {
+	for _, path := range []string{
+		"/sys/fs/cgroup/memory.max",
+		"/sys/fs/cgroup/memory/memory.limit_in_bytes",
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(string(raw))
+		if value == "" || value == "max" {
+			continue
+		}
+		bytes, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || bytes == 0 || bytes >= 1<<60 {
+			continue
+		}
+		return (bytes + (1 << 20) - 1) / (1 << 20)
+	}
+	return 0
 }
 
 func probeDiskWrite(ctx context.Context, dataDir string) (mbps float64, ok bool, note string) {

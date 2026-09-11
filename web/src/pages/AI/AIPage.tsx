@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Eye, KeyRound, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
+import { Activity, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleDollarSign, Eye, KeyRound, ListChecks, PlugZap, ShieldCheck } from 'lucide-react';
 import {
   Badge,
   Button,
@@ -17,11 +17,11 @@ import {
   Switch,
   toast,
 } from '@/components/ui';
-import { APIRequestError, analyzeEventsStream, analyzeLogReferenceStream, fetchAIConfig, fetchAIModels, fetchLogs, runAISelfLearning, testAIConnection, updateAIConfig } from '../../api/client';
+import { APIRequestError, analyzeEventsStream, analyzeLogReferenceStream, fetchAIConfig, fetchAIModels, fetchAIOpsProviders, fetchAIOpsUsage, fetchLogs, runAISelfLearning, testAIConnection, updateAIConfig } from '../../api/client';
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import PolicyDecisionCard from '../../components/PolicyDecisionCard';
 import SafeMarkdown from '../../components/SafeMarkdown';
-import type { AIAssistantTraceEvent, AIConfig, AIModelConfig, AIModelInfo, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
+import type { AIAssistantTraceEvent, AIConfig, AIModelConfig, AIModelInfo, AIProviderOpsStatus, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
 import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 import '../../styles/ai-page.css';
@@ -34,6 +34,20 @@ const analysisRanges = [
   { value: '7d', labelKey: 'ai.range7d', seconds: 7 * 24 * 60 * 60 },
 ];
 const AI_EVENT_PAGE_SIZE = 8;
+const aiOpsRanges = ['1d', '7d', '30d', '90d'] as const;
+type AIOpsRange = typeof aiOpsRanges[number] | 'custom';
+const aiOpsRangeLabelKeys = {
+  '1d': 'ai.opsRange1d',
+  '7d': 'ai.opsRange7d',
+  '30d': 'ai.opsRange30d',
+  '90d': 'ai.opsRange90d',
+} as const;
+const aiOpsStatusLabelKeys: Record<string, string> = {
+  ready: 'ai.opsStatusReady',
+  disabled: 'ai.opsStatusDisabled',
+  degraded: 'ai.opsStatusDegraded',
+  unavailable: 'ai.opsStatusUnavailable',
+};
 export const SELF_LEARNING_MAX_EVENTS_RANGE = { min: 1, max: 10_000 };
 
 type AIFormValues = {
@@ -46,11 +60,23 @@ type AIFormValues = {
   assistantAPIBase: string;
   assistantAPIKey: string;
   assistantModel: string;
+  assistantDisplayModelName: string;
+  assistantContextWindow: number | string;
+  assistantReasoningEffort: string;
+  assistantModelListPath: string;
+  assistantBalancePath: string;
+  assistantUsagePath: string;
   assistantAllowPrivateAPIBase: boolean;
   reasoningProvider: string;
   reasoningAPIBase: string;
   reasoningAPIKey: string;
   reasoningModel: string;
+  reasoningDisplayModelName: string;
+  reasoningContextWindow: number | string;
+  reasoningReasoningEffort: string;
+  reasoningModelListPath: string;
+  reasoningBalancePath: string;
+  reasoningUsagePath: string;
   reasoningAllowPrivateAPIBase: boolean;
   async: boolean;
   allowPrivateAPIBase: boolean;
@@ -123,12 +149,24 @@ function formValuesFromConfig(config: AIConfig, assistantConfig: AIModelConfig, 
     assistantProvider: assistantConfig.provider,
     assistantAPIBase: assistantConfig.api_base,
     assistantAPIKey: '',
-    assistantModel: assistantConfig.model,
+    assistantModel: assistantConfig.invocation_model_name || assistantConfig.model,
+    assistantDisplayModelName: assistantConfig.display_model_name || assistantConfig.model,
+    assistantContextWindow: assistantConfig.context_window || '',
+    assistantReasoningEffort: assistantConfig.reasoning_effort || 'none',
+    assistantModelListPath: assistantConfig.model_list_path || '',
+    assistantBalancePath: assistantConfig.balance_path || '',
+    assistantUsagePath: assistantConfig.usage_path || '',
     assistantAllowPrivateAPIBase: assistantConfig.allow_private_api_base,
     reasoningProvider: reasoningConfig.provider,
     reasoningAPIBase: reasoningConfig.api_base,
     reasoningAPIKey: '',
-    reasoningModel: reasoningConfig.model,
+    reasoningModel: reasoningConfig.invocation_model_name || reasoningConfig.model,
+    reasoningDisplayModelName: reasoningConfig.display_model_name || reasoningConfig.model,
+    reasoningContextWindow: reasoningConfig.context_window || '',
+    reasoningReasoningEffort: reasoningConfig.reasoning_effort || 'none',
+    reasoningModelListPath: reasoningConfig.model_list_path || '',
+    reasoningBalancePath: reasoningConfig.balance_path || '',
+    reasoningUsagePath: reasoningConfig.usage_path || '',
     reasoningAllowPrivateAPIBase: reasoningConfig.allow_private_api_base,
     async: config.async,
     allowPrivateAPIBase: config.allow_private_api_base,
@@ -155,6 +193,10 @@ export default function AIPage() {
   const formDirtyRef = useRef(false);
   const [selectedId, setSelectedId] = useState('');
   const [analysisRange, setAnalysisRange] = useState('24h');
+  const [opsRange, setOpsRange] = useState<AIOpsRange>('7d');
+  const [opsCustomStart, setOpsCustomStart] = useState('');
+  const [opsCustomEnd, setOpsCustomEnd] = useState('');
+  const [opsCustomQuery, setOpsCustomQuery] = useState<{ start: string; end: string } | null>(null);
   const [eventPage, setEventPage] = useState(1);
   const [analyses, setAnalyses] = useState<Record<string, AttackAnalysis>>({});
   const [liveAnalysis, setLiveAnalysis] = useState<{
@@ -169,6 +211,22 @@ export default function AIPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [maxEventsError, setMaxEventsError] = useState('');
   const configQuery = useQuery({ queryKey: ['ai-config'], queryFn: fetchAIConfig, retry: false });
+  const opsUsageRequest = useMemo(() => {
+    if (opsRange !== 'custom') {
+      return { range: opsRange } as const;
+    }
+    if (!opsCustomQuery) {
+      return null;
+    }
+    return { range: 'custom' as const, ...opsCustomQuery };
+  }, [opsCustomQuery, opsRange]);
+  const opsUsageQuery = useQuery({
+    queryKey: ['ai-ops-usage', opsUsageRequest],
+    queryFn: () => fetchAIOpsUsage(opsUsageRequest!),
+    enabled: opsUsageRequest !== null,
+    retry: false,
+  });
+  const opsProvidersQuery = useQuery({ queryKey: ['ai-ops-providers'], queryFn: fetchAIOpsProviders, retry: false });
   const { data } = configQuery;
   const aiEventsRefetchInterval = usePollingVisibility(5_000);
   const { data: logs, isLoading } = useQuery({
@@ -209,6 +267,13 @@ export default function AIPage() {
     assistantConfig.api_base,
     assistantConfig.allow_private_api_base,
     assistantConfig.model,
+    assistantConfig.invocation_model_name,
+    assistantConfig.display_model_name,
+    assistantConfig.context_window,
+    assistantConfig.reasoning_effort,
+    assistantConfig.model_list_path,
+    assistantConfig.balance_path,
+    assistantConfig.usage_path,
     assistantConfig.provider,
     config.allow_private_api_base,
     config.api_base,
@@ -232,6 +297,13 @@ export default function AIPage() {
     reasoningConfig.api_base,
     reasoningConfig.allow_private_api_base,
     reasoningConfig.model,
+    reasoningConfig.invocation_model_name,
+    reasoningConfig.display_model_name,
+    reasoningConfig.context_window,
+    reasoningConfig.reasoning_effort,
+    reasoningConfig.model_list_path,
+    reasoningConfig.balance_path,
+    reasoningConfig.usage_path,
     reasoningConfig.provider,
   ]);
 
@@ -378,6 +450,16 @@ export default function AIPage() {
     }
   }
 
+  function applyCustomOpsRange() {
+    const start = utcDateTimeInputToISO(opsCustomStart);
+    const end = utcDateTimeInputToISO(opsCustomEnd);
+    if (!start || !end || Date.parse(start) > Date.parse(end) || Date.parse(end) - Date.parse(start) > 90 * 24 * 60 * 60 * 1000) {
+      toast.error(t('ai.opsCustomRangeInvalid'));
+      return;
+    }
+    setOpsCustomQuery({ start, end });
+  }
+
   return (
     <section className="page-surface ai-page">
       <header className="page-header">
@@ -388,6 +470,76 @@ export default function AIPage() {
       </header>
 
       <div className="ai-dashboard-grid">
+        <section className="panel ai-ops-panel">
+          <div className="panel-heading ai-ops-heading">
+            <div>
+              <h2><Activity size={16} /> {t('ai.opsTitle')}</h2>
+              <p>{t('ai.opsSubtitle')}</p>
+            </div>
+            <div className="ai-ops-range" role="group" aria-label={t('ai.opsRange')}>
+              {aiOpsRanges.map((range) => (
+                <Button
+                  key={range}
+                  type="button"
+                  size="sm"
+                  variant={opsRange === range ? 'default' : 'outline'}
+                  aria-label={t(aiOpsRangeLabelKeys[range])}
+                  onClick={() => setOpsRange(range)}
+                >
+                  {t(aiOpsRangeLabelKeys[range])}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                size="sm"
+                variant={opsRange === 'custom' ? 'default' : 'outline'}
+                aria-label={t('ai.opsRangeCustom')}
+                onClick={() => setOpsRange('custom')}
+              >
+                {t('ai.opsRangeCustom')}
+              </Button>
+            </div>
+          </div>
+          {opsRange === 'custom' && (
+            <div className="ai-ops-custom-range">
+              <div>
+                <Label>{t('ai.opsCustomStart')}</Label>
+                <Input type="datetime-local" aria-label={t('ai.opsCustomStart')} value={opsCustomStart} onChange={(event) => setOpsCustomStart(event.target.value)} />
+              </div>
+              <div>
+                <Label>{t('ai.opsCustomEnd')}</Label>
+                <Input type="datetime-local" aria-label={t('ai.opsCustomEnd')} value={opsCustomEnd} onChange={(event) => setOpsCustomEnd(event.target.value)} />
+              </div>
+              <Button type="button" variant="secondary" aria-label={t('ai.opsApplyRange')} onClick={applyCustomOpsRange}>
+                {t('ai.opsApplyRange')}
+              </Button>
+              <span>{t('ai.opsUTC')}</span>
+            </div>
+          )}
+          <div className="ai-ops-content">
+            <div className="ai-ops-metrics" aria-busy={opsUsageQuery.isFetching}>
+              <article className="ai-ops-metric">
+                <span>{t('ai.opsTotalTokens')}</span>
+                <strong>{opsUsageQuery.data?.total_tokens_formatted ?? '0'}</strong>
+                <small>{t('ai.opsTokenSplit', {
+                  input: opsUsageQuery.data?.input_tokens_formatted ?? '0',
+                  output: opsUsageQuery.data?.output_tokens_formatted ?? '0',
+                })}</small>
+              </article>
+              <article className="ai-ops-metric">
+                <span>{t('ai.opsCallCount')}</span>
+                <strong>{opsUsageQuery.data?.call_count ?? 0}</strong>
+                <small>{opsUsageQuery.data ? `${formatCompactUTC(opsUsageQuery.data.range.start)} – ${formatCompactUTC(opsUsageQuery.data.range.end)}` : t('common.loading')}</small>
+              </article>
+            </div>
+            <div className="ai-ops-providers" aria-busy={opsProvidersQuery.isFetching}>
+              {(opsProvidersQuery.data?.items ?? []).map((provider) => (
+                <AIProviderOpsCard key={`${provider.target}-${provider.provider}`} provider={provider} t={t} />
+              ))}
+              {opsProvidersQuery.isError && <div className="empty-state">{t('ai.opsProviderUnavailable')}</div>}
+            </div>
+          </div>
+        </section>
         <section className="panel ai-config-panel">
           <div className="panel-heading">
             <h2><PlugZap size={16} /> {t('ai.connection')}</h2>
@@ -751,6 +903,53 @@ export default function AIPage() {
   );
 }
 
+function AIProviderOpsCard({ provider, t }: { provider: AIProviderOpsStatus; t: (key: string, options?: Record<string, unknown>) => string }) {
+  const model = provider.display_model_name || provider.invocation_model_name || '-';
+  const currency = provider.balance?.currency ? `${provider.balance.currency} ` : '';
+  const available = provider.balance?.available;
+  return (
+    <article className="ai-ops-provider-card">
+      <header>
+        <div>
+          <span>{provider.target === 'reasoning' ? t('ai.reasoningModel') : t('ai.assistantModel')}</span>
+          <strong>{model}</strong>
+        </div>
+        <Badge variant={provider.status === 'ready' ? 'success' : provider.status === 'disabled' ? 'secondary' : 'warning'}>
+          {t(aiOpsStatusLabelKeys[provider.status] || 'ai.opsStatusUnavailable')}
+        </Badge>
+      </header>
+      <div className="ai-ops-provider-meta">
+        <span>{provider.provider}</span>
+        {provider.context_window ? <span>{t('ai.opsContextWindow', { value: provider.context_window.toLocaleString() })}</span> : null}
+        {provider.reasoning_effort ? <span>{t('ai.opsReasoningEffort', { value: provider.reasoning_effort })}</span> : null}
+      </div>
+      <div className="ai-ops-balance">
+        <CircleDollarSign size={15} />
+        <span>{t('ai.opsBalance')}</span>
+        <strong>{typeof available === 'number' ? `${currency}${available.toFixed(2)}` : t('ai.opsNotConfigured')}</strong>
+      </div>
+      {provider.issue ? <small>{provider.issue}</small> : null}
+    </article>
+  );
+}
+
+function utcDateTimeInputToISO(value: string) {
+  const normalized = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
+    return '';
+  }
+  const parsed = new Date(`${normalized}:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString();
+}
+
+function formatCompactUTC(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toISOString().replace('.000Z', 'Z');
+}
+
 function FieldSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -996,6 +1195,14 @@ export function buildAIConfigPayload(
     api_key: values.assistantAPIKey || values.apiKey,
     api_key_set: config.api_key_set,
     model: values.assistantModel || values.model,
+    invocation_model_name: values.assistantModel || values.model,
+    display_model_name: values.assistantDisplayModelName || values.assistantModel || values.model,
+    context_window: optionalPositiveInteger(values.assistantContextWindow),
+    reasoning_effort: values.assistantReasoningEffort || undefined,
+    model_list_path: values.assistantModelListPath || '',
+    balance_path: values.assistantBalancePath || '',
+    usage_path: values.assistantUsagePath || '',
+    configured_catalog: assistantConfig.configured_catalog,
     async: values.async,
     allow_private_api_base: values.assistantAllowPrivateAPIBase ?? values.allowPrivateAPIBase,
     assistant: {
@@ -1004,6 +1211,14 @@ export function buildAIConfigPayload(
       api_key: values.assistantAPIKey,
       api_key_set: assistantConfig.api_key_set,
       model: values.assistantModel,
+      invocation_model_name: values.assistantModel,
+      display_model_name: values.assistantDisplayModelName || values.assistantModel,
+      context_window: optionalPositiveInteger(values.assistantContextWindow),
+      reasoning_effort: values.assistantReasoningEffort || undefined,
+      model_list_path: values.assistantModelListPath || '',
+      balance_path: values.assistantBalancePath || '',
+      usage_path: values.assistantUsagePath || '',
+      configured_catalog: assistantConfig.configured_catalog,
       allow_private_api_base: values.assistantAllowPrivateAPIBase,
     },
     reasoning: {
@@ -1012,6 +1227,14 @@ export function buildAIConfigPayload(
       api_key: values.reasoningAPIKey,
       api_key_set: reasoningConfig.api_key_set,
       model: values.reasoningModel,
+      invocation_model_name: values.reasoningModel,
+      display_model_name: values.reasoningDisplayModelName || values.reasoningModel,
+      context_window: optionalPositiveInteger(values.reasoningContextWindow),
+      reasoning_effort: values.reasoningReasoningEffort || undefined,
+      model_list_path: values.reasoningModelListPath || '',
+      balance_path: values.reasoningBalancePath || '',
+      usage_path: values.reasoningUsagePath || '',
+      configured_catalog: reasoningConfig.configured_catalog,
       allow_private_api_base: values.reasoningAllowPrivateAPIBase,
     },
     self_learning: {
@@ -1034,6 +1257,14 @@ export function buildAIConfigPayload(
   };
 }
 
+function optionalPositiveInteger(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return undefined;
+  }
+  return Math.floor(numeric);
+}
+
 export function validateSelfLearningMaxEvents(value: unknown) {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric < SELF_LEARNING_MAX_EVENTS_RANGE.min || numeric > SELF_LEARNING_MAX_EVENTS_RANGE.max) {
@@ -1050,6 +1281,7 @@ function buildAIModelRequest(values: Record<string, any>, target: 'assistant' | 
     api_base: values[`${prefix}APIBase`],
     api_key: values[`${prefix}APIKey`],
     model: values[`${prefix}Model`],
+    model_list_path: values[`${prefix}ModelListPath`] || '',
     allow_private_api_base: values[`${prefix}AllowPrivateAPIBase`],
   };
 }
@@ -1061,6 +1293,14 @@ function normalizeAIModel(model: AIModelConfig | undefined, config: AIConfig): A
     api_key: '',
     api_key_set: Boolean(model?.api_key_set ?? config.api_key_set),
     model: model?.model || config.model || 'gpt-4o-mini',
+    invocation_model_name: model?.invocation_model_name || model?.model || config.invocation_model_name || config.model || 'gpt-4o-mini',
+    display_model_name: model?.display_model_name || config.display_model_name || model?.model || config.model || 'gpt-4o-mini',
+    context_window: model?.context_window || config.context_window,
+    reasoning_effort: model?.reasoning_effort || config.reasoning_effort,
+    model_list_path: model?.model_list_path || config.model_list_path,
+    balance_path: model?.balance_path || config.balance_path,
+    usage_path: model?.usage_path || config.usage_path,
+    configured_catalog: model?.configured_catalog || config.configured_catalog,
     allow_private_api_base: Boolean(model?.allow_private_api_base ?? config.allow_private_api_base),
   };
 }
@@ -1097,6 +1337,12 @@ function AIModelFormBlock({
   const modelKey = `${prefix}Model` as const;
   const apiKeyKey = `${prefix}APIKey` as const;
   const privateKey = `${prefix}AllowPrivateAPIBase` as const;
+  const displayModelKey = `${prefix}DisplayModelName` as const;
+  const contextWindowKey = `${prefix}ContextWindow` as const;
+  const reasoningEffortKey = `${prefix}ReasoningEffort` as const;
+  const modelListPathKey = `${prefix}ModelListPath` as const;
+  const balancePathKey = `${prefix}BalancePath` as const;
+  const usagePathKey = `${prefix}UsagePath` as const;
   const modelValue = String(values[modelKey] || '');
   const modelIds = models.map((model) => model.id);
   const knownModel = modelIds.includes(modelValue);
@@ -1176,6 +1422,37 @@ function AIModelFormBlock({
             <p className="text-xs text-muted-foreground">{t('ai.allowPrivateAPIBaseHint')}</p>
           </div>
           <Switch checked={Boolean(values[privateKey])} onCheckedChange={(checked) => setField(privateKey, checked)} />
+        </div>
+      </div>
+      <div className="ai-model-advanced-grid">
+        <div className="space-y-1.5">
+          <Label>{t('ai.displayModelName')}</Label>
+          <Input value={String(values[displayModelKey] || '')} onChange={(event) => setField(displayModelKey, event.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.contextWindow')}</Label>
+          <Input type="number" min={1} max={2_000_000} value={String(values[contextWindowKey] || '')} onChange={(event) => setField(contextWindowKey, event.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.reasoningEffort')}</Label>
+          <Select value={String(values[reasoningEffortKey] || 'none')} onValueChange={(value) => setField(reasoningEffortKey, value)}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {['none', 'low', 'medium', 'high', 'xhigh'].map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.modelListPath')}</Label>
+          <Input placeholder="models" value={String(values[modelListPathKey] || '')} onChange={(event) => setField(modelListPathKey, event.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.balancePath')}</Label>
+          <Input placeholder="account/balance" value={String(values[balancePathKey] || '')} onChange={(event) => setField(balancePathKey, event.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('ai.providerUsagePath')}</Label>
+          <Input placeholder="account/usage" value={String(values[usagePathKey] || '')} onChange={(event) => setField(usagePathKey, event.target.value)} />
         </div>
       </div>
       <div className="ai-model-config-actions flex flex-wrap gap-2">

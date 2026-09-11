@@ -12,10 +12,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/LaokeQwQ/CheeseWAF/internal/tokens"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -74,6 +77,12 @@ func (m *TokenManager) SignWithClaims(subject, username, role string) (string, *
 	if m == nil || !m.ready || len(m.secret) == 0 {
 		return "", nil, fmt.Errorf("token manager signing secret is unavailable")
 	}
+	if !strictTokenIdentity(subject) || !strictTokenIdentity(role) {
+		return "", nil, fmt.Errorf("token identity contains whitespace or control characters")
+	}
+	if err := validateUsernameForRole(username, role); err != nil {
+		return "", nil, err
+	}
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := m.nowUTC()
 	tokenID, err := randomTokenID()
@@ -123,6 +132,12 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 	}
 	var claims Claims
 	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+	if !strictTokenIdentity(claims.Subject) || !strictTokenIdentity(claims.ID) || !strictTokenIdentity(claims.Role) || !strictTokenIdentityList(claims.Scopes) {
+		return nil, fmt.Errorf("token identity contains whitespace or control characters")
+	}
+	if err := validateUsernameForRole(claims.Username, claims.Role); err != nil {
 		return nil, err
 	}
 	now := m.nowUTC().Unix()
@@ -230,20 +245,24 @@ func HashManagementAPIToken(raw string) string {
 	// Management tokens contain 256 random bits, so a fast one-way digest does
 	// not reduce offline resistance. It avoids exposing every unauthenticated API
 	// request to password-hash CPU cost. bcrypt remains accepted for migration.
-	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+	if !strictTokenIdentity(raw) {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // HashManagementAPITokenLegacySHA256 is used only for tests that need deterministic digests.
 func HashManagementAPITokenLegacySHA256(raw string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
+	if !strictTokenIdentity(raw) {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func managementAPITokenMatches(raw, stored string) bool {
-	raw = strings.TrimSpace(raw)
-	stored = strings.TrimSpace(stored)
-	if raw == "" || stored == "" {
+	if !strictTokenIdentity(raw) || !strictTokenIdentity(stored) {
 		return false
 	}
 	switch {
@@ -260,22 +279,29 @@ func managementAPITokenMatches(raw, stored string) bool {
 }
 
 func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now time.Time) (*Claims, bool) {
-	if !cfg.Enabled || strings.TrimSpace(raw) == "" {
+	if !cfg.Enabled || !strictTokenIdentity(raw) {
 		return nil, false
 	}
 	now = now.UTC()
 	for _, token := range cfg.Tokens {
-		if !token.Enabled || token.ID == "" || token.Hash == "" || !token.RevokedAt.IsZero() {
+		if !token.Enabled || !strictTokenIdentity(token.ID) || !strictTokenIdentity(token.Prefix) || !strictTokenIdentity(token.Hash) || len(token.Scopes) == 0 || !strictTokenIdentityList(token.Scopes) || !validTokenDisplayText(token.Name, false) || !token.RevokedAt.IsZero() {
 			continue
 		}
 		if !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(now) {
 			continue
 		}
+		lastActivity := token.LastUsedAt
+		if lastActivity.IsZero() {
+			lastActivity = token.CreatedAt
+		}
+		if !lastActivity.IsZero() && now.Sub(lastActivity) >= tokens.InactivityTTL {
+			continue
+		}
 		// Prefixes are public lookup keys generated with each token. Filtering
 		// before hash verification keeps legacy bcrypt compatibility without an
 		// attacker forcing one bcrypt operation per configured token.
-		prefix := strings.TrimSpace(token.Prefix)
-		if prefix == "" || !strings.HasPrefix(raw, prefix) {
+		prefix := token.Prefix
+		if !strings.HasPrefix(raw, prefix) {
 			continue
 		}
 		if !managementAPITokenMatches(raw, token.Hash) {
@@ -289,8 +315,8 @@ func VerifyManagementAPIToken(raw string, cfg config.ManagementAPIConfig, now ti
 		if issuedAt.IsZero() {
 			issuedAt = now
 		}
-		name := strings.TrimSpace(token.Name)
-		if name == "" {
+		name := token.Name
+		if !hasDisplayText(name) {
 			name = token.ID
 		}
 		return &Claims{
@@ -323,7 +349,7 @@ func SessionMiddlewareWithClock(validator SessionValidator, clock timekeeper.Clo
 				return
 			}
 			claims, _ := r.Context().Value(UserContextKey).(*Claims)
-			if claims == nil || claims.ID == "" || claims.Subject == "" {
+			if claims == nil || !strictTokenIdentity(claims.ID) || !strictTokenIdentity(claims.Subject) || !strictTokenIdentity(claims.Role) || !strictTokenIdentityList(claims.Scopes) || validateUsernameForRole(claims.Username, claims.Role) != nil {
 				writeUnauthorized(w)
 				return
 			}
@@ -335,6 +361,55 @@ func SessionMiddlewareWithClock(validator SessionValidator, clock timekeeper.Clo
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func validateUsernameForRole(username, role string) error {
+	if role == "api_token" {
+		return nil
+	}
+	return identity.ValidateUsername(username)
+}
+
+func strictTokenIdentity(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
+}
+
+func strictTokenIdentityList(values []string) bool {
+	for _, value := range values {
+		if !strictTokenIdentity(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasDisplayText(value string) bool {
+	for _, r := range value {
+		if !unicode.IsSpace(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func validTokenDisplayText(value string, required bool) bool {
+	if required && !hasDisplayText(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *TokenManager) nowUTC() time.Time {
@@ -361,11 +436,17 @@ func bearerToken(r *http.Request) string {
 	if header == "" {
 		return ""
 	}
-	parts := strings.Fields(header)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+	separator := strings.IndexByte(header, ' ')
+	if separator <= 0 || !strings.EqualFold(header[:separator], "Bearer") {
 		return ""
 	}
-	return strings.TrimSpace(parts[1])
+	for separator < len(header) && header[separator] == ' ' {
+		separator++
+	}
+	if separator == len(header) {
+		return ""
+	}
+	return header[separator:]
 }
 
 func (m *TokenManager) sign(unsigned string) string {

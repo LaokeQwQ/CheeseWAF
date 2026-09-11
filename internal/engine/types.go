@@ -60,10 +60,13 @@ type RequestContext struct {
 	// an allowed site/tenant. Request-aware same-origin optimizations must not
 	// trust a raw, attacker-controlled Host value without this provenance.
 	HostValidated bool
-	DecodedURI    string            // 解码后的 URI / Decoded URI
-	DecodedBody   []byte            // 解码后的请求体 / Decoded request body
-	Results       []DetectionResult // 检测结果集合 / Detection results
-	Metadata      map[string]any    // 扩展元数据 / Extension metadata
+	// TrustedProxyCIDRs carries the immutable proxy trust scope used for
+	// request-aware protocol decisions (for example X-Forwarded-Proto).
+	TrustedProxyCIDRs []string
+	DecodedURI        string            // 解码后的 URI / Decoded URI
+	DecodedBody       []byte            // 解码后的请求体 / Decoded request body
+	Results           []DetectionResult // 检测结果集合 / Detection results
+	Metadata          map[string]any    // 扩展元数据 / Extension metadata
 
 	// Lazy body fields (hot path): body is not read until EnsureBody.
 	// bodyMu also protects the immutable snapshots used when semantic detector

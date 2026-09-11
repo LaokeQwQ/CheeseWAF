@@ -68,6 +68,32 @@ func TestScannerIgnoresDocumentationAndEntropyAlone(t *testing.T) {
 	}
 }
 
+func TestScannerUsesShannonEntropyForObfuscatedShells(t *testing.T) {
+	raw := make([]byte, 96)
+	for i := range raw {
+		raw[i] = byte((i*73 + 19) % 251)
+	}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	payload := []byte(`<?php eval(base64_decode($_POST['x'])); $blob = '` + encoded + `'; ?>`)
+	findings := NewScanner().Scan("upload.php", payload)
+	if !hasFinding(findings, "php-high-entropy") {
+		t.Fatalf("high-entropy obfuscated shell was not flagged: %+v", findings)
+	}
+}
+
+func TestShannonEntropyDistinguishesRepeatedAndRandomTokens(t *testing.T) {
+	if got := shannonEntropy(strings.Repeat("A", 96)); got > 0.01 {
+		t.Fatalf("repeated token entropy = %f, want near zero", got)
+	}
+	raw := make([]byte, 96)
+	for i := range raw {
+		raw[i] = byte((i*73 + 19) % 251)
+	}
+	if got := shannonEntropy(base64.StdEncoding.EncodeToString(raw)); got < 5.2 {
+		t.Fatalf("random Base64 entropy = %f, want at least 5.2", got)
+	}
+}
+
 func TestScannerDetectsConcatenatedVariableFunction(t *testing.T) {
 	payload := []byte(`<?php $fn = 'sys'.'tem'; $arg = $_GET['cmd']; $fn($arg); ?>`)
 	findings := NewScanner().Scan("upload.php", payload)

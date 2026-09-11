@@ -32,6 +32,13 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIKey = "existing-secret"
 	cfg.AI.APIKeyHeader = "api-key"
+	cfg.AI.InvocationModelName = "provider-model"
+	cfg.AI.DisplayModelName = "Visible Model"
+	cfg.AI.ContextWindow = 131072
+	cfg.AI.ReasoningEffort = "high"
+	cfg.AI.ModelListPath = "models"
+	cfg.AI.BalancePath = "balance"
+	cfg.AI.UsagePath = "usage"
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
 	if err := config.Save(configPath, &cfg); err != nil {
 		t.Fatalf("save config: %v", err)
@@ -75,6 +82,185 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 	}
 	if _, ok := response.Data["api_key"]; ok {
 		t.Fatalf("api_key should not be returned to the Web UI: %+v", response.Data)
+	}
+	assistant, _ := response.Data["assistant"].(map[string]any)
+	if assistant["invocation_model_name"] != "provider-model" || assistant["display_model_name"] != "Visible Model" || assistant["reasoning_effort"] != "high" {
+		t.Fatalf("model identity and reasoning metadata missing from config view: %+v", assistant)
+	}
+}
+
+func TestAIOpsUsageSupportsPresetsAndRejectsUnsafeCustomRanges(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	oldStore := currentAIUsageStore()
+	store := ai.NewUsageStore(ai.UsageStoreOptions{Now: func() time.Time { return now }})
+	processAIUsageStore.Store(store)
+	t.Cleanup(func() { processAIUsageStore.Store(oldStore) })
+	store.Record(ai.UsageEvent{At: now.Add(-48 * time.Hour), Provider: "openai", Model: "recent", InputTokens: 1200, OutputTokens: 800})
+	store.Record(ai.UsageEvent{At: now.Add(-8 * 24 * time.Hour), Provider: "openai", Model: "old", InputTokens: 1, OutputTokens: 1})
+
+	cfg := config.Default()
+	h := New(Options{Config: &cfg, Clock: &handlerTestClock{now: now}})
+	recorder := httptest.NewRecorder()
+	h.AIOpsUsage(recorder, httptest.NewRequest(http.MethodGet, "/api/ai/ops/usage?range=7d", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"call_count":1`) || !strings.Contains(recorder.Body.String(), `"total_tokens_formatted":"2.00K"`) {
+		t.Fatalf("unexpected 7d usage response: code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	for _, query := range []string{
+		"range=custom&start=2026-09-11T00:00:00Z&end=2026-09-11T01:00:00Z",
+		"range=custom&start=2026-09-10T10:00:00%2B08:00&end=2026-09-10T11:00:00%2B08:00",
+		"range=custom&start=2026-09-10T11:00:00Z&end=2026-09-10T10:00:00Z",
+		"range=custom&start=2026-06-01T00:00:00Z&end=2026-09-10T12:00:00Z",
+	} {
+		recorder = httptest.NewRecorder()
+		h.AIOpsUsage(recorder, httptest.NewRequest(http.MethodGet, "/api/ai/ops/usage?"+query, nil))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("unsafe custom query %q returned %d: %s", query, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestAIOpsProviderStatusNeverReturnsRawProviderErrorsOrSecrets(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"raw prompt existing-secret"}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.APIBase = upstream.URL
+	cfg.AI.APIKey = "existing-secret"
+	cfg.AI.Model = "actual-model"
+	cfg.AI.AllowPrivateAPIBase = true
+	cfg.AI.BalancePath = "balance"
+	cfg.AI.UsagePath = "usage"
+	h := New(Options{Config: &cfg})
+	recorder := httptest.NewRecorder()
+	h.AIOpsProviders(recorder, httptest.NewRequest(http.MethodGet, "/api/ai/ops/providers", nil))
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"status":"degraded"`) {
+		t.Fatalf("unexpected provider status: code=%d body=%s", recorder.Code, body)
+	}
+	if strings.Contains(body, "raw prompt") || strings.Contains(body, "existing-secret") {
+		t.Fatalf("provider raw error or secret leaked: %s", body)
+	}
+}
+
+func TestHandlerRuntimeAIClientsRecordLocalUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`))
+	}))
+	defer upstream.Close()
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	oldStore := currentAIUsageStore()
+	store := ai.NewUsageStore(ai.UsageStoreOptions{Now: func() time.Time { return now }})
+	processAIUsageStore.Store(store)
+	t.Cleanup(func() { processAIUsageStore.Store(oldStore) })
+
+	cfg := config.Default()
+	cfg.AI.Enabled = true
+	cfg.AI.APIBase = upstream.URL
+	cfg.AI.APIKey = "secret"
+	cfg.AI.Model = "actual-model"
+	cfg.AI.AllowPrivateAPIBase = true
+	h := New(Options{Config: &cfg})
+	if _, err := h.aiAssistantClient().CompleteWithUsage(context.Background(), []ai.Message{{Role: "user", Content: "ping"}}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	snapshot, err := store.Snapshot(ai.UsageRange{Start: now.Add(-time.Hour), End: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.CallCount != 1 || snapshot.TotalTokens != 7 {
+		t.Fatalf("handler runtime client did not record usage: %+v", snapshot)
+	}
+}
+
+func TestUpdateAIConfigPersistsProviderPathsAndSeparateModelIdentity(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.APIKey = "existing-secret"
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{Config: &cfg, ConfigPath: configPath})
+	body := []byte(`{
+		"enabled":true,
+		"provider":"openai",
+		"api_base":"http://127.0.0.1:9999/v1",
+		"model":"assistant-invoke",
+		"allow_private_api_base":true,
+		"assistant":{
+			"provider":"openai",
+			"api_base":"http://127.0.0.1:9999/v1",
+			"model":"assistant-invoke",
+			"invocation_model_name":"assistant-invoke",
+			"display_model_name":"Assistant Visible",
+			"context_window":131072,
+			"reasoning_effort":"medium",
+			"model_list_path":"models",
+			"balance_path":"account/balance",
+			"usage_path":"account/usage",
+			"configured_catalog":[{"id":"assistant-invoke","display_name":"Assistant Visible","context_window":131072,"reasoning_efforts":["low","medium"]}],
+			"allow_private_api_base":true
+		},
+		"reasoning":{
+			"provider":"openai",
+			"api_base":"http://127.0.0.1:9999/v1",
+			"model":"reasoning-invoke",
+			"invocation_model_name":"reasoning-invoke",
+			"display_model_name":"Reasoning Visible",
+			"context_window":200000,
+			"reasoning_effort":"high",
+			"model_list_path":"models",
+			"balance_path":"account/balance",
+			"usage_path":"account/usage",
+			"allow_private_api_base":true
+		}
+	}`)
+	recorder := httptest.NewRecorder()
+	h.UpdateAIConfig(recorder, httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update AI config: %d %s", recorder.Code, recorder.Body.String())
+	}
+	assistant := cfg.AI.Assistant
+	reasoning := cfg.AI.Reasoning
+	if assistant.InvocationModelName != "assistant-invoke" || assistant.DisplayModelName != "Assistant Visible" || assistant.ContextWindow != 131072 || assistant.ReasoningEffort != "medium" {
+		t.Fatalf("assistant metadata was not persisted: %+v", assistant)
+	}
+	if assistant.ModelListPath != "models" || assistant.BalancePath != "account/balance" || assistant.UsagePath != "account/usage" || len(assistant.ConfiguredCatalog) != 1 {
+		t.Fatalf("assistant provider operations config was not persisted: %+v", assistant)
+	}
+	if reasoning.InvocationModelName != "reasoning-invoke" || reasoning.DisplayModelName != "Reasoning Visible" || reasoning.ReasoningEffort != "high" {
+		t.Fatalf("reasoning metadata was not persisted: %+v", reasoning)
+	}
+	if strings.Contains(recorder.Body.String(), "existing-secret") || strings.Contains(recorder.Body.String(), `"api_key":`) {
+		t.Fatalf("config response leaked API key material: %s", recorder.Body.String())
+	}
+}
+
+func TestUpdateAIConfigCanClearOptionalProviderOperationPaths(t *testing.T) {
+	cfg := config.Default()
+	cfg.AI.Enabled = false
+	cfg.AI.Assistant = config.AIModelConfig{
+		Provider: "openai", APIBase: "https://example.invalid/v1", Model: "model",
+		ModelListPath: "models", BalancePath: "account/balance", UsagePath: "account/usage",
+	}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{Config: &cfg, ConfigPath: configPath})
+	body := []byte(`{"enabled":false,"async":true,"assistant":{"provider":"openai","api_base":"https://example.invalid/v1","model":"model","model_list_path":"","balance_path":"","usage_path":"","allow_private_api_base":false}}`)
+	recorder := httptest.NewRecorder()
+	h.UpdateAIConfig(recorder, httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("clear provider operation paths: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.AI.Assistant.ModelListPath != "" || cfg.AI.Assistant.BalancePath != "" || cfg.AI.Assistant.UsagePath != "" {
+		t.Fatalf("optional provider paths were not cleared: %+v", cfg.AI.Assistant)
 	}
 }
 

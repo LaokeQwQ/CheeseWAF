@@ -1425,6 +1425,25 @@ func evaluateWebAttackPolicyWithEvidence(
 		}
 		return decision
 	}
+	// Deterministic user-defined custom rules represent explicit administrative intent,
+	// not probabilistic weak signals. Honor detector action without severity/confidence gates.
+	if result.Category == "custom_rule" {
+		switch result.Action {
+		case engine.ActionChallenge:
+			decision.Action = engine.ActionChallenge.String()
+			decision.Reason = "custom rule matched with challenge action"
+		case engine.ActionBlock:
+			decision.Action = engine.ActionBlock.String()
+			decision.Reason = "custom rule matched with block action"
+		case engine.ActionLog:
+			decision.Action = engine.ActionLog.String()
+			decision.Reason = "custom rule matched with log action"
+		default:
+			decision.Action = engine.ActionPass.String()
+			decision.Reason = "custom rule matched with pass action"
+		}
+		return decision
+	}
 	evidence := aggregateWebAttackEvidence(result, results)
 	decision.RiskScore = evidence.Score
 	decision.EvidenceCount = evidence.Count

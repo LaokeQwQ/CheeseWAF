@@ -1,0 +1,18 @@
+---
+# vars_files has higher precedence than inventory and play variables.  Load
+# the checked-in contract as a namespace, then materialize only values the
+# operator did not provide so entrypoint constants and secret vars keep their
+# intended precedence.
+- name: Load version-controlled non-secret deployment defaults
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/vars/defaults.yml"
+    name: cheesewaf_default_values
+  delegate_to: localhost
+  run_once: true
+
+- name: Apply a default only when the caller did not provide the variable
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value }}"
+  loop: "{{ cheesewaf_default_values | dict2items }}"
+  when: item.key not in vars
+  no_log: true

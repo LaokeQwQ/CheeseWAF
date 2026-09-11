@@ -1,0 +1,69 @@
+---
+# Contract defaults only. Secrets belong in an external vault or an ignored
+# extra-vars file; this file is safe to keep under version control.
+cheesewaf_provision_only: false
+cheesewaf_offline: true
+cheesewaf_prepare_host: false
+cheesewaf_service_user: cheesewaf
+cheesewaf_service_group: cheesewaf
+cheesewaf_runtime_dir: /var/lib/cheesewaf
+cheesewaf_management_listen: 127.0.0.1:9443
+cheesewaf_management_tls_enabled: true
+cheesewaf_management_acl: []
+cheesewaf_management_audit_sink: ""
+cheesewaf_management_rollback_ref: ""
+
+# Production control-plane dependencies are deliberately empty. Production
+# inventories must provide these values through an external secret mechanism.
+cheesewaf_management_postgresql_dsn: ""
+cheesewaf_control_postgresql_mode: none
+cheesewaf_control_postgresql_dsn: ""
+cheesewaf_redis_address: ""
+cheesewaf_redis_instance_id: ""
+cheesewaf_redis_tls_enabled: true
+cheesewaf_redis_ca_file: ""
+cheesewaf_consensus_backend: native-raft
+cheesewaf_native_raft_endpoints: []
+cheesewaf_native_raft_tls_enabled: true
+cheesewaf_native_raft_ca_file: ""
+cheesewaf_native_raft_cert_file: ""
+cheesewaf_native_raft_key_file: ""
+cheesewaf_native_raft_data_dir: ""
+cheesewaf_native_raft_listen: ""
+cheesewaf_native_raft_mode: ""
+cheesewaf_cluster_id: ""
+
+# Full deployment may call a locally reviewed adapter. The adapter checkout,
+# entrypoint and vars file are all controller-local paths supplied by the
+# operator; no source is downloaded by this repository.
+cheesewaf_pigsty_enabled: false
+cheesewaf_pigsty_version: ""
+cheesewaf_pigsty_ref: ""
+cheesewaf_pigsty_checkout: ""
+cheesewaf_pigsty_entrypoint: ""
+cheesewaf_pigsty_inventory: ""
+cheesewaf_pigsty_vars_file: ""
+cheesewaf_pigsty_limit: ""
+
+# CWEDP is a pull-only, operator-supplied artifact. Ansible never receives or
+# distributes CRP/plugin packages. Starting the agent is an explicit action.
+cheesewaf_cwedp_agent_enabled: false
+cheesewaf_cwedp_agent_src: ""
+cheesewaf_cwedp_agent_sha256: ""
+cheesewaf_cwedp_agent_dir: /opt/cheesewaf/cwedp-agent
+cheesewaf_cwedp_data_dir: /var/lib/cheesewaf/cwedp
+cheesewaf_cwedp_environment_file: ""
+cheesewaf_cwedp_agent_start: false
+
+# Explicitly rejected compatibility knobs. Keeping them visible makes an
+# accidental legacy invocation fail closed instead of silently doing work.
+cheesewaf_plugin_push: false
+cheesewaf_crp_push: false
+cheesewaf_plugin_install: false
+cheesewaf_plugin_upgrade: false
+cheesewaf_plugin_rollback: false
+cheesewaf_crp_install: false
+cheesewaf_crp_upgrade: false
+cheesewaf_crp_rollback: false
+cheesewaf_plugin_packages: []
+cheesewaf_crp_packages: []

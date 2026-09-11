@@ -6,6 +6,8 @@ import {
   continueAIApprovalStream,
   fetchAIApproval,
   fetchAIApprovals,
+  fetchAIOpsProviders,
+  fetchAIOpsUsage,
   analyzeEventsStream,
   analyzeLogReferenceStream,
   bootstrapSessionFromLegacyToken,
@@ -35,6 +37,8 @@ import {
   refreshSession,
   resetAuthRedirectStateForTest,
   resetSetupTokenForTest,
+  setSetupTokenForSession,
+  hasSetupToken,
   setupAdmin,
   setupUser2FA,
   updateRule,
@@ -51,6 +55,23 @@ import {
 import { apiClient } from './client';
 import type { RuntimeStats } from '../types/api';
 import { queryClient } from '../queryClient';
+
+describe('AI Ops API', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('sends bounded custom range parameters to protected read endpoints', async () => {
+    const get = vi.spyOn(apiClient, 'get')
+      .mockResolvedValueOnce({ data: { data: { total_tokens: 0, call_count: 0 } } })
+      .mockResolvedValueOnce({ data: { data: { items: [], total: 0 } } });
+    const query = { range: 'custom' as const, start: '2026-09-01T00:00:00Z', end: '2026-09-10T00:00:00Z' };
+
+    await fetchAIOpsUsage(query);
+    await fetchAIOpsProviders();
+
+    expect(get).toHaveBeenNthCalledWith(1, '/ai/ops/usage', { params: query });
+    expect(get).toHaveBeenNthCalledWith(2, '/ai/ops/providers');
+  });
+});
 
 describe('log event lookup', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -125,14 +146,9 @@ describe('first-install setup token', () => {
     expect(window.location.hash).toBe('');
   });
 
-  it('loads the setup token from loopback setup_url when the fragment is empty', async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        data: { needs_setup: true, setup_url: 'http://127.0.0.1:9443/setup#setup_token=status-secret' },
-      }),
-    }));
-    vi.stubGlobal('fetch', fetchMock);
+  it('keeps a manually entered token in memory and sends it only on setup mutations', async () => {
+    setSetupTokenForSession('manual-secret');
+    expect(hasSetupToken()).toBe(true);
     const seenHeaders: Array<string | undefined> = [];
     const adapter = vi.fn(async (config) => {
       seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
@@ -141,9 +157,9 @@ describe('first-install setup token', () => {
 
     await apiClient.post('/setup/probe', {}, { adapter });
 
-    expect(seenHeaders).toEqual(['status-secret']);
+    expect(seenHeaders).toEqual(['manual-secret']);
     expect(sessionStorage.getItem('cheesewaf-setup-token')).toBeNull();
-    expect(fetchMock).toHaveBeenCalled();
+    expect(window.location.hash).toBe('');
   });
 
   it('clears the in-memory setup token only after setup completes successfully', async () => {

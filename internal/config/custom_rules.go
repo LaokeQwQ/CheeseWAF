@@ -110,7 +110,7 @@ func parseCustomRulesYAML(data []byte) ([]CustomRuleConfig, error) {
 			return nil, err
 		}
 		if doc.CustomRules == nil {
-			doc.CustomRules = []CustomRuleConfig{}
+			return nil, fmt.Errorf("custom_rules is required")
 		}
 		return doc.CustomRules, nil
 	default:
@@ -355,6 +355,21 @@ func ExampleCustomRulesDocument(format string) ([]byte, error) {
 // CustomRuleFilename is a download name for exported or example documents.
 func CustomRuleFilename(kind, format string) string {
 	base := strings.TrimSpace(kind)
+	if base == "" {
+		base = "custom_rules"
+	}
+	// This value is emitted in Content-Disposition. Restrict it to a safe
+	// filename alphabet so caller-controlled site IDs cannot inject headers or
+	// path separators. Invalid runes become underscores to keep the name useful.
+	var safe strings.Builder
+	for _, r := range base {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			safe.WriteRune(r)
+		} else {
+			safe.WriteByte('_')
+		}
+	}
+	base = strings.Trim(safe.String(), "._-")
 	if base == "" {
 		base = "custom_rules"
 	}

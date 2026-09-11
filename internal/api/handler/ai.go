@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
@@ -22,29 +23,45 @@ import (
 )
 
 type aiConfigPayload struct {
-	Enabled             bool                      `json:"enabled"`
-	Provider            string                    `json:"provider"`
-	APIBase             string                    `json:"api_base"`
-	APIKey              string                    `json:"api_key,omitempty"`
-	APIKeySet           bool                      `json:"api_key_set"`
-	Model               string                    `json:"model"`
-	MaxTokens           int                       `json:"max_tokens"`
-	Async               bool                      `json:"async"`
-	AllowPrivateAPIBase bool                      `json:"allow_private_api_base"`
-	Assistant           *aiModelConfigPayload     `json:"assistant,omitempty"`
-	Reasoning           *aiModelConfigPayload     `json:"reasoning,omitempty"`
-	SelfLearning        any                       `json:"self_learning,omitempty"`
-	Knowledge           *config.AIKnowledgeConfig `json:"knowledge,omitempty"`
+	Enabled             bool                         `json:"enabled"`
+	Provider            string                       `json:"provider"`
+	APIBase             string                       `json:"api_base"`
+	APIKey              string                       `json:"api_key,omitempty"`
+	APIKeySet           bool                         `json:"api_key_set"`
+	Model               string                       `json:"model"`
+	InvocationModelName string                       `json:"invocation_model_name,omitempty"`
+	DisplayModelName    string                       `json:"display_model_name,omitempty"`
+	ContextWindow       int                          `json:"context_window,omitempty"`
+	ReasoningEffort     string                       `json:"reasoning_effort,omitempty"`
+	MaxTokens           int                          `json:"max_tokens"`
+	Async               bool                         `json:"async"`
+	AllowPrivateAPIBase bool                         `json:"allow_private_api_base"`
+	ModelListPath       *string                      `json:"model_list_path,omitempty"`
+	BalancePath         *string                      `json:"balance_path,omitempty"`
+	UsagePath           *string                      `json:"usage_path,omitempty"`
+	ConfiguredCatalog   []config.AIModelCatalogEntry `json:"configured_catalog,omitempty"`
+	Assistant           *aiModelConfigPayload        `json:"assistant,omitempty"`
+	Reasoning           *aiModelConfigPayload        `json:"reasoning,omitempty"`
+	SelfLearning        any                          `json:"self_learning,omitempty"`
+	Knowledge           *config.AIKnowledgeConfig    `json:"knowledge,omitempty"`
 }
 
 type aiModelConfigPayload struct {
-	Provider            string `json:"provider"`
-	APIBase             string `json:"api_base"`
-	APIKey              string `json:"api_key,omitempty"`
-	APIKeySet           bool   `json:"api_key_set"`
-	Model               string `json:"model"`
-	MaxTokens           int    `json:"max_tokens"`
-	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
+	Provider            string                       `json:"provider"`
+	APIBase             string                       `json:"api_base"`
+	APIKey              string                       `json:"api_key,omitempty"`
+	APIKeySet           bool                         `json:"api_key_set"`
+	Model               string                       `json:"model"`
+	InvocationModelName string                       `json:"invocation_model_name,omitempty"`
+	DisplayModelName    string                       `json:"display_model_name,omitempty"`
+	ContextWindow       int                          `json:"context_window,omitempty"`
+	ReasoningEffort     string                       `json:"reasoning_effort,omitempty"`
+	MaxTokens           int                          `json:"max_tokens"`
+	AllowPrivateAPIBase bool                         `json:"allow_private_api_base"`
+	ModelListPath       *string                      `json:"model_list_path,omitempty"`
+	BalancePath         *string                      `json:"balance_path,omitempty"`
+	UsagePath           *string                      `json:"usage_path,omitempty"`
+	ConfiguredCatalog   []config.AIModelCatalogEntry `json:"configured_catalog,omitempty"`
 }
 
 type aiEventsAnalyzePayload struct {
@@ -78,6 +95,7 @@ type aiModelsPayload struct {
 	APIKey              string `json:"api_key,omitempty"`
 	Target              string `json:"target,omitempty"`
 	AllowPrivateAPIBase bool   `json:"allow_private_api_base"`
+	ModelListPath       string `json:"model_list_path,omitempty"`
 }
 
 type aiTestPayload struct {
@@ -99,7 +117,44 @@ const aiLongRequestTimeout = 5 * time.Minute
 var (
 	providerFirstEventSlowAfter     = 10 * time.Second
 	providerWaitingProgressInterval = 10 * time.Second
+	processAIUsageStore             atomic.Pointer[ai.UsageStore]
 )
+
+const (
+	maxAIUsageRange      = 90 * 24 * time.Hour
+	maxAIUsageFutureSkew = 5 * time.Minute
+)
+
+func init() {
+	processAIUsageStore.Store(ai.NewUsageStore(ai.UsageStoreOptions{}))
+}
+
+func currentAIUsageStore() *ai.UsageStore {
+	store := processAIUsageStore.Load()
+	if store != nil {
+		return store
+	}
+	store = ai.NewUsageStore(ai.UsageStoreOptions{})
+	if processAIUsageStore.CompareAndSwap(nil, store) {
+		return store
+	}
+	return processAIUsageStore.Load()
+}
+
+type aiProviderOpsStatus struct {
+	Target              string              `json:"target"`
+	Provider            string              `json:"provider"`
+	Status              string              `json:"status"`
+	DisplayModelName    string              `json:"display_model_name,omitempty"`
+	InvocationModelName string              `json:"invocation_model_name,omitempty"`
+	ContextWindow       int                 `json:"context_window,omitempty"`
+	ReasoningEffort     string              `json:"reasoning_effort,omitempty"`
+	BalanceConfigured   bool                `json:"balance_configured"`
+	UsageConfigured     bool                `json:"usage_configured"`
+	Balance             *ai.ProviderBalance `json:"balance,omitempty"`
+	ProviderUsage       *ai.ProviderUsage   `json:"provider_usage,omitempty"`
+	Issue               string              `json:"issue,omitempty"`
+}
 
 type aiSelfLearningConfigView struct {
 	Enabled        bool    `json:"enabled"`
@@ -132,11 +187,31 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		next.Provider = firstNonEmpty(req.Provider, next.Provider)
 		next.APIBase = firstNonEmpty(req.APIBase, next.APIBase)
 		next.Model = firstNonEmpty(req.Model, next.Model)
+		next.InvocationModelName = firstNonEmpty(req.InvocationModelName, next.InvocationModelName, next.Model)
+		next.DisplayModelName = firstNonEmpty(req.DisplayModelName, next.DisplayModelName)
+		if req.ContextWindow != 0 {
+			next.ContextWindow = req.ContextWindow
+		}
+		if strings.TrimSpace(req.ReasoningEffort) != "" {
+			next.ReasoningEffort = strings.TrimSpace(req.ReasoningEffort)
+		}
 		if req.MaxTokens != 0 {
 			next.MaxTokens = req.MaxTokens
 		}
 		next.Async = req.Async
 		next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+		if req.ModelListPath != nil {
+			next.ModelListPath = strings.TrimSpace(*req.ModelListPath)
+		}
+		if req.BalancePath != nil {
+			next.BalancePath = strings.TrimSpace(*req.BalancePath)
+		}
+		if req.UsagePath != nil {
+			next.UsagePath = strings.TrimSpace(*req.UsagePath)
+		}
+		if req.ConfiguredCatalog != nil {
+			next.ConfiguredCatalog = append([]config.AIModelCatalogEntry(nil), req.ConfiguredCatalog...)
+		}
 		if req.APIKey != "" {
 			next.APIKey = req.APIKey
 		}
@@ -149,8 +224,6 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		if req.Reasoning != nil {
 			next.Reasoning = mergeAIModelPayload(next.Reasoning, *req.Reasoning)
 		}
-		next.Assistant = mergeAIModelPayload(next.Assistant, legacyAIModelPayload(next))
-		next.Reasoning = mergeAIModelPayload(next.Reasoning, aiModelPayloadFromConfig(next.Assistant))
 		if req.SelfLearning != nil {
 			previousAutoApply := next.SelfLearning.AutoApply
 			selfLearning, parseErr := parseAISelfLearningConfig(req.SelfLearning, next.SelfLearning)
@@ -273,6 +346,132 @@ func (h *Handler) AIModels(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{"items": models, "total": len(models)})
 }
 
+// AIOpsUsage returns bounded process-local provider accounting. Raw events are
+// intentionally never exposed by HTTP.
+func (h *Handler) AIOpsUsage(w http.ResponseWriter, r *http.Request) {
+	query, err := h.aiUsageRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "AI_USAGE_RANGE_INVALID", err.Error())
+		return
+	}
+	snapshot, err := currentAIUsageStore().Snapshot(query)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "AI_USAGE_RANGE_INVALID", "AI usage range is invalid")
+		return
+	}
+	writeData(w, snapshot)
+}
+
+// AIOpsProviders returns non-sensitive provider readiness, balance, and
+// upstream usage metadata for the assistant and reasoning configurations.
+func (h *Handler) AIOpsProviders(w http.ResponseWriter, r *http.Request) {
+	items := []aiProviderOpsStatus{
+		h.aiProviderOpsStatus(r.Context(), "assistant", h.aiRuntimeConfig("assistant")),
+		h.aiProviderOpsStatus(r.Context(), "reasoning", h.aiRuntimeConfig("reasoning")),
+	}
+	writeData(w, map[string]any{"items": items, "total": len(items)})
+}
+
+func (h *Handler) aiUsageRange(r *http.Request) (ai.UsageRange, error) {
+	now := h.nowUTC()
+	selection := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("range")))
+	if selection == "" {
+		selection = "7d"
+	}
+	presets := map[string]time.Duration{
+		"1d":  24 * time.Hour,
+		"7d":  7 * 24 * time.Hour,
+		"30d": 30 * 24 * time.Hour,
+		"90d": 90 * 24 * time.Hour,
+	}
+	if duration, ok := presets[selection]; ok {
+		return ai.UsageRange{Start: now.Add(-duration), End: now}, nil
+	}
+	if selection != "custom" {
+		return ai.UsageRange{}, fmt.Errorf("range must be one of 1d, 7d, 30d, 90d, or custom")
+	}
+	start, err := parseUTCQueryTime(r.URL.Query().Get("start"))
+	if err != nil {
+		return ai.UsageRange{}, fmt.Errorf("custom start must be an RFC3339 UTC timestamp")
+	}
+	end, err := parseUTCQueryTime(r.URL.Query().Get("end"))
+	if err != nil {
+		return ai.UsageRange{}, fmt.Errorf("custom end must be an RFC3339 UTC timestamp")
+	}
+	if start.After(end) {
+		return ai.UsageRange{}, fmt.Errorf("custom start must not be after end")
+	}
+	if end.Sub(start) > maxAIUsageRange {
+		return ai.UsageRange{}, fmt.Errorf("custom range must not exceed 90 days")
+	}
+	if start.After(now.Add(maxAIUsageFutureSkew)) || end.After(now.Add(maxAIUsageFutureSkew)) {
+		return ai.UsageRange{}, fmt.Errorf("custom range must not extend into the future")
+	}
+	return ai.UsageRange{Start: start, End: end}, nil
+}
+
+func parseUTCQueryTime(value string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, err
+	}
+	_, offset := parsed.Zone()
+	if offset != 0 {
+		return time.Time{}, fmt.Errorf("timestamp is not UTC")
+	}
+	return parsed.UTC(), nil
+}
+
+func (h *Handler) aiProviderOpsStatus(parent context.Context, target string, cfg config.AIConfig) aiProviderOpsStatus {
+	invocation := firstNonEmpty(cfg.InvocationModelName, cfg.Model)
+	display := firstNonEmpty(cfg.DisplayModelName, invocation)
+	status := aiProviderOpsStatus{
+		Target:              target,
+		Provider:            firstNonEmpty(cfg.Provider, "openai"),
+		Status:              "ready",
+		DisplayModelName:    display,
+		InvocationModelName: invocation,
+		ContextWindow:       cfg.ContextWindow,
+		ReasoningEffort:     cfg.ReasoningEffort,
+		BalanceConfigured:   strings.TrimSpace(cfg.BalancePath) != "",
+		UsageConfigured:     strings.TrimSpace(cfg.UsagePath) != "",
+	}
+	if !cfg.Enabled {
+		status.Status = "disabled"
+		return status
+	}
+	if strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.APIBase) == "" || invocation == "" {
+		status.Status = "unavailable"
+		status.Issue = "provider configuration is incomplete"
+		return status
+	}
+	if !status.BalanceConfigured && !status.UsageConfigured {
+		return status
+	}
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	client := ai.NewClientWithTimeout(cfg, 15*time.Second)
+	if status.BalanceConfigured {
+		balance, err := client.FetchBalance(ctx)
+		if err != nil {
+			status.Status = "degraded"
+			status.Issue = "provider operations endpoint is unavailable"
+		} else {
+			status.Balance = &balance
+		}
+	}
+	if status.UsageConfigured {
+		usage, err := client.FetchProviderUsage(ctx)
+		if err != nil {
+			status.Status = "degraded"
+			status.Issue = "provider operations endpoint is unavailable"
+		} else {
+			status.ProviderUsage = &usage
+		}
+	}
+	return status
+}
+
 func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Request) *config.AIConfig {
 	target := ""
 	cfg := h.currentConfig().AI.AssistantRuntimeConfig()
@@ -297,6 +496,9 @@ func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Reque
 		cfg.APIKey = strings.TrimSpace(req.APIKey)
 	}
 	cfg.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+	if strings.TrimSpace(req.ModelListPath) != "" {
+		cfg.ModelListPath = strings.TrimSpace(req.ModelListPath)
+	}
 	return &cfg
 }
 
@@ -1432,7 +1634,7 @@ func (h *Handler) aiAssistantClient() *ai.Client {
 	}
 	cfg := h.currentConfig().AI.AssistantRuntimeConfig()
 	if cfg.Enabled && cfg.APIKey != "" {
-		return ai.NewClient(cfg, nil)
+		return ai.NewClient(cfg, nil).SetUsageStore(currentAIUsageStore())
 	}
 	return nil
 }
@@ -1443,7 +1645,7 @@ func (h *Handler) aiReasoningClient() *ai.Client {
 	}
 	cfg := h.currentConfig().AI.ReasoningRuntimeConfig()
 	if cfg.Enabled && cfg.APIKey != "" {
-		return ai.NewClient(cfg, nil)
+		return ai.NewClient(cfg, nil).SetUsageStore(currentAIUsageStore())
 	}
 	return nil
 }
@@ -1491,9 +1693,17 @@ func aiConfigView(cfg config.AIConfig) aiConfigPayload {
 		APIBase:             assistant.APIBase,
 		APIKeySet:           assistant.APIKey != "",
 		Model:               assistant.Model,
+		InvocationModelName: assistant.InvocationModelName,
+		DisplayModelName:    assistant.DisplayModelName,
+		ContextWindow:       assistant.ContextWindow,
+		ReasoningEffort:     assistant.ReasoningEffort,
 		MaxTokens:           assistant.MaxTokens,
 		Async:               cfg.Async,
 		AllowPrivateAPIBase: assistant.AllowPrivateAPIBase,
+		ModelListPath:       stringPointer(assistant.ModelListPath),
+		BalancePath:         stringPointer(assistant.BalancePath),
+		UsagePath:           stringPointer(assistant.UsagePath),
+		ConfiguredCatalog:   append([]config.AIModelCatalogEntry(nil), assistant.ConfiguredCatalog...),
 		Assistant:           aiModelConfigView(assistant.RuntimeModelConfig()),
 		Reasoning:           aiModelConfigView(reasoning.RuntimeModelConfig()),
 		SelfLearning:        aiSelfLearningView(cfg.SelfLearning),
@@ -1633,6 +1843,11 @@ func durationForDisplay(value time.Duration) string {
 	return value.String()
 }
 
+func stringPointer(value string) *string {
+	copy := value
+	return &copy
+}
+
 func aiModelConfigView(cfg config.AIModelConfig) *aiModelConfigPayload {
 	provider := cfg.Provider
 	if provider == "" {
@@ -1643,8 +1858,16 @@ func aiModelConfigView(cfg config.AIModelConfig) *aiModelConfigPayload {
 		APIBase:             cfg.APIBase,
 		APIKeySet:           cfg.APIKey != "",
 		Model:               cfg.Model,
+		InvocationModelName: cfg.InvocationModelName,
+		DisplayModelName:    cfg.DisplayModelName,
+		ContextWindow:       cfg.ContextWindow,
+		ReasoningEffort:     cfg.ReasoningEffort,
 		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
+		ModelListPath:       stringPointer(cfg.ModelListPath),
+		BalancePath:         stringPointer(cfg.BalancePath),
+		UsagePath:           stringPointer(cfg.UsagePath),
+		ConfiguredCatalog:   append([]config.AIModelCatalogEntry(nil), cfg.ConfiguredCatalog...),
 	}
 }
 
@@ -1662,10 +1885,37 @@ func mergeAIModelPayload(current config.AIModelConfig, req aiModelConfigPayload)
 	if strings.TrimSpace(req.Model) != "" {
 		next.Model = strings.TrimSpace(req.Model)
 	}
+	if strings.TrimSpace(req.InvocationModelName) != "" {
+		next.InvocationModelName = strings.TrimSpace(req.InvocationModelName)
+	} else if strings.TrimSpace(req.Model) != "" {
+		next.InvocationModelName = strings.TrimSpace(req.Model)
+	}
+	if strings.TrimSpace(req.DisplayModelName) != "" {
+		next.DisplayModelName = strings.TrimSpace(req.DisplayModelName)
+	}
+	if req.ContextWindow != 0 {
+		next.ContextWindow = req.ContextWindow
+	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		next.ReasoningEffort = strings.TrimSpace(req.ReasoningEffort)
+	}
 	if req.MaxTokens != 0 {
 		next.MaxTokens = req.MaxTokens
 	}
 	next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+	next.AllowPrivateAPIBaseSet = true
+	if req.ModelListPath != nil {
+		next.ModelListPath = strings.TrimSpace(*req.ModelListPath)
+	}
+	if req.BalancePath != nil {
+		next.BalancePath = strings.TrimSpace(*req.BalancePath)
+	}
+	if req.UsagePath != nil {
+		next.UsagePath = strings.TrimSpace(*req.UsagePath)
+	}
+	if req.ConfiguredCatalog != nil {
+		next.ConfiguredCatalog = append([]config.AIModelCatalogEntry(nil), req.ConfiguredCatalog...)
+	}
 	if strings.TrimSpace(next.APIKeyHeader) == "" {
 		next.APIKeyHeader = "authorization"
 	}
@@ -1678,8 +1928,16 @@ func aiModelPayloadFromConfig(model config.AIModelConfig) aiModelConfigPayload {
 		APIBase:             model.APIBase,
 		APIKey:              model.APIKey,
 		Model:               model.Model,
+		InvocationModelName: model.InvocationModelName,
+		DisplayModelName:    model.DisplayModelName,
+		ContextWindow:       model.ContextWindow,
+		ReasoningEffort:     model.ReasoningEffort,
 		MaxTokens:           model.MaxTokens,
 		AllowPrivateAPIBase: model.AllowPrivateAPIBase,
+		ModelListPath:       stringPointer(model.ModelListPath),
+		BalancePath:         stringPointer(model.BalancePath),
+		UsagePath:           stringPointer(model.UsagePath),
+		ConfiguredCatalog:   append([]config.AIModelCatalogEntry(nil), model.ConfiguredCatalog...),
 	}
 }
 
@@ -1689,8 +1947,16 @@ func legacyAIModelPayload(cfg config.AIConfig) aiModelConfigPayload {
 		APIBase:             cfg.APIBase,
 		APIKey:              cfg.APIKey,
 		Model:               cfg.Model,
+		InvocationModelName: cfg.InvocationModelName,
+		DisplayModelName:    cfg.DisplayModelName,
+		ContextWindow:       cfg.ContextWindow,
+		ReasoningEffort:     cfg.ReasoningEffort,
 		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
+		ModelListPath:       stringPointer(cfg.ModelListPath),
+		BalancePath:         stringPointer(cfg.BalancePath),
+		UsagePath:           stringPointer(cfg.UsagePath),
+		ConfiguredCatalog:   append([]config.AIModelCatalogEntry(nil), cfg.ConfiguredCatalog...),
 	}
 }
 

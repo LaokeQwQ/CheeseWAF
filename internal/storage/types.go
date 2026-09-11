@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -110,9 +111,16 @@ type Store interface {
 }
 
 // TOTPStore persists one-time consumed TOTP counters so a burned code cannot be
-// replayed after a process restart. Expired rows are allowed to remain and are
-// ignored by IsTOTPConsumed, so a code can be reused again after its TTL.
+// replayed after a process restart. Authentication paths must use ConsumeTOTP;
+// the Mark/Is pair remains only for compatibility with older callers and does
+// not provide an atomic claim when used as two separate operations. Expired
+// rows are allowed to remain and can be replaced by ConsumeTOTP.
 type TOTPStore interface {
+	// ConsumeTOTP atomically claims a TOTP counter when no unexpired claim
+	// exists. It returns true only for the first claim or a claim replacing an
+	// expired record; concurrent callers for the same user and counter have at
+	// most one successful result.
+	ConsumeTOTP(ctx context.Context, userID string, counter int64, expiresAt, now time.Time) (bool, error)
 	MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error
 	IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error)
 	DeleteTOTPConsumed(ctx context.Context, userID string, counter int64) error
@@ -252,10 +260,20 @@ type RuleStore interface {
 type UserStore interface {
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	CreateUser(ctx context.Context, user *User) error
+	// UpdateUser atomically persists security-field changes and revokes all
+	// existing sessions for that user when the username, password, role, or
+	// two-factor state changes. Callers must not perform a second revocation
+	// after a successful update.
 	UpdateUser(ctx context.Context, user *User) error
 	DeleteUser(ctx context.Context, id string) error
 	ListUsers(ctx context.Context) ([]User, error)
 }
+
+var (
+	ErrCredentialEpochChanged = errors.New("credential epoch changed")
+	ErrUserNotFound           = errors.New("user not found")
+	ErrSessionNotFound        = errors.New("session not found")
+)
 
 // SessionStore manages admin bearer-token sessions.
 // 管理端 Bearer token 会话管理。
@@ -448,26 +466,41 @@ type Rule struct {
 // User represents an admin user.
 // 管理员用户。
 type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`
-	Role         string    `json:"role"` // admin/readonly/custom
-	TwoFAEnabled bool      `json:"two_fa_enabled"`
-	TwoFASecret  string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Username        string    `json:"username"`
+	PasswordHash    string    `json:"-"`
+	Role            string    `json:"role"` // admin/readonly/custom
+	TwoFAEnabled    bool      `json:"two_fa_enabled"`
+	TwoFASecret     string    `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	CredentialEpoch uint64    `json:"-"`
+}
+
+// UserUsernameRepair is the durable audit record for an explicit repair of a
+// historical non-canonical username.
+type UserUsernameRepair struct {
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	OldUsername     string    `json:"old_username"`
+	NewUsername     string    `json:"new_username"`
+	Actor           string    `json:"actor"`
+	Reason          string    `json:"reason"`
+	RevokedSessions int64     `json:"revoked_sessions"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // Session represents a revocable admin API session.
 // 可撤销的管理端 API 会话。
 type Session struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	Username  string    `json:"username"`
-	Role      string    `json:"role"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	RevokedAt time.Time `json:"revoked_at,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	Username        string    `json:"username"`
+	Role            string    `json:"role"`
+	IssuedAt        time.Time `json:"issued_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	RevokedAt       time.Time `json:"revoked_at,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	CredentialEpoch uint64    `json:"-"`
 }

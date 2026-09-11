@@ -4,7 +4,7 @@
 BINARY_NAME  := cheesewaf
 CLI_NAME     := waf-cli
 MODULE       := github.com/LaokeQwQ/CheeseWAF
-VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.3.9-dev")
 COMMIT       := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME   := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 CHANNEL      := $(shell sh scripts/ci/channel-from-git.sh)
@@ -161,7 +161,7 @@ web-test:
 
 ## web-build: Build the React dashboard
 web-build:
-	cd web && npm ci --no-audit --no-fund --ignore-scripts && npm run build
+	cd web && CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts && CHEESEWAF_AGENT_EYES=0 npm run build
 
 ## security-corpus: Run curated attack/benign corpus against the semantic analyzer
 security-corpus:

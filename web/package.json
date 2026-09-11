@@ -1,7 +1,7 @@
 {
   "name": "cheesewaf-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -71,7 +71,7 @@
     "vitest": "^4.1.11"
   },
   "overrides": {
-    "hono": "^4.12.34",
+    "hono": "^4.13.7",
     "fast-uri": "^3.1.7",
     "nanoid": "^3.3.18",
     "@hono/node-server": "^2.0.5",

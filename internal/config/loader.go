@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -59,7 +60,14 @@ func Default() Config {
 				Listen:       "127.0.0.1:9444",
 				MTLSRequired: true,
 			},
-			Consensus: ConsensusConfig{Provider: "builtin"},
+			Consensus: ConsensusConfig{
+				Provider: "builtin",
+				NativeRaft: NativeRaftConfig{
+					DataDir: "./data/cluster/native-raft",
+					Listen:  "127.0.0.1:9451",
+					Mode:    "bootstrap",
+				},
+			},
 			Join: JoinConfig{
 				RequireApproval: true,
 				TokenTTL:        15 * time.Minute,
@@ -271,11 +279,14 @@ func Default() Config {
 			},
 		},
 		Storage: StorageConfig{
-			SQLite:        SQLiteConfig{Path: "./data/cheesewaf.db"},
-			ClickHouse:    ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
-			VictoriaLogs:  VictoriaLogsConfig{Timeout: 10 * time.Second},
-			PostgreSQL:    PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
-			Elasticsearch: ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
+			Profile:              StorageProfileTemporary,
+			ManagementPostgreSQL: ManagementPostgreSQLConfig{Timeout: 10 * time.Second},
+			ControlPostgreSQL:    ManagementPostgreSQLConfig{Timeout: 10 * time.Second},
+			SQLite:               SQLiteConfig{Path: "./data/cheesewaf.db"},
+			ClickHouse:           ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			VictoriaLogs:         VictoriaLogsConfig{Timeout: 10 * time.Second},
+			PostgreSQL:           PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			Elasticsearch:        ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
 		},
 		ACME: ACMEConfig{
 			Enabled:       false,
@@ -343,7 +354,7 @@ func Default() Config {
 				Enabled: true,
 				Rules: []AlertRuleConfig{
 					{ID: "high-block-rate", Name: "High block rate", Metric: "cheesewaf_blocked_total", Operator: ">", Threshold: 100, For: 5 * time.Minute, Severity: "high", Enabled: true},
-					{ID: "disk-usage", Name: "Disk usage high", Metric: "cheesewaf_disk_usage_percent", Operator: ">", Threshold: 85, For: 10 * time.Minute, Severity: "medium", Enabled: true},
+					{ID: "disk-usage", Name: "Disk usage high", Metric: "cheesewaf_disk_usage_bytes:data", Operator: ">", Threshold: 1.073741824e+10, For: 10 * time.Minute, Severity: "medium", Enabled: true},
 				},
 			},
 			Notifiers: []NotifierConfig{
@@ -395,9 +406,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config file %s exceeds max size (%d bytes > %d bytes)", path, info.Size(), MaxConfigFileBytes)
 	}
 
-	contents, err := os.ReadFile(path)
+	file, err := openConfigFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	contents, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read config %s: %w", path, readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close config %s: %w", path, closeErr)
 	}
 	if err := yaml.Unmarshal(contents, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
@@ -586,6 +605,7 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 			}
 			if onChange != nil {
 				if err := onChange(cfg); err != nil {
+					log.Printf("config watch: apply %s failed, keeping previous configuration: %v", path, err)
 					failedDigest = digest
 					continue
 				}
@@ -597,12 +617,20 @@ func Watch(ctx context.Context, path string, interval time.Duration, onChange fu
 }
 
 func configFileDigest(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	file, err := openConfigFile(path)
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256(raw)
-	return fmt.Sprintf("%x", digest[:]), nil
+	defer file.Close()
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(file, MaxConfigFileBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if size > MaxConfigFileBytes {
+		return "", fmt.Errorf("config file exceeds max size (%d bytes > %d bytes)", size, MaxConfigFileBytes)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func applyDefaults(cfg *Config) {
@@ -694,6 +722,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Cluster.Consensus.Provider == "" {
 		cfg.Cluster.Consensus.Provider = def.Cluster.Consensus.Provider
 	}
+	if cfg.Cluster.Consensus.NativeRaft.DataDir == "" {
+		cfg.Cluster.Consensus.NativeRaft.DataDir = def.Cluster.Consensus.NativeRaft.DataDir
+	}
+	if cfg.Cluster.Consensus.NativeRaft.Listen == "" {
+		cfg.Cluster.Consensus.NativeRaft.Listen = def.Cluster.Consensus.NativeRaft.Listen
+	}
+	if cfg.Cluster.Consensus.NativeRaft.Mode == "" {
+		cfg.Cluster.Consensus.NativeRaft.Mode = def.Cluster.Consensus.NativeRaft.Mode
+	}
 	if cfg.Cluster.Join.TokenTTL == 0 {
 		cfg.Cluster.Join.TokenTTL = def.Cluster.Join.TokenTTL
 	}
@@ -741,6 +778,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		cfg.Storage.SQLite.Path = filepath.Join(cfg.Setup.DataDir, "cheesewaf.db")
+	}
+	if cfg.Storage.Profile == "" {
+		cfg.Storage.Profile = def.Storage.Profile
+	}
+	if cfg.Storage.ManagementPostgreSQL.Timeout == 0 {
+		cfg.Storage.ManagementPostgreSQL.Timeout = def.Storage.ManagementPostgreSQL.Timeout
+	}
+	if cfg.Storage.ControlPostgreSQL.Timeout == 0 {
+		cfg.Storage.ControlPostgreSQL.Timeout = def.Storage.ControlPostgreSQL.Timeout
 	}
 	if cfg.Storage.ClickHouse.Table == "" {
 		cfg.Storage.ClickHouse.Table = def.Storage.ClickHouse.Table
@@ -1035,6 +1081,8 @@ func applyDefaults(cfg *Config) {
 		}
 		if site.WAF.Mode == "" {
 			site.WAF.Mode = "block"
+		} else if site.WAF.Mode == "log" {
+			site.WAF.Mode = "monitor"
 		}
 		if site.WAF.Performance.MaxBodyBytes == 0 {
 			site.WAF.Performance.MaxBodyBytes = 8 << 20

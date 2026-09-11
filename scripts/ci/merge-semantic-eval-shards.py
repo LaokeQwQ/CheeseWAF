@@ -51,11 +51,11 @@ def validate_source_metrics(src):
                 raise ValueError(f"sources counter {name!r} must be a non-negative integer")
 
 
-def request_scope_totals(sources):
-    """Return request-scope denominators used to bound primary diagnostics."""
+def scope_totals(sources, scope_filter=None):
+    """Return denominators used to bound diagnostic counters."""
     totals = {"benign_total": 0, "benign_fp": 0, "attack_total": 0, "attack_hit": 0}
     for src in sources.values():
-        if src.get("scope", "request") != "request":
+        if scope_filter is not None and src.get("scope", "request") != scope_filter:
             continue
         for key in totals:
             value = src.get(key, 0)
@@ -64,14 +64,43 @@ def request_scope_totals(sources):
     return totals
 
 
+def request_scope_totals(sources):
+    """Return request-scope denominators used by primary diagnostics."""
+    return scope_totals(sources, "request")
+
+
 def validate_primary_diagnostics(data):
     """Reject non-integer/negative/oversized primary diagnostic counts."""
-    limits = request_scope_totals(data.get("sources", {}))
+    if not isinstance(data, dict):
+        raise ValueError("report root must be an object")
+    sources = data.get("sources", {})
+    if not isinstance(sources, dict):
+        raise ValueError("sources must be an object")
+    for source_name, src in sources.items():
+        if not isinstance(src, dict):
+            raise ValueError(f"sources[{source_name!r}] must be an object")
+    diagnostic_sections = (
+        "by_category",
+        "by_paranoia_level",
+        "by_category_all_sources",
+        "by_paranoia_level_all_sources",
+    )
+    for section in diagnostic_sections:
+        values = data.get(section, {})
+        if not isinstance(values, dict):
+            raise ValueError(f"{section} must be an object")
+        for label, metrics in values.items():
+            if not isinstance(metrics, dict):
+                raise ValueError(f"{section}[{label!r}] must be an object")
+    request_limits = request_scope_totals(sources)
+    all_limits = scope_totals(sources)
     fields = {
-        "by_category": ("attack_total", "attack_hit"),
-        "by_paranoia_level": ("benign_total", "benign_fp", "attack_total", "attack_hit"),
+        "by_category": (("attack_total", "attack_hit"), request_limits),
+        "by_paranoia_level": (("benign_total", "benign_fp", "attack_total", "attack_hit"), request_limits),
+        "by_category_all_sources": (("attack_total", "attack_hit"), all_limits),
+        "by_paranoia_level_all_sources": (("benign_total", "benign_fp", "attack_total", "attack_hit"), all_limits),
     }
-    for section, names in fields.items():
+    for section, (names, limits) in fields.items():
         for label, metrics in data.get(section, {}).items():
             for name in names:
                 if name not in metrics:
@@ -83,8 +112,9 @@ def validate_primary_diagnostics(data):
                     raise ValueError(f"{section}[{label!r}].{name} must not be negative")
                 bound_name = {"benign_fp": "benign_total", "attack_hit": "attack_total"}.get(name, name)
                 if value > limits[bound_name]:
+                    limit_scope = "source" if section.endswith("_all_sources") else "request-scope"
                     raise ValueError(
-                        f"{section}[{label!r}].{name} exceeds request-scope total {limits[bound_name]}"
+                        f"{section}[{label!r}].{name} exceeds {limit_scope} total {limits[bound_name]}"
                     )
 
 
