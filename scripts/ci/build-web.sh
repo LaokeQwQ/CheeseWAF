@@ -27,8 +27,8 @@ fi
 pushd "$work_web" >/dev/null
 # agent-eyes postinstall runs `pnpm build` and fails without a monorepo layout;
 # the published package ships usable dist, so skip lifecycle scripts on CI install.
-npm ci --no-audit --no-fund --ignore-scripts
-npm run build
+CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts
+CHEESEWAF_AGENT_EYES=0 npm run build
 popd >/dev/null
 
 rm -rf "${repo_root}/web/dist"
@@ -38,4 +38,5 @@ embed_dir="${repo_root}/internal/webui/dist"
 rm -rf "$embed_dir"
 mkdir -p "$embed_dir"
 cp -R "${work_web}/dist/." "$embed_dir/"
-: >"${embed_dir}/.keep"
+printf 'keep\n' >"${embed_dir}/.keep"
+node "${work_web}/scripts/verify-production-markers.mjs" "${repo_root}/web/dist" "${embed_dir}"

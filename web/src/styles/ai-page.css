@@ -610,6 +610,170 @@
     grid-template-columns: 1fr;
   }
 }
+
+.ai-page .ai-dashboard-grid {
+  grid-template-areas:
+    "ops ops"
+    "config events"
+    "detail detail";
+}
+.ai-page .ai-ops-panel {
+  grid-area: ops;
+  min-width: 0;
+}
+.ai-page .ai-ops-heading {
+  align-items: flex-start;
+  gap: 16px;
+}
+.ai-page .ai-ops-heading p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.ai-page .ai-ops-range {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.ai-page .ai-ops-custom-range {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+  padding: 12px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.ai-page .ai-ops-custom-range > div {
+  display: grid;
+  gap: 6px;
+}
+.ai-page .ai-ops-custom-range > span {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.ai-page .ai-ops-content {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1.28fr);
+  gap: 12px;
+}
+.ai-page .ai-ops-metrics,
+.ai-page .ai-ops-providers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ai-page .ai-ops-metric,
+.ai-page .ai-ops-provider-card {
+  min-width: 0;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface-soft) 66%, var(--surface));
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.ai-page .ai-ops-metric {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+}
+.ai-page .ai-ops-metric > span,
+.ai-page .ai-ops-metric > small,
+.ai-page .ai-ops-provider-card small {
+  color: var(--text-muted);
+}
+.ai-page .ai-ops-metric strong {
+  font-size: clamp(24px, 3vw, 38px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.ai-page .ai-ops-provider-card {
+  display: grid;
+  gap: 10px;
+}
+.ai-page .ai-ops-provider-card > header,
+.ai-page .ai-ops-balance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ai-page .ai-ops-provider-card > header > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.ai-page .ai-ops-provider-card > header span,
+.ai-page .ai-ops-balance span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.ai-page .ai-ops-provider-card > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-page .ai-ops-provider-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ai-page .ai-ops-provider-meta span {
+  padding: 3px 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+.ai-page .ai-ops-balance {
+  justify-content: flex-start;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ai-page .ai-ops-balance strong {
+  margin-left: auto;
+}
+.ai-page .ai-model-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+@media (max-width: 1180px) {
+  .ai-page .ai-dashboard-grid {
+    grid-template-areas:
+      "ops"
+      "config"
+      "events"
+      "detail";
+  }
+  .ai-page .ai-ops-content {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .ai-page .ai-ops-heading,
+  .ai-page .ai-ops-provider-card > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .ai-page .ai-ops-range {
+    justify-content: flex-start;
+  }
+  .ai-page .ai-ops-custom-range,
+  .ai-page .ai-ops-metrics,
+  .ai-page .ai-ops-providers,
+  .ai-page .ai-model-advanced-grid {
+    grid-template-columns: 1fr;
+  }
+}
 .ai-page .ai-dashboard-grid {
   grid-template-columns: minmax(380px, 420px) minmax(0, 1fr);
 }

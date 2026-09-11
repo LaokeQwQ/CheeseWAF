@@ -464,6 +464,14 @@ export type AIConfig = {
   api_key?: string;
   api_key_set: boolean;
   model: string;
+  invocation_model_name?: string;
+  display_model_name?: string;
+  context_window?: number;
+  reasoning_effort?: AIReasoningEffort;
+  model_list_path?: string;
+  balance_path?: string;
+  usage_path?: string;
+  configured_catalog?: AIModelCatalogEntry[];
   async: boolean;
   allow_private_api_base: boolean;
   assistant?: AIModelConfig;
@@ -478,7 +486,24 @@ export type AIModelConfig = {
   api_key?: string;
   api_key_set: boolean;
   model: string;
+  invocation_model_name?: string;
+  display_model_name?: string;
+  context_window?: number;
+  reasoning_effort?: AIReasoningEffort;
+  model_list_path?: string;
+  balance_path?: string;
+  usage_path?: string;
+  configured_catalog?: AIModelCatalogEntry[];
   allow_private_api_base: boolean;
+};
+
+export type AIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+
+export type AIModelCatalogEntry = {
+  id: string;
+  display_name?: string;
+  context_window?: number;
+  reasoning_efforts?: AIReasoningEffort[];
 };
 
 export type AISelfLearningConfig = {
@@ -504,6 +529,55 @@ export type AIModelInfo = {
   id: string;
   owned_by?: string;
   created?: number;
+  display_name?: string;
+  invocation_model_name?: string;
+  context_window?: number;
+  reasoning_efforts?: AIReasoningEffort[];
+};
+
+export type AIUsageBreakdown = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  call_count: number;
+};
+
+export type AIUsageSnapshot = AIUsageBreakdown & {
+  range: { start: string; end: string };
+  input_tokens_formatted: string;
+  output_tokens_formatted: string;
+  total_tokens_formatted: string;
+  by_provider?: Record<string, AIUsageBreakdown>;
+  by_model?: Record<string, AIUsageBreakdown>;
+};
+
+export type AIProviderBalance = {
+  available?: number;
+  used?: number;
+  limit?: number;
+  currency?: string;
+};
+
+export type AIProviderUsage = Partial<AIUsageBreakdown>;
+
+export type AIProviderOpsStatus = {
+  target: 'assistant' | 'reasoning' | string;
+  provider: string;
+  status: 'ready' | 'disabled' | 'degraded' | 'unavailable' | string;
+  display_model_name?: string;
+  invocation_model_name?: string;
+  context_window?: number;
+  reasoning_effort?: AIReasoningEffort;
+  balance_configured: boolean;
+  usage_configured: boolean;
+  balance?: AIProviderBalance;
+  provider_usage?: AIProviderUsage;
+  issue?: string;
+};
+
+export type AIProviderOpsResponse = {
+  items: AIProviderOpsStatus[];
+  total: number;
 };
 
 export type AISelfLearningReport = {
@@ -1065,6 +1139,7 @@ export type ManagementAPIToken = {
   last_used_at?: string;
   expires_at?: string;
   revoked_at?: string;
+  never_expire?: boolean;
 };
 
 export type ManagementAPIConfig = {
@@ -1085,6 +1160,9 @@ export type CreateManagementAPITokenRequest = {
   expires_at?: string;
   notes?: string;
   enabled?: boolean;
+  never_expire?: boolean;
+  confirm_never_expire?: boolean;
+  confirmation_id?: string;
 };
 
 export type CreateManagementAPITokenResponse = {

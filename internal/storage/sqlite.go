@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
@@ -36,7 +40,7 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON`); err != nil {
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA recursive_triggers = ON`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
@@ -49,6 +53,40 @@ func (s *SQLiteStore) MarkTOTPConsumed(ctx context.Context, userID string, count
 		created_at = excluded.created_at`,
 		userID, counter, expiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+// ConsumeTOTP atomically claims a TOTP counter. SQLite's single-statement
+// UPSERT is serialized by the database (and this store also uses one pooled
+// connection), so two independent store handles cannot both claim an active
+// counter. An expired row is replaced and can be claimed again.
+func (s *SQLiteStore) ConsumeTOTP(ctx context.Context, userID string, counter int64, expiresAt, now time.Time) (bool, error) {
+	if s == nil || s.db == nil || ctx == nil {
+		return false, errors.New("invalid sqlite store")
+	}
+	if userID == "" {
+		return false, errors.New("user id is required")
+	}
+	now = now.UTC()
+	expiresAt = expiresAt.UTC()
+	if expiresAt.IsZero() {
+		return false, errors.New("totp expiry is required")
+	}
+	if !expiresAt.After(now) {
+		return false, nil
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO totp_consumed(user_id, counter, expires_at, created_at) VALUES(?, ?, ?, ?)
+		ON CONFLICT(user_id, counter) DO UPDATE SET expires_at = excluded.expires_at,
+		created_at = excluded.created_at
+		WHERE julianday(totp_consumed.expires_at) <= julianday(excluded.created_at)`,
+		userID, counter, expiresAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
 }
 
 func (s *SQLiteStore) IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error) {
@@ -227,7 +265,7 @@ func (s *SQLiteStore) DeleteRule(ctx context.Context, id string) error {
 }
 
 func (s *SQLiteStore) GetUserByUsername(ctx context.Context, username string) (*User, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at FROM users WHERE username=?`, username)
+	row := s.db.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch FROM users WHERE username=?`, username)
 	user, err := scanUser(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -236,17 +274,186 @@ func (s *SQLiteStore) GetUserByUsername(ctx context.Context, username string) (*
 }
 
 func (s *SQLiteStore) CreateUser(ctx context.Context, user *User) error {
+	if user == nil {
+		return errors.New("user is nil")
+	}
+	if err := identity.ValidateUsername(user.Username); err != nil {
+		return err
+	}
 	ensureUser(user)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO users(id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
-		user.ID, user.Username, user.PasswordHash, user.Role, boolInt(user.TwoFAEnabled), user.TwoFASecret, formatTime(user.CreatedAt), formatTime(user.UpdatedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users(id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch) VALUES(?,?,?,?,?,?,?,?,?)`,
+		user.ID, user.Username, user.PasswordHash, user.Role, boolInt(user.TwoFAEnabled), user.TwoFASecret, formatTime(user.CreatedAt), formatTime(user.UpdatedAt), user.CredentialEpoch)
 	return err
 }
 
 func (s *SQLiteStore) UpdateUser(ctx context.Context, user *User) error {
-	user.UpdatedAt = time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET username=?,password_hash=?,role=?,two_fa_enabled=?,two_fa_secret=?,updated_at=? WHERE id=?`,
-		user.Username, user.PasswordHash, user.Role, boolInt(user.TwoFAEnabled), user.TwoFASecret, formatTime(user.UpdatedAt), user.ID)
-	return err
+	if user == nil {
+		return errors.New("user is nil")
+	}
+	if err := identity.ValidateUsername(user.Username); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var existing User
+	var twoFA int
+	var createdAt, updatedAt string
+	err = tx.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch FROM users WHERE id=?`, user.ID).Scan(&existing.ID, &existing.Username, &existing.PasswordHash, &existing.Role, &twoFA, &existing.TwoFASecret, &createdAt, &updatedAt, &existing.CredentialEpoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	}
+	if err != nil {
+		return err
+	}
+	existing.TwoFAEnabled = twoFA == 1
+	existing.CreatedAt = parseTime(createdAt)
+	existing.UpdatedAt = parseTime(updatedAt)
+	if user.CredentialEpoch != existing.CredentialEpoch {
+		return ErrCredentialEpochChanged
+	}
+	// A historical dirty account can only be repaired by the explicit
+	// RepairUserUsername transaction, which records a reason and audit event.
+	if err := identity.ValidateUsername(existing.Username); err != nil {
+		return err
+	}
+	securityChanged := existing.Username != user.Username || existing.PasswordHash != user.PasswordHash || existing.Role != user.Role || existing.TwoFAEnabled != user.TwoFAEnabled || existing.TwoFASecret != user.TwoFASecret
+	now := time.Now().UTC()
+	nextEpoch := existing.CredentialEpoch
+	if securityChanged {
+		if nextEpoch == ^uint64(0) {
+			return fmt.Errorf("%w: epoch exhausted", ErrCredentialEpochChanged)
+		}
+		nextEpoch++
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE users SET username=?,password_hash=?,role=?,two_fa_enabled=?,two_fa_secret=?,updated_at=?,credential_epoch=? WHERE id=? AND credential_epoch=?`,
+		user.Username, user.PasswordHash, user.Role, boolInt(user.TwoFAEnabled), user.TwoFASecret, formatTime(now), nextEpoch, user.ID, existing.CredentialEpoch)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return ErrCredentialEpochChanged
+	}
+	if securityChanged {
+		if _, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''`, formatOptionalTime(now), formatTime(now), user.ID); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	user.UpdatedAt = now
+	user.CredentialEpoch = nextEpoch
+	return nil
+}
+
+// RepairUserUsername repairs one historical non-canonical username selected by
+// immutable user ID. The rename, session revocation, and audit record commit as
+// one transaction so a partially repaired identity cannot become visible.
+func (s *SQLiteStore) RepairUserUsername(ctx context.Context, userID, newUsername, actor, reason string) (*UserUsernameRepair, error) {
+	if err := validateRepairIdentity("user ID", userID); err != nil {
+		return nil, err
+	}
+	if err := identity.ValidateUsername(newUsername); err != nil {
+		return nil, err
+	}
+	if err := validateRepairIdentity("repair actor", actor); err != nil {
+		return nil, err
+	}
+	if err := validateRepairReason(reason); err != nil {
+		return nil, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var oldUsername string
+	if err := tx.QueryRowContext(ctx, `SELECT username FROM users WHERE id=?`, userID).Scan(&oldUsername); errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("user ID %q not found", userID)
+	} else if err != nil {
+		return nil, err
+	}
+	if identity.ValidateUsername(oldUsername) == nil {
+		return nil, fmt.Errorf("username for user ID %q is already canonical; use user rename", userID)
+	}
+	var existingID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE username=?`, newUsername).Scan(&existingID); err == nil {
+		return nil, fmt.Errorf("user %q already exists", newUsername)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE users SET username=?,updated_at=? WHERE id=?`, newUsername, formatTime(now), userID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected != 1 {
+		return nil, fmt.Errorf("repair updated %d users, want 1", affected)
+	}
+
+	result, err = tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''`, formatOptionalTime(now), formatTime(now), userID)
+	if err != nil {
+		return nil, err
+	}
+	revoked, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	repair := &UserUsernameRepair{
+		ID:              uuid.NewString(),
+		UserID:          userID,
+		OldUsername:     oldUsername,
+		NewUsername:     newUsername,
+		Actor:           actor,
+		Reason:          reason,
+		RevokedSessions: revoked,
+		CreatedAt:       now,
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_username_repairs(id,user_id,old_username,new_username,actor,reason,revoked_sessions,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		repair.ID, repair.UserID, repair.OldUsername, repair.NewUsername, repair.Actor, repair.Reason, repair.RevokedSessions, formatTime(repair.CreatedAt)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return repair, nil
+}
+
+func validateRepairIdentity(field, value string) error {
+	if value == "" || strings.IndexFunc(value, func(r rune) bool { return r < '!' || r > '~' }) >= 0 {
+		return fmt.Errorf("%s must be non-empty and contain only visible ASCII characters without whitespace", field)
+	}
+	return nil
+}
+
+func validateRepairReason(reason string) error {
+	if !utf8.ValidString(reason) || strings.TrimSpace(reason) == "" {
+		return errors.New("repair reason is required and must be valid UTF-8")
+	}
+	runes := []rune(reason)
+	if len(runes) > 512 {
+		return errors.New("repair reason must contain at most 512 characters")
+	}
+	for _, r := range runes {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return errors.New("repair reason must not contain control or formatting characters")
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
@@ -255,7 +462,7 @@ func (s *SQLiteStore) DeleteUser(ctx context.Context, id string) error {
 }
 
 func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at FROM users ORDER BY username`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +479,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 func (s *SQLiteStore) GetUserByID(ctx context.Context, id string) (*User, error) {
-	user, err := scanUser(s.db.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at FROM users WHERE id=?`, id))
+	user, err := scanUser(s.db.QueryRowContext(ctx, `SELECT id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch FROM users WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -280,15 +487,40 @@ func (s *SQLiteStore) GetUserByID(ctx context.Context, id string) (*User, error)
 }
 
 func (s *SQLiteStore) CreateSession(ctx context.Context, session *Session) error {
+	if session == nil {
+		return errors.New("session is nil")
+	}
 	ensureSession(session)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		session.ID, session.UserID, session.Username, session.Role, formatTime(session.IssuedAt), formatTime(session.ExpiresAt), formatOptionalTime(session.RevokedAt), formatTime(session.CreatedAt), formatTime(session.UpdatedAt))
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var currentEpoch uint64
+	if err := tx.QueryRowContext(ctx, `SELECT credential_epoch FROM users WHERE id=?`, session.UserID).Scan(&currentEpoch); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return err
+	}
+	if session.CredentialEpoch != currentEpoch {
+		return ErrCredentialEpochChanged
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at,credential_epoch) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		session.ID, session.UserID, session.Username, session.Role, formatTime(session.IssuedAt), formatTime(session.ExpiresAt), formatOptionalTime(session.RevokedAt), formatTime(session.CreatedAt), formatTime(session.UpdatedAt), session.CredentialEpoch); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) RotateSession(ctx context.Context, oldID, userID string, next *Session) error {
 	if oldID == "" || userID == "" {
 		return fmt.Errorf("session id and user id are required")
+	}
+	if next == nil {
+		return errors.New("session is nil")
+	}
+	if next.UserID != userID {
+		return ErrCredentialEpochChanged
 	}
 	ensureSession(next)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -297,6 +529,15 @@ func (s *SQLiteStore) RotateSession(ctx context.Context, oldID, userID string, n
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
+	var currentEpoch uint64
+	if err := tx.QueryRowContext(ctx, `SELECT credential_epoch FROM users WHERE id=?`, userID).Scan(&currentEpoch); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return err
+	}
+	if next.CredentialEpoch != currentEpoch {
+		return ErrCredentialEpochChanged
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE id=? AND user_id=? AND revoked_at=''`,
 		formatOptionalTime(now), formatTime(now), oldID, userID)
 	if err != nil {
@@ -307,12 +548,19 @@ func (s *SQLiteStore) RotateSession(ctx context.Context, oldID, userID string, n
 		return err
 	}
 	if affected == 0 {
-		return fmt.Errorf("session is not active")
+		return ErrSessionNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		next.ID, next.UserID, next.Username, next.Role, formatTime(next.IssuedAt), formatTime(next.ExpiresAt), formatOptionalTime(next.RevokedAt), formatTime(next.CreatedAt), formatTime(next.UpdatedAt)); err != nil {
+	result, err = tx.ExecContext(ctx, `INSERT INTO admin_sessions(id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at,credential_epoch) SELECT ?,id,username,role,?,?,?,?,?,credential_epoch FROM users WHERE id=? AND username=? AND role=? AND credential_epoch=?`,
+		next.ID, formatTime(next.IssuedAt), formatTime(next.ExpiresAt), formatOptionalTime(next.RevokedAt), formatTime(next.CreatedAt), formatTime(next.UpdatedAt), userID, next.Username, next.Role, next.CredentialEpoch)
+	if err != nil {
 		return err
 	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return ErrCredentialEpochChanged
+	}
+	next.CredentialEpoch = currentEpoch
 	return tx.Commit()
 }
 
@@ -320,24 +568,74 @@ func (s *SQLiteStore) RevokeSession(ctx context.Context, id, userID string) erro
 	if id == "" || userID == "" {
 		return fmt.Errorf("session id and user id are required")
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id=?`, userID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE id=? AND user_id=? AND revoked_at=''`, formatOptionalTime(now), formatTime(now), id, userID)
-	return err
+	result, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE id=? AND user_id=? AND revoked_at=''`, formatOptionalTime(now), formatTime(now), id, userID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return ErrSessionNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) RevokeUserSessions(ctx context.Context, userID string, exceptID string) error {
 	if userID == "" {
 		return fmt.Errorf("user id is required")
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var currentEpoch uint64
+	if err := tx.QueryRowContext(ctx, `SELECT credential_epoch FROM users WHERE id=?`, userID).Scan(&currentEpoch); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return err
+	}
+	if currentEpoch == ^uint64(0) {
+		return fmt.Errorf("%w: epoch exhausted", ErrCredentialEpochChanged)
+	}
+	nextEpoch := currentEpoch + 1
 	now := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `UPDATE users SET credential_epoch=?,updated_at=? WHERE id=? AND credential_epoch=?`, nextEpoch, formatTime(now), userID, currentEpoch)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return ErrCredentialEpochChanged
+	}
 	query := `UPDATE admin_sessions SET revoked_at=?,updated_at=? WHERE user_id=? AND revoked_at=''`
 	args := []any{formatOptionalTime(now), formatTime(now), userID}
 	if exceptID != "" {
 		query += ` AND id<>?`
 		args = append(args, exceptID)
 	}
-	_, err := s.db.ExecContext(ctx, query, args...)
-	return err
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	if exceptID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET credential_epoch=?,updated_at=? WHERE id=? AND user_id=? AND revoked_at='' AND credential_epoch=?`, nextEpoch, formatTime(now), exceptID, userID, currentEpoch); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error) {
@@ -348,7 +646,7 @@ func (s *SQLiteStore) IsSessionActive(ctx context.Context, id, userID string, no
 		now = time.Now().UTC()
 	}
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM admin_sessions WHERE id=? AND user_id=? AND revoked_at='' AND expires_at>?`, id, userID, formatTime(now)).Scan(&count)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM admin_sessions AS s JOIN users AS u ON u.id=s.user_id AND u.username=s.username AND u.role=s.role AND u.credential_epoch=s.credential_epoch WHERE s.id=? AND s.user_id=? AND s.revoked_at='' AND s.expires_at>?`, id, userID, formatTime(now)).Scan(&count)
 	if err != nil {
 		return false, err
 	}
@@ -403,7 +701,7 @@ func scanUser(row scanner) (*User, error) {
 	var user User
 	var twoFA int
 	var createdAt, updatedAt string
-	if err := row.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &twoFA, &user.TwoFASecret, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &twoFA, &user.TwoFASecret, &createdAt, &updatedAt, &user.CredentialEpoch); err != nil {
 		return nil, err
 	}
 	user.TwoFAEnabled = twoFA == 1

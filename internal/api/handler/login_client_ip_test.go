@@ -66,6 +66,29 @@ func TestLoginRateLimitKeysIgnorePrivatePeerXFF(t *testing.T) {
 	}
 }
 
+func TestLoginRateLimitKeysPreserveUsernameIdentity(t *testing.T) {
+
+	t.Parallel()
+	r := &http.Request{Header: make(http.Header), RemoteAddr: "127.0.0.1:4444"}
+	canonical := loginRateLimitKeys(r, "admin", false)
+	spaced := loginRateLimitKeys(r, " admin ", false)
+	if slicesEqual(canonical, spaced) {
+		t.Fatalf("rate-limit keys must preserve distinct username input: canonical=%v spaced=%v", canonical, spaced)
+	}
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestTrustedLoginClientIPRejectsXFFWhenAdminPublic(t *testing.T) {
 	t.Parallel()
 	r := &http.Request{Header: make(http.Header), RemoteAddr: "127.0.0.1:54321"}

@@ -58,7 +58,7 @@ export default function SystemPage() {
   const setTheme = useAppStore((state) => state.setTheme);
   const setAiAssistantFabVisible = useAppStore((state) => state.setAiAssistantFabVisible);
   const setLanguage = useAppStore((state) => state.setLanguage);
-  const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
+  const [apiTokenDraft, setAPITokenDraft] = useState({ name: '', scopes: ['read:system'], ttl: '2160h', notes: '' });
   const [latestAPIToken, setLatestAPIToken] = useState('');
   const [revokeTokenId, setRevokeTokenId] = useState<string | null>(null);
   const [apiTokenPage, setAPITokenPage] = useState(0);
@@ -214,7 +214,7 @@ export default function SystemPage() {
     mutationFn: createManagementAPIToken,
     onSuccess: (result) => {
       setLatestAPIToken(result.token);
-      setAPITokenDraft({ name: '', scopes: ['read:system'], ttl: '720h', notes: '' });
+      setAPITokenDraft({ name: '', scopes: ['read:system'], ttl: '2160h', notes: '' });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
       queryClient.invalidateQueries({ queryKey: ['system'] });
       toast.success(t('system.apiTokenCreated'));
@@ -750,7 +750,7 @@ export default function SystemPage() {
                       <span>{t('system.apiTokenTTL')}</span>
                       <Select
                         value={apiTokenDraft.ttl === '' ? '__none__' : apiTokenDraft.ttl}
-                        onValueChange={(ttl) => setAPITokenDraft((draft) => ({ ...draft, ttl: ttl === '__none__' ? '' : ttl }))}
+                        onValueChange={(ttl) => setAPITokenDraft((draft) => ({ ...draft, ttl }))}
                       >
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -758,7 +758,9 @@ export default function SystemPage() {
                           <SelectItem value="24h">24h</SelectItem>
                           <SelectItem value="168h">7d</SelectItem>
                           <SelectItem value="720h">30d</SelectItem>
-                          <SelectItem value="__none__">{t('system.apiTokenNoExpiry')}</SelectItem>
+                          <SelectItem value="2160h">90d</SelectItem>
+                          <SelectItem value="8760h">365d</SelectItem>
+                          <SelectItem value="__none__" disabled>{t('system.apiTokenNoExpiryUnavailable')}</SelectItem>
                         </SelectContent>
                       </Select>
                     </label>

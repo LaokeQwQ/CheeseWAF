@@ -23,6 +23,7 @@ import { safeImageDataUri } from '../../features/captcha/protocol';
 import BrandLogo from '../../components/BrandLogo';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
+import { isCanonicalUsername, usernameValidationError } from '../../utils/username';
 import type {
   LoginCAPTCHAChallenge,
   LoginCAPTCHAPayload,
@@ -43,7 +44,6 @@ function isLanguage(value: unknown): value is Language {
 
 type CAPTCHAState = 'loading' | 'ready' | 'solving' | 'checking' | 'verified' | 'invalid' | 'disabled' | 'error';
 type LoginCAPTCHAMode = 'slider' | 'pow';
-const LOGIN_USERNAME_MIN_LENGTH = 3;
 const CAPTCHA_USERNAME_DEBOUNCE_MS = 300;
 const CAPTCHA_RETRY_DELAY_MS = 1000;
 const CAPTCHA_RETRY_MAX_FAILURES = 4;
@@ -414,8 +414,11 @@ export default function LoginPage() {
     setSuccess('');
     try {
       const submittedUsername = normalizeLoginUsername(username);
-      if (!isLoginUsernameReady(submittedUsername)) {
-        setError(localizedLoginText(t, 'login.usernameRequired', 'Enter a valid username.'));
+      const usernameIssue = usernameValidationError(submittedUsername);
+      if (usernameIssue) {
+        setError(usernameIssue === 'whitespace'
+          ? localizedLoginText(t, 'login.usernameWhitespace', 'Username must not contain whitespace or invisible characters. Re-enter it without them.')
+          : localizedLoginText(t, usernameIssue === 'required' ? 'login.usernameRequired' : 'login.usernameInvalid', 'Enter a valid username.'));
         return;
       }
       if (!password) {
@@ -1337,12 +1340,11 @@ function yieldToBrowser(signal?: AbortSignal) {
 }
 
 function normalizeLoginUsername(value: string) {
-  return value.trim();
+  return value;
 }
 
 function isLoginUsernameReady(value: string) {
-  const normalized = normalizeLoginUsername(value);
-  return normalized.length >= LOGIN_USERNAME_MIN_LENGTH && normalized.length <= 128 && !/[\u0000-\u001f\u007f]/.test(normalized);
+  return isCanonicalUsername(value);
 }
 
 function localizedLoginText(t: TFunction, key: string, fallback: string) {

@@ -36,7 +36,7 @@
 | `CHEESEWAF_GO_IMAGE` / `CHEESEWAF_NODE_IMAGE` / `CHEESEWAF_RUNTIME_IMAGE` | `scripts/ci/docker-build.sh` | 各构建阶段基础镜像覆盖 |
 | `CHEESEWAF_SKIP_OUTBOUND_TLS` | `scripts/ci/docker-build.sh` | 置为 `1` 则跳过容器出站 HTTPS 检查，默认 `0` |
 | `CHEESEWAF_OUTBOUND_TLS_URL` | `scripts/ci/docker-build.sh` | 出站 HTTPS 检查 URL，默认 `https://example.com` |
-| `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认 `0.1.0` |
+| `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认 `0.3.9` |
 | `CHEESEWAF_REF_NAME` / `CHEESEWAF_COMMIT` / `CHEESEWAF_RUN_NUMBER` / `CHEESEWAF_BUILD_TIME` | `scripts/ci/package-release.sh`、`.github/workflows/ci.yml`、`.forgejo/workflows/ci.yml` | 发布元数据（分支/提交/构建号/时间） |
 | `CHEESEWAF_RELEASE_DIR` / `CHEESEWAF_RELEASE_WORK_DIR` / `CHEESEWAF_TARGETS` | `scripts/ci/package-release.sh`、CI workflows | 发布输出目录、工作目录与目标平台列表 |
 | `CHEESEWAF_SETUP_TOKEN` | `scripts/ci/docker-build.sh`、`scripts/ci/verify-ci-static.sh` | CI 冒烟/静态验证时固定首次安装令牌（运行时同名字段见上表） |

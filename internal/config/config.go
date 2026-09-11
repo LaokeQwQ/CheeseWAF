@@ -179,8 +179,18 @@ type InterconnectConfig struct {
 }
 
 type ConsensusConfig struct {
-	Provider      string   `yaml:"provider" json:"provider"`
-	EtcdEndpoints []string `yaml:"etcd_endpoints" json:"etcd_endpoints"`
+	Provider      string           `yaml:"provider" json:"provider"`
+	EtcdEndpoints []string         `yaml:"etcd_endpoints" json:"etcd_endpoints"`
+	NativeRaft    NativeRaftConfig `yaml:"native_raft" json:"native_raft"`
+}
+
+// NativeRaftConfig contains the explicit local native-raft process settings
+// used by the production serve startup unit. The mode is intentionally not
+// inferred: bootstrap and join have different safety properties.
+type NativeRaftConfig struct {
+	DataDir string `yaml:"data_dir" json:"data_dir"`
+	Listen  string `yaml:"listen" json:"listen"`
+	Mode    string `yaml:"mode" json:"mode"`
 }
 
 type JoinConfig struct {
@@ -783,12 +793,29 @@ type CompressionPolicyConfig struct {
 }
 
 type StorageConfig struct {
-	SQLite        SQLiteConfig        `yaml:"sqlite" json:"sqlite"`
-	Redis         RedisConfig         `yaml:"redis" json:"redis"`
-	ClickHouse    ClickHouseConfig    `yaml:"clickhouse" json:"clickhouse"`
-	VictoriaLogs  VictoriaLogsConfig  `yaml:"victorialogs" json:"victorialogs"`
-	PostgreSQL    PostgreSQLConfig    `yaml:"postgresql" json:"postgresql"`
-	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch" json:"elasticsearch"`
+	Profile              string                     `yaml:"profile" json:"profile"`
+	ManagementPostgreSQL ManagementPostgreSQLConfig `yaml:"management_postgresql" json:"management_postgresql"`
+	ControlPostgreSQL    ManagementPostgreSQLConfig `yaml:"control_postgresql" json:"control_postgresql"`
+	SQLite               SQLiteConfig               `yaml:"sqlite" json:"sqlite"`
+	Redis                RedisConfig                `yaml:"redis" json:"redis"`
+	ClickHouse           ClickHouseConfig           `yaml:"clickhouse" json:"clickhouse"`
+	VictoriaLogs         VictoriaLogsConfig         `yaml:"victorialogs" json:"victorialogs"`
+	PostgreSQL           PostgreSQLConfig           `yaml:"postgresql" json:"postgresql"`
+	Elasticsearch        ElasticsearchConfig        `yaml:"elasticsearch" json:"elasticsearch"`
+}
+
+const (
+	StorageProfileTemporary  = "temporary"
+	StorageProfileProduction = "production"
+)
+
+// ManagementPostgreSQLConfig belongs to the durable management/control plane.
+// It is intentionally separate from PostgreSQLConfig, which configures the
+// asynchronous access-log sink. The DSN is persisted to YAML but never exposed
+// through the JSON configuration API.
+type ManagementPostgreSQLConfig struct {
+	DSN     string        `yaml:"dsn" json:"-"`
+	Timeout time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type SQLiteConfig struct {
@@ -796,8 +823,9 @@ type SQLiteConfig struct {
 }
 
 type RedisConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Address string `yaml:"address" json:"address"`
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	Address    string `yaml:"address" json:"address"`
+	InstanceID string `yaml:"instance_id" json:"instance_id"`
 }
 
 type ClickHouseConfig struct {
@@ -876,30 +904,56 @@ type ACMEDNSProviderConfig struct {
 }
 
 type AIConfig struct {
-	Enabled             bool                 `yaml:"enabled" json:"enabled"`
-	Provider            string               `yaml:"provider" json:"provider"`
-	APIBase             string               `yaml:"api_base" json:"api_base"`
-	APIKey              string               `yaml:"api_key" json:"api_key"`
-	APIKeyHeader        string               `yaml:"api_key_header" json:"api_key_header"`
-	Model               string               `yaml:"model" json:"model"`
-	MaxTokens           int                  `yaml:"max_tokens" json:"max_tokens"`
-	Async               bool                 `yaml:"async" json:"async"`
-	AllowPrivateAPIBase bool                 `yaml:"allow_private_api_base" json:"allow_private_api_base"`
-	Assistant           AIModelConfig        `yaml:"assistant" json:"assistant"`
-	Reasoning           AIModelConfig        `yaml:"reasoning" json:"reasoning"`
-	SelfLearning        AISelfLearningConfig `yaml:"self_learning" json:"self_learning"`
-	Knowledge           AIKnowledgeConfig    `yaml:"knowledge" json:"knowledge"`
+	Enabled             bool                  `yaml:"enabled" json:"enabled"`
+	Provider            string                `yaml:"provider" json:"provider"`
+	APIBase             string                `yaml:"api_base" json:"api_base"`
+	APIKey              string                `yaml:"api_key" json:"api_key"`
+	APIKeyHeader        string                `yaml:"api_key_header" json:"api_key_header"`
+	Model               string                `yaml:"model" json:"model"`
+	InvocationModelName string                `yaml:"invocation_model_name" json:"invocation_model_name"`
+	DisplayModelName    string                `yaml:"display_model_name" json:"display_model_name"`
+	ContextWindow       int                   `yaml:"context_window" json:"context_window"`
+	ReasoningEffort     string                `yaml:"reasoning_effort" json:"reasoning_effort"`
+	MaxTokens           int                   `yaml:"max_tokens" json:"max_tokens"`
+	Async               bool                  `yaml:"async" json:"async"`
+	AllowPrivateAPIBase bool                  `yaml:"allow_private_api_base" json:"allow_private_api_base"`
+	ModelListPath       string                `yaml:"model_list_path" json:"model_list_path"`
+	BalancePath         string                `yaml:"balance_path" json:"balance_path"`
+	UsagePath           string                `yaml:"usage_path" json:"usage_path"`
+	ConfiguredCatalog   []AIModelCatalogEntry `yaml:"configured_catalog" json:"configured_catalog"`
+	Assistant           AIModelConfig         `yaml:"assistant" json:"assistant"`
+	Reasoning           AIModelConfig         `yaml:"reasoning" json:"reasoning"`
+	SelfLearning        AISelfLearningConfig  `yaml:"self_learning" json:"self_learning"`
+	Knowledge           AIKnowledgeConfig     `yaml:"knowledge" json:"knowledge"`
 }
 
 type AIModelConfig struct {
-	Provider               string `yaml:"provider" json:"provider"`
-	APIBase                string `yaml:"api_base" json:"api_base"`
-	APIKey                 string `yaml:"api_key" json:"api_key"`
-	APIKeyHeader           string `yaml:"api_key_header" json:"api_key_header"`
-	Model                  string `yaml:"model" json:"model"`
-	MaxTokens              int    `yaml:"max_tokens" json:"max_tokens"`
-	AllowPrivateAPIBase    bool   `yaml:"allow_private_api_base" json:"allow_private_api_base"`
-	AllowPrivateAPIBaseSet bool   `yaml:"-" json:"-"`
+	Provider               string                `yaml:"provider" json:"provider"`
+	APIBase                string                `yaml:"api_base" json:"api_base"`
+	APIKey                 string                `yaml:"api_key" json:"api_key"`
+	APIKeyHeader           string                `yaml:"api_key_header" json:"api_key_header"`
+	Model                  string                `yaml:"model" json:"model"`
+	InvocationModelName    string                `yaml:"invocation_model_name" json:"invocation_model_name"`
+	DisplayModelName       string                `yaml:"display_model_name" json:"display_model_name"`
+	ContextWindow          int                   `yaml:"context_window" json:"context_window"`
+	ReasoningEffort        string                `yaml:"reasoning_effort" json:"reasoning_effort"`
+	MaxTokens              int                   `yaml:"max_tokens" json:"max_tokens"`
+	AllowPrivateAPIBase    bool                  `yaml:"allow_private_api_base" json:"allow_private_api_base"`
+	AllowPrivateAPIBaseSet bool                  `yaml:"-" json:"-"`
+	ModelListPath          string                `yaml:"model_list_path" json:"model_list_path"`
+	BalancePath            string                `yaml:"balance_path" json:"balance_path"`
+	UsagePath              string                `yaml:"usage_path" json:"usage_path"`
+	ConfiguredCatalog      []AIModelCatalogEntry `yaml:"configured_catalog" json:"configured_catalog"`
+}
+
+// AIModelCatalogEntry is an operator-supplied model record used when a
+// provider does not expose a safe model-discovery endpoint. IDs are always
+// explicit; the runtime never invents model names from provider defaults.
+type AIModelCatalogEntry struct {
+	ID               string   `yaml:"id" json:"id"`
+	DisplayName      string   `yaml:"display_name" json:"display_name"`
+	ContextWindow    int      `yaml:"context_window" json:"context_window"`
+	ReasoningEfforts []string `yaml:"reasoning_efforts" json:"reasoning_efforts"`
 }
 
 type AISelfLearningConfig struct {
@@ -940,8 +994,16 @@ func (cfg AIConfig) legacyModelConfig() AIModelConfig {
 		APIKey:              cfg.APIKey,
 		APIKeyHeader:        cfg.APIKeyHeader,
 		Model:               cfg.Model,
+		InvocationModelName: cfg.InvocationModelName,
+		DisplayModelName:    cfg.DisplayModelName,
+		ContextWindow:       cfg.ContextWindow,
+		ReasoningEffort:     cfg.ReasoningEffort,
 		MaxTokens:           cfg.MaxTokens,
 		AllowPrivateAPIBase: cfg.AllowPrivateAPIBase,
+		ModelListPath:       cfg.ModelListPath,
+		BalancePath:         cfg.BalancePath,
+		UsagePath:           cfg.UsagePath,
+		ConfiguredCatalog:   append([]AIModelCatalogEntry(nil), cfg.ConfiguredCatalog...),
 	}
 }
 
@@ -950,6 +1012,7 @@ func (cfg AIConfig) RuntimeModelConfig() AIModelConfig {
 }
 
 func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) AIConfig {
+	hasOwnModelIdentity := strings.TrimSpace(model.Model) != "" || strings.TrimSpace(model.InvocationModelName) != ""
 	if strings.TrimSpace(model.Provider) == "" {
 		model.Provider = fallback.Provider
 	}
@@ -962,8 +1025,42 @@ func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) A
 	if strings.TrimSpace(model.APIKeyHeader) == "" {
 		model.APIKeyHeader = fallback.APIKeyHeader
 	}
+	if strings.TrimSpace(model.InvocationModelName) == "" {
+		model.InvocationModelName = model.Model
+	}
+	if strings.TrimSpace(model.InvocationModelName) == "" {
+		model.InvocationModelName = firstNonEmptyString(fallback.InvocationModelName, fallback.Model)
+	}
 	if strings.TrimSpace(model.Model) == "" {
-		model.Model = fallback.Model
+		model.Model = model.InvocationModelName
+	}
+	if strings.TrimSpace(model.DisplayModelName) == "" {
+		if hasOwnModelIdentity {
+			model.DisplayModelName = model.InvocationModelName
+		} else {
+			model.DisplayModelName = fallback.DisplayModelName
+		}
+	}
+	if strings.TrimSpace(model.DisplayModelName) == "" {
+		model.DisplayModelName = model.InvocationModelName
+	}
+	if model.ContextWindow == 0 {
+		model.ContextWindow = fallback.ContextWindow
+	}
+	if strings.TrimSpace(model.ReasoningEffort) == "" {
+		model.ReasoningEffort = fallback.ReasoningEffort
+	}
+	if strings.TrimSpace(model.ModelListPath) == "" {
+		model.ModelListPath = fallback.ModelListPath
+	}
+	if strings.TrimSpace(model.BalancePath) == "" {
+		model.BalancePath = fallback.BalancePath
+	}
+	if strings.TrimSpace(model.UsagePath) == "" {
+		model.UsagePath = fallback.UsagePath
+	}
+	if len(model.ConfiguredCatalog) == 0 {
+		model.ConfiguredCatalog = append([]AIModelCatalogEntry(nil), fallback.ConfiguredCatalog...)
 	}
 	if model.MaxTokens == 0 {
 		model.MaxTokens = fallback.MaxTokens
@@ -976,10 +1073,27 @@ func (cfg AIConfig) runtimeConfig(model AIModelConfig, fallback AIModelConfig) A
 	next.APIBase = model.APIBase
 	next.APIKey = model.APIKey
 	next.APIKeyHeader = model.APIKeyHeader
-	next.Model = model.Model
+	next.Model = model.InvocationModelName
+	next.InvocationModelName = model.InvocationModelName
+	next.DisplayModelName = model.DisplayModelName
+	next.ContextWindow = model.ContextWindow
+	next.ReasoningEffort = model.ReasoningEffort
 	next.MaxTokens = model.MaxTokens
 	next.AllowPrivateAPIBase = model.AllowPrivateAPIBase
+	next.ModelListPath = model.ModelListPath
+	next.BalancePath = model.BalancePath
+	next.UsagePath = model.UsagePath
+	next.ConfiguredCatalog = append([]AIModelCatalogEntry(nil), model.ConfiguredCatalog...)
 	return next
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (model AIModelConfig) isZero() bool {
@@ -988,6 +1102,14 @@ func (model AIModelConfig) isZero() bool {
 		strings.TrimSpace(model.APIKey) == "" &&
 		strings.TrimSpace(model.APIKeyHeader) == "" &&
 		strings.TrimSpace(model.Model) == "" &&
+		strings.TrimSpace(model.InvocationModelName) == "" &&
+		strings.TrimSpace(model.DisplayModelName) == "" &&
+		model.ContextWindow == 0 &&
+		strings.TrimSpace(model.ReasoningEffort) == "" &&
+		strings.TrimSpace(model.ModelListPath) == "" &&
+		strings.TrimSpace(model.BalancePath) == "" &&
+		strings.TrimSpace(model.UsagePath) == "" &&
+		len(model.ConfiguredCatalog) == 0 &&
 		!model.AllowPrivateAPIBase &&
 		model.MaxTokens == 0
 }
@@ -1118,18 +1240,22 @@ const (
 )
 
 type ManagementAPITokenConfig struct {
-	ID         string    `yaml:"id" json:"id"`
-	Name       string    `yaml:"name" json:"name"`
-	Prefix     string    `yaml:"prefix" json:"prefix"`
-	Hash       string    `yaml:"hash" json:"hash,omitempty"`
-	Scopes     []string  `yaml:"scopes" json:"scopes"`
-	Notes      string    `yaml:"notes" json:"notes,omitempty"`
-	Enabled    bool      `yaml:"enabled" json:"enabled"`
-	CreatedAt  time.Time `yaml:"created_at" json:"created_at,omitempty"`
-	UpdatedAt  time.Time `yaml:"updated_at" json:"updated_at,omitempty"`
-	LastUsedAt time.Time `yaml:"last_used_at" json:"last_used_at,omitempty"`
-	ExpiresAt  time.Time `yaml:"expires_at" json:"expires_at,omitempty"`
-	RevokedAt  time.Time `yaml:"revoked_at" json:"revoked_at,omitempty"`
+	ID      string   `yaml:"id" json:"id"`
+	Name    string   `yaml:"name" json:"name"`
+	Prefix  string   `yaml:"prefix" json:"prefix"`
+	Hash    string   `yaml:"hash" json:"hash,omitempty"`
+	Scopes  []string `yaml:"scopes" json:"scopes"`
+	Notes   string   `yaml:"notes" json:"notes,omitempty"`
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	// NeverExpire is explicit metadata for newly-issued non-expiring tokens.
+	// A zero ExpiresAt without this flag remains accepted for legacy configs so
+	// an upgrade does not silently invalidate existing credentials.
+	NeverExpire bool      `yaml:"never_expire,omitempty" json:"never_expire,omitempty"`
+	CreatedAt   time.Time `yaml:"created_at" json:"created_at,omitempty"`
+	UpdatedAt   time.Time `yaml:"updated_at" json:"updated_at,omitempty"`
+	LastUsedAt  time.Time `yaml:"last_used_at" json:"last_used_at,omitempty"`
+	ExpiresAt   time.Time `yaml:"expires_at" json:"expires_at,omitempty"`
+	RevokedAt   time.Time `yaml:"revoked_at" json:"revoked_at,omitempty"`
 }
 
 type APIDiscoveryConfig struct {

@@ -60,18 +60,18 @@ CheeseWAF 采用分层处理方案：
 2. **异步复核（ALAP 机制）**：**ALAP（AI Large-Language-Model Auto Pilot，大语言模型自动值守）** 在请求响应返回客户端后，将可疑、边界模糊或带有攻击特征的样本放入后台队列，由大语言模型异步深度审查，全程自动值守，不占用业务转发延迟。
 3. **动态规则生成**：在站点开启自动采纳后，大模型复核判定为高危（`high` 或 `critical`）的样本可沉淀为该站点的长期自定义载荷规则，反哺数据平面进行拦截。全局 IP 黑名单与客户端指纹封禁仍需操作者明确执行。
 
-系统以单个静态二进制程序交付，内置响应式 Web 控制台、命令行 TUI 工具与 RESTful 管理 API，无需安装外部复杂中间件即可独立运行。
+主 `cheesewaf serve` 当前可运行的管理存储配置仍是 `storage.profile: temporary`，管理状态保存在内置 SQLite 中。主 WAF 的 `storage.profile: production` 即使填写独立 DSN，也会在完整管理存储、控制面、Redis、审批和数据面启动链路接好前以 `ErrProductionStorageUnavailable` 失败。现在已有独立的 `cheesewaf-control` 进程：它可以使用控制面 PostgreSQL 表和 native-raft 提供 loopback 健康、就绪和状态接口，但不能替代主 WAF 的完整管理存储，也不会让主 WAF 自动进入生产就绪状态。`storage.postgresql` 仅用于可选的异步访问日志 Sink；Redis 尚未接入 Bot 挑战后端。主 WAF 的集群协调仍只有单节点 `builtin` 路径；选择 `etcd` 仍会 fail-closed，因为当前没有 etcd 协调器。`internal/crp` 已提供离线验签、本地暂存和 sidecar 激活服务，但主 WAF 的 CLI、商店、OTA 和安装生命周期尚未挂载；`internal/cwedp` 已有 pull transport 适配器，持久租约、审计和集群编排仍需接线。`cheesewaf temporary-online probe` 已提供显式本地、一次性的 HTTPS broker：它要求管理员密码复核、直接 IP 的 TLS pin 和耐久元数据审计；它不会由 `serve` 启动，也尚未接入 CWEDP 或控制面。
 
 ---
 
 ## 功能列表
 
 - **语义分析检测**：通过多阶段解码与语法树评估识别 SQL 注入、XSS、命令执行等攻击，不依赖庞大且脆弱的正则表达式。
-- **ALAP 异步审查**：支持对接任意兼容 OpenAI 协议的大模型接口或私有模型，后台异步运行，不阻塞线上请求。
+- **ALAP 异步审查**：后台异步调用配置的 OpenAI 或 Anthropic 兼容接口，不阻塞线上请求；私有/本地模型地址必须显式开启 `allow_private_api_base`。
 - **0～5 级防护策略**：支持针对站点分别配置防护级别，区分独立攻击载荷与长文本中夹杂的特征，支持基于时间的临时升档（`promote_seconds`）。
 - **访问控制与防刷**：内置 IP 黑白名单、地理位置封禁、客户端软指纹识别、滑动验证码挑战、分片滑动窗口限流与排队等待室。
 - **三端统一管理**：Web 控制台（桌面与移动端自适应）、终端交互工具（`waf-cli`）与 RESTful API 共享同一套权限体系、会话管理与审计日志。
-- **轻量独立交付**：纯 Go 语言编写，内置 SQLite 存储（无 CGO 依赖），支持单机运行与容器化编排。
+- **当前存储边界**：主 WAF 的 `storage.profile: temporary` 使用 SQLite 保存管理状态；主 WAF 的 `production` profile 在完整启动链路完成前继续拒绝。独立 `cheesewaf-control` 可使用控制面 PostgreSQL 和 native-raft 提供状态服务，但不等于主 WAF 的生产管理存储已接通。`storage.postgresql` 仍是可选日志 Sink；配置校验会拒绝 Redis Bot 挑战后端。builtin 集群路径仅限单节点，etcd 仍保持 fail-closed。
 
 ---
 
@@ -109,7 +109,7 @@ flowchart TB
 | :--- | :--- | :--- |
 | **数据平面** | `http://127.0.0.1:8080` | 接收 Web 业务流量并执行安全检测与反向代理 |
 | **管理平面** | `http://127.0.0.1:9443` | 承载 Web 控制台、REST API 与初始化向导（Docker 默认为 HTTPS） |
-| **集群平面** | `https://127.0.0.1:9444` | 用于节点身份、健康/心跳、拓扑与编排的 TLS/mTLS 互联，不是通用站点/策略状态复制通道 |
+| **集群平面** | `https://127.0.0.1:9444` | `cluster.enabled: true` 时启用的可选 TLS/mTLS 节点互联，只处理健康、心跳、拓扑与编排钩子，不负责站点/策略复制 |
 
 ---
 
@@ -144,14 +144,27 @@ flowchart TB
 | **5** | 高敏感严格 | **当场阻断** | **当场阻断**，异步复核 | 不适用（已是最高） | 核心支付网关、管理后台，或遭受高频定向攻击期间的紧急防御。 |
 
 > **补充说明：**
-> 1. **临时升档（`promote_seconds`）**：在等级 4 下，若检测到夹杂攻击，站点可在指定窗口期内（如 300 秒）临时按等级 5 严格阻断夹杂特征。升档截止时间持久化在 SQLite 中，服务重启依然生效。
+> 1. **临时升档（`promote_seconds`）**：在等级 4 下，若检测到夹杂攻击，站点可在指定窗口期内（如 300 秒）临时按等级 5 严格阻断夹杂特征。当前运行时把截止时间保存在 SQLite 中，服务重启后仍生效。
 > 2. **等级 5 拦截约束**：在等级 5 被阻断的样本依然会进入待确认队列供模型审计（标记为 `blocked`），但不可直接改为放行，仅支持一键沉淀为长期封禁规则（同类特征、URL、IP、客户端指纹）。
+
+---
+
+## 首次安装的资源建议
+
+初始化向导会先运行最长 30 秒的本机探测，再给出硬件档位建议。档位判断使用逻辑核数、可见内存和 8 MiB 顺序写入测试：
+
+- **轻量（`low`）**：逻辑核数不超过 2、内存不超过 2048 MB，或磁盘写入测试未通过。2 核 / 2 GB 主机应使用此档位。
+- **均衡（`medium`）**：至少 3 个逻辑核、至少 4096 MB 内存，且磁盘写入测试通过。
+- **强力（`high`）**：至少 4 个逻辑核、至少 8192 MB 内存，且顺序写入速度至少为 50 MB/s。
+- **智能自适应（`smart`）**：手动选择的配置档，不是硬件探测的固定结果。探测未完成或请求失败时，向导会推荐 `low`。
+
+档位只会应用当前配置中已有的防护级别和默认限流请求数。向导不会把尚未接入运行时的性能字段写入配置。
 
 ---
 
 ## 部署方式
 
-CheeseWAF 针对不同基础设施环境提供三种独立的部署方式。
+CheeseWAF 针对不同基础设施环境提供四种独立的部署方式。
 
 ### 1. Linux 部署（Systemd 生产运行）
 
@@ -195,7 +208,9 @@ sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
 sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 sudo cp -R web/dist/. /usr/share/cheesewaf/web/
-sudo cp configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+# 将版本库模板复制到 systemd 使用的专用运行时路径。
+# 后续只编辑 /etc/cheesewaf/cheesewaf.yaml，不要把初始化状态写回 configs/。
+sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
@@ -221,7 +236,7 @@ sudo systemctl status cheesewaf
 
 systemd 单元保留 `ProtectSystem=strict`，但只允许服务写入 `/etc/cheesewaf`、`/var/lib/cheesewaf` 和 `/var/log/cheesewaf`。这样管理 API 可以保存已校验的配置修改，其他系统目录仍保持只读。
 
-默认管理口只听 `127.0.0.1:9443`。在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。所有初始化修改（包括回环请求）都必须提供 `X-CheeseWAF-Setup-Token`；请使用启动日志或受保护的 `/var/lib/cheesewaf/setup.url` 片段中的令牌（也可设置 `CHEESEWAF_SETUP_TOKEN`）。初始化明确选择对外管理策略之前，远程 `SERVER_IP:9443` 不会开放。
+默认管理口只听 `127.0.0.1:9443`。请在本机（或 SSH 隧道里）打开 `http://127.0.0.1:9443/setup`。所有初始化修改（包括回环请求）都必须提供 `X-CheeseWAF-Setup-Token`；请从受保护的运行时 `setup.url` 文件读取一次性完整地址，也可以在启动前设置 `CHEESEWAF_SETUP_TOKEN`。启动日志只显示基础地址、文件路径和不含秘密的回执，不显示令牌。初始化明确选择对外管理策略之前，远程 `SERVER_IP:9443` 不会开放。
 
 `GET /api/setup` 会返回 405。查是否还要初始化用 `GET /api/setup/status`。完成初始化是带 `X-CheeseWAF-Setup-Token` 的 `POST /api/setup`。从别的机器用 API 登录仍要过控制台验证码；本机回环地址不用。
 
@@ -281,8 +296,10 @@ docker compose logs -f cheesewaf
 #### 步骤 3：访问管理端
 
 - 在 Docker 宿主机访问 `https://127.0.0.1:9443/setup` 进行初始化设置（容器环境默认使用自签名证书）。从其他机器访问时，先执行 `ssh -N -L 9443:127.0.0.1:9443 <用户>@<服务器>` 建立隧道，再访问同一回环地址；只有在明确修改绑定并配置访问控制后才使用远程地址。
-- 首次初始化所需的令牌可在启动日志中获取。
+- 首次初始化所需的一次性地址保存在受保护的运行时 `setup.url` 文件中；启动日志只显示文件路径和不含秘密的回执。
 - 业务数据保存在 `cheesewaf-data` 卷中，执行 `docker compose down` 不会丢失配置数据。
+
+管理员用户名按输入内容精确保存。服务端会拒绝前后或中间的空白、控制字符、不可见字符和非 ASCII 字符，不会自动去空格或改成小写。旧数据库如果已有不符合规则的用户名，普通用户修改和重新初始化都不能悄悄修复。请先核对不可变用户 ID，再执行 `cheesewaf user repair-username USER_ID NEW_USERNAME --reason "repair historical username"`，之后使用新的完整用户名登录。
 
 ---
 
@@ -349,8 +366,9 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 ### 1. 初始化系统
 
 服务启动后，在浏览器中打开初始化地址：
-- 访问 `http://127.0.0.1:9443/setup`（Docker 环境为 `https://127.0.0.1:9443/setup`）。
-- 创建超级管理员账号，并妥善保存系统生成的密钥凭据。
+- 优先从受保护的运行时 `setup.url` 文件复制并打开一次性完整地址（形如 `http://127.0.0.1:9443/setup#setup_token=...`；Docker 使用 `https://127.0.0.1:9443/setup#setup_token=...`）。向导会读取 fragment，并立即从地址栏清除它，再通过 `X-CheeseWAF-Setup-Token` Header 发送。
+- 如果直接打开裸 `/setup`，页面会提供手动 Token 兜底输入。请从受保护的 `setup.url` 文件复制 Token；提交后输入框会清空，Token 只保留在页面内存中。不要把 Token 放入查询参数或提交到截图、工单和日志。
+- 创建超级管理员账号。请保存管理员密码，并保护好运行时配置和证书备份；当前初始化向导不会展示或导出可携带的系统主密钥。
 
 ### 2. 添加反向代理站点
 
@@ -363,9 +381,9 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 ### 3. 配置大模型接入（ALAP）
 
 在控制台中进入 **AI 设置**：
-1. **接口地址**：填写大模型服务的 API Endpoint（如 `https://api.openai.com/v1`）。
+1. **接口地址**：填写 `ai.api_base` 对应的大模型 API Endpoint（如 `https://api.openai.com/v1`）。旧键 `ai.base_url` 不会被当前版本读取。
 2. **认证信息**：填入 API Key 并指定模型名称。
-3. **自动采纳**：开启后，大模型判定为高危的样本将自动生成拦截规则。
+3. **自动采纳**：这是站点级开关 `sites[].waf.semantic_policy.auto_agree`，开启后才会将高置信度高危研判沉淀为该站点规则；旧键 `ai.auto_agree` 不会生效。
 
 ---
 
@@ -448,13 +466,67 @@ waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --form
 | **核心转发** | Go 1.26、`chi` 路由、quic-go（支持 HTTP/3） |
 | **检测引擎** | 进程内 AST 语法分析器、客户端软指纹、分片滑动窗口限流算法 |
 | **异步审查** | 内存与持久化队列、标准 Chat Completions / Messages 协议适配 |
-| **数据存储** | 内嵌 SQLite（`modernc.org/sqlite`，纯 Go 实现）、支持对接 PostgreSQL |
+| **数据存储** | `storage.profile: temporary` 使用内置 SQLite 管理主存储；可选 `storage.postgresql` 访问日志 Sink；Redis Bot 挑战后端当前不可用；集群当前仅有 builtin 单节点路径，etcd/native-raft 协调器尚未接线 |
 | **前端架构** | React 18、TypeScript、Vite、Tailwind CSS、shadcn/ui、TanStack Query |
 | **终端工具** | Cobra 命令行库、Bubble Tea 终端 UI 框架 |
 
 ---
 
+## 生产构建约束
+
+前端依赖 `@agent-eyes/agent-eyes`、code-inspector、`codex-acp` 及相关布局检查脚本只允许本地开发和测试使用，禁止进入生产 JavaScript、发布包、Docker 运行时镜像或运行时依赖。生产构建统一使用 `bash scripts/ci/build-web.sh`；该脚本会跳过依赖生命周期脚本、设置 `CHEESEWAF_AGENT_EYES=0`，并在产物中发现 Agent 工具标记时失败。
+
+---
+
 ## 开发与测试
+
+### 离线验证 CRP
+
+验证本地 `.crp` ZIP 包，不安装、不激活、也不联网。必须显式提供 JSON 信任根、来源注册表和确定性的 `--now`：
+
+```bash
+cheesewaf crp verify --package ./plugin.crp --trust-roots ./trust-roots.json --sources ./sources.json --now 2026-09-06T12:00:00Z
+```
+
+命令只输出 manifest identity、签名状态和 artifact 大小。
+
+### 离线暂存 CRP
+
+验签后，可以把可信包写入明确指定的本地 staged 槽位，但不会激活或执行：
+
+```bash
+cheesewaf crp stage --package ./plugin.crp --trust-roots ./trust-roots.json --sources ./sources.json --runtime-dir /var/lib/cheesewaf/crp-runtime --now 2026-09-08T12:00:00Z
+```
+
+该命令会重新执行离线准入校验，以内容寻址方式保存 artifact 和元数据，并把权限收紧为仅属主可访问，然后输出暂存 revision。它不会晋级包。需要管理员确认的签名类别会被拒绝，因为 CLI 还没有接入密码确认、10 秒警告等待、第三次确认和耐久审计流程。这里交付的是本地暂存状态基础，不是完整插件安装器或 OTA 客户端。
+
+### 显式临时 HTTPS 探测
+
+当前唯一已挂载的临时外连入口是管理员执行的一次性 probe。它不是后台 worker、下载器，也不是 `serve` 功能：
+
+```bash
+cheesewaf temporary-online probe --help
+```
+
+该命令要求 `--administrator`、`--password-stdin`、插件 ID/版本、小写 HTTPS
+主机名、精确的 `sha256:` TLS 叶证书 pin，以及有界的 TTL 和字节限制。它只允许
+相对路径的 `HEAD` 或 `GET`，只解析一次并直接拨号到选中的公网 IP，同时把仅含元数据的审计记录写入 `<data-dir>/audit/netlease.jsonl`。管理员密码只能从受信任的本地终端或秘密来源经标准输入提供；命令刻意没有密码 flag。CWEDP、CRP 激活、控制面和 `cheesewaf serve` 尚未接入该 broker。
+
+### Get Started 验收脚本
+
+运行有边界的本地 smoke：把 `configs/cheesewaf.yaml` 复制到临时运行目录，构建 Go 二进制，在回环地址启动 `temporary` 配置，检查 `/health/ready` 和初始化文件，并确认 `production` 会拒绝启动且不会回退写入 SQLite：
+
+```bash
+bash scripts/acceptance/get-started.sh
+```
+
+只做静态/contract 验收（不构建、不启动服务）：
+
+```bash
+bash scripts/acceptance/get-started.sh --static-contract
+```
+
+脚本不会启动 PostgreSQL、Redis 或其他持久外部服务，退出时会清理自己的临时目录。
 
 ### 构建环境
 
@@ -468,18 +540,16 @@ waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --form
 git clone https://github.com/LaokeQwQ/CheeseWAF.git
 cd CheeseWAF
 
-# 2. 构建前端静态资源
-cd web
-npm ci
-npm run build
-cd ..
-cp -R web/dist/. internal/webui/dist/
+# 2. 构建前端静态资源（生产构建禁止带入 Agent 开发工具）
+bash scripts/ci/build-web.sh
 
 # 3. 构建后端二进制
 go build -o bin/cheesewaf ./cmd/cheesewaf
 
-# 4. 运行
-./bin/cheesewaf serve --config ./configs/cheesewaf.yaml
+# 4. 创建运行时配置副本并运行（不要直接写入 configs/cheesewaf.yaml）
+mkdir -p ./data/config
+cp ./configs/cheesewaf.yaml ./data/config/cheesewaf.yaml
+./bin/cheesewaf serve --config ./data/config/cheesewaf.yaml --data-dir ./data
 ```
 
 ### 测试与语料验证

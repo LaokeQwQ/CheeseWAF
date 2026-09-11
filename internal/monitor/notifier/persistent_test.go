@@ -20,7 +20,7 @@ func TestPersistAlertsIsUserScopedAndIdempotent(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, user := range []storage.User{{ID: "user-a", Username: "a", PasswordHash: "hash"}, {ID: "user-b", Username: "b", PasswordHash: "hash"}} {
+	for _, user := range []storage.User{{ID: "user-a", Username: "user-a", PasswordHash: "hash"}, {ID: "user-b", Username: "user-b", PasswordHash: "hash"}} {
 		user := user
 		if err := store.CreateUser(ctx, &user); err != nil {
 			t.Fatal(err)

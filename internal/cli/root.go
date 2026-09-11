@@ -5,9 +5,12 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
+	climigration "github.com/LaokeQwQ/CheeseWAF/internal/cli/migration"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -58,7 +61,21 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(versionCmd)
 	cmd.AddCommand(newLangCommand())
 	cmd.AddCommand(newLogsCommand())
+	cmd.AddCommand(newTemporaryOnlineCommand())
+	cmd.AddCommand(climigration.NewRuntimeCommand(climigration.RuntimeOptions{
+		ConfigPath: func() string { return configPath },
+		DataDir:    func() string { return dataDir },
+		ApplyDataDir: func(cfg *config.Config, root string) error {
+			return applyCLIDataDir(cfg, root)
+		},
+		AcquireExclusive: func(runtimeDir string) (io.Closer, error) {
+			return acquirePIDLease(runtimeDir)
+		},
+	}))
 	cmd.AddCommand(rulesCmd)
+	crpCmd := newCRPCommand()
+	crpCmd.AddCommand(newCRPStageCommand())
+	cmd.AddCommand(crpCmd)
 	return cmd
 }
 

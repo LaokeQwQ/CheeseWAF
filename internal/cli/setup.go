@@ -10,6 +10,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -259,7 +260,9 @@ func stepProfile(term *wizardIO, state *setupState) error {
 	profiles := []setup.HardwareProfile{
 		setup.ProfileSmart, setup.ProfileLow, setup.ProfileMedium, setup.ProfileHigh, setup.ProfileCustom,
 	}
-	recommended := setup.ProfileMedium
+	// Without a completed probe, keep the first choice conservative. A medium
+	// profile assumes at least 4 GiB of memory and can overcommit small hosts.
+	recommended := setup.ProfileLow
 	if state.probe != nil {
 		recommended = state.probe.Profile
 	}
@@ -285,15 +288,15 @@ func stepProfile(term *wizardIO, state *setupState) error {
 func stepAdmin(term *wizardIO, state *setupState) error {
 	fmt.Fprintf(term.out, "\n%s\n", clilang.T("setup.admin.title"))
 	username, err := term.prompt(clilang.T("setup.admin.username"), "admin", func(value string) error {
-		if len(strings.TrimSpace(value)) < 3 {
-			return errors.New(clilang.T("setup.admin.usernameShort"))
+		if err := identity.ValidateUsername(value); err != nil {
+			return err
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	state.username = strings.TrimSpace(username)
+	state.username = username
 
 	generate, err := term.promptYesNo(clilang.T("setup.admin.generate"), false)
 	if err != nil {
@@ -583,12 +586,12 @@ func applySetupExternal(cfg *config.Config, s *setupState) {
 }
 
 func runSetupNonInteractive(in io.Reader, out io.Writer, state *setupState) error {
-	username := strings.TrimSpace(setupOpts.username)
+	username := setupOpts.username
 	if username == "" {
 		username = "admin"
 	}
-	if len(username) < 3 {
-		return errors.New(clilang.T("setup.admin.usernameShort"))
+	if err := identity.ValidateUsername(username); err != nil {
+		return err
 	}
 	password := ""
 	if setupOpts.passwordStdin {
@@ -618,7 +621,7 @@ func runSetupNonInteractive(in io.Reader, out io.Writer, state *setupState) erro
 		if state.probe != nil {
 			state.profile = state.probe.Profile
 		} else {
-			state.profile = setup.ProfileMedium
+			state.profile = setup.ProfileLow
 		}
 	}
 	// External integrations stay at their generated defaults in --yes mode;

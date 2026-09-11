@@ -52,6 +52,29 @@ func TestLoginAttemptConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestInvalidUsernameAttemptsEnterLoginRateLimit(t *testing.T) {
+	now := time.Date(2026, time.September, 7, 12, 0, 0, 0, time.UTC)
+	cfg := config.Default()
+	state := newLoginCAPTCHAState()
+	h := &Handler{Config: &cfg, LoginCAPTCHAState: state, now: func() time.Time { return now }}
+	for attempt := 0; attempt < loginRateLimitMaxFailures; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader("{\"username\":\" admin \",\"password\":\"x\"}"))
+		request.RemoteAddr = "192.0.2.44:41234"
+		response := httptest.NewRecorder()
+		h.Login(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d status = %d, want %d", attempt+1, response.Code, http.StatusBadRequest)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader("{\"username\":\" admin \",\"password\":\"x\"}"))
+	request.RemoteAddr = "192.0.2.44:41234"
+	response := httptest.NewRecorder()
+	h.Login(response, request)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked attempt status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+}
+
 func TestLoginCAPTCHAProofCanOnlyBeReservedOnceConcurrently(t *testing.T) {
 	state := newLoginCAPTCHAState()
 	now := time.Now().UTC()

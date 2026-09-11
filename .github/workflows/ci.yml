@@ -153,9 +153,42 @@ jobs:
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh coverage
 
+  postgres-controlplane-integration:
+    name: postgres-controlplane-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        # Pin the official multi-arch image manifest to prevent tag retargeting.
+        image: postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+        env:
+          POSTGRES_PASSWORD: cheesewaf-ci-only
+          POSTGRES_DB: cheesewaf_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cheesewaf_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run PostgreSQL control-plane integration tests
+        env:
+          CHEESEWAF_POSTGRES_TEST_DSN: postgres://postgres:cheesewaf-ci-only@127.0.0.1:5432/cheesewaf_test?sslmode=disable
+        run: bash scripts/ci/go-env.sh go test -race -count=1 ./internal/controlplane/postgres ./internal/cwedp/postgres ./internal/tokens/postgres
+
   web-build:
     name: web-build
     runs-on: ubuntu-latest
+    env:
+      CHEESEWAF_AGENT_EYES: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,13 +201,16 @@ jobs:
       - name: Install dependencies
         working-directory: web
         # @agent-eyes postinstall runs `pnpm build`; published dist is usable without it.
-        run: npm ci --ignore-scripts
+        run: CHEESEWAF_AGENT_EYES=0 npm ci --ignore-scripts
       - name: Run CAPTCHA contract tests
         working-directory: web
         run: npm run test:captcha-contract
+      - name: Run build gate script tests
+        working-directory: web
+        run: npm run test:scripts
       - name: Install pinned coverage provider
         working-directory: web
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
+        run: CHEESEWAF_AGENT_EYES=0 npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
       - name: Run dashboard tests with coverage
         working-directory: web
         run: npm test -- --coverage
@@ -217,7 +253,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         working-directory: web
-        run: npm ci --ignore-scripts
+        run: CHEESEWAF_AGENT_EYES=0 npm ci --ignore-scripts
       - name: Audit web dependencies
         working-directory: web
         # Gate with documented allowlist (see web/scripts/npm-audit-gate.mjs).

@@ -45,6 +45,8 @@ blob-report/
 **/data/run/
 /tmp/
 /.tmp/
+__pycache__/
+*.pyc
 /temp/
 /certs/
 *.log
@@ -103,6 +105,7 @@ cheesewaf-*-deploy.tar.gz
 *.md
 !/README.md
 !/README_CN.md
+!/AGENTS.md
 !/progress.md
 !/PERFORMANCE_DELIVERY.md
 !docs/performance-optimization.md
@@ -112,6 +115,13 @@ cheesewaf-*-deploy.tar.gz
 !docs/acme.md
 !docs/semantic-corpus-governance.md
 !docs/open-corpus-catalog.md
+!tasks.md
+!docs/architecture/
+!docs/architecture/**/*.md
+!docs/acceptance-matrix.md
+!docs/superpowers/
+!docs/superpowers/plans/
+!docs/superpowers/plans/2026-09-05-commercial-grilling-plan.md
 *.private.md
 *.local.md
 

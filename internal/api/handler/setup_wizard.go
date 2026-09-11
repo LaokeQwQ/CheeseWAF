@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 )
 
@@ -222,6 +223,12 @@ func (h *Handler) SetupDraftPatch(w http.ResponseWriter, r *http.Request) {
 	var req setupDraftPatch
 	if !decode(w, r, &req) {
 		return
+	}
+	if req.Username != "" {
+		if err := identity.ValidateUsername(req.Username); err != nil {
+			writeError(w, http.StatusBadRequest, "USERNAME_INVALID", err.Error())
+			return
+		}
 	}
 	if req.Password != "" {
 		if !h.setupDraftStore().SetPassword(id, req.Password) {
