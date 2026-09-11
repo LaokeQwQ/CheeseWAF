@@ -76,7 +76,9 @@ func (s *Store) ListReviewItems(ctx context.Context, f storage.ReviewFilter) ([]
 		return nil, 0, e
 	}
 	defer rows.Close()
-	out := make([]storage.ReviewItem, 0, limit)
+	// Do not use the request-controlled limit as an allocation size. The SQL
+	// LIMIT still bounds the number of rows appended below.
+	out := make([]storage.ReviewItem, 0)
 	for rows.Next() {
 		v, e := scanReview(rows)
 		if e != nil {

@@ -98,6 +98,13 @@ func testCertificateFingerprint(t *testing.T, server *httptest.Server) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+func testTLSPolicy(t *testing.T, server *httptest.Server) *TLSPolicy {
+	t.Helper()
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	return &TLSPolicy{Config: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}}
+}
+
 func newTestBroker(t *testing.T, server *httptest.Server, fingerprint string, auth *testAdministratorAuthenticator) (*Broker, *MemoryAuditSink, *loopbackTransport, time.Time) {
 	t.Helper()
 	if auth == nil {
@@ -137,7 +144,7 @@ func issueTestLease(t *testing.T, broker *Broker, port int, fingerprint string) 
 	if err != nil {
 		t.Fatalf("begin temporary session: %v", err)
 	}
-	target := Target{Host: "updates.example.test", Port: port, Protocol: "https"}
+	target := Target{Host: "updates.example.com", Port: port, Protocol: "https"}
 	lease, err := broker.IssueTemporary(context.Background(), ConfirmationInput{
 		SessionID:      session.ID,
 		Password:       "correct horse battery staple",
@@ -174,7 +181,7 @@ func TestBrokerPerformsPinnedHTTPSOverDirectResolvedAddressAndAudits(t *testing.
 	port, _ := strconv.Atoi(portText)
 	lease, scope := issueTestLease(t, broker, port, fingerprint)
 
-	response, err := broker.DoHTTP(context.Background(), HTTPRequest{LeaseID: lease.ID, Scope: scope, Method: http.MethodGet, Path: "/release?channel=stable", Header: http.Header{"X-CWEDP-Test": []string{"yes"}}})
+	response, err := broker.DoHTTP(context.Background(), HTTPRequest{LeaseID: lease.ID, Scope: scope, TLSPolicy: testTLSPolicy(t, server), Method: http.MethodGet, Path: "/release?channel=stable", Header: http.Header{"X-CWEDP-Test": []string{"yes"}}})
 	if err != nil {
 		t.Fatalf("DoHTTP: %v", err)
 	}
@@ -224,7 +231,7 @@ func TestExecuteTemporaryHTTPOwnsConfirmationNetworkAndCleanupLifecycle(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := Target{Host: "updates.example.test", Port: port, Protocol: "https"}
+	target := Target{Host: "updates.example.com", Port: port, Protocol: "https"}
 
 	response, err := broker.ExecuteTemporaryHTTP(context.Background(), TemporaryHTTPExecution{
 		Identity:         AdministratorIdentity{ID: "admin", ManagementSessionID: "management-session"},
@@ -236,6 +243,7 @@ func TestExecuteTemporaryHTTPOwnsConfirmationNetworkAndCleanupLifecycle(t *testi
 		PolicyEpoch:      7,
 		TTL:              time.Minute,
 		MaxBytes:         64 << 10,
+		TLSPolicy:        testTLSPolicy(t, server),
 		Method:           http.MethodGet,
 		Path:             "/probe",
 		MaxResponseBytes: 1024,
@@ -421,7 +429,7 @@ func TestBrokerFailsClosedForPasswordPinScopeAndAuditFailures(t *testing.T) {
 		broker, sink, transport, _ := newTestBroker(t, server, fingerprint, nil)
 		wrong := "sha256:" + strings.Repeat("b", 64)
 		lease, scope := issueTestLease(t, broker, port, wrong)
-		_, err := broker.DoHTTP(context.Background(), HTTPRequest{LeaseID: lease.ID, Scope: scope, Method: http.MethodGet, Path: "/"})
+		_, err := broker.DoHTTP(context.Background(), HTTPRequest{LeaseID: lease.ID, Scope: scope, TLSPolicy: testTLSPolicy(t, server), Method: http.MethodGet, Path: "/"})
 		if !errors.Is(err, ErrTLSFingerprint) || transport.dialCount() != 1 {
 			t.Fatalf("pin mismatch was not enforced: err=%v dials=%d", err, transport.dialCount())
 		}
@@ -593,6 +601,22 @@ func TestTLSPolicySnapshotIsIndependentFromCallerMutation(t *testing.T) {
 	policy.Config.Certificates[0].Certificate[0][0] = 9
 	if snapshot == nil || snapshot.Config == nil || snapshot.Config.InsecureSkipVerify || snapshot.Config.Certificates[0].Certificate[0][0] != 1 {
 		t.Fatalf("TLS policy snapshot followed caller mutation: %+v", snapshot)
+	}
+}
+
+func TestTLSConfigForLeaseKeepsStandardVerificationEnabled(t *testing.T) {
+	config, err := tlsConfigForLease(Lease{
+		Target:         Target{Host: "updates.example.com", Port: 443, Protocol: "https"},
+		TLSFingerprint: testTLSFingerprint,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.InsecureSkipVerify {
+		t.Fatal("lease TLS config disabled standard certificate verification")
+	}
+	if config.ServerName != "updates.example.com" {
+		t.Fatalf("TLS server name=%q, want updates.example.com", config.ServerName)
 	}
 }
 

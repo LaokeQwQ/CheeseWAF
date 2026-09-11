@@ -776,10 +776,10 @@ func tlsConfigForLease(lease Lease, policy *TLSPolicy) (*tls.Config, error) {
 	if err := validateTLSPolicy(RequestScope{Target: lease.Target}, policy); err != nil {
 		return nil, err
 	}
-	config := &tls.Config{ // #nosec G402 -- pin-only mode verifies the exact leaf below.
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true,
-	}
+	// Keep the standard certificate-chain and hostname verification enabled.
+	// The lease's exact leaf pin below is an additional constraint, not a
+	// replacement for TLS verification.
+	config := &tls.Config{MinVersion: tls.VersionTLS12}
 	if policy != nil && policy.Config != nil {
 		config = cloneTLSConfig(policy.Config)
 		config.InsecureSkipVerify = false
