@@ -1059,7 +1059,7 @@ Dependabot/CodeQL 复核结果：
 
 隔离测试服务器此前没有 CheeseWAF 二进制、目录、systemd 单元或监听器。预览部署使用独立的 `cheesewaf-preview` 系统用户、`/opt/cheesewaf-preview`、`/etc/cheesewaf-preview`、`/var/lib/cheesewaf-preview`、`/var/log/cheesewaf-preview` 和 `cheesewaf-preview.service`；未修改现有 PostgreSQL 17.11 或 Redis 8.0.2，两者仍只监听 loopback。
 
-预览服务当前 active、未启用开机自启，代理和管理端分别只监听服务器 `127.0.0.1:18080` 与 `127.0.0.1:19443`。`GET /api/setup/status` 返回 `needs_setup: true`，`.setup_complete` 不存在，`setup.url` 权限为 `0600`；因此确实是刚部署、尚未提交设置向导的状态。管理端没有直接暴露公网，当前通过本机 SSH 隧道访问 `http://127.0.0.1:19443/setup`。
+在 2026-09-11 的受控 SSH 复核中，预览服务曾处于 active 且未启用开机自启。代理和管理端分别只监听服务器 `127.0.0.1:18080` 与 `127.0.0.1:19443`。当时 `GET /api/setup/status` 返回 `needs_setup: true`，`.setup_complete` 不存在，`setup.url` 权限为 `0600`，所以那次复核确认服务处于刚部署、尚未提交设置向导的状态。该状态依赖临时服务器进程，不代表当前仍可访问。后续只读探测未能建立 SSH、HTTPS 或管理端连接，因此当前没有可复核的公网预览地址。
 
 回滚边界：停止并禁用（当前本就未启用）`cheesewaf-preview.service`，删除该独立 unit 与四个 preview 目录即可；正式 CheeseWAF 路径、数据库服务和其他系统服务不在本次预览部署范围内。
 
@@ -1078,4 +1078,31 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 - 环境检查行采用「状态与标签 / 数值」两列布局，避免 `MB/s` 和磁盘标签被拆开。
 - 2 核 / 2 GB 主机推荐 `low`（轻量）；档位页提供「选择方案」按钮。选择高于或低于本机建议的档位只提示 warning，仍可继续。
 - 前端 42 项定向测试、类型检查、生产构建和 marker scan 通过；1280 px、390 px、320 px 假数据浏览器验收通过。
-- 产品版本源已更新为 `0.3.9`，正式版标签使用 `v0.3.9`；本次发布不使用 GitHub Pre-release 标记。商业化架构中尚未接线的验收项继续按现状记录，不因发版改写状态。
+- 产品版本源已更新为 `0.3.9`，并创建了指向 master 提交的 `v0.3.9` tag。稳定版 GitHub Release 尚未生成：tag 工作流在 Windows Authenticode 校验阶段因 `WINDOWS_CERT_P12` 未配置而失败。自动生成的 Alpha 预发布记录不等于稳定版发布。商业化架构中尚未接线的验收项继续按现状记录，不因创建 tag 改写状态。
+
+### 2026-09-11 发布复核与外部依赖
+
+范围：复核 master 晋升、`v0.3.9` tag、Dependabot 告警、插件文档 PR、Cloudflare Pages 构建和临时预览服务状态。
+
+实际结果：
+
+- CheeseWAF 已按 `dev → canary → master` 顺序晋升。master 提交为 `cc96e2d8bad9a1378a73711e3c3e5039d56bccd7`，`v0.3.9` tag 指向同一提交。
+- master 的三平台测试、CodeQL、Web 构建、跨平台编译、发行物构建和 macOS DMG 构建均通过。
+- tag 工作流 `34651525489` 的 `release-artifacts` 在验证 `cheesewaf-amd64-windows-0.3.9-setup.exe` 时报告 `No signature found`，同时记录 `WINDOWS_CERT_P12` 为空。该工作流没有创建稳定版 GitHub Release。
+- Dependabot #23 和 #24 已变为 `fixed`。Hono `4.13.7` 已进入 master 的 `web/package-lock.json`；旧 PR #430 已关闭。
+- CheeseSec_Plugin_Docs PR #7 的 `handbook-checks / validate` 已通过，但 main 分支仍要求独立 code-owner 审批。PR #8 与 #7 使用同一提交，已关闭为重复 PR。
+- CheeseSec_pages 的 CI 构建已通过，但工作流因缺少 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID` 跳过部署。当前不能把文档构建写成 Cloudflare 已发布。
+
+验证证据：
+
+- `gh run view 34649209066`：master CI 完成且成功。
+- `gh run view 34649209055`：master CodeQL 完成且成功。
+- `gh run view 34651525489 --job 103437836071 --log-failed`：稳定发行物校验因 Windows Authenticode 无签名失败。
+- `git rev-parse v0.3.9^{}`：结果为 `cc96e2d8bad9a1378a73711e3c3e5039d56bccd7`。
+- `gh api repos/LaokeQwQ/CheeseWAF/dependabot/alerts`：告警 #23、#24 均为 `fixed`。
+- `gh pr view 7 --repo LaokeQwQ/CheeseSec_Plugin_Docs`：检查成功，状态仍为 `BLOCKED`。
+- 临时服务器只读探测：80 端口可建立连接但返回空响应，22、443、8080、9443、19443 未形成可用管理入口；没有执行远程修改。
+
+遗留风险：稳定发布仍需要 GitHub `publish-release` 环境中的 Windows 和 macOS 签名凭据；插件文档 PR 仍需要独立 code-owner 审批；Cloudflare Pages 部署仍需要 Cloudflare 凭据。阶段 1 至阶段 7 中列出的主服务生产接线、CRP 控制面、CWEDP 节点编排、对象复制和空网演练仍未完成，不能把当前 tag 或构建结果写成商业化架构全部交付。
+
+下一步：补齐签名凭据后重跑现有 `v0.3.9` tag 工作流；取得独立 code-owner 审批后合并 PR #7；补齐 Cloudflare 凭据后重新执行文档部署；随后按 `tasks.md` 中的未完成项继续做主服务生产接线和端到端演练。
