@@ -109,8 +109,12 @@ grep -Fq 'SEMANTIC_BENCH_OUTPUT="/tmp/semantic-bench-check.json"' <<<"$makefile_
   fail "authorized blind-lab smoke test must be executable"
 [[ -x scripts/ci/run-semantic-benchmark.sh ]] ||
   fail "semantic benchmark runner must be executable"
-bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh ||
+[[ -x scripts/ci/test-go-windows.sh ]] ||
+  fail "Windows Go test runner must be executable"
+bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh scripts/ci/test-go-windows.sh ||
   fail "evaluation, benchmark, and blind-lab scripts must pass bash syntax validation"
+grep -Fq 'bash scripts/ci/test-go-windows.sh' .github/workflows/ci.yml ||
+  fail "GitHub Windows Go test job must use the dedicated Windows test runner"
 
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
   fail "GitHub Actions must pin Node ${NODE_VERSION}"

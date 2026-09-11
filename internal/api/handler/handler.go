@@ -86,6 +86,7 @@ type Handler struct {
 	clusterDeployAuthMu            sync.Mutex
 	clusterDeployPending           map[string]deploy.AuthorizationTarget
 	clusterHeartbeatsMu            sync.Mutex
+	configCompatMu                 sync.RWMutex
 	configMutationMu               sync.RWMutex
 	configPersistMu                sync.Mutex
 	siteMutationMu                 sync.Mutex
@@ -460,7 +461,16 @@ func (h *Handler) currentConfig() *config.Config {
 	if current := h.configCurrent.Load(); current != nil {
 		return current
 	}
-	return h.Config
+	h.configCompatMu.RLock()
+	defer h.configCompatMu.RUnlock()
+	if h.Config == nil {
+		return nil
+	}
+	snapshot, err := config.Clone(h.Config)
+	if err != nil {
+		return nil
+	}
+	return snapshot
 }
 
 // publishConfig atomically replaces the request-facing snapshot. A separate
@@ -478,9 +488,11 @@ func (h *Handler) publishConfig(candidate *config.Config) error {
 	if err != nil {
 		return err
 	}
-	// Publish the immutable request snapshot before updating the compatibility
-	// view. New readers cannot retain the object that is updated below.
+	// Publish the immutable request snapshot before replacing the compatibility
+	// view. New readers cannot retain the object that is replaced below.
 	h.configCurrent.Store(published)
+	h.configCompatMu.Lock()
+	defer h.configCompatMu.Unlock()
 	if h.Config == nil {
 		h.Config = compatibility
 	} else {

@@ -112,7 +112,12 @@ jobs:
           cache: true
       - name: Test
         shell: bash
-        run: bash scripts/ci/go-env.sh go test -race -short -count=1 ./cmd/... ./internal/...
+        run: |
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            bash scripts/ci/test-go-windows.sh
+          else
+            bash scripts/ci/go-env.sh go test -race -short -count=1 ./cmd/... ./internal/...
+          fi
 
   go-quality:
     name: go-quality
