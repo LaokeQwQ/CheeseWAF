@@ -5,6 +5,7 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:60eac759739651111db372c07be6786381
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS backend
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party ./third_party
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
