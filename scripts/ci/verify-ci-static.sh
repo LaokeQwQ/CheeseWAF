@@ -56,6 +56,10 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not typecheck the dashboard"
   grep -Fq 'npm run build' "$workflow" ||
     fail "${workflow} does not build the dashboard"
+  grep -A8 -Fx '  web-build:' "$workflow" | grep -Fq 'CHEESEWAF_AGENT_EYES: "0"' ||
+    fail "${workflow} web-build must explicitly disable Agent Eyes"
+  grep -Fq 'npm run test:scripts' "$workflow" ||
+    fail "${workflow} web-build must run build gate script tests"
   grep -Fq 'bash scripts/ci/run-corpus-governance.sh' "$workflow" ||
     fail "${workflow} does not run the corpus governance gate"
   grep -Fq 'bash scripts/ci/run-semantic-benchmark.sh' "$workflow" ||
@@ -105,8 +109,12 @@ grep -Fq 'SEMANTIC_BENCH_OUTPUT="/tmp/semantic-bench-check.json"' <<<"$makefile_
   fail "authorized blind-lab smoke test must be executable"
 [[ -x scripts/ci/run-semantic-benchmark.sh ]] ||
   fail "semantic benchmark runner must be executable"
-bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh ||
+[[ -x scripts/ci/test-go-windows.sh ]] ||
+  fail "Windows Go test runner must be executable"
+bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh scripts/ci/test-go-windows.sh ||
   fail "evaluation, benchmark, and blind-lab scripts must pass bash syntax validation"
+grep -Fq 'bash scripts/ci/test-go-windows.sh' .github/workflows/ci.yml ||
+  fail "GitHub Windows Go test job must use the dedicated Windows test runner"
 
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
   fail "GitHub Actions must pin Node ${NODE_VERSION}"
@@ -225,7 +233,8 @@ grep -Fq 'scripts/ci/sign-windows.sh' scripts/ci/package-release.sh ||
   fail "Windows packages must Authenticode-sign when WINDOWS_CERT_P12 is present"
 grep -Fq 'APP_BUNDLE_VERSION' deploy/macos/Info.plist ||
   fail "macOS Info.plist must keep a numeric CFBundleVersion placeholder"
-got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version '0.1.0-PreTest')"
+product_version_for_bundle="$(cat scripts/ci/product-version)"
+got_ver="$(bash scripts/ci/package-macos-dmg.sh --print-bundle-version "${product_version_for_bundle}-PreTest")"
 [[ "$got_ver" == "$(cat scripts/ci/product-version)" ]] ||
   fail "macOS CFBundleVersion must strip PreTest labels (got ${got_ver})"
 grep -Fq 'package-macos-dmg.sh' .github/workflows/ci.yml ||
@@ -253,6 +262,22 @@ grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
   fail "Ansible unit must start cheesewaf serve"
 grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
   fail "web build must copy UI files into the embedded dist directory"
+grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' scripts/ci/build-web.sh ||
+  fail "isolated web build must disable Agent Eyes during npm install"
+grep -Fq 'verify-production-markers.mjs' scripts/ci/build-web.sh ||
+  fail "isolated web build must scan production markers after copying outputs"
+grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' deploy/docker/Dockerfile ||
+  fail "Docker Web stage must disable Agent Eyes during npm install"
+grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm run build' deploy/docker/Dockerfile ||
+  fail "Docker Web stage must disable Agent Eyes during npm build"
+grep -Fq 'COPY --from=web /src/web/dist/' deploy/docker/Dockerfile ||
+  fail "runtime image must copy only the built Web dist from the Web stage"
+grep -Fq 'RUN chmod 0644 /usr/share/cheesewaf/config/cheesewaf.yaml' deploy/docker/Dockerfile ||
+  fail "runtime image must make the non-secret config template readable to its non-root entrypoint"
+runtime_stage="$(sed -n '/^FROM ${RUNTIME_IMAGE}/,$p' deploy/docker/Dockerfile)"
+if grep -Eq 'COPY .*node_modules|COPY .*web/(src|scripts|tests?)(/|[[:space:]])' <<<"${runtime_stage}"; then
+  fail "runtime image must not copy node_modules or Web test/development sources"
+fi
 grep -Fq 'WorkingDirectory=/var/lib/cheesewaf' deploy/systemd/cheesewaf.service ||
   fail "systemd unit must set WorkingDirectory so relative data paths stay under /var/lib/cheesewaf"
 grep -Fq 'CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web' deploy/systemd/cheesewaf.service ||
@@ -342,6 +367,8 @@ grep -A1 'canary)' scripts/ci/channel-from-git.sh | grep -Fq 'echo PreTest' ||
   fail "local canary channel must match package-release PreTest metadata"
 grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
   fail "make web-build must skip agent-eyes postinstall"
+grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
+  fail "make web-build must disable Agent Eyes during npm install"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
   fail "GoReleaser archives must keep one binary per platform; channel packages ship cheesewaf-gui"
 fi
@@ -538,7 +565,7 @@ fi
 if grep -n -- '-l=4' Makefile scripts/build-all.sh scripts/build-pgo.sh; then
   fail "release builds must not disable compiler inlining with -l=4"
 fi
-if grep -Fi 'aggressive inlining' PERFORMANCE_DELIVERY.md docs/performance-optimization.md; then
+if grep -Fi 'aggressive inlining' docs/performance-optimization.md; then
   fail "performance docs must not misdescribe -l=4 as aggressive inlining"
 fi
 if grep -Fq '/nonfatal' deploy/windows/nsis/cheesewaf.nsi; then

@@ -1,0 +1,183 @@
+---
+# This file is intentionally side-effect free. It is safe to run with
+# --check, and all sensitive assertions suppress their values in output.
+- name: Validate deployment entrypoint
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_deployment_entrypoint in ['single-node', 'production', 'full']
+    fail_msg: deployment entrypoint is not recognized
+
+- name: Validate strict service identity and paths
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_service_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - cheesewaf_service_group is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - cheesewaf_runtime_dir is match('^/\S+$')
+      - cheesewaf_cwedp_agent_dir is match('^/\S+$')
+      - cheesewaf_cwedp_data_dir is match('^/\S+$')
+    fail_msg: service identity and runtime paths must be absolute strict values
+
+- name: Reject plugin and CRP mutation through Ansible
+  ansible.builtin.assert:
+    that:
+      - not (cheesewaf_plugin_push | default(false, true) | bool)
+      - not (cheesewaf_crp_push | default(false, true) | bool)
+      - not (cheesewaf_plugin_install | default(false, true) | bool)
+      - not (cheesewaf_plugin_upgrade | default(false, true) | bool)
+      - not (cheesewaf_plugin_rollback | default(false, true) | bool)
+      - not (cheesewaf_crp_install | default(false, true) | bool)
+      - not (cheesewaf_crp_upgrade | default(false, true) | bool)
+      - not (cheesewaf_crp_rollback | default(false, true) | bool)
+      - (cheesewaf_plugin_packages | default([], true) | length) == 0
+      - (cheesewaf_crp_packages | default([], true) | length) == 0
+    fail_msg: plugins are negotiated by CWEDP; Ansible never pushes CRP packages
+
+- name: Require CWEDP start to be explicitly enabled
+  ansible.builtin.assert:
+    that:
+      - not (cheesewaf_cwedp_agent_start | default(false, true) | bool) or (cheesewaf_cwedp_agent_enabled | default(false, true) | bool)
+    fail_msg: CWEDP agent_start requires cheesewaf_cwedp_agent_enabled=true
+
+- name: Refuse temporary nodes that request production orchestration
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_storage_profile == 'temporary'
+      - cheesewaf_management_postgresql_mode == 'none'
+      - cheesewaf_control_postgresql_mode == 'none'
+      - cheesewaf_redis_mode == 'none'
+      - cheesewaf_management_postgresql_dsn | default('') | length == 0
+      - cheesewaf_control_postgresql_dsn | default('') | length == 0
+      - cheesewaf_redis_address | default('') | length == 0
+      - cheesewaf_redis_instance_id | default('') | length == 0
+      - cheesewaf_consensus_backend == 'builtin'
+      - cheesewaf_native_raft_endpoints | default([]) | length == 0
+      - cheesewaf_native_raft_ca_file | default('') | length == 0
+      - cheesewaf_native_raft_cert_file | default('') | length == 0
+      - cheesewaf_native_raft_key_file | default('') | length == 0
+      - cheesewaf_native_raft_data_dir | default('') | length == 0
+      - cheesewaf_native_raft_listen | default('') | length == 0
+      - cheesewaf_native_raft_mode | default('') | length == 0
+      - not (cheesewaf_pigsty_enabled | bool)
+      - not (cheesewaf_provision_only | bool)
+      - not (cheesewaf_cwedp_agent_start | bool)
+    fail_msg: temporary must not provision PostgreSQL or Redis
+  when: cheesewaf_deployment_entrypoint == 'single-node'
+
+- name: Require production full mode and explicit external control-plane backends
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_storage_profile == 'production'
+      - cheesewaf_management_postgresql_mode == 'external'
+      - cheesewaf_management_postgresql_dsn | default('') | length > 0
+      - cheesewaf_control_postgresql_mode == 'external'
+      - cheesewaf_control_postgresql_dsn | default('') | length > 0
+      - cheesewaf_management_postgresql_dsn != cheesewaf_control_postgresql_dsn
+      - cheesewaf_redis_mode == 'external'
+      - cheesewaf_redis_address | default('') | length > 0
+      - cheesewaf_redis_instance_id | default('') | length > 0
+      - cheesewaf_consensus_backend == 'native-raft'
+      - cheesewaf_native_raft_endpoints | default([]) | length > 0
+    fail_msg: >-
+      {{ 'full.yml requires production; ' if cheesewaf_deployment_entrypoint == 'full' else '' }}
+      production requires explicit external PostgreSQL, external Redis and native-raft
+  when: cheesewaf_deployment_entrypoint in ['production', 'full']
+
+- name: Validate production PostgreSQL and Redis security contract
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_management_postgresql_dsn | default('') is match('^postgres(ql)?://\S+$')
+      - cheesewaf_management_postgresql_dsn | default('') is search('(^|[?&])sslmode=verify-full($|&)')
+      - cheesewaf_control_postgresql_dsn | default('') is match('^postgres(ql)?://\S+$')
+      - cheesewaf_control_postgresql_dsn | default('') is search('(^|[?&])sslmode=verify-full($|&)')
+      - cheesewaf_redis_address | default('') is match('^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+):[0-9]{1,5}$')
+      - cheesewaf_redis_address.rsplit(':', 1)[1] | int >= 1
+      - cheesewaf_redis_address.rsplit(':', 1)[1] | int <= 65535
+      - cheesewaf_redis_instance_id | default('') is match('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')
+      - cheesewaf_redis_tls_enabled | bool
+      - cheesewaf_redis_ca_file | default('') is match('^/\S+$')
+    fail_msg: external PostgreSQL and Redis require TLS and explicit secure endpoints
+  no_log: true
+  when: cheesewaf_deployment_entrypoint in ['production', 'full']
+
+- name: Validate native-raft endpoint and identity contract
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_consensus_backend == 'native-raft'
+      - cheesewaf_native_raft_endpoints | default([]) | length > 0
+      - (cheesewaf_native_raft_endpoints | default([]) | unique | list | length) == (cheesewaf_native_raft_endpoints | default([]) | length)
+      - cheesewaf_native_raft_tls_enabled | bool
+      - cheesewaf_native_raft_ca_file | default('') is match('^/\S+$')
+      - cheesewaf_native_raft_cert_file | default('') is match('^/\S+$')
+      - cheesewaf_native_raft_key_file | default('') is match('^/\S+$')
+      - cheesewaf_native_raft_data_dir | default('') is match('^/\S+$')
+      - cheesewaf_native_raft_listen | default('') is match('^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+):[0-9]{1,5}$')
+      - cheesewaf_native_raft_listen.rsplit(':', 1)[1] | int >= 1
+      - cheesewaf_native_raft_listen.rsplit(':', 1)[1] | int <= 65535
+      - cheesewaf_native_raft_mode in ['bootstrap', 'join']
+      - cheesewaf_cluster_id | default('') is match('^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
+    fail_msg: native-raft requires HTTPS endpoints, mTLS files, data/listen/mode and a strict cluster id
+  no_log: true
+  when: cheesewaf_deployment_entrypoint in ['production', 'full']
+
+- name: Validate every native-raft endpoint is HTTPS
+  ansible.builtin.assert:
+    that:
+      - item is match('^https://\S+$')
+    fail_msg: native-raft endpoints must use HTTPS
+  loop: "{{ cheesewaf_native_raft_endpoints | default([]) }}"
+  no_log: true
+  when: cheesewaf_deployment_entrypoint in ['production', 'full']
+
+- name: Require a deliberate production hand-off because runtime is fail-closed
+  ansible.builtin.fail:
+    msg: >-
+      ErrProductionStorageUnavailable: management PostgreSQL, Coordinator and
+      native-raft are not wired as one startup unit; use provision_only=true
+      only for infrastructure hand-off and complete runtime verification before
+      starting CheeseWAF.
+  when:
+    - cheesewaf_deployment_entrypoint in ['production', 'full']
+    - not (cheesewaf_provision_only | bool)
+
+- name: Validate management-plane exposure safeguards
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_management_tls_enabled | bool
+      - cheesewaf_management_acl | default([]) | length > 0
+      - cheesewaf_management_audit_sink | default('') | length > 0
+      - cheesewaf_management_rollback_ref | default('') | length > 0
+    fail_msg: remote management requires TLS, ACL, audit and rollback
+  when:
+    - cheesewaf_management_listen is not match('^(127\.0\.0\.1|localhost|::1|\[::1\]):')
+
+- name: Validate fixed CWEDP artifact contract when enabled
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_cwedp_agent_src | default('') is match('^/\S+$')
+      - cheesewaf_cwedp_agent_sha256 | default('') is match('^[A-Fa-f0-9]{64}$')
+      - (not (cheesewaf_cwedp_agent_start | bool)) or (cheesewaf_cwedp_environment_file | default('') is match('^/\S+$'))
+    fail_msg: CWEDP requires a local SHA-256-pinned artifact and explicit environment file to start
+  when: cheesewaf_cwedp_agent_enabled | bool
+
+- name: Validate Pigsty adapter contract when enabled
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_deployment_entrypoint == 'full'
+      - cheesewaf_pigsty_version | default('') is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - cheesewaf_pigsty_ref | default('') is match('^[A-Fa-f0-9]{40}$')
+      - cheesewaf_pigsty_checkout | default('') is match('^/\S+$')
+      - cheesewaf_pigsty_entrypoint | default('') is match('^[^/\s]\S*\.(yml|yaml)$')
+      - cheesewaf_pigsty_inventory | default('') is match('^/\S+$')
+      - cheesewaf_pigsty_vars_file | default('') is match('^/\S+$')
+      - cheesewaf_pigsty_entrypoint is not search('(^|/)\.\.(/|$)')
+      - cheesewaf_pigsty_vars_file is not match('^' ~ (cheesewaf_pigsty_checkout | regex_escape) ~ '(/|$)')
+      - cheesewaf_pigsty_limit | default('') is match('^[A-Za-z0-9_.:/,*?!&|+\-]*$')
+    fail_msg: Pigsty requires a fixed version, immutable commit and local files
+  when: cheesewaf_pigsty_enabled | bool
+
+- name: Explain offline and plugin ownership boundary
+  ansible.builtin.debug:
+    msg: >-
+      offline={{ cheesewaf_offline | bool }}; Ansible performs no artifact
+      downloads and no plugin/CRP push. CWEDP negotiates signed DistributionIntent
+      sources and owns install, upgrade and rollback.

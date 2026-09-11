@@ -12,7 +12,7 @@ import (
 // version and must not be opened by this binary.
 var ErrSQLiteSchemaTooNew = errors.New("newer SQLite schema version")
 
-const sqliteSchemaVersion = 3
+const sqliteSchemaVersion = 5
 
 type sqliteMigration struct {
 	version int
@@ -36,6 +36,16 @@ var sqliteMigrations = []sqliteMigration{
 		name:    "legacy rules to site custom rules",
 		apply:   migrateSQLiteLegacyRules,
 	},
+	{
+		version: 4,
+		name:    "user username repair audit",
+		apply:   migrateSQLiteUserUsernameRepairAudit,
+	},
+	{
+		version: 5,
+		name:    "user credential epochs",
+		apply:   migrateSQLiteCredentialEpochs,
+	},
 }
 
 type sqliteContextExecutor interface {
@@ -52,6 +62,9 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	}
 	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 		return fmt.Errorf("configure SQLite foreign keys: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA recursive_triggers = ON`); err != nil {
+		return fmt.Errorf("configure SQLite recursive triggers: %w", err)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -220,6 +233,40 @@ func migrateSQLiteLegacyRules(ctx context.Context, tx *sql.Tx) error {
 	}
 	_, err = tx.ExecContext(ctx, `DELETE FROM rules`)
 	return err
+}
+
+func migrateSQLiteUserUsernameRepairAudit(ctx context.Context, tx *sql.Tx) error {
+	// No user foreign key: account deletion must not remove its repair history.
+	_, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS user_username_repairs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  old_username TEXT NOT NULL,
+  new_username TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  revoked_sessions INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_username_repairs_user_time ON user_username_repairs(user_id, created_at DESC);
+CREATE TRIGGER IF NOT EXISTS prevent_user_username_repair_update
+BEFORE UPDATE ON user_username_repairs
+BEGIN
+  SELECT RAISE(ABORT, 'user username repair audit is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS prevent_user_username_repair_delete
+BEFORE DELETE ON user_username_repairs
+BEGIN
+  SELECT RAISE(ABORT, 'user username repair audit is append-only');
+END;`)
+	return err
+}
+
+func migrateSQLiteCredentialEpochs(ctx context.Context, tx *sql.Tx) error {
+	if err := ensureColumns(ctx, tx, "users", []sqliteColumnMigration{{column: "credential_epoch", statement: `ALTER TABLE users ADD COLUMN credential_epoch INTEGER NOT NULL DEFAULT 0`}}); err != nil {
+		return fmt.Errorf("upgrade users columns: %w", err)
+	}
+	return ensureColumns(ctx, tx, "admin_sessions", []sqliteColumnMigration{{column: "credential_epoch", statement: `ALTER TABLE admin_sessions ADD COLUMN credential_epoch INTEGER NOT NULL DEFAULT 0`}})
 }
 
 type sqliteColumnMigration struct {

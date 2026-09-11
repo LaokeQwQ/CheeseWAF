@@ -29,7 +29,7 @@ export function cacheAccount(input: AccountInput | null | undefined) {
   }
   const account: AccountProfile = {
     subject: String(input.subject ?? input.id ?? '').trim(),
-    username: String(input.username ?? '').trim(),
+    username: String(input.username ?? ''),
     role: String(input.role ?? '').trim(),
     scopes: normalizeScopes(input.scopes),
   };
@@ -49,7 +49,7 @@ export function currentAccount(): AccountProfile {
     const parsed = JSON.parse(cached) as AccountInput;
     return {
       subject: String(parsed.subject ?? parsed.id ?? '').trim(),
-      username: String(parsed.username ?? '').trim(),
+      username: String(parsed.username ?? ''),
       role: String(parsed.role ?? '').trim(),
       scopes: normalizeScopes(parsed.scopes),
     };

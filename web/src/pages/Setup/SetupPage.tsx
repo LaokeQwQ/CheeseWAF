@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -11,6 +11,7 @@ import {
   Database,
   Eye,
   EyeOff,
+  Gauge,
   Languages,
   LockKeyhole,
   Logs,
@@ -30,11 +31,12 @@ import {
   Switch,
   toast,
 } from '@/components/ui';
-import { apiClient, setupAdmin, unwrapAPIResponse } from '../../api/client';
+import { APIRequestError, apiClient, captureSetupTokenFromFragment, hasSetupToken, setSetupTokenForSession, setupAdmin, unwrapAPIResponse } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import i18n, { ensureLanguage, readPersistedLanguage } from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { classifyPassword, passwordClassCount, passwordPolicyErrorKey } from '../../utils/passwordPolicy';
+import { USERNAME_MAX, USERNAME_MIN, usernameErrorKey } from '../../utils/username';
 
 /**
  * Admin listener / access strategy are operator-level knobs. The wizard is
@@ -44,10 +46,6 @@ import { classifyPassword, passwordClassCount, passwordPolicyErrorKey } from '..
  */
 const DEFAULT_ADMIN_LISTEN = '127.0.0.1:9443';
 const DEFAULT_ADMIN_STRATEGY = 'local';
-
-const USERNAME_MIN = 3;
-const USERNAME_MAX = 32;
-const USERNAME_ALLOWED = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 const TYPING_INTERVAL_MS = 70;
 const DELETING_INTERVAL_MS = 34;
@@ -135,6 +133,13 @@ const PROFILE_OPTIONS: readonly ProfileOption[] = [
     webAttackLevel: 'smart',
   },
 ];
+
+const PROFILE_RANK: Partial<Record<ProfileKey, number>> = {
+  low: 0,
+  smart: 1,
+  medium: 2,
+  high: 3,
+};
 
 const WEB_ATTACK_LEVEL_KEYS: Record<string, string> = {
   off: 'sites.levelOff',
@@ -236,23 +241,7 @@ function formatCount(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString() : '—';
 }
 
-/** Returns an i18n key under `setup.*`, or null when the username is usable. */
-function usernameErrorKey(raw: string): string | null {
-  const value = raw.trim();
-  if (!value) return 'setup.usernameRequired';
-  if (!/^[A-Za-z]/.test(value)) return 'setup.usernameMustStartWithLetter';
-  if (!USERNAME_ALLOWED.test(value)) return 'setup.usernameInvalidChars';
-  if ([...value].length < USERNAME_MIN) return 'setup.usernameTooShort';
-  if ([...value].length > USERNAME_MAX) return 'setup.usernameTooLong';
-  if (!/[A-Za-z0-9]$/.test(value)) return 'setup.usernameMustEndAlnum';
-  return null;
-}
-
-/**
- * `usernameTooShort` / `usernameTooLong` interpolate {{min}} / {{max}}, so the
- * key has to be resolved with the bounds or the operator reads a raw
- * placeholder.
- */
+/** `usernameTooShort` / `usernameTooLong` interpolate {{min}} / {{max}}. */
 function usernameError(raw: string, t: TFunction): string | null {
   const key = usernameErrorKey(raw);
   if (!key) return null;
@@ -364,6 +353,8 @@ export default function SetupPage() {
   const [done, setDone] = useState(false);
   const [probe, setProbe] = useState<ProbeResult | null>(null);
   const [profile, setProfile] = useState<ProfileKey>('smart');
+  const [profileWarning, setProfileWarning] = useState('');
+  const warnedProfileRef = useRef('');
   const [confirmed, setConfirmed] = useState(false);
   const [account, setAccount] = useState({ username: '', password: '', confirm: '' });
   const [touched, setTouched] = useState<TouchedFields>({ username: false, password: false, confirm: false });
@@ -372,6 +363,14 @@ export default function SetupPage() {
   const [accountError, setAccountError] = useState('');
   const [integrations, setIntegrations] = useState<IntegrationsState>(DEFAULT_INTEGRATIONS);
   const [integrationsError, setIntegrationsError] = useState('');
+  const [setupAccessReady, setSetupAccessReady] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const rawFragment = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+    return Boolean(new URLSearchParams(rawFragment).get('setup_token')?.trim()) || hasSetupToken();
+  });
+  const [setupTokenInput, setSetupTokenInput] = useState('');
+  const [setupTokenError, setSetupTokenError] = useState('');
+  const probeProfileInitializedRef = useRef(false);
 
   const typewriterPhrases = useMemo(
     () => [t('setup.languageTitleZh'), t('setup.languageTitleEn')],
@@ -389,6 +388,7 @@ export default function SetupPage() {
     setErrorMessage('');
     setAccountError('');
     setIntegrationsError('');
+    setProfileWarning('');
     setStep(nextStep);
   };
 
@@ -413,29 +413,67 @@ export default function SetupPage() {
     };
   }, [language]);
 
+  // Accept the one-time URL fragment without ever retaining it in the address
+  // bar. A direct /setup visit stays at this gate until the operator pastes the
+  // token; the value is kept only in the API client's process memory.
   useEffect(() => {
+    const fragmentToken = captureSetupTokenFromFragment();
+    if (fragmentToken || hasSetupToken()) setSetupAccessReady(true);
+  }, []);
+
+  function handleSetupTokenSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = setupTokenInput.trim();
+    if (!token) {
+      const message = t('setup.tokenRequired');
+      setSetupTokenError(message);
+      toast.error(message);
+      return;
+    }
+    setSetupTokenForSession(token);
+    setSetupTokenInput('');
+    setSetupTokenError('');
+    setSetupAccessReady(true);
+  }
+
+  useEffect(() => {
+    if (!setupAccessReady) return;
     let cancelled = false;
     (async () => {
       try {
         const data = await unwrapAPIResponse<{ probe: ProbeResult }>(apiClient.post('/setup/probe', {}));
         if (!cancelled) {
           setProbe(data.probe);
-          if (data.probe?.profile && data.probe.profile !== 'custom') {
+          setSetupTokenInput('');
+          if (!probeProfileInitializedRef.current && data.probe?.profile && data.probe.profile !== 'custom') {
             setProfile(data.probe.profile);
+            probeProfileInitializedRef.current = true;
           }
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof APIRequestError && err.code === 'SETUP_TOKEN_REQUIRED') {
+          if (!cancelled) {
+            setSetupAccessReady(false);
+            setSetupTokenError(t('setup.tokenInvalid'));
+            setProbe(null);
+          }
+          return;
+        }
         // Probe is best-effort; operator can still complete setup with conservative defaults.
         if (!cancelled) {
           setProbe({ profile: 'low', incomplete: true, notes: ['probe unavailable'] });
-          setProfile('low');
+          if (!probeProfileInitializedRef.current) {
+            setProfile('low');
+            probeProfileInitializedRef.current = true;
+          }
+          setSetupTokenInput('');
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [setupAccessReady, t]);
 
   // Clear stale integration errors as soon as the operator edits any value.
   useEffect(() => {
@@ -455,7 +493,7 @@ export default function SetupPage() {
     setAccountError('');
     setTouched({ username: true, password: true, confirm: true });
 
-    const username = account.username.trim();
+    const username = account.username;
     // Client-side field errors are shown inline (and as a toast for visibility);
     // the form-level banner is reserved for server/API failures.
     const usernameMessage = usernameError(username, t);
@@ -563,7 +601,7 @@ export default function SetupPage() {
   const browserLanguage = detectBrowserLanguage();
 
   const usernameVisibleError = touched.username ? usernameError(account.username, t) : null;
-  const passwordPolicyKey = passwordPolicyErrorKey(account.password, account.username.trim());
+  const passwordPolicyKey = passwordPolicyErrorKey(account.password, account.username);
   const passwordVisibleError = touched.password
     ? account.password === ''
       ? t('setup.passwordRequired')
@@ -590,6 +628,38 @@ export default function SetupPage() {
   const integrationsSummary = enabledIntegrations.length
     ? enabledIntegrations.join(' · ')
     : t('setup.integrationsSummaryNone');
+
+  function handleProfileSelect(nextProfile: ProfileKey) {
+    setProfile(nextProfile);
+  }
+
+  useEffect(() => {
+    if (step !== STEP_PROFILE || !recommendedProfile || profile === recommendedProfile) {
+      warnedProfileRef.current = '';
+      setProfileWarning('');
+      return;
+    }
+    const warningID = `${recommendedProfile}:${profile}`;
+    if (warnedProfileRef.current === warningID) return;
+    warnedProfileRef.current = warningID;
+
+    const recommendedRank = PROFILE_RANK[recommendedProfile];
+    const selectedRank = PROFILE_RANK[profile];
+    const recommendedTitle = t(
+      PROFILE_OPTIONS.find((option) => option.value === recommendedProfile)?.titleKey ?? 'setup.profileCustom',
+    );
+    const selectedTitle = t(
+      PROFILE_OPTIONS.find((option) => option.value === profile)?.titleKey ?? 'setup.profileCustom',
+    );
+    const warningKey = recommendedRank != null && selectedRank != null
+      ? selectedRank > recommendedRank
+        ? 'setup.profileWarningHigher'
+        : 'setup.profileWarningLower'
+      : 'setup.profileWarningDifferent';
+    const message = t(warningKey, { selected: selectedTitle, recommended: recommendedTitle });
+    setProfileWarning(message);
+    toast.warning(message);
+  }, [profile, recommendedProfile, step]);
 
   function renderStatusIcon(status: CheckStatus) {
     if (status === 'pass') return <Check size={14} aria-hidden="true" />;
@@ -663,35 +733,74 @@ export default function SetupPage() {
   return (
     <main className="auth-screen setup-screen">
       <section className="auth-panel setup-panel">
-        <div className="auth-brand">
-          <span><BrandLogo /></span>
-          <div>
+        <div className="auth-brand setup-brand">
+          <span className="setup-brand-mark"><BrandLogo className="setup-brand-logo" /></span>
+          <div className="setup-brand-copy">
             <h1>{t('setup.title')}</h1>
             <p>{t('setup.subtitle')}</p>
           </div>
         </div>
 
-        {step > STEP_LANGUAGE && (
-          <ol className="setup-steps flex flex-wrap items-center gap-3 text-sm">
-            {steps.map((item, index) => (
-              <li
-                key={item.title}
-                className={[
-                  'inline-flex items-center gap-1.5',
-                  index === step ? 'font-semibold text-foreground' : 'text-muted-foreground',
-                  index < step ? 'opacity-80' : '',
-                ].filter(Boolean).join(' ')}
-                aria-current={index === step ? 'step' : undefined}
-              >
-                <span aria-hidden="true">{item.icon}</span>
-                <span>{item.title}</span>
-                {index < steps.length - 1 ? <span className="ml-1 text-muted-foreground/60" aria-hidden="true">/</span> : null}
-              </li>
-            ))}
-          </ol>
+        {!setupAccessReady ? (
+          <section className="setup-card setup-token-card rounded-2xl p-5" aria-live="polite">
+            <h2 className="m-0 text-base font-semibold">{t('setup.tokenTitle')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{t('setup.tokenHint')}</p>
+            <form className="mt-3 grid gap-2" onSubmit={handleSetupTokenSubmit} noValidate>
+              <Label htmlFor="setup-token">{t('setup.tokenLabel')}</Label>
+              <Input
+                id="setup-token"
+                className="setup-input"
+                type="password"
+                inputMode="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={setupTokenInput}
+                onChange={(event) => { setSetupTokenInput(event.target.value); setSetupTokenError(''); }}
+                placeholder={t('setup.tokenPlaceholder')}
+                aria-invalid={setupTokenError ? true : undefined}
+              />
+              {setupTokenError ? <p className="text-xs text-destructive" role="alert">{setupTokenError}</p> : null}
+              <p className="m-0 text-xs text-muted-foreground">{t('setup.tokenSecurity')}</p>
+              <Button className="setup-btn-primary mt-1 w-full" type="submit">{t('setup.tokenContinue')}</Button>
+            </form>
+          </section>
+        ) : null}
+
+        {setupAccessReady && step > STEP_LANGUAGE && (
+          <>
+            <ol className="setup-steps setup-fishbone" aria-label={t('setup.progressLabel')}>
+              {steps.map((item, index) => {
+                const state = index < step ? 'complete' : index === step ? 'current' : 'upcoming';
+                return (
+                  <li
+                    key={item.title}
+                    data-state={state}
+                    aria-current={index === step ? 'step' : undefined}
+                    aria-label={t('setup.progressStep', {
+                      current: index + 1,
+                      total: steps.length,
+                      title: item.title,
+                    })}
+                  >
+                    <span className="setup-step-icon" aria-hidden="true">
+                      {state === 'complete' ? <Check size={15} /> : item.icon}
+                    </span>
+                    <span className="setup-step-label">{item.title}</span>
+                  </li>
+                );
+              })}
+            </ol>
+            <p className="setup-progress-mobile" aria-live="polite">
+              {t('setup.progressCurrent', {
+                current: step + 1,
+                total: steps.length,
+                title: steps[step]?.title ?? '',
+              })}
+            </p>
+          </>
         )}
 
-        {step === STEP_LANGUAGE && (
+        {setupAccessReady && step === STEP_LANGUAGE && (
           <div className="auth-form setup-step-content">
             <div className="relative">
               {/* Invisible placeholder reserves the width/height of the longest
@@ -748,7 +857,7 @@ export default function SetupPage() {
           </div>
         )}
 
-        {step === STEP_ENVIRONMENT && (
+        {setupAccessReady && step === STEP_ENVIRONMENT && (
           <div className="auth-form setup-step-content">
             <p>{t('setup.probeHint')}</p>
             {probe ? (
@@ -757,13 +866,15 @@ export default function SetupPage() {
                   <h3 className="m-0 mb-2 text-sm font-semibold">{t('setup.probeChecklistTitle')}</h3>
                   <ul className="m-0 grid list-none gap-1.5 p-0">
                     {checks.map((check) => (
-                      <li key={check.id} className="flex items-center gap-2 text-sm">
-                        <span className={`inline-flex items-center gap-1 font-medium ${STATUS_STYLES[check.status]}`}>
-                          {renderStatusIcon(check.status)}
-                          {t(STATUS_KEYS[check.status])}
+                      <li key={check.id} className="setup-check-row text-sm">
+                        <span className="setup-check-main">
+                          <span className={`setup-check-status inline-flex items-center gap-1 font-medium ${STATUS_STYLES[check.status]}`}>
+                            {renderStatusIcon(check.status)}
+                            {t(STATUS_KEYS[check.status])}
+                          </span>
+                          <span className="setup-check-label text-muted-foreground">{check.label}</span>
                         </span>
-                        <span className="text-muted-foreground">{check.label}</span>
-                        <span className="ml-auto font-medium tabular-nums">{check.value}</span>
+                        <span className="setup-check-value font-medium tabular-nums">{check.value}</span>
                       </li>
                     ))}
                   </ul>
@@ -771,12 +882,53 @@ export default function SetupPage() {
 
                 {probe.incomplete ? <p className="form-error" role="alert">{t('setup.probeIncomplete')}</p> : null}
 
-                <section className="setup-card mt-2 rounded-2xl bg-muted/30 p-4">
-                  <h3 className="m-0 mb-1 text-sm font-semibold">{t('setup.probeRecommendationTitle')}</h3>
-                  <p className="m-0 text-sm">
-                    {recommendedOption ? t(recommendedOption.titleKey) : t('setup.profileCustom')}
-                  </p>
-                  <p className="m-0 text-xs text-muted-foreground">{t('setup.probeRecommendationReason')}</p>
+                <section className="setup-card setup-recommendation-card mt-2 p-4" aria-label={t('setup.probeRecommendationTitle')}>
+                  <div className="setup-recommendation-head">
+                    <div className="setup-recommendation-title">
+                      <span className="setup-recommendation-icon" aria-hidden="true"><Gauge size={18} /></span>
+                      <div className="min-w-0">
+                        <p className="setup-recommendation-eyebrow">{t('setup.probeRecommendationTitle')}</p>
+                        <h3 className="m-0 text-lg font-semibold">
+                          {recommendedOption ? t(recommendedOption.titleKey) : t('setup.profileCustom')}
+                        </h3>
+                      </div>
+                    </div>
+                    {recommendedOption ? <Badge variant="success">{t('setup.profileRecommended')}</Badge> : null}
+                  </div>
+                  <p className="setup-recommendation-copy">{t('setup.probeRecommendationReason')}</p>
+                  <dl className="setup-recommendation-stats">
+                    <div>
+                      <dt>{t('setup.recommendationHost')}</dt>
+                      <dd>
+                        {probe.cpu_logical != null && probe.memory_total_mb != null
+                          ? t('setup.recommendationHostValue', {
+                            cpu: formatCount(probe.cpu_logical),
+                            memory: formatCount(probe.memory_total_mb),
+                          })
+                          : t('setup.recommendationUnavailable')}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>{t('setup.recommendationDepth')}</dt>
+                      <dd>
+                        {probe.suggested_config?.semantic_depth != null
+                          ? t('setup.recommendationDepthValue', {
+                            value: formatCount(probe.suggested_config.semantic_depth),
+                          })
+                          : t('setup.recommendationUnavailable')}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>{t('setup.recommendationBudget')}</dt>
+                      <dd>
+                        {probe.suggested_config?.pipeline_budget_ms != null
+                          ? t('setup.recommendationBudgetValue', {
+                            value: formatCount(probe.suggested_config.pipeline_budget_ms),
+                          })
+                          : t('setup.recommendationUnavailable')}
+                      </dd>
+                    </div>
+                  </dl>
                 </section>
 
                 {notes.length > 0 ? (
@@ -800,12 +952,12 @@ export default function SetupPage() {
           </div>
         )}
 
-        {step === STEP_PROFILE && (
+        {setupAccessReady && step === STEP_PROFILE && (
           <div className="auth-form setup-step-content">
             <p>{t('setup.profileHint')}</p>
             <RadioGroup
               value={profile}
-              onValueChange={(value) => setProfile(value as ProfileKey)}
+              onValueChange={(value) => handleProfileSelect(value as ProfileKey)}
               className="mt-2 grid gap-2"
             >
               {PROFILE_OPTIONS.map((option) => {
@@ -815,18 +967,21 @@ export default function SetupPage() {
                   <div
                     key={option.value}
                     className={[
-                      'setup-card-radio flex items-start gap-3 p-5',
+                      'setup-card-radio setup-profile-card flex items-start gap-3 p-5',
                       profile === option.value ? 'setup-card-radio-selected' : '',
+                      isRecommended ? 'setup-profile-card-recommended' : '',
                     ].join(' ')}
+                    data-recommended={isRecommended ? 'true' : undefined}
+                    onClick={() => handleProfileSelect(option.value)}
                   >
                     <RadioGroupItem value={option.value} id={id} className="mt-0.5" />
                     <Label htmlFor={id} className="grid cursor-pointer gap-1 font-normal leading-snug">
-                      <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      <span className="setup-profile-option-title flex flex-wrap items-center gap-2 text-sm font-medium">
                         {t(option.titleKey)}
                         {isRecommended ? <Badge variant="success">{t('setup.profileRecommended')}</Badge> : null}
                       </span>
-                      <span className="text-xs text-muted-foreground">{t(option.descKey)}</span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="setup-profile-option-description text-xs text-muted-foreground">{t(option.descKey)}</span>
+                      <span className="setup-profile-option-meta text-xs text-muted-foreground">
                         {t('setup.profileWebAttack')}: {t(WEB_ATTACK_LEVEL_KEYS[option.webAttackLevel] ?? 'sites.levelSmart')}
                         {' · '}
                         {t('setup.profileOverhead')}: {t(option.overheadKey)}
@@ -836,6 +991,12 @@ export default function SetupPage() {
                 );
               })}
             </RadioGroup>
+            {profileWarning ? (
+              <div className="setup-profile-warning" role="alert">
+                <AlertTriangle size={15} aria-hidden="true" />
+                <span>{profileWarning}</span>
+              </div>
+            ) : null}
             {recommendedOption ? (
               <p className="mt-2 text-xs text-muted-foreground">{t('setup.profileRecommendedReason')}</p>
             ) : null}
@@ -845,13 +1006,13 @@ export default function SetupPage() {
                 className="setup-btn-primary flex-1"
                 onClick={async () => { await persistDraft({ profile }); goToStep(STEP_ACCOUNT); }}
               >
-                {t('common.next')}
+                {t('setup.chooseProfile')}
               </Button>
             </div>
           </div>
         )}
 
-        {step === STEP_ACCOUNT && (
+        {setupAccessReady && step === STEP_ACCOUNT && (
           <form className="auth-form setup-step-content" onSubmit={handleAccountSubmit} noValidate>
             <div className="grid gap-1.5">
               <Label htmlFor="setup-username">{t('setup.username')}</Label>
@@ -913,7 +1074,7 @@ export default function SetupPage() {
           </form>
         )}
 
-        {step === STEP_INTEGRATIONS && (
+        {setupAccessReady && step === STEP_INTEGRATIONS && (
           <div className="auth-form setup-step-content">
             <p>{t('setup.integrationsHint')}</p>
             <p className="m-0 text-xs text-muted-foreground">{t('setup.integrationsPostponed')}</p>
@@ -1016,7 +1177,7 @@ export default function SetupPage() {
           </div>
         )}
 
-        {step === STEP_REVIEW && (
+        {setupAccessReady && step === STEP_REVIEW && (
           <div className="auth-form setup-step-content">
             <p>{t('setup.reviewHint')}</p>
             <section className="setup-card mt-2 rounded-2xl p-4">
@@ -1098,7 +1259,7 @@ export default function SetupPage() {
           </div>
         )}
 
-        {step === STEP_DONE && done && (
+        {setupAccessReady && step === STEP_DONE && done && (
           <div className="auth-form setup-step-content justify-items-center gap-2 py-2 text-center" role="status">
             <CheckCircle2 className="setup-success-mark text-emerald-600 dark:text-emerald-400" size={30} aria-hidden="true" />
             <h2 className="m-0 text-lg font-semibold">{t('setup.completeTitle')}</h2>

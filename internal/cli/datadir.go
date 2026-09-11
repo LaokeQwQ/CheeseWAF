@@ -31,6 +31,7 @@ func applyCLIDataDir(cfg *config.Config, flagDir string) error {
 		cfg.Setup.RuntimeDir = filepath.Join(abs, "run")
 	}
 	cfg.Storage.SQLite.Path = rebaseUnderDataDir(cfg.Storage.SQLite.Path, abs)
+	cfg.Cluster.Consensus.NativeRaft.DataDir = rebaseUnderDataDir(cfg.Cluster.Consensus.NativeRaft.DataDir, abs)
 	cfg.Server.AdminTLS.CertFile = rebaseUnderDataDir(cfg.Server.AdminTLS.CertFile, abs)
 	cfg.Server.AdminTLS.KeyFile = rebaseUnderDataDir(cfg.Server.AdminTLS.KeyFile, abs)
 	cfg.TLS.CertFile = rebaseUnderDataDir(cfg.TLS.CertFile, abs)

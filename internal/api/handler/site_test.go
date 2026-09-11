@@ -62,6 +62,37 @@ func TestConfigReplacementIsSynchronizedAndDeepCloned(t *testing.T) {
 	}
 }
 
+func TestCurrentConfigFallbackDeepClonesCompatibilityConfig(t *testing.T) {
+	cfg := config.Default()
+	h := New(Options{Config: &cfg})
+	snapshot := h.currentConfig()
+	if snapshot == nil {
+		t.Fatal("initial config snapshot is nil")
+	}
+	if snapshot == h.Config {
+		t.Fatal("initial config snapshot aliases compatibility config")
+	}
+	h.Config.Logging.Level = "debug"
+	if snapshot.Logging.Level == "debug" {
+		t.Fatal("initial config snapshot changed with compatibility config")
+	}
+
+	candidate, err := config.Clone(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Logging.Level = "warn"
+	if err := h.publishConfig(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if h.Config.Logging.Level != "warn" {
+		t.Fatalf("compatibility config level = %q, want warn", h.Config.Logging.Level)
+	}
+	if h.currentConfig().Logging.Level != "warn" {
+		t.Fatalf("published config level = %q, want warn", h.currentConfig().Logging.Level)
+	}
+}
+
 func TestSiteMutationStoreFailuresDoNotReturnSuccess(t *testing.T) {
 	tests := []string{"create", "update", "delete"}
 	for _, operation := range tests {

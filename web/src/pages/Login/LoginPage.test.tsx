@@ -335,6 +335,22 @@ describe('Login CAPTCHA request isolation', () => {
 });
 
 describe('Login CAPTCHA username binding', () => {
+  it.each([' admin ', 'ad min', 'admin\u200b', 'admin\t'])('rejects %j without rewriting it or starting authentication work', async (value) => {
+    api.fetchLoginOptions.mockResolvedValue({ ...options, captcha: { ...options.captcha, enabled: false } });
+    renderLogin();
+    await waitFor(() => expect(api.fetchLoginOptions).toHaveBeenCalledTimes(1));
+    const input = screen.getByRole('textbox', { name: 'login.username' }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value } });
+    fireEvent.change(screen.getByLabelText('login.password'), { target: { value: 'S3cure-Pass!' } });
+    fireEvent.click(screen.getByRole('button', { name: 'login.submit' }));
+
+    await waitFor(() => expect(document.body.textContent).toContain('Username must not contain whitespace or invisible characters. Re-enter it without them.'));
+    expect(input.value).toBe(value);
+    expect(api.fetchLoginCaptcha).not.toHaveBeenCalled();
+    expect(api.verifyLoginCaptcha).not.toHaveBeenCalled();
+    expect(api.login).not.toHaveBeenCalled();
+  });
+
   it('does not issue a challenge until a valid username remains stable', async () => {
     vi.useFakeTimers();
     api.fetchLoginCaptcha.mockResolvedValue(captcha('stable-username-token'));

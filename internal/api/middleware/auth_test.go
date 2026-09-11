@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/tokens"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -247,6 +248,19 @@ func TestManagementAPITokenUsesFastDigestAndRetainsPrefixedBcryptCompatibility(t
 	}
 }
 
+func TestManagementAPITokenRejectsAfter180DaysWithoutActivity(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	raw := "cwapi_inactivity_fixture"
+	old := now.Add(-tokens.InactivityTTL)
+	claims, ok := VerifyManagementAPIToken(raw, config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{{
+		ID: "inactive", Name: "inactive", Prefix: "cwapi_inactiv", Hash: HashManagementAPIToken(raw), Scopes: []string{"read:system"}, Enabled: true,
+		CreatedAt: old, LastUsedAt: old, NeverExpire: true,
+	}}}, now)
+	if ok || claims != nil {
+		t.Fatalf("inactive token was accepted: claims=%+v ok=%v", claims, ok)
+	}
+}
+
 func TestManagementAPITokenRejectsHashMatchUnderWrongPrefix(t *testing.T) {
 	raw := "cwapi_expected_token"
 	claims, ok := VerifyManagementAPIToken(raw, config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{{
@@ -277,5 +291,82 @@ func TestSessionMiddlewareWithClockUsesInjectedUTCClock(t *testing.T) {
 	want := now.UTC()
 	if len(validator.times) != 1 || !validator.times[0].Equal(want) || validator.times[0].Location() != time.UTC {
 		t.Fatalf("session validation times = %v, want one UTC time %s", validator.times, want)
+	}
+}
+
+func TestManagementAPITokenSecretIsHashedExactlyAndWhitespaceIsRejected(t *testing.T) {
+	raw := ManagementAPITokenPrefix + "fixture-secret"
+	if HashManagementAPIToken(raw+" ") == HashManagementAPIToken(raw) {
+		t.Fatal("hashing a secret with trailing whitespace silently rewrote it")
+	}
+	now := time.Now().UTC()
+	cfg := config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{{
+		ID: "fixture", Name: "deploy", Prefix: raw[:12], Hash: HashManagementAPIToken(raw), Scopes: []string{"read:system"}, Enabled: true, CreatedAt: now,
+	}}}
+	for _, invalid := range []string{raw + " ", raw + "\t", raw + "\u200b", raw + "\x00"} {
+		if claims, ok := VerifyManagementAPIToken(invalid, cfg, now); ok || claims != nil {
+			t.Fatalf("VerifyManagementAPIToken(%q) accepted invalid secret: claims=%+v ok=%v", invalid, claims, ok)
+		}
+	}
+}
+
+func TestManagementAPITokenRejectsMalformedConfiguredIdentity(t *testing.T) {
+	raw := ManagementAPITokenPrefix + "fixture-secret"
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*config.ManagementAPITokenConfig)
+	}{
+		{name: "id", mutate: func(token *config.ManagementAPITokenConfig) { token.ID = "fixture " }},
+		{name: "prefix", mutate: func(token *config.ManagementAPITokenConfig) { token.Prefix = raw[:12] + " " }},
+		{name: "scope", mutate: func(token *config.ManagementAPITokenConfig) { token.Scopes = []string{"read:system\u200b"} }},
+		{name: "hash", mutate: func(token *config.ManagementAPITokenConfig) { token.Hash += " " }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token := config.ManagementAPITokenConfig{ID: "fixture", Name: "deploy", Prefix: raw[:12], Hash: HashManagementAPIToken(raw), Scopes: []string{"read:system"}, Enabled: true, CreatedAt: now}
+			tc.mutate(&token)
+			claims, ok := VerifyManagementAPIToken(raw, config.ManagementAPIConfig{Enabled: true, Tokens: []config.ManagementAPITokenConfig{token}}, now)
+			if ok || claims != nil {
+				t.Fatalf("malformed configured token was accepted: claims=%+v ok=%v", claims, ok)
+			}
+		})
+	}
+}
+
+func TestBearerTokenPreservesCredentialAndUsesHTTPSpaceSeparator(t *testing.T) {
+	raw := ManagementAPITokenPrefix + "fixture-secret"
+	for _, tc := range []struct {
+		name, header, want string
+	}{
+		{name: "one space", header: "Bearer " + raw, want: raw},
+		{name: "multiple spaces", header: "Bearer    " + raw, want: raw},
+		{name: "trailing secret space", header: "Bearer " + raw + " ", want: raw + " "},
+		{name: "tab separator", header: "Bearer\t" + raw, want: ""},
+		{name: "embedded space", header: "Bearer " + raw[:8] + " " + raw[8:], want: raw[:8] + " " + raw[8:]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api", nil)
+			req.Header.Set("Authorization", tc.header)
+			if got := bearerToken(req); got != tc.want {
+				t.Fatalf("bearerToken(%q)=%q, want %q", tc.header, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTokenManagerRejectsNonCanonicalTokenIdentity(t *testing.T) {
+	manager := NewTokenManager("configured-secret", time.Hour)
+	for _, tc := range []struct {
+		name, subject, role string
+	}{
+		{name: "subject leading space", subject: " user-1", role: "admin"},
+		{name: "subject zero width", subject: "user-1\u200b", role: "admin"},
+		{name: "role trailing space", subject: "user-1", role: "admin "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := manager.SignWithClaims(tc.subject, "admin", tc.role); err == nil {
+				t.Fatalf("SignWithClaims(%q, %q) accepted non-canonical identity", tc.subject, tc.role)
+			}
+		})
 	}
 }

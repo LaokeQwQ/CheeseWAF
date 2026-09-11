@@ -102,6 +102,9 @@ async function editRuntimeListenAndSave(initialValue: string, value: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = vi.fn();
+  }
   apiMocks.fetchManagementAPITokens.mockResolvedValue({ items: [] });
   apiMocks.fetchSystemConfig.mockResolvedValue(systemWithListen(':18080'));
   apiMocks.fetchTimeSyncStatus.mockResolvedValue({
@@ -222,5 +225,26 @@ describe('SystemPage persistence success', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+describe('SystemPage management API token lifetime', () => {
+  it('keeps non-expiring lifetime disabled until the secure confirmation service is wired', async () => {
+    const initial = systemWithListen(':18080');
+    initial.apisec = {
+      ...initial.apisec,
+      management_api: { enabled: true, tokens: [] },
+    };
+    apiMocks.fetchSystemConfig.mockResolvedValue(initial);
+    renderSystem();
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'system.apiSecurity' }), { button: 0, ctrlKey: false });
+    await screen.findByText('system.managementAPI');
+    const comboboxes = screen.getAllByRole('combobox');
+    fireEvent.click(comboboxes[comboboxes.length - 1]);
+    const unavailable = await screen.findByRole('option', { name: 'system.apiTokenNoExpiryUnavailable' });
+    expect(unavailable.getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryByRole('heading', { name: 'system.apiTokenNeverExpireConfirmTitle' })).toBeNull();
+    expect(apiMocks.createManagementAPIToken).not.toHaveBeenCalled();
   });
 });

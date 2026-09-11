@@ -23,6 +23,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/approval"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -44,6 +45,8 @@ func TestRouterRequiresBearerForManagementAPI(t *testing.T) {
 		{name: "logs", method: http.MethodGet, path: "/api/logs"},
 		{name: "review", method: http.MethodGet, path: "/api/review"},
 		{name: "ui error report", method: http.MethodPost, path: "/api/ui/errors"},
+		{name: "ai provider operations", method: http.MethodGet, path: "/api/ai/ops/providers"},
+		{name: "ai local usage", method: http.MethodGet, path: "/api/ai/ops/usage?range=7d"},
 		{name: "backup export", method: http.MethodPost, path: "/api/backup/export"},
 		{name: "block page preview", method: http.MethodPost, path: "/api/block-pages/preview"},
 	} {
@@ -82,6 +85,27 @@ func TestRouterRequiresBearerForManagementAPI(t *testing.T) {
 			t.Fatalf("expected cookie-only request to stay unauthorized, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 	})
+}
+
+func TestRouterDoesNotExposeApprovalGateWithoutExplicitWiring(t *testing.T) {
+	router, _, _ := newAuthzTestRouter(t)
+	for _, path := range []string{"/api/approvals", "/api/approvals/request-1/confirmation/start", "/api/approvals/request-1/confirmation"} {
+		recorder := perform(router, http.MethodPost, path, "", []byte(`{}`))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("approval route %s exposed without wiring: %d %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestRouterMountsApprovalGateOnlyWhenInjectedBehindManagementAuth(t *testing.T) {
+	cfg := config.Default()
+	gate := approval.NewGate(1)
+	approvalHandler := handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{Gate: gate})
+	router := NewRouter(Options{Config: &cfg, Secret: "approval-route-test-secret", AssistantApprovals: ai.NewApprovalStore(), ApprovalHTTP: approvalHandler})
+	recorder := perform(router, http.MethodPost, "/api/approvals", "", []byte(`{}`))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("injected approval route must remain behind management authentication, got %d: %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestRouterReadonlyCannotMutateManagementAPI(t *testing.T) {

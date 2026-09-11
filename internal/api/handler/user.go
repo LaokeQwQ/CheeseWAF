@@ -7,9 +7,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passpolicy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -42,6 +45,14 @@ type totpConsumedPersist interface {
 	IsTOTPConsumed(ctx context.Context, userID string, counter int64, now time.Time) (bool, error)
 	DeleteTOTPConsumed(ctx context.Context, userID string, counter int64) error
 	PruneTOTPConsumed(ctx context.Context, before time.Time) error
+}
+
+// totpAtomicConsumer is implemented by the production storage backends. The
+// legacy read/write methods above remain in the narrow persistence subset so
+// older test or embedding stores can still be used through the documented
+// compatibility fallback below.
+type totpAtomicConsumer interface {
+	ConsumeTOTP(ctx context.Context, userID string, counter int64, expiresAt, now time.Time) (bool, error)
 }
 
 type twoFAState struct {
@@ -103,7 +114,11 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if req.Username == "" || req.Password == "" {
+	if err := identity.ValidateUsername(req.Username); err != nil {
+		writeError(w, http.StatusBadRequest, "USERNAME_INVALID", err.Error())
+		return
+	}
+	if req.Password == "" {
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "username and password are required")
 		return
 	}
@@ -189,9 +204,6 @@ func (h *Handler) EnableUser2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
-	if !h.revokeUserSessions(w, r, user.ID, "") {
-		return
-	}
 	writeData(w, user)
 }
 
@@ -236,9 +248,6 @@ func (h *Handler) DisableUser2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
-	if !h.revokeUserSessions(w, r, user.ID, "") {
-		return
-	}
 	writeData(w, user)
 }
 
@@ -269,7 +278,7 @@ func (h *Handler) RecoverUser2FA(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if !h.verifyCurrentCallerPassword(r, req.Password) || strings.TrimSpace(req.ConfirmUsername) != user.Username {
+	if identity.ValidateUsername(req.ConfirmUsername) != nil || !h.verifyCurrentCallerPassword(r, req.Password) || req.ConfirmUsername != user.Username {
 		writeError(w, http.StatusBadRequest, "INVALID_RECOVERY_CONFIRMATION", "invalid recovery confirmation")
 		return
 	}
@@ -281,9 +290,6 @@ func (h *Handler) RecoverUser2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.twoFATracker().clearPending(user.ID)
-	if !h.revokeUserSessions(w, r, user.ID, "") {
-		return
-	}
 	writeData(w, user)
 }
 
@@ -362,7 +368,15 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "USER_UPDATE_FORBIDDEN", "only an admin can modify an admin user")
 		return
 	}
+	if identity.ValidateUsername(user.Username) != nil {
+		writeError(w, http.StatusConflict, "USERNAME_REPAIR_REQUIRED", "historical username requires explicit repair by immutable user ID")
+		return
+	}
 	if req.Username != "" {
+		if err := identity.ValidateUsername(req.Username); err != nil {
+			writeError(w, http.StatusBadRequest, "USERNAME_INVALID", err.Error())
+			return
+		}
 		user.Username = req.Username
 	}
 	if req.Role != "" {
@@ -392,18 +406,16 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
-	if !h.revokeUserSessions(w, r, user.ID, "") {
-		return
-	}
 	writeData(w, user)
 }
 
 func (h *Handler) validateUserRole(role string) error {
-	role = strings.TrimSpace(role)
 	if role == "" {
 		return fmt.Errorf("role is required")
 	}
-	if strings.Contains(role, "*") || strings.Contains(role, ":") || strings.ContainsAny(role, " \t\r\n") {
+	if !utf8.ValidString(role) || strings.Contains(role, "*") || strings.Contains(role, ":") || strings.IndexFunc(role, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) >= 0 {
 		return fmt.Errorf("role must be a configured role name, not a permission expression")
 	}
 	permissions := config.Default().APISec.Permissions
@@ -420,7 +432,6 @@ func (h *Handler) validateUserRoleChange(r *http.Request, users []storage.User, 
 	if user == nil {
 		return fmt.Errorf("user is required")
 	}
-	nextRole = strings.TrimSpace(nextRole)
 	if nextRole != user.Role {
 		if err := h.validateRoleGrant(r, nextRole); err != nil {
 			return err
@@ -453,7 +464,7 @@ func (h *Handler) rolePermissions(role string) []string {
 	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
 		permissions = h.currentConfig().APISec.Permissions
 	}
-	return append([]string(nil), permissions[strings.TrimSpace(role)]...)
+	return append([]string(nil), permissions[role]...)
 }
 
 func callerIsAdmin(r *http.Request) bool {
@@ -599,13 +610,23 @@ func (s *twoFAState) consumeTOTPCounter(userID, secret, code string, now time.Ti
 		return counter, true
 	}
 	s.persistMu.Lock()
-	consumed, err := store.IsTOTPConsumed(context.Background(), userID, counter, now)
-	if err == nil && !consumed {
-		err = store.MarkTOTPConsumed(context.Background(), userID, counter, expiresAt)
+	claimed := false
+	var err error
+	if atomicStore, ok := store.(totpAtomicConsumer); ok {
+		claimed, err = atomicStore.ConsumeTOTP(context.Background(), userID, counter, expiresAt, now)
+	} else {
+		// Compatibility fallback for legacy embedding stores. Production SQLite
+		// and PostgreSQL stores implement ConsumeTOTP and never take this path.
+		var consumed bool
+		consumed, err = store.IsTOTPConsumed(context.Background(), userID, counter, now)
+		if err == nil && !consumed {
+			err = store.MarkTOTPConsumed(context.Background(), userID, counter, expiresAt)
+			claimed = err == nil
+		}
 	}
 	s.maybePrunePersistedLocked(store, now)
 	s.persistMu.Unlock()
-	if err != nil || consumed {
+	if err != nil || !claimed {
 		// Keep the in-memory burn on persistence errors or an already-consumed
 		// database counter. Authentication fails closed and cannot immediately
 		// replay the same TOTP while storage is unavailable.
@@ -620,13 +641,10 @@ func (s *twoFAState) releaseConsumedTOTP(userID string, counter int64) {
 	}
 	s.mu.Lock()
 	delete(s.consumed, totpConsumeKey(userID, counter))
-	store := s.store
 	s.mu.Unlock()
-	if store != nil {
-		s.persistMu.Lock()
-		_ = store.DeleteTOTPConsumed(context.Background(), userID, counter)
-		s.persistMu.Unlock()
-	}
+	// The durable claim is intentionally retained. Releasing only the local
+	// reservation preserves the caller's retry bookkeeping without reopening a
+	// replay window when a later token/session mutation fails.
 }
 
 func totpConsumeKey(userID string, counter int64) string {

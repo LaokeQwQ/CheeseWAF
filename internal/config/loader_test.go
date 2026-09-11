@@ -341,7 +341,7 @@ func TestValidateOTAEndpointGuard(t *testing.T) {
 
 	cfg := Default()
 	cfg.Update.OTA.Enabled = true
-	cfg.Update.OTA.Server = "https://ota.waf.laoker.cc/"
+	cfg.Update.OTA.Server = "https://ota.cheesesec.com/"
 	cfg.Update.OTA.Channel = "stable"
 	cfg.Update.OTA.CheckInterval = 6 * time.Hour
 	if err := Validate(&cfg); err != nil {

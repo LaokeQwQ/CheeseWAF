@@ -37,6 +37,31 @@ func TestCreateUserRejectsPermissionExpressionRole(t *testing.T) {
 	}
 }
 
+func TestCreateUserRejectsNonCanonicalUsername(t *testing.T) {
+	handler, store := newUserTestHandler(t)
+	for _, username := range []string{" admin", "admin ", "ad min", "admin\t", "admin\u200b"} {
+		t.Run(username, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			body, err := json.Marshal(map[string]string{"username": username, "password": "Correct-Horse-9x!", "role": "readonly"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/users", bytes.NewReader(body))
+			handler.CreateUser(recorder, request)
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "USERNAME_INVALID") {
+				t.Fatalf("expected username rejection, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	users, err := store.ListUsers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("invalid username requests mutated storage: %+v", users)
+	}
+}
+
 func TestUpdateUserRejectsPermissionExpressionRoleWithoutMutation(t *testing.T) {
 	handler, store := newUserTestHandler(t)
 
@@ -57,6 +82,66 @@ func TestUpdateUserRejectsPermissionExpressionRoleWithoutMutation(t *testing.T) 
 			t.Fatalf("invalid role update mutated user: %+v", user)
 		}
 	}
+}
+
+func TestUpdateUserRejectsNonCanonicalUsernameWithoutMutation(t *testing.T) {
+	handler, store := newUserTestHandler(t)
+	router := chi.NewRouter()
+	router.Put("/users/{id}", handler.UpdateUser)
+	for _, username := range []string{" admin", "admin ", "ad min", "admin\t", "admin\u200b"} {
+		t.Run(username, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			body, err := json.Marshal(map[string]string{"username": username})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPut, "/users/reader-id", bytes.NewReader(body))
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "USERNAME_INVALID") {
+				t.Fatalf("expected username rejection, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	user, err := store.GetUserByUsername(context.Background(), "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user == nil || user.Username != "reader" {
+		t.Fatalf("invalid username requests mutated user: %+v", user)
+	}
+}
+
+func TestUpdateUserCannotBypassHistoricalUsernameRepairAudit(t *testing.T) {
+	handler, store := newUserTestHandler(t)
+	dirty := &dirtyUserStore{Store: store, users: []storage.User{{ID: "dirty-id", Username: " admin ", PasswordHash: "hash", Role: "admin"}}}
+	handler.Store = dirty
+	router := chi.NewRouter()
+	router.Put("/users/{id}", handler.UpdateUser)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/users/dirty-id", bytes.NewReader([]byte("{\"username\":\"recovered-admin\"}")))
+	request = withUserClaims(request, "admin-id", "admin", "admin")
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "USERNAME_REPAIR_REQUIRED") {
+		t.Fatalf("expected explicit repair requirement, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if dirty.updated {
+		t.Fatal("ordinary user update bypassed historical repair audit")
+	}
+}
+
+type dirtyUserStore struct {
+	storage.Store
+	users   []storage.User
+	updated bool
+}
+
+func (s *dirtyUserStore) ListUsers(context.Context) ([]storage.User, error) {
+	return append([]storage.User(nil), s.users...), nil
+}
+
+func (s *dirtyUserStore) UpdateUser(ctx context.Context, user *storage.User) error {
+	s.updated = true
+	return s.Store.UpdateUser(ctx, user)
 }
 
 func TestCreateUserAllowsConfiguredCustomRole(t *testing.T) {
@@ -314,7 +399,7 @@ func TestRecoverUser2FAClearsStateAndRevokesTargetSessions(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	handler.twoFATracker().storePending(target.ID, "PENDINGSECRET", now.Add(time.Minute), now)
-	if err := store.CreateSession(context.Background(), &storage.Session{ID: "reader-session", UserID: target.ID, Username: target.Username, Role: target.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+	if err := store.CreateSession(context.Background(), &storage.Session{ID: "reader-session", UserID: target.ID, Username: target.Username, Role: target.Role, CredentialEpoch: target.CredentialEpoch, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatalf("create target session: %v", err)
 	}
 

@@ -50,21 +50,32 @@ func newWizardIO(in io.Reader, out io.Writer) *wizardIO {
 	return w
 }
 
-// readLine returns one trimmed line. A bare EOF (Ctrl-D or exhausted pipe) is
-// reported as errWizardQuit so callers never loop forever on a closed stdin.
+// readLine returns one line with only the transport line ending removed.
+// Identity and secret fields must see the original bytes so callers can reject
+// accidental or malicious whitespace instead of silently changing them. A
+// bare EOF (Ctrl-D or exhausted pipe) is reported as errWizardQuit so callers
+// never loop forever on a closed stdin.
 func (w *wizardIO) readLine() (string, error) {
 	text, err := w.reader.ReadString('\n')
-	text = strings.TrimRight(text, "\r\n")
+	text = stripLineEnding(text)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			if strings.TrimSpace(text) == "" {
 				return "", errWizardQuit
 			}
-			return strings.TrimSpace(text), nil
+			return text, nil
 		}
 		return "", err
 	}
-	return strings.TrimSpace(text), nil
+	return text, nil
+}
+
+func stripLineEnding(text string) string {
+	if strings.HasSuffix(text, "\n") {
+		text = strings.TrimSuffix(text, "\n")
+		text = strings.TrimSuffix(text, "\r")
+	}
+	return text
 }
 
 // prompt asks for a free-form value, retrying until validate passes.
@@ -174,7 +185,7 @@ func (w *wizardIO) promptYesNo(label string, def bool) (bool, error) {
 		case "":
 			return def, nil
 		}
-		switch strings.ToLower(raw) {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
 		case "y", "yes":
 			return true, nil
 		case "n", "no":
@@ -211,7 +222,7 @@ func (w *wizardIO) promptChoice(label string, options []string, defIndex int) (i
 		case "":
 			return defIndex, nil
 		}
-		chosen, convErr := strconv.Atoi(raw)
+		chosen, convErr := strconv.Atoi(strings.TrimSpace(raw))
 		if convErr != nil || chosen < 1 || chosen > len(options) {
 			fmt.Fprintln(w.out, clilang.T("setup.invalidChoice", strings.Join(allowed, ", ")))
 			continue

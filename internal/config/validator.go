@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
@@ -23,6 +25,8 @@ import (
 )
 
 var ErrBotRedisBackendUnavailable = errors.New("bot Redis challenge backend is not wired into the runtime; use challenge_backend=memory")
+
+var ErrProductionStorageUnavailable = errors.New("production storage unavailable: controlplane.DurableStore cannot satisfy storage.Store; management PostgreSQL, Coordinator and native-raft cluster/epoch backend are not wired as one startup unit; refusing SQLite fallback")
 
 // ValidateBotChallengeBackend keeps the public configuration contract honest:
 // Policy currently owns an in-process challenge lifecycle only.
@@ -48,6 +52,9 @@ const (
 	maxRewriteProgramInsts    = 4096
 	maxCustomRulesPerSite     = 256
 	maxCustomRuleProgramInsts = 4096
+	maxAIContextWindow        = 2_000_000
+	maxAIModelNameBytes       = 512
+	maxAIProviderPathBytes    = 2048
 )
 
 func Validate(cfg *Config) error {
@@ -84,8 +91,8 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("server.listen_http3 is invalid: %w", err)
 		}
 	}
-	if cfg.Storage.SQLite.Path == "" {
-		return fmt.Errorf("storage.sqlite.path is required")
+	if err := ValidateStorageProfile(cfg); err != nil {
+		return err
 	}
 	if cfg.Storage.Redis.Enabled {
 		address := strings.TrimSpace(cfg.Storage.Redis.Address)
@@ -670,6 +677,68 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
+// ValidateStorageProfile checks the declarative prerequisites for the runtime
+// production startup unit. The serve command still performs the durable,
+// consensus, Redis, approval, and consumer-wiring checks before readiness.
+func ValidateStorageProfile(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	profile := strings.ToLower(strings.TrimSpace(cfg.Storage.Profile))
+	if profile == "" {
+		profile = StorageProfileTemporary
+	}
+	cfg.Storage.Profile = profile
+	switch profile {
+	case StorageProfileTemporary:
+		if strings.TrimSpace(cfg.Storage.SQLite.Path) == "" {
+			return fmt.Errorf("storage.sqlite.path is required for storage.profile=temporary")
+		}
+		return nil
+	case StorageProfileProduction:
+		if strings.TrimSpace(cfg.Storage.ManagementPostgreSQL.DSN) == "" {
+			return fmt.Errorf("storage.management_postgresql.dsn is required for storage.profile=production")
+		}
+		if strings.TrimSpace(cfg.Storage.ControlPostgreSQL.DSN) == "" {
+			return fmt.Errorf("%w: storage.control_postgresql.dsn is required for storage.profile=production", ErrProductionStorageUnavailable)
+		}
+		if strings.TrimSpace(cfg.Storage.ManagementPostgreSQL.DSN) == strings.TrimSpace(cfg.Storage.ControlPostgreSQL.DSN) {
+			return fmt.Errorf("%w: management and control PostgreSQL DSNs must be independent", ErrProductionStorageUnavailable)
+		}
+		if !controlplaneIdentity(cfg.Cluster.ClusterID) {
+			return fmt.Errorf("%w: cluster.cluster_id is required for storage.profile=production", ErrProductionStorageUnavailable)
+		}
+		raft := cfg.Cluster.Consensus.NativeRaft
+		if strings.TrimSpace(raft.DataDir) == "" || strings.TrimSpace(raft.Listen) == "" || strings.TrimSpace(raft.Mode) == "" {
+			return fmt.Errorf("%w: cluster.consensus.native_raft data_dir, listen and explicit mode are required", ErrProductionStorageUnavailable)
+		}
+		if !cfg.Storage.Redis.Enabled || strings.TrimSpace(cfg.Storage.Redis.Address) == "" {
+			return fmt.Errorf("%w: Redis must be enabled with storage.redis.address for storage.profile=production", ErrProductionStorageUnavailable)
+		}
+		if !controlplaneIdentity(cfg.Storage.Redis.InstanceID) {
+			return fmt.Errorf("%w: storage.redis.instance_id must be a non-empty identity without whitespace for storage.profile=production", ErrProductionStorageUnavailable)
+		}
+		// Once the declarative prerequisites are complete, let the serve startup
+		// unit open and health-check them. Missing approval wiring or a failed
+		// Bootstrap must still reject startup before any listener is bound.
+		return nil
+	default:
+		return fmt.Errorf("storage.profile must be temporary or production (got %q)", cfg.Storage.Profile)
+	}
+}
+
+func controlplaneIdentity(value string) bool {
+	if value == "" || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			return false
+		}
+	}
+	return true
+}
+
 func validateFileLogging(logging LoggingConfig) error {
 	outputType := strings.ToLower(strings.TrimSpace(logging.Output.Type))
 	if outputType == "" {
@@ -1054,6 +1123,12 @@ func validateManagementAPI(api ManagementAPIConfig) error {
 		if !token.CreatedAt.IsZero() && !token.ExpiresAt.IsZero() && !token.ExpiresAt.After(token.CreatedAt) {
 			return fmt.Errorf("management api token %q expires_at must be after created_at", id)
 		}
+		if token.NeverExpire && !token.ExpiresAt.IsZero() {
+			return fmt.Errorf("management api token %q never_expire cannot carry expires_at", id)
+		}
+		if !token.CreatedAt.IsZero() && !token.LastUsedAt.IsZero() && token.LastUsedAt.Before(token.CreatedAt) {
+			return fmt.Errorf("management api token %q last_used_at must not precede created_at", id)
+		}
 	}
 	return nil
 }
@@ -1270,6 +1345,56 @@ func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) err
 	if model.MaxTokens < 0 || model.MaxTokens > 200000 {
 		return fmt.Errorf("%s.max_tokens must be between 1 and 200000 when set", prefix)
 	}
+	if model.ContextWindow < 0 || model.ContextWindow > maxAIContextWindow {
+		return fmt.Errorf("%s.context_window must be between 1 and %d when set", prefix, maxAIContextWindow)
+	}
+	if err := validateAIModelName(prefix+".invocation_model_name", model.InvocationModelName, false); err != nil {
+		return err
+	}
+	if err := validateAIModelName(prefix+".display_model_name", model.DisplayModelName, true); err != nil {
+		return err
+	}
+	if effort := model.ReasoningEffort; effort != "" {
+		if effort != strings.TrimSpace(effort) {
+			return fmt.Errorf("%s.reasoning_effort must not contain leading or trailing whitespace", prefix)
+		}
+		switch strings.ToLower(effort) {
+		case "none", "low", "medium", "high", "xhigh":
+		default:
+			return fmt.Errorf("%s.reasoning_effort must be one of none, low, medium, high, or xhigh", prefix)
+		}
+	}
+	for field, value := range map[string]string{
+		"model_list_path": model.ModelListPath,
+		"balance_path":    model.BalancePath,
+		"usage_path":      model.UsagePath,
+	} {
+		if err := validateAIProviderPath(prefix+"."+field, value); err != nil {
+			return err
+		}
+	}
+	for idx, entry := range model.ConfiguredCatalog {
+		entryPrefix := fmt.Sprintf("%s.configured_catalog[%d]", prefix, idx)
+		if err := validateAIModelName(entryPrefix+".id", entry.ID, false); err != nil {
+			return err
+		}
+		if err := validateAIModelName(entryPrefix+".display_name", entry.DisplayName, true); err != nil {
+			return err
+		}
+		if entry.ContextWindow < 0 || entry.ContextWindow > maxAIContextWindow {
+			return fmt.Errorf("%s.context_window must be between 1 and %d when set", entryPrefix, maxAIContextWindow)
+		}
+		for effortIndex, effort := range entry.ReasoningEfforts {
+			if effort != strings.TrimSpace(effort) {
+				return fmt.Errorf("%s.reasoning_efforts[%d] must not contain leading or trailing whitespace", entryPrefix, effortIndex)
+			}
+			switch strings.ToLower(effort) {
+			case "none", "low", "medium", "high", "xhigh":
+			default:
+				return fmt.Errorf("%s.reasoning_efforts[%d] must be one of none, low, medium, high, or xhigh", entryPrefix, effortIndex)
+			}
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(model.Provider)) {
 	case "", "openai", "anthropic":
 	default:
@@ -1289,6 +1414,57 @@ func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) err
 	}
 	if strings.TrimSpace(model.Model) == "" {
 		return fmt.Errorf("%s.model is required when ai is enabled", prefix)
+	}
+	return nil
+}
+
+func validateAIProviderPath(prefix, value string) error {
+	if value == "" {
+		return nil
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", prefix)
+	}
+	if len(value) > maxAIProviderPathBytes {
+		return fmt.Errorf("%s exceeds %d bytes", prefix, maxAIProviderPathBytes)
+	}
+	if strings.Contains(value, "\\") {
+		return fmt.Errorf("%s contains an unsupported separator", prefix)
+	}
+	for _, char := range value {
+		if unicode.IsControl(char) || unicode.Is(unicode.Cf, char) {
+			return fmt.Errorf("%s contains unsupported control characters", prefix)
+		}
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", prefix, err)
+	}
+	if parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.Fragment != "" || strings.HasPrefix(value, "//") {
+		return fmt.Errorf("%s must be a path on the configured api_base", prefix)
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return fmt.Errorf("%s must not contain dot segments", prefix)
+		}
+	}
+	return nil
+}
+
+func validateAIModelName(prefix, value string, allowSpaces bool) error {
+	if value == "" {
+		return nil
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("%s must not contain leading or trailing whitespace", prefix)
+	}
+	if len(value) > maxAIModelNameBytes {
+		return fmt.Errorf("%s exceeds %d bytes", prefix, maxAIModelNameBytes)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || (!allowSpaces && unicode.IsSpace(r)) {
+			return fmt.Errorf("%s contains unsupported whitespace or control characters", prefix)
+		}
 	}
 	return nil
 }

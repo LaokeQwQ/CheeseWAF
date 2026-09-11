@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,21 +45,62 @@ type CompletionUsage struct {
 type StreamEmitter func(AssistantTraceEvent)
 
 type ModelInfo struct {
-	ID      string `json:"id"`
-	OwnedBy string `json:"owned_by,omitempty"`
-	Created int64  `json:"created,omitempty"`
+	ID                  string   `json:"id"`
+	OwnedBy             string   `json:"owned_by,omitempty"`
+	Created             int64    `json:"created,omitempty"`
+	DisplayName         string   `json:"display_name,omitempty"`
+	ContextWindow       int      `json:"context_window,omitempty"`
+	InvocationModelName string   `json:"invocation_model_name,omitempty"`
+	ReasoningEfforts    []string `json:"reasoning_efforts,omitempty"`
+}
+
+type ModelDiscoveryStatus string
+
+const (
+	ModelDiscoveryAvailable   ModelDiscoveryStatus = "available"
+	ModelDiscoveryConfigured  ModelDiscoveryStatus = "configured"
+	ModelDiscoveryUnsupported ModelDiscoveryStatus = "unsupported"
+	ModelDiscoveryError       ModelDiscoveryStatus = "error"
+)
+
+type ModelDiscovery struct {
+	Status ModelDiscoveryStatus `json:"status"`
+	Models []ModelInfo          `json:"items,omitempty"`
+	Reason string               `json:"reason,omitempty"`
+}
+
+type ProviderBalance struct {
+	Available float64 `json:"available,omitempty"`
+	Used      float64 `json:"used,omitempty"`
+	Limit     float64 `json:"limit,omitempty"`
+	Currency  string  `json:"currency,omitempty"`
+}
+
+type ProviderUsage struct {
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
+	TotalTokens  int `json:"total_tokens,omitempty"`
+	CallCount    int `json:"call_count,omitempty"`
 }
 
 type Client struct {
-	provider     string
-	apiBase      string
-	apiKey       string
-	apiKeyHeader string
-	model        string
-	maxTokens    int
-	allowPrivate bool
-	http         *http.Client
-	openai       openaisdk.Client
+	provider          string
+	apiBase           string
+	apiKey            string
+	apiKeyHeader      string
+	model             string
+	displayModel      string
+	contextWindow     int
+	reasoningEffort   string
+	maxTokens         int
+	allowPrivate      bool
+	modelListPath     string
+	balancePath       string
+	usagePath         string
+	configuredCatalog []config.AIModelCatalogEntry
+	usageStore        *UsageStore
+	http              *http.Client
+	openai            openaisdk.Client
 }
 
 const (
@@ -65,6 +108,11 @@ const (
 	maxAIJSONResponseBytes    = 4 << 20
 	maxAIStreamResponseBytes  = 16 << 20
 	defaultAnthropicMaxTokens = 4096
+	maxAIProviderPathBytes    = 2048
+	maxDiscoveredModels       = 2000
+	maxAIContextWindow        = 2_000_000
+	maxAI429Retries           = 1
+	maxAI429RetryDelay        = 2 * time.Second
 )
 
 var errAIResponseTooLarge = errors.New("AI API response exceeds byte limit")
@@ -76,19 +124,36 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 	httpClient = withAIResponseLimits(httpClient)
 	provider := normalizeProvider(cfg.Provider)
 	client := &Client{
-		provider:     provider,
-		apiBase:      strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
-		apiKey:       cfg.APIKey,
-		apiKeyHeader: strings.TrimSpace(cfg.APIKeyHeader),
-		model:        cfg.Model,
-		maxTokens:    normalizedMaxTokens(cfg.MaxTokens),
-		allowPrivate: cfg.AllowPrivateAPIBase,
-		http:         httpClient,
+		provider:          provider,
+		apiBase:           strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
+		apiKey:            cfg.APIKey,
+		apiKeyHeader:      strings.TrimSpace(cfg.APIKeyHeader),
+		model:             cfg.Model,
+		displayModel:      strings.TrimSpace(cfg.DisplayModelName),
+		contextWindow:     cfg.ContextWindow,
+		reasoningEffort:   strings.TrimSpace(cfg.ReasoningEffort),
+		maxTokens:         normalizedMaxTokens(cfg.MaxTokens),
+		allowPrivate:      cfg.AllowPrivateAPIBase,
+		modelListPath:     strings.TrimSpace(cfg.ModelListPath),
+		balancePath:       strings.TrimSpace(cfg.BalancePath),
+		usagePath:         strings.TrimSpace(cfg.UsagePath),
+		configuredCatalog: append([]config.AIModelCatalogEntry(nil), cfg.ConfiguredCatalog...),
+		http:              httpClient,
 	}
 	if provider == "openai" {
 		client.openai = newOpenAISDKClient(client.apiBase, client.apiKey, client.apiKeyHeader, httpClient)
 	}
 	return client
+}
+
+// SetUsageStore connects this client to process-local accounting. The store
+// records only provider/model identifiers and token counts; prompts,
+// responses, credentials, and endpoint URLs are never retained.
+func (c *Client) SetUsageStore(store *UsageStore) *Client {
+	if c != nil {
+		c.usageStore = store
+	}
+	return c
 }
 
 func normalizedMaxTokens(value int) int {
@@ -114,6 +179,27 @@ func (c *Client) setAPIKeyHeader(req *http.Request, fallback string) {
 		value = "Bearer " + value
 	}
 	req.Header.Set(name, value)
+}
+
+func (c *Client) setAnthropicHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if c.apiKey == "" {
+		return
+	}
+	// The Anthropic API requires x-api-key. Keep an explicitly configured
+	// gateway header as an additional same-origin credential for compatible
+	// proxies instead of replacing the standard header.
+	req.Header.Set("x-api-key", c.apiKey)
+	if name := strings.TrimSpace(c.apiKeyHeader); name != "" && !strings.EqualFold(name, "x-api-key") {
+		value := c.apiKey
+		if strings.EqualFold(name, "authorization") && !strings.HasPrefix(strings.ToLower(value), "bearer ") {
+			value = "Bearer " + value
+		}
+		req.Header.Set(name, value)
+	}
 }
 
 type aiResponseLimitTransport struct {
@@ -176,6 +262,12 @@ func withAIResponseLimits(client *http.Client) *http.Client {
 		jsonLimit:   maxAIJSONResponseBytes,
 		streamLimit: maxAIStreamResponseBytes,
 	}
+	// Provider metadata and completion requests must never follow redirects.
+	// This keeps credentials and request bodies pinned to the configured
+	// origin, including when callers inject their own http.Client.
+	clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &clone
 }
 
@@ -214,16 +306,20 @@ func newOpenAISDKClient(apiBase, apiKey, apiKeyHeader string, httpClient *http.C
 	return openaisdk.NewClient(options...)
 }
 
-func openAIChatParams(model string, messages []Message) openaisdk.ChatCompletionNewParams {
-	return openaisdk.ChatCompletionNewParams{
-		Model:       openaishared.ChatModel(model),
+func (c *Client) openAIChatParams(messages []Message) openaisdk.ChatCompletionNewParams {
+	params := openaisdk.ChatCompletionNewParams{
+		Model:       openaishared.ChatModel(c.model),
 		Messages:    openAIMessageParams(messages),
 		Temperature: openaiparam.NewOpt(0.2),
 	}
+	if effort := normalizeReasoningEffort(c.reasoningEffort); effort != "" {
+		params.ReasoningEffort = openaishared.ReasoningEffort(effort)
+	}
+	return params
 }
 
-func openAIChatToolParams(model string, messages []Message, tools []map[string]any) (openaisdk.ChatCompletionNewParams, error) {
-	params := openAIChatParams(model, messages)
+func (c *Client) openAIChatToolParams(messages []Message, tools []map[string]any) (openaisdk.ChatCompletionNewParams, error) {
+	params := c.openAIChatParams(messages)
 	converted, err := openAIToolParams(tools)
 	if err != nil {
 		return params, err
@@ -302,14 +398,87 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.apiBase == "" {
 		return nil, fmt.Errorf("ai api_base is required")
 	}
-	switch c.provider {
-	case "openai":
-		return c.listOpenAIModels(ctx)
-	case "anthropic":
-		return c.listAnthropicModels(ctx)
-	default:
-		return nil, fmt.Errorf("unsupported ai provider %q", c.provider)
+	discovery, err := c.DiscoverModels(ctx)
+	if err != nil {
+		return nil, err
 	}
+	if discovery.Status == ModelDiscoveryUnsupported {
+		return nil, fmt.Errorf("model discovery unsupported: %s", discovery.Reason)
+	}
+	if len(discovery.Models) == 0 {
+		return nil, fmt.Errorf("ai api returned no models")
+	}
+	return discovery.Models, nil
+}
+
+// DiscoverModels never fabricates a provider model. Anthropic-compatible
+// gateways may expose no catalog endpoint; in that case the caller receives a
+// deliberate unsupported state unless an operator supplied configured catalog
+// is present.
+func (c *Client) DiscoverModels(ctx context.Context) (ModelDiscovery, error) {
+	if c == nil {
+		return ModelDiscovery{}, fmt.Errorf("ai client is nil")
+	}
+	if len(c.configuredCatalog) > 0 {
+		models := make([]ModelInfo, 0, len(c.configuredCatalog))
+		seen := map[string]bool{}
+		for _, item := range c.configuredCatalog {
+			id := strings.TrimSpace(item.ID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			display := strings.TrimSpace(item.DisplayName)
+			if display == "" {
+				display = id
+			}
+			models = append(models, ModelInfo{ID: id, DisplayName: display, ContextWindow: boundedContextWindow(item.ContextWindow), InvocationModelName: id, ReasoningEfforts: normalizeReasoningEfforts(item.ReasoningEfforts)})
+		}
+		if len(models) > 0 {
+			return ModelDiscovery{Status: ModelDiscoveryConfigured, Models: models}, nil
+		}
+	}
+	if c.provider == "anthropic" && strings.TrimSpace(c.modelListPath) == "" {
+		return ModelDiscovery{Status: ModelDiscoveryUnsupported, Reason: "Anthropic-compatible providers do not guarantee model-list support; configure ai.configured_catalog or ai.model_list_path."}, nil
+	}
+	if c.apiBase == "" {
+		return ModelDiscovery{}, fmt.Errorf("ai api_base is required")
+	}
+	models, err := c.listModelsAt(ctx, c.modelListPath)
+	if err != nil {
+		return ModelDiscovery{Status: ModelDiscoveryError, Reason: "provider model discovery failed"}, err
+	}
+	return ModelDiscovery{Status: ModelDiscoveryAvailable, Models: models}, nil
+}
+
+func (c *Client) FetchBalance(ctx context.Context) (ProviderBalance, error) {
+	if c == nil || strings.TrimSpace(c.balancePath) == "" {
+		return ProviderBalance{}, fmt.Errorf("provider balance endpoint is not configured")
+	}
+	raw, err := c.fetchJSONEndpoint(ctx, c.balancePath, parseProviderBalance)
+	if err != nil {
+		return ProviderBalance{}, err
+	}
+	result, ok := raw.(ProviderBalance)
+	if !ok {
+		return ProviderBalance{}, fmt.Errorf("provider balance response has unexpected type %T", raw)
+	}
+	return result, nil
+}
+
+func (c *Client) FetchProviderUsage(ctx context.Context) (ProviderUsage, error) {
+	if c == nil || strings.TrimSpace(c.usagePath) == "" {
+		return ProviderUsage{}, fmt.Errorf("provider usage endpoint is not configured")
+	}
+	raw, err := c.fetchJSONEndpoint(ctx, c.usagePath, parseProviderUsage)
+	if err != nil {
+		return ProviderUsage{}, err
+	}
+	result, ok := raw.(ProviderUsage)
+	if !ok {
+		return ProviderUsage{}, fmt.Errorf("provider usage response has unexpected type %T", raw)
+	}
+	return result, nil
 }
 
 func (c *Client) CompleteWithUsage(ctx context.Context, messages []Message) (*CompletionResult, error) {
@@ -324,9 +493,13 @@ func (c *Client) CompleteWithUsage(ctx context.Context, messages []Message) (*Co
 	}
 	switch c.provider {
 	case "openai":
-		return c.completeOpenAI(ctx, messages)
+		result, err := c.completeOpenAI(ctx, messages)
+		c.recordCompletionUsage(result)
+		return result, safeProviderCallError(err)
 	case "anthropic":
-		return c.completeAnthropic(ctx, messages)
+		result, err := c.completeAnthropic(ctx, messages)
+		c.recordCompletionUsage(result)
+		return result, safeProviderCallError(err)
 	default:
 		return nil, fmt.Errorf("unsupported ai provider %q", c.provider)
 	}
@@ -341,9 +514,13 @@ func (c *Client) CompleteToolPlan(ctx context.Context, messages []Message, tools
 	}
 	switch c.provider {
 	case "openai":
-		return c.completeOpenAIToolPlan(ctx, messages, tools)
+		plan, err := c.completeOpenAIToolPlan(ctx, messages, tools)
+		c.recordPlanUsage(plan)
+		return plan, safeProviderCallError(err)
 	case "anthropic":
-		return c.completeAnthropicToolPlan(ctx, messages, tools)
+		plan, err := c.completeAnthropicToolPlan(ctx, messages, tools)
+		c.recordPlanUsage(plan)
+		return plan, safeProviderCallError(err)
 	default:
 		return nil, fmt.Errorf("unsupported ai provider %q", c.provider)
 	}
@@ -365,16 +542,22 @@ func (c *Client) CompleteWithUsageStream(ctx context.Context, messages []Message
 	switch c.provider {
 	case "openai":
 		result, started, err := c.completeOpenAIStream(ctx, messages, emit)
+		c.recordCompletionUsage(result)
 		if err == nil || started {
-			return result, err
+			return result, safeProviderCallError(err)
 		}
-		return c.completeOpenAI(ctx, messages)
+		result, err = c.completeOpenAI(ctx, messages)
+		c.recordCompletionUsage(result)
+		return result, safeProviderCallError(err)
 	case "anthropic":
 		result, started, err := c.completeAnthropicStream(ctx, messages, emit)
+		c.recordCompletionUsage(result)
 		if err == nil || started {
-			return result, err
+			return result, safeProviderCallError(err)
 		}
-		return c.completeAnthropic(ctx, messages)
+		result, err = c.completeAnthropic(ctx, messages)
+		c.recordCompletionUsage(result)
+		return result, safeProviderCallError(err)
 	default:
 		return nil, fmt.Errorf("unsupported ai provider %q", c.provider)
 	}
@@ -393,23 +576,68 @@ func (c *Client) CompleteToolPlanStream(ctx context.Context, messages []Message,
 	switch c.provider {
 	case "openai":
 		plan, started, err := c.completeOpenAIToolPlanStream(ctx, messages, tools, emit)
+		c.recordPlanUsage(plan)
 		if err == nil || started {
-			return plan, err
+			return plan, safeProviderCallError(err)
 		}
-		return c.completeOpenAIToolPlan(ctx, messages, tools)
+		plan, err = c.completeOpenAIToolPlan(ctx, messages, tools)
+		c.recordPlanUsage(plan)
+		return plan, safeProviderCallError(err)
 	case "anthropic":
 		plan, started, err := c.completeAnthropicToolPlanStream(ctx, messages, tools, emit)
+		c.recordPlanUsage(plan)
 		if err == nil || started {
-			return plan, err
+			return plan, safeProviderCallError(err)
 		}
-		return c.completeAnthropicToolPlan(ctx, messages, tools)
+		plan, err = c.completeAnthropicToolPlan(ctx, messages, tools)
+		c.recordPlanUsage(plan)
+		return plan, safeProviderCallError(err)
 	default:
 		return nil, fmt.Errorf("unsupported ai provider %q", c.provider)
 	}
 }
 
+func (c *Client) recordCompletionUsage(result *CompletionResult) {
+	if result == nil {
+		c.recordProviderUsage(CompletionUsage{})
+		return
+	}
+	c.recordProviderUsage(result.Usage)
+}
+
+func (c *Client) recordPlanUsage(plan *AssistantPlan) {
+	if plan == nil {
+		c.recordProviderUsage(CompletionUsage{})
+		return
+	}
+	c.recordProviderUsage(CompletionUsage{InputTokens: plan.InputTokens, OutputTokens: plan.OutputTokens, TotalTokens: plan.TotalTokens})
+}
+
+func (c *Client) recordProviderUsage(usage CompletionUsage) {
+	if c == nil || c.usageStore == nil {
+		return
+	}
+	c.usageStore.Record(UsageEvent{
+		Provider:     c.provider,
+		Model:        c.model,
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.TotalTokens,
+	})
+}
+
+func safeProviderCallError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errAIResponseTooLarge) {
+		return err
+	}
+	return errors.New("AI provider request failed")
+}
+
 func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*CompletionResult, error) {
-	completion, err := c.openai.Chat.Completions.New(ctx, openAIChatParams(c.model, messages))
+	completion, err := c.openai.Chat.Completions.New(ctx, c.openAIChatParams(messages))
 	if err != nil {
 		return nil, err
 	}
@@ -434,7 +662,7 @@ func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*Compl
 }
 
 func (c *Client) completeOpenAIToolPlan(ctx context.Context, messages []Message, tools []map[string]any) (*AssistantPlan, error) {
-	params, err := openAIChatToolParams(c.model, messages, tools)
+	params, err := c.openAIChatToolParams(messages, tools)
 	if err != nil {
 		return nil, err
 	}
@@ -479,51 +707,328 @@ func (c *Client) completeOpenAIToolPlan(ctx context.Context, messages []Message,
 }
 
 func (c *Client) listOpenAIModels(ctx context.Context) ([]ModelInfo, error) {
-	endpoint, err := c.endpoint("/models")
+	return c.listModelsAt(ctx, c.modelListPath)
+}
+
+func (c *Client) listModelsAt(ctx context.Context, configuredPath string) ([]ModelInfo, error) {
+	path := strings.TrimSpace(configuredPath)
+	if path == "" {
+		path = "/models"
+	}
+	endpoint, err := c.endpoint(path)
 	if err != nil {
 		return nil, err
 	}
-	req, err := netguard.NewRequest(ctx, http.MethodGet, endpoint, nil, c.urlPolicy())
-	if err != nil {
-		return nil, err
-	}
-	c.setAPIKeyHeader(req, "Authorization")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = netguard.DrainAndClose(resp.Body) }()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ai api returned %s", resp.Status)
-	}
-	var parsed struct {
-		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
-			Created int64  `json:"created"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, err
-	}
-	models := make([]ModelInfo, 0, len(parsed.Data))
-	seen := map[string]bool{}
-	for _, item := range parsed.Data {
-		id := strings.TrimSpace(item.ID)
-		if id == "" || seen[id] {
+	var raw any
+	for attempt := 0; ; attempt++ {
+		req, err := netguard.NewRequest(ctx, http.MethodGet, endpoint, nil, c.urlPolicy())
+		if err != nil {
+			return nil, err
+		}
+		c.setAPIKeyHeader(req, "Authorization")
+		if c.provider == "anthropic" {
+			c.setAnthropicHeaders(req)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attempt < maxAI429Retries {
+			delay := boundedRetryAfter(resp.Header.Get("Retry-After"))
+			_ = netguard.DrainAndClose(resp.Body)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 			continue
 		}
-		seen[id] = true
-		models = append(models, ModelInfo{ID: id, OwnedBy: item.OwnedBy, Created: item.Created})
+		defer func() { _ = netguard.DrainAndClose(resp.Body) }()
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("ai api returned %s", resp.Status)
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			return nil, err
+		}
+		break
 	}
+	models := c.enrichDiscoveredModels(parseModelList(raw))
 	if len(models) == 0 {
 		return nil, fmt.Errorf("ai api returned no models")
 	}
 	return models, nil
 }
 
+func parseModelList(raw any) []ModelInfo {
+	items := modelListItems(raw, 0)
+	if len(items) > maxDiscoveredModels {
+		items = items[:maxDiscoveredModels]
+	}
+	models := make([]ModelInfo, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		var id, owned, display string
+		var created int64
+		var contextWindow int
+		switch value := item.(type) {
+		case string:
+			id = value
+		case map[string]any:
+			id, _ = value["id"].(string)
+			owned, _ = value["owned_by"].(string)
+			display, _ = value["display_name"].(string)
+			if number, ok := value["created"].(float64); ok {
+				created = int64(number)
+			}
+			contextWindow = boundedContextWindow(int(numberField(value, "context_window", "context_length", "max_context_tokens")))
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if strings.TrimSpace(display) == "" {
+			display = id
+		}
+		var reasoningEfforts []string
+		if value, ok := item.(map[string]any); ok {
+			reasoningEfforts = reasoningEffortsField(value, "reasoning_efforts", "supported_reasoning_efforts")
+		}
+		models = append(models, ModelInfo{ID: id, OwnedBy: owned, Created: created, DisplayName: display, ContextWindow: contextWindow, InvocationModelName: id, ReasoningEfforts: reasoningEfforts})
+	}
+	return models
+}
+
+func modelListItems(raw any, depth int) []any {
+	if depth > 4 {
+		return nil
+	}
+	switch value := raw.(type) {
+	case []any:
+		return value
+	case map[string]any:
+		for _, key := range []string{"data", "models", "items", "result"} {
+			if candidate, ok := value[key]; ok {
+				if items := modelListItems(candidate, depth+1); len(items) > 0 {
+					return items
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Client) enrichDiscoveredModels(models []ModelInfo) []ModelInfo {
+	for index := range models {
+		if models[index].ID != c.model {
+			continue
+		}
+		if c.displayModel != "" {
+			models[index].DisplayName = c.displayModel
+		}
+		if c.contextWindow > 0 {
+			models[index].ContextWindow = boundedContextWindow(c.contextWindow)
+		}
+		models[index].ReasoningEfforts = normalizeReasoningEfforts(append(models[index].ReasoningEfforts, c.reasoningEffort))
+	}
+	return models
+}
+
+func boundedContextWindow(value int) int {
+	if value <= 0 {
+		return 0
+	}
+	if value > maxAIContextWindow {
+		return maxAIContextWindow
+	}
+	return value
+}
+
+func reasoningEffortsField(obj map[string]any, keys ...string) []string {
+	var values []string
+	for _, key := range keys {
+		switch raw := obj[key].(type) {
+		case []any:
+			for _, value := range raw {
+				if text, ok := value.(string); ok {
+					values = append(values, text)
+				}
+			}
+		case []string:
+			values = append(values, raw...)
+		case string:
+			values = append(values, raw)
+		}
+	}
+	return normalizeReasoningEfforts(values)
+}
+
+func normalizeReasoningEfforts(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = normalizeReasoningEffort(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "none", "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func (c *Client) fetchJSONEndpoint(ctx context.Context, path string, parse func(any) any) (any, error) {
+	endpoint, err := c.endpoint(path)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; ; attempt++ {
+		req, err := netguard.NewRequest(ctx, http.MethodGet, endpoint, nil, c.urlPolicy())
+		if err != nil {
+			return nil, err
+		}
+		c.setAPIKeyHeader(req, "Authorization")
+		if c.provider == "anthropic" {
+			c.setAnthropicHeaders(req)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attempt < maxAI429Retries {
+			delay := boundedRetryAfter(resp.Header.Get("Retry-After"))
+			_ = netguard.DrainAndClose(resp.Body)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+			continue
+		}
+		defer func() { _ = netguard.DrainAndClose(resp.Body) }()
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("ai api returned %s", resp.Status)
+		}
+		var raw any
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			return nil, err
+		}
+		return parse(raw), nil
+	}
+}
+
+func boundedRetryAfter(raw string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds < 0 {
+		return 0
+	}
+	if seconds > int(maxAI429RetryDelay/time.Second) {
+		seconds = int(maxAI429RetryDelay / time.Second)
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func parseProviderBalance(raw any) any {
+	result := ProviderBalance{}
+	obj := unwrapProviderObject(raw, []string{"data", "account", "balance"}, 0)
+	result.Available = nonNegativeNumberField(obj, "balance", "available", "remaining", "credit", "credits")
+	result.Used = nonNegativeNumberField(obj, "used", "usage", "used_quota", "quota_used", "spent")
+	result.Limit = nonNegativeNumberField(obj, "limit", "quota", "total", "total_quota")
+	if result.Available == 0 && result.Limit >= result.Used {
+		result.Available = result.Limit - result.Used
+	}
+	result.Currency, _ = obj["currency"].(string)
+	result.Currency = strings.TrimSpace(result.Currency)
+	if len(result.Currency) > 16 {
+		result.Currency = result.Currency[:16]
+	}
+	return result
+}
+
+func parseProviderUsage(raw any) any {
+	result := ProviderUsage{}
+	obj := unwrapProviderObject(raw, []string{"data", "usage", "metrics", "result"}, 0)
+	result.InputTokens = boundedProviderInteger(nonNegativeNumberField(obj, "input_tokens", "prompt_tokens"))
+	result.OutputTokens = boundedProviderInteger(nonNegativeNumberField(obj, "output_tokens", "completion_tokens"))
+	result.TotalTokens = boundedProviderInteger(nonNegativeNumberField(obj, "total_tokens", "tokens"))
+	if result.TotalTokens == 0 {
+		result.TotalTokens = boundedProviderInteger(float64(result.InputTokens) + float64(result.OutputTokens))
+	}
+	result.CallCount = boundedProviderInteger(nonNegativeNumberField(obj, "requests", "request_count", "call_count", "calls"))
+	return result
+}
+
+func unwrapProviderObject(raw any, keys []string, depth int) map[string]any {
+	obj, _ := raw.(map[string]any)
+	if obj == nil || depth >= 4 {
+		return obj
+	}
+	for _, key := range keys {
+		if nested, ok := obj[key].(map[string]any); ok {
+			return unwrapProviderObject(nested, keys, depth+1)
+		}
+	}
+	return obj
+}
+
+func nonNegativeNumberField(obj map[string]any, keys ...string) float64 {
+	value := numberField(obj, keys...)
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
+	}
+	return value
+}
+
+func boundedProviderInteger(value float64) int {
+	const maxProviderCounter = 1_000_000_000_000_000
+	if value <= 0 {
+		return 0
+	}
+	if value > maxProviderCounter {
+		value = maxProviderCounter
+	}
+	return int(value)
+}
+
+func numberField(obj map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		switch value := obj[key].(type) {
+		case float64:
+			return value
+		case int:
+			return float64(value)
+		case json.Number:
+			if parsed, err := value.Float64(); err == nil {
+				return parsed
+			}
+		case string:
+			if parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
 func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, emit StreamEmitter) (*CompletionResult, bool, error) {
-	params := openAIChatParams(c.model, messages)
+	params := c.openAIChatParams(messages)
 	params.StreamOptions = openAIStreamOptions()
 	stream := c.openai.Chat.Completions.NewStreaming(ctx, params)
 	defer stream.Close()
@@ -543,7 +1048,7 @@ func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, e
 }
 
 func (c *Client) completeOpenAIToolPlanStream(ctx context.Context, messages []Message, tools []map[string]any, emit StreamEmitter) (*AssistantPlan, bool, error) {
-	params, err := openAIChatToolParams(c.model, messages, tools)
+	params, err := c.openAIChatToolParams(messages, tools)
 	if err != nil {
 		return nil, false, err
 	}
@@ -590,8 +1095,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	c.setAPIKeyHeader(req, "x-api-key")
+	c.setAnthropicHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -661,8 +1165,7 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	c.setAPIKeyHeader(req, "x-api-key")
+	c.setAnthropicHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -723,8 +1226,7 @@ func (c *Client) listAnthropicModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("anthropic-version", "2023-06-01")
-	c.setAPIKeyHeader(req, "x-api-key")
+	c.setAnthropicHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -841,12 +1343,26 @@ func (c *Client) doAnthropicRequest(ctx context.Context, body []byte) (*http.Res
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	c.setAPIKeyHeader(req, "x-api-key")
+	c.setAnthropicHeaders(req)
 	return c.http.Do(req)
 }
 
 func (c *Client) endpoint(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("ai provider path is required")
+	}
+	if len(path) > maxAIProviderPathBytes {
+		return "", fmt.Errorf("ai provider path exceeds %d bytes", maxAIProviderPathBytes)
+	}
+	if strings.Contains(path, "\\") {
+		return "", fmt.Errorf("ai provider path contains an unsupported separator")
+	}
+	for _, char := range path {
+		if char < 0x20 || char == 0x7f {
+			return "", fmt.Errorf("ai provider path contains a control character")
+		}
+	}
 	base, err := url.Parse(strings.TrimRight(c.apiBase, "/") + "/")
 	if err != nil {
 		return "", err
@@ -857,8 +1373,24 @@ func (c *Client) endpoint(path string) (string, error) {
 	if base.Host == "" {
 		return "", fmt.Errorf("ai api base host is required")
 	}
-	ref := &url.URL{Path: strings.TrimPrefix(path, "/")}
-	return base.ResolveReference(ref).String(), nil
+	ref, err := url.Parse(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid ai provider path: %w", err)
+	}
+	if ref.IsAbs() || ref.Host != "" || ref.User != nil || ref.Fragment != "" || strings.HasPrefix(path, "//") {
+		return "", fmt.Errorf("ai provider path must remain on the configured API base")
+	}
+	for _, segment := range strings.Split(ref.Path, "/") {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("ai provider path must not contain dot segments")
+		}
+	}
+	ref.Path = strings.TrimPrefix(ref.Path, "/")
+	resolved := base.ResolveReference(ref)
+	if !strings.EqualFold(resolved.Scheme, base.Scheme) || !strings.EqualFold(resolved.Host, base.Host) {
+		return "", fmt.Errorf("ai provider path escaped the configured API base")
+	}
+	return resolved.String(), nil
 }
 
 func (c *Client) urlPolicy() netguard.URLPolicy {

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
@@ -48,6 +48,7 @@ vi.mock('../../api/client', async (importOriginal) => {
 
 import SetupPage from './SetupPage';
 import { useAppStore } from '../../stores';
+import { resetSetupTokenForTest } from '../../api/client';
 
 const NAV_LANGUAGE = 'en-US';
 
@@ -58,10 +59,10 @@ function setBrowserLanguage(value: string) {
 function probePayload(overrides: Record<string, unknown> = {}) {
   return {
     probe: {
-      profile: 'medium',
-      cpu_logical: 4,
-      memory_total_mb: 8192,
-      memory_avail_mb: 4096,
+      profile: 'low',
+      cpu_logical: 2,
+      memory_total_mb: 2048,
+      memory_avail_mb: 1024,
       disk_write_mbps: 100,
       disk_ok: true,
       duration_ms: 12,
@@ -74,7 +75,9 @@ function probePayload(overrides: Record<string, unknown> = {}) {
 }
 
 function clickNext() {
-  fireEvent.click(screen.getByRole('button', { name: 'common.next' }));
+  const button = screen.queryByRole('button', { name: 'common.next' })
+    ?? screen.getByRole('button', { name: 'setup.chooseProfile' });
+  fireEvent.click(button);
 }
 
 function passwordInputs() {
@@ -85,6 +88,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ shouldAdvanceTime: true });
   localStorage.clear();
+  window.history.replaceState({}, '', '/setup#setup_token=test-setup-token');
   setBrowserLanguage(NAV_LANGUAGE);
   // Start from the non-browser value and with no persisted choice, so a mount
   // has to fall back to `navigator.language` on its own.
@@ -97,6 +101,8 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   setBrowserLanguage(NAV_LANGUAGE);
+  resetSetupTokenForTest();
+  window.history.replaceState({}, '', '/');
 });
 
 /** Step 0 (language) → step 1 (environment). */
@@ -149,6 +155,30 @@ async function completeSetup() {
 }
 
 describe('SetupPage', () => {
+  it('uses a setup-specific unframed brand mark', async () => {
+    render(<SetupPage />);
+    const logo = await screen.findByAltText('CheeseWAF logo');
+
+    expect(logo.classList.contains('setup-brand-logo')).toBe(true);
+    expect(logo.parentElement?.classList.contains('setup-brand-mark')).toBe(true);
+  });
+
+  it('requires a manual token on a bare setup URL and unlocks the wizard after acceptance', async () => {
+    window.history.replaceState({}, '', '/setup');
+    render(<SetupPage />);
+
+    await waitFor(() => expect(screen.getByLabelText('setup.tokenLabel')).toBeTruthy());
+    expect(apiMocks.unwrapAPIResponse).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('setup.tokenLabel'), { target: { value: 'manual-setup-token' } });
+    fireEvent.click(screen.getByRole('button', { name: 'setup.tokenContinue' }));
+
+    await waitFor(() => expect(apiMocks.unwrapAPIResponse).toHaveBeenCalled());
+    expect(screen.queryByLabelText('setup.tokenLabel')).toBeNull();
+    clickNext();
+    await waitFor(() => expect(screen.getByText('setup.probeChecklistTitle')).toBeTruthy());
+  });
+
   it('submits admin bootstrap with form values after confirmation', async () => {
     apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true });
     await advanceToReviewStep();
@@ -224,6 +254,19 @@ describe('SetupPage', () => {
     expect(screen.getAllByText('setup.probeStatusPass').length).toBeGreaterThan(0);
   });
 
+  it('renders fishbone progress with completed, current, and upcoming states', async () => {
+    await advanceToEnvironmentStep();
+    const progress = screen.getByRole('list', { name: 'setup.progressLabel' });
+    const items = within(progress).getAllByRole('listitem');
+
+    expect(items).toHaveLength(7);
+    expect(items[0].getAttribute('data-state')).toBe('complete');
+    expect(items[1].getAttribute('data-state')).toBe('current');
+    expect(items[1].getAttribute('aria-current')).toBe('step');
+    expect(items[2].getAttribute('data-state')).toBe('upcoming');
+    expect(screen.getByText('setup.progressCurrent')).toBeTruthy();
+  });
+
   it('flags a failing disk probe', async () => {
     apiMocks.unwrapAPIResponse.mockResolvedValue(
       probePayload({ disk_ok: false, disk_write_mbps: 5, profile: 'low' }),
@@ -241,14 +284,39 @@ describe('SetupPage', () => {
     expect(screen.getByText('setup.profileMediumDesc')).toBeTruthy();
     expect(screen.getByText('setup.profileHighDesc')).toBeTruthy();
     expect(screen.getByText('setup.profileCustomDesc')).toBeTruthy();
-    // Probe recommends medium, so exactly one option carries the badge.
+    // The fixture represents a small host, so exactly one option carries the badge.
     expect(screen.getAllByText('setup.profileRecommended')).toHaveLength(1);
+  });
+
+  it('preselects the light tier for a two-core, two-gib host and lets the whole card select it', async () => {
+    await advanceToProfileStep();
+    const lightRadio = screen.getByRole('radio', { name: /setup.profileLow/ });
+    expect(lightRadio.getAttribute('aria-checked')).toBe('true');
+
+    const lightCard = lightRadio.closest('.setup-profile-card');
+    expect(lightCard?.getAttribute('data-recommended')).toBe('true');
+    fireEvent.click(lightCard as HTMLElement);
+    expect(lightRadio.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('warns when choosing above the host recommendation without blocking the choice', async () => {
+    await advanceToProfileStep();
+    const highRadio = screen.getByRole('radio', { name: /setup.profileHigh/ });
+    fireEvent.click(highRadio.closest('.setup-profile-card') as HTMLElement);
+
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(toastMocks.warning).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: /setup.profileHigh/ }).getAttribute('aria-checked')).toBe('true'),
+    );
+    const chooseProfile = screen.getByRole('button', { name: 'setup.chooseProfile' }) as HTMLButtonElement;
+    expect(chooseProfile.disabled).toBe(false);
   });
 
   it('shows the probe recommendation before the profile step', async () => {
     await advanceToEnvironmentStep();
     expect(screen.getByText('setup.probeRecommendationTitle')).toBeTruthy();
-    expect(screen.getByText('setup.profileMedium')).toBeTruthy();
+    expect(screen.getByText('setup.profileLow')).toBeTruthy();
   });
 
   // 问题 5：用户名/密码校验、小眼睛、二次确认。
@@ -267,8 +335,24 @@ describe('SetupPage', () => {
     fireEvent.blur(username);
     expect(await screen.findByText('setup.usernameTooShort')).toBeTruthy();
 
-    fireEvent.change(username, { target: { value: 'admin name' } });
+    fireEvent.change(username, { target: { value: 'admin@name' } });
     expect(await screen.findByText('setup.usernameInvalidChars')).toBeTruthy();
+  });
+
+  it.each([' admin ', 'ad min', 'admin\u200b'])('rejects %j and preserves the input for explicit correction', async (value) => {
+    await advanceToAccountStep();
+    const username = screen.getByPlaceholderText('setup.usernamePlaceholder') as HTMLInputElement;
+    fireEvent.change(username, { target: { value } });
+    fireEvent.blur(username);
+    const [passwordInput, confirmInput] = passwordInputs();
+    fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass!' } });
+    fireEvent.change(confirmInput, { target: { value: 'S3cure-Pass!' } });
+    clickNext();
+
+    expect(await screen.findByText('setup.usernameWhitespace')).toBeTruthy();
+    expect(username.value).toBe(value);
+    expect(apiMocks.setupAdmin).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'setup.integrationsSkip' })).toBeNull();
   });
 
   it('toggles password visibility with the eye button', async () => {

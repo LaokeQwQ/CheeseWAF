@@ -1,0 +1,39 @@
+---
+# Full is the production orchestration boundary. It can invoke a fixed,
+# controller-local Pigsty adapter and bootstrap CWEDP, but never carries
+# Pigsty source or pushes CRP/plugin packages.
+- name: CheeseWAF full production deployment
+  hosts: cheesewaf
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    cheesewaf_deployment_entrypoint: full
+    cheesewaf_storage_profile: production
+    cheesewaf_management_postgresql_mode: external
+    cheesewaf_control_postgresql_mode: external
+    cheesewaf_redis_mode: external
+    cheesewaf_provision_only: false
+  pre_tasks:
+    - name: Load deployment defaults without overriding entrypoint or secret vars
+      ansible.builtin.import_tasks: tasks/defaults.yml
+    - name: Validate full production contract
+      ansible.builtin.import_tasks: tasks/preflight.yml
+  tasks:
+    - name: Call the fixed-version Pigsty adapter when explicitly enabled
+      ansible.builtin.import_tasks: tasks/pigsty.yml
+      when: cheesewaf_pigsty_enabled | bool
+    - name: Bootstrap host hand-off and optional CWEDP pull agent
+      ansible.builtin.import_tasks: tasks/bootstrap.yml
+      when:
+        - cheesewaf_provision_only | bool
+        - cheesewaf_prepare_host | bool or cheesewaf_cwedp_agent_enabled | bool
+  handlers:
+    - name: Reload systemd after CheeseWAF unit changes
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Restart CWEDP pull agent after an intentional change
+      ansible.builtin.systemd_service:
+        name: cheesewaf-cwedp-agent
+        state: restarted
+      when: cheesewaf_cwedp_agent_start | bool

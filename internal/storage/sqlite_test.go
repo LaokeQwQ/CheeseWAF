@@ -54,7 +54,7 @@ func TestSQLiteConnectionPragmasAndSessionLifecycle(t *testing.T) {
 	if err := store.CreateUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{ID: "pragma-session", UserID: user.ID, Username: user.Username, Role: user.Role, ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	session := &Session{ID: "pragma-session", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, ExpiresAt: time.Now().UTC().Add(time.Hour)}
 	if err := store.CreateSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestSQLiteStoreSessionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	first := &Session{ID: "session-1", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	first := &Session{ID: "session-1", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := store.CreateSession(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestSQLiteStoreSessionLifecycle(t *testing.T) {
 	if !active {
 		t.Fatal("expected new session to be active")
 	}
-	next := &Session{ID: "session-2", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now.Add(time.Minute), ExpiresAt: now.Add(2 * time.Hour)}
+	next := &Session{ID: "session-2", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, IssuedAt: now.Add(time.Minute), ExpiresAt: now.Add(2 * time.Hour)}
 	if err := store.RotateSession(ctx, first.ID, user.ID, next); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestSQLiteStoreSessionLifecycle(t *testing.T) {
 	if revokedActive {
 		t.Fatal("expected revoked session to be inactive")
 	}
-	expired := &Session{ID: "session-expired", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
+	expired := &Session{ID: "session-expired", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, IssuedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
 	if err := store.CreateSession(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
@@ -172,8 +172,8 @@ func TestSQLiteStoreSessionLifecycle(t *testing.T) {
 	if expiredActive {
 		t.Fatal("expected expired session to be inactive")
 	}
-	activeOne := &Session{ID: "session-active-one", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
-	activeTwo := &Session{ID: "session-active-two", UserID: user.ID, Username: user.Username, Role: user.Role, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	activeOne := &Session{ID: "session-active-one", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	activeTwo := &Session{ID: "session-active-two", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := store.CreateSession(ctx, activeOne); err != nil {
 		t.Fatal(err)
 	}

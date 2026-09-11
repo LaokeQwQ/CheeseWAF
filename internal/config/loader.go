@@ -60,7 +60,14 @@ func Default() Config {
 				Listen:       "127.0.0.1:9444",
 				MTLSRequired: true,
 			},
-			Consensus: ConsensusConfig{Provider: "builtin"},
+			Consensus: ConsensusConfig{
+				Provider: "builtin",
+				NativeRaft: NativeRaftConfig{
+					DataDir: "./data/cluster/native-raft",
+					Listen:  "127.0.0.1:9451",
+					Mode:    "bootstrap",
+				},
+			},
 			Join: JoinConfig{
 				RequireApproval: true,
 				TokenTTL:        15 * time.Minute,
@@ -272,11 +279,14 @@ func Default() Config {
 			},
 		},
 		Storage: StorageConfig{
-			SQLite:        SQLiteConfig{Path: "./data/cheesewaf.db"},
-			ClickHouse:    ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
-			VictoriaLogs:  VictoriaLogsConfig{Timeout: 10 * time.Second},
-			PostgreSQL:    PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
-			Elasticsearch: ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
+			Profile:              StorageProfileTemporary,
+			ManagementPostgreSQL: ManagementPostgreSQLConfig{Timeout: 10 * time.Second},
+			ControlPostgreSQL:    ManagementPostgreSQLConfig{Timeout: 10 * time.Second},
+			SQLite:               SQLiteConfig{Path: "./data/cheesewaf.db"},
+			ClickHouse:           ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			VictoriaLogs:         VictoriaLogsConfig{Timeout: 10 * time.Second},
+			PostgreSQL:           PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
+			Elasticsearch:        ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
 		},
 		ACME: ACMEConfig{
 			Enabled:       false,
@@ -704,6 +714,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Cluster.Consensus.Provider == "" {
 		cfg.Cluster.Consensus.Provider = def.Cluster.Consensus.Provider
 	}
+	if cfg.Cluster.Consensus.NativeRaft.DataDir == "" {
+		cfg.Cluster.Consensus.NativeRaft.DataDir = def.Cluster.Consensus.NativeRaft.DataDir
+	}
+	if cfg.Cluster.Consensus.NativeRaft.Listen == "" {
+		cfg.Cluster.Consensus.NativeRaft.Listen = def.Cluster.Consensus.NativeRaft.Listen
+	}
+	if cfg.Cluster.Consensus.NativeRaft.Mode == "" {
+		cfg.Cluster.Consensus.NativeRaft.Mode = def.Cluster.Consensus.NativeRaft.Mode
+	}
 	if cfg.Cluster.Join.TokenTTL == 0 {
 		cfg.Cluster.Join.TokenTTL = def.Cluster.Join.TokenTTL
 	}
@@ -751,6 +770,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Storage.SQLite.Path == "" {
 		cfg.Storage.SQLite.Path = filepath.Join(cfg.Setup.DataDir, "cheesewaf.db")
+	}
+	if cfg.Storage.Profile == "" {
+		cfg.Storage.Profile = def.Storage.Profile
+	}
+	if cfg.Storage.ManagementPostgreSQL.Timeout == 0 {
+		cfg.Storage.ManagementPostgreSQL.Timeout = def.Storage.ManagementPostgreSQL.Timeout
+	}
+	if cfg.Storage.ControlPostgreSQL.Timeout == 0 {
+		cfg.Storage.ControlPostgreSQL.Timeout = def.Storage.ControlPostgreSQL.Timeout
 	}
 	if cfg.Storage.ClickHouse.Table == "" {
 		cfg.Storage.ClickHouse.Table = def.Storage.ClickHouse.Table

@@ -209,6 +209,19 @@ func TestValidatorBoundsManagementAPITokensAndRequiresUniquePrefixes(t *testing.
 			t.Fatalf("expected duplicate prefix error, got %v", err)
 		}
 	})
+	t.Run("explicit non-expiring token cannot carry expiry", func(t *testing.T) {
+		cfg := Default()
+		cfg.APISec.ManagementAPI.Enabled = true
+		cfg.APISec.ManagementAPI.Tokens = []ManagementAPITokenConfig{{
+			ID: "forever", Name: "forever", Prefix: "cwapi_forever", Hash: "sha256:" + strings.Repeat("0", 64),
+			Scopes: []string{"read:system"}, Enabled: true, NeverExpire: true,
+			CreatedAt: time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC),
+			ExpiresAt: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC),
+		}}
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "never_expire") {
+			t.Fatalf("expected explicit lifetime consistency error, got %v", err)
+		}
+	})
 }
 
 func TestValidatorTrustedProxyProviderBindings(t *testing.T) {

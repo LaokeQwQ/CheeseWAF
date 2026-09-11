@@ -63,6 +63,10 @@ cluster:
     consensus:
         provider: builtin
         etcd_endpoints: []
+        native_raft:
+            data_dir: "./data/cluster/native-raft"
+            listen: 127.0.0.1:9451
+            mode: bootstrap
     join:
         require_approval: true
         token_ttl: 15m0s
@@ -331,11 +335,22 @@ protection:
               severity: high
               enabled: true
 storage:
+    # temporary is the only runnable management-storage profile today.
+    # production requires management_postgresql.dsn and control_postgresql.dsn,
+    # native-raft, Redis and an explicitly mounted approval consumer.
+    profile: temporary
+    management_postgresql:
+        dsn: ""
+        timeout: 10s
+    control_postgresql:
+        dsn: ""
+        timeout: 10s
     sqlite:
         path: "./data/cheesewaf.db"
     redis:
         enabled: false
         address: 127.0.0.1:6379
+        instance_id: ""
     clickhouse:
         enabled: false
         endpoint: ""
@@ -429,7 +444,7 @@ ai:
 update:
     ota:
         enabled: false
-        server: ""
+        server: https://ota.cheesesec.com/
         channel: stable
         check_interval: 6h0m0s
         auto_update_rules: true

@@ -8,8 +8,10 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
 	"errors"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +31,109 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
+
+func TestValidateStartupUsersRejectsHistoricalNonCanonicalUsername(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "cheesewaf.db")
+	store, err := storage.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a pre-contract row through a separate connection. Normal Store
+	// writes must reject this value; the startup check must still diagnose it.
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	if _, err := legacy.ExecContext(ctx, "INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)", "dirty-admin", " admin ", "hash", "admin", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	err = validateStartupUsers(ctx, dataDir, store)
+	if err == nil || !strings.Contains(err.Error(), "non-canonical username") || !strings.Contains(err.Error(), "repair-username") {
+		t.Fatalf("expected actionable invalid username error, got %v", err)
+	}
+}
+
+func TestValidateStartupUsersAllowsDirtyReadonlyWhenCanonicalAdminExists(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "cheesewaf.db")
+	store, err := storage.OpenSQLite(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "admin", PasswordHash: "hash", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	if _, err := legacy.ExecContext(ctx, "INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)", "dirty-readonly", " reader ", "hash", "readonly", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+
+	var diagnostics bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&diagnostics)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+	if err := validateStartupUsers(ctx, dataDir, store); err != nil {
+		t.Fatalf("a dirty readonly account must not block a valid administrator: %v", err)
+	}
+	if !strings.Contains(diagnostics.String(), "dirty-readonly") || !strings.Contains(diagnostics.String(), "repair-username") {
+		t.Fatalf("startup diagnostics did not include an actionable repair hint: %q", diagnostics.String())
+	}
+	dirty, err := store.GetUserByUsername(ctx, " reader ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty == nil || dirty.Username != " reader " {
+		t.Fatalf("startup validation mutated the dirty account: %+v", dirty)
+	}
+}
+
+func TestValidateStartupUsersRequiresExactCanonicalAdminRole(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.OpenSQLite(filepath.Join(dataDir, "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "Admin", PasswordHash: "hash", Role: "Admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	err = validateStartupUsers(ctx, dataDir, store)
+	if err == nil || !strings.Contains(err.Error(), "no administrator") {
+		t.Fatalf("non-exact admin role must not satisfy startup validation: %v", err)
+	}
+	if strings.Contains(err.Error(), "repair-username") {
+		t.Fatalf("canonical username with a bad role should use the no-admin repair path, got %v", err)
+	}
+}
 
 func TestPublishMonitorEventsPublishesStatsAndAlerts(t *testing.T) {
 	hub := realtime.NewHub()
@@ -125,6 +230,17 @@ func TestSetupBrowserURLUsesFragmentAndReachableLoopbackHost(t *testing.T) {
 	}
 	if strings.Contains(got, "?setup_token=") {
 		t.Fatalf("setup token must not be placed in the query string: %q", got)
+	}
+}
+
+func TestSetupBrowserDisplayURLNeverIncludesTokenFragment(t *testing.T) {
+	page := setupBrowserURL("https", "127.0.0.1:9443", "stdout-secret")
+	display := setupBrowserDisplayURL(page)
+	if strings.Contains(display, "stdout-secret") || strings.Contains(display, "setup_token") || strings.Contains(display, "#") {
+		t.Fatalf("display URL leaked setup token fragment: %q", display)
+	}
+	if display != "https://127.0.0.1:9443/setup" {
+		t.Fatalf("display URL = %q, want base setup URL", display)
 	}
 }
 

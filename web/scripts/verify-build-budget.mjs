@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import path from 'node:path';
+import { scanProductionMarkers } from './verify-production-markers.mjs';
 
 const distDir = path.resolve('dist');
 const html = readFileSync(path.join(distDir, 'index.html'), 'utf8');
@@ -24,6 +25,8 @@ if (preloadBytes > preloadBudget) {
 
 const cssAssets = readdirSync(path.join(distDir, 'assets')).filter((file) => file.endsWith('.css'));
 const jsAssets = readdirSync(path.join(distDir, 'assets')).filter((file) => file.endsWith('.js'));
+scanProductionMarkers([distDir]);
+console.log('Production marker scan passed for the complete dist tree.');
 const jsChunkLimit = 500 * 1024;
 const lazyDependencyLimit = 1024 * 1024;
 const unexpectedOversizedChunks = jsAssets.filter((file) => {
