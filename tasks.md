@@ -1059,7 +1059,7 @@ Dependabot/CodeQL 复核结果：
 
 隔离测试服务器此前没有 CheeseWAF 二进制、目录、systemd 单元或监听器。预览部署使用独立的 `cheesewaf-preview` 系统用户、`/opt/cheesewaf-preview`、`/etc/cheesewaf-preview`、`/var/lib/cheesewaf-preview`、`/var/log/cheesewaf-preview` 和 `cheesewaf-preview.service`；未修改现有 PostgreSQL 17.11 或 Redis 8.0.2，两者仍只监听 loopback。
 
-在 2026-09-11 的受控 SSH 复核中，预览服务曾处于 active 且未启用开机自启。代理和管理端分别只监听服务器 `127.0.0.1:18080` 与 `127.0.0.1:19443`。当时 `GET /api/setup/status` 返回 `needs_setup: true`，`.setup_complete` 不存在，`setup.url` 权限为 `0600`，所以那次复核确认服务处于刚部署、尚未提交设置向导的状态。该状态依赖临时服务器进程，不代表当前仍可访问。后续只读探测未能建立 SSH、HTTPS 或管理端连接，因此当前没有可复核的公网预览地址。
+在 2026-09-11 的受控 SSH 复核中，预览服务曾处于 active 且未启用开机自启。代理和管理端分别只监听服务器 `127.0.0.1:18080` 与 `127.0.0.1:19443`。当时 `GET /api/setup/status` 返回 `needs_setup: true`，`.setup_complete` 不存在，`setup.url` 权限为 `0600`，所以那次复核确认服务处于刚部署、尚未提交设置向导的状态。该状态依赖临时服务器进程，不代表进程会长期保留。本轮复核已恢复本机 SSH 隧道，`GET /api/setup/status` 再次返回 `needs_setup: true`，所以当前可以通过 `http://127.0.0.1:19443/setup` 查看设置向导。这个地址只在本机隧道存活时有效，不是公网预览地址；当前隧道没有转发数据面 `127.0.0.1:18080`。
 
 回滚边界：停止并禁用（当前本就未启用）`cheesewaf-preview.service`，删除该独立 unit 与四个 preview 目录即可；正式 CheeseWAF 路径、数据库服务和其他系统服务不在本次预览部署范围内。
 
@@ -1101,7 +1101,7 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 - `git rev-parse v0.3.9^{}`：结果为 `cc96e2d8bad9a1378a73711e3c3e5039d56bccd7`。
 - `gh api repos/LaokeQwQ/CheeseWAF/dependabot/alerts`：告警 #23、#24 均为 `fixed`。
 - `gh pr view 7 --repo LaokeQwQ/CheeseSec_Plugin_Docs`：检查成功，状态仍为 `BLOCKED`。
-- 临时服务器只读探测：80 端口可建立连接但返回空响应，22、443、8080、9443、19443 未形成可用管理入口；没有执行远程修改。
+- 临时服务器只读探测：本轮本机 SSH 隧道的 `http://127.0.0.1:19443/setup` 返回 HTTP 200，`GET /api/setup/status` 返回 `needs_setup: true`；公网端口探测仍未形成可用入口，没有执行远程修改。
 
 遗留风险：稳定发布仍需要 GitHub `publish-release` 环境中的 Windows 和 macOS 签名凭据；插件文档 PR 仍需要独立 code-owner 审批；Cloudflare Pages 部署仍需要 Cloudflare 凭据。阶段 1 至阶段 7 中列出的主服务生产接线、CRP 控制面、CWEDP 节点编排、对象复制和空网演练仍未完成，不能把当前 tag 或构建结果写成商业化架构全部交付。
 
