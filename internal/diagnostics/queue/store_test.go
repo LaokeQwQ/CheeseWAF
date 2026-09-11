@@ -455,12 +455,28 @@ func TestStoreWorkerRetriesBeforeTerminalFailure(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("worker attempts=%d", attempts.Load())
 	}
+	deadline := time.NewTimer(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	var status Item
+	var statusErr error
+	for {
+		status, statusErr = s.Status(context.Background(), receipt.ID)
+		if statusErr == nil && status.State == StateFailed {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("status=%#v err=%v worker attempts=%d", status, statusErr, attempts.Load())
+		}
+	}
 	if err := s.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	status, err := s.Status(context.Background(), receipt.ID)
-	if err != nil || status.State != StateFailed {
-		t.Fatalf("status=%#v err=%v", status, err)
+	if status.Attempt != 2 || status.MaxAttempts != 2 {
+		t.Fatalf("status=%#v, want terminal attempt 2/2", status)
 	}
 }
 
