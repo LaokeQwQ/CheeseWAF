@@ -81,6 +81,9 @@ support-bundle*.zip
 *credential*
 *credentials*
 !scripts/**/*credential*
+!internal/cli/migration/credential.go
+!internal/recovery/kms/credential.go
+!internal/storage/credential_epoch_test.go
 forgejo-credential*
 *.session
 *.secret
