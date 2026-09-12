@@ -470,31 +470,38 @@ func TestBehaviorChallenge_VisualSelectionGenerationStaysBounded(t *testing.T) {
 }
 
 func TestBehaviorChallenge_SelectionImagesKeepVisualComplexity(t *testing.T) {
-	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
+	const samples = 32
 	for _, kind := range []BehaviorType{BehaviorTextClick, BehaviorIconClick} {
-		challenge, err := IssueBehaviorChallenge(behaviorTestOptions(kind, now))
-		if err != nil {
-			t.Fatalf(`%s generation: %v`, kind, err)
+		for seed := int64(1); seed <= samples; seed++ {
+			challenge, err := IssueBehaviorChallenge(seededVisualChallengeOptions(kind, seed))
+			if err != nil {
+				t.Fatalf(`%s seed %d generation: %v`, kind, seed, err)
+			}
+			img := decodeBehaviorPNG(t, challenge.Presentation.Image)
+			levels, edges := selectionImageComplexity(img)
+			if levels < 30 || edges < 500 {
+				t.Fatalf(`%s seed %d background is too easy to segment: levels=%d edges=%d`, kind, seed, levels, edges)
+			}
 		}
-		img := decodeBehaviorPNG(t, challenge.Presentation.Image)
-		edges := 0
-		levels := map[uint32]struct{}{}
-		for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y += 2 {
-			for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x += 2 {
-				r, g, b, _ := img.At(x, y).RGBA()
-				levels[(r+g+b)/3/1024] = struct{}{}
-				if x+2 < img.Bounds().Max.X {
-					nr, ng, nb, _ := img.At(x+2, y).RGBA()
-					if absBehavior(int(r)-int(nr))+absBehavior(int(g)-int(ng))+absBehavior(int(b)-int(nb)) > 42*257 {
-						edges++
-					}
+	}
+}
+
+func selectionImageComplexity(img image.Image) (int, int) {
+	edges := 0
+	levels := map[uint32]struct{}{}
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y += 2 {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x += 2 {
+			r, g, b, _ := img.At(x, y).RGBA()
+			levels[(r+g+b)/3/1024] = struct{}{}
+			if x+2 < img.Bounds().Max.X {
+				nr, ng, nb, _ := img.At(x+2, y).RGBA()
+				if absBehavior(int(r)-int(nr))+absBehavior(int(g)-int(ng))+absBehavior(int(b)-int(nb)) > 42*257 {
+					edges++
 				}
 			}
 		}
-		if len(levels) < 30 || edges < 500 {
-			t.Fatalf(`%s background is too easy to segment: levels=%d edges=%d`, kind, len(levels), edges)
-		}
 	}
+	return len(levels), edges
 }
 
 func TestBehaviorChallenge_RotateUsesCorrectionAngle(t *testing.T) {
