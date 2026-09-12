@@ -85,6 +85,7 @@ type ProviderUsage struct {
 
 type Client struct {
 	provider          string
+	openAIResponses   bool
 	apiBase           string
 	apiKey            string
 	apiKeyHeader      string
@@ -122,10 +123,13 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		httpClient = newAIHTTPClient(cfg, defaultAIHTTPTimeout)
 	}
 	httpClient = withAIResponseLimits(httpClient)
-	provider := normalizeProvider(cfg.Provider)
+	rawProvider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	provider := normalizeProvider(rawProvider)
+	apiBase := strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/")
 	client := &Client{
 		provider:          provider,
-		apiBase:           strings.TrimRight(defaultAPIBase(provider, cfg.APIBase), "/"),
+		openAIResponses:   shouldUseOpenAIResponses(rawProvider, apiBase),
+		apiBase:           apiBase,
 		apiKey:            cfg.APIKey,
 		apiKeyHeader:      strings.TrimSpace(cfg.APIKeyHeader),
 		model:             cfg.Model,
@@ -541,12 +545,16 @@ func (c *Client) CompleteWithUsageStream(ctx context.Context, messages []Message
 	}
 	switch c.provider {
 	case "openai":
-		result, started, err := c.completeOpenAIStream(ctx, messages, emit)
+		result, started, protocol, err := c.completeOpenAIStream(ctx, messages, emit)
 		c.recordCompletionUsage(result)
-		if err == nil || started {
+		if err == nil || started || !openAIStreamFallbackSafe(err) {
 			return result, safeProviderCallError(err)
 		}
-		result, err = c.completeOpenAI(ctx, messages)
+		if protocol == openAIProtocolResponses {
+			result, err = c.completeOpenAIResponse(ctx, messages)
+		} else {
+			result, err = c.completeOpenAIChat(ctx, messages)
+		}
 		c.recordCompletionUsage(result)
 		return result, safeProviderCallError(err)
 	case "anthropic":
@@ -575,12 +583,16 @@ func (c *Client) CompleteToolPlanStream(ctx context.Context, messages []Message,
 	}
 	switch c.provider {
 	case "openai":
-		plan, started, err := c.completeOpenAIToolPlanStream(ctx, messages, tools, emit)
+		plan, started, protocol, err := c.completeOpenAIToolPlanStream(ctx, messages, tools, emit)
 		c.recordPlanUsage(plan)
-		if err == nil || started {
+		if err == nil || started || !openAIStreamFallbackSafe(err) {
 			return plan, safeProviderCallError(err)
 		}
-		plan, err = c.completeOpenAIToolPlan(ctx, messages, tools)
+		if protocol == openAIProtocolResponses {
+			plan, err = c.completeOpenAIResponseToolPlan(ctx, messages, tools)
+		} else {
+			plan, err = c.completeOpenAIChatToolPlan(ctx, messages, tools)
+		}
 		c.recordPlanUsage(plan)
 		return plan, safeProviderCallError(err)
 	case "anthropic":
@@ -636,7 +648,7 @@ func safeProviderCallError(err error) error {
 	return errors.New("AI provider request failed")
 }
 
-func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*CompletionResult, error) {
+func (c *Client) completeOpenAIChat(ctx context.Context, messages []Message) (*CompletionResult, error) {
 	completion, err := c.openai.Chat.Completions.New(ctx, c.openAIChatParams(messages))
 	if err != nil {
 		return nil, err
@@ -661,7 +673,7 @@ func (c *Client) completeOpenAI(ctx context.Context, messages []Message) (*Compl
 	}, nil
 }
 
-func (c *Client) completeOpenAIToolPlan(ctx context.Context, messages []Message, tools []map[string]any) (*AssistantPlan, error) {
+func (c *Client) completeOpenAIChatToolPlan(ctx context.Context, messages []Message, tools []map[string]any) (*AssistantPlan, error) {
 	params, err := c.openAIChatToolParams(messages, tools)
 	if err != nil {
 		return nil, err
@@ -1027,7 +1039,7 @@ func numberField(obj map[string]any, keys ...string) float64 {
 	return 0
 }
 
-func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, emit StreamEmitter) (*CompletionResult, bool, error) {
+func (c *Client) completeOpenAIChatStream(ctx context.Context, messages []Message, emit StreamEmitter) (*CompletionResult, bool, error) {
 	params := c.openAIChatParams(messages)
 	params.StreamOptions = openAIStreamOptions()
 	stream := c.openai.Chat.Completions.NewStreaming(ctx, params)
@@ -1047,7 +1059,7 @@ func (c *Client) completeOpenAIStream(ctx context.Context, messages []Message, e
 	return assembler.completion(), assembler.started, nil
 }
 
-func (c *Client) completeOpenAIToolPlanStream(ctx context.Context, messages []Message, tools []map[string]any, emit StreamEmitter) (*AssistantPlan, bool, error) {
+func (c *Client) completeOpenAIChatToolPlanStream(ctx context.Context, messages []Message, tools []map[string]any, emit StreamEmitter) (*AssistantPlan, bool, error) {
 	params, err := c.openAIChatToolParams(messages, tools)
 	if err != nil {
 		return nil, false, err
@@ -1404,7 +1416,9 @@ func (c *Client) urlPolicy() netguard.URLPolicy {
 
 func normalizeProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "openai", "openai-compatible", "openai_compatible":
+	case "", "openai", "openai-compatible", "openai_compatible",
+		"openai-responses", "openai_responses", "openai-response", "openai_response",
+		"openai-chat", "openai_chat", "openai-chat-completions", "openai_chat_completions":
 		return "openai"
 	case "anthropic", "claude":
 		return "anthropic"

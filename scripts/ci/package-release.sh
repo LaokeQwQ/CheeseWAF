@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 version_prefix="${CHEESEWAF_VERSION_PREFIX:-$(cat "${script_dir}/product-version")}"
+product_version="$(tr -d '[:space:]' <"${script_dir}/product-version")"
 ref_name="${CHEESEWAF_REF_NAME:-${GITHUB_REF_NAME:-}}"
 if [[ -z "$ref_name" ]]; then
   ref_name="$(git branch --show-current 2>/dev/null || true)"
@@ -23,6 +24,10 @@ case "$ref_name" in
   v[0-9]*.[0-9]*.[0-9]*)
     if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       echo "::error::stable release tag must use vMAJOR.MINOR.PATCH: ${ref_name}" >&2
+      exit 1
+    fi
+    if [[ "$ref_name" != "v${product_version}" ]]; then
+      echo "::error::stable release tag ${ref_name} does not match product version v${product_version}" >&2
       exit 1
     fi
     channel="stable"
@@ -148,13 +153,19 @@ echo "Packaging CheeseWAF ${version} (${channel}) from ${commit}"
 rm -rf "$release_dir" "$work_dir"
 mkdir -p "$release_dir" "$work_dir"
 
+# shellcheck disable=SC1091
+source "${script_dir}/release-targets.sh"
+targets=()
+while IFS= read -r target; do
+  [[ -n "$target" ]] || continue
+  targets+=("$target")
+done < <(release_targets)
+
 metadata_dir="${work_dir}/release-metadata"
 bash scripts/ci/generate-release-metadata.sh \
   "$metadata_dir" "$version" "$channel" "$ref_name" "$commit" "$build_time" "$release_tag"
 
 bash scripts/ci/build-web.sh
-
-read -r -a targets <<<"${CHEESEWAF_TARGETS:-linux/amd64 linux/arm64 linux/loong64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64}"
 
 for target in "${targets[@]}"; do
   goos="${target%/*}"

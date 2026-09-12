@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${script_dir}/stable-release-policy.sh"
+
 release_dir="${1:-release}"
 max_total_bytes="${RELEASE_TOTAL_MAX_BYTES:-629145600}"
 max_artifact_bytes="${RELEASE_ARTIFACT_MAX_BYTES:-134217728}"
@@ -55,6 +59,58 @@ checksum_manifest_lists_once() {
     END { print count + 0 }
   ' "$manifest")"
   [[ "$count" -eq 1 ]]
+}
+
+manifest_value() {
+  local manifest="$1"
+  local key="$2"
+  awk -F': ' -v wanted="$key" '
+    $1 == wanted {
+      value = substr($0, length($1) + 3)
+      count++
+    }
+    END {
+      if (count != 1 || value == "") exit 1
+      print value
+    }
+  ' "$manifest"
+}
+
+version_metadata_value() {
+  local metadata="$1"
+  local key="$2"
+  awk -F= -v wanted="$key" '
+    $1 == wanted {
+      value = substr($0, length($1) + 2)
+      count++
+    }
+    END {
+      if (count != 1 || value == "") exit 1
+      print value
+    }
+  ' "$metadata"
+}
+
+json_string_value() {
+  local metadata="$1"
+  local key="$2"
+  awk -v wanted="$key" '
+    {
+      rest = $0
+      pattern = "\\\"" wanted "\\\"[[:space:]]*:[[:space:]]*\\\"[^\\\"]*\\\""
+      while (match(rest, pattern)) {
+        value = substr(rest, RSTART, RLENGTH)
+        sub("^.*:[[:space:]]*\\\"", "", value)
+        sub("\\\"$", "", value)
+        count++
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }
+    END {
+      if (count != 1 || value == "") exit 1
+      print value
+    }
+  ' "$metadata"
 }
 
 validate_archive_members() {
@@ -220,15 +276,39 @@ case "$signing_mode" in
   *) fail "CHEESEWAF_REQUIRE_SIGNING must be 0, 1, or warn" ;;
 esac
 case "$signing_scope" in
-  all | windows | macos) ;;
-  *) fail "CHEESEWAF_SIGNING_SCOPE must be all, windows, or macos" ;;
+  all | server | windows | macos) ;;
+  *) fail "CHEESEWAF_SIGNING_SCOPE must be all, server, windows, or macos" ;;
 esac
+
+if [[ "$signing_scope" == "server" ]]; then
+  server_manifest="${release_dir}/release-manifest.txt"
+  [[ -f "$server_manifest" ]] || fail "server release scope requires release-manifest.txt"
+  server_release_tag="$(manifest_value "$server_manifest" release_tag)" ||
+    fail "server release scope requires exactly one release_tag"
+  [[ "$server_release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    fail "server release scope requires an exact stable release_tag"
+  server_version="${server_release_tag#v}"
+  server_manifest_version="$(manifest_value "$server_manifest" version)" ||
+    fail "server release scope requires exactly one manifest version"
+  [[ "$server_manifest_version" == "$server_version" ]] ||
+    fail "server release manifest version ${server_manifest_version} does not match ${server_version}"
+  server_manifest_commit="$(manifest_value "$server_manifest" commit)" ||
+    fail "server release scope requires exactly one manifest commit"
+  [[ "$server_manifest_commit" =~ ^[0-9a-fA-F]{40}$ ]] ||
+    fail "server release manifest commit must be a full 40-character SHA"
+  server_release_kind="$(manifest_value "$server_manifest" release_kind)" ||
+    fail "server release scope requires exactly one release_kind"
+  [[ "$server_release_kind" == "stable" ]] ||
+    fail "server release scope requires release_kind stable"
+  stable_release_validate_top_level "$release_dir" "server release scope" "$server_version" || exit 1
+  stable_release_require_archives "$release_dir" "$server_version" || exit 1
+fi
 
 # Strict release signing gate. CI selects 1 only when the corresponding
 # signing/notarization credentials exist; otherwise it selects warn visibly.
 if [[ "$signing_mode" == "1" ]]; then
   # --- Windows Authenticode (PE executables at the top level of the release dir) ---
-  if [[ "$signing_scope" != "macos" ]]; then
+  if [[ "$signing_scope" == "all" || "$signing_scope" == "windows" ]]; then
     pe_files=()
     while IFS= read -r pe; do
       [[ -n "$pe" ]] || continue
@@ -254,7 +334,7 @@ if [[ "$signing_mode" == "1" ]]; then
   fi
 
   # --- macOS Developer ID / notarization (mount any .dmg and assess the .app) ---
-  if [[ "$signing_scope" != "windows" ]]; then
+  if [[ "$signing_scope" == "all" || "$signing_scope" == "macos" ]]; then
     dmg_files=()
     while IFS= read -r dmg; do
       [[ -n "$dmg" ]] || continue
@@ -292,6 +372,9 @@ if [[ "$signing_mode" == "1" ]]; then
     else
       warn "CHEESEWAF_REQUIRE_SIGNING=1 but no .dmg artifacts were present; macOS verification was not applicable"
     fi
+  fi
+  if [[ "$signing_scope" == "server" ]]; then
+    echo "Server release scope skips desktop code-signing verification."
   fi
 fi
 
@@ -351,6 +434,25 @@ for artifact in "${artifacts[@]}"; do
     fail "${artifact_name} VERSION metadata is missing commit"
   grep -Eq '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "${package_root}/release.json" ||
     fail "${artifact_name} has invalid release.json metadata"
+
+  if [[ "$signing_scope" == "server" ]]; then
+    archive_version="$(version_metadata_value "${package_root}/VERSION" version)" ||
+      fail "${artifact_name} VERSION must contain exactly one version"
+    archive_commit="$(version_metadata_value "${package_root}/VERSION" commit)" ||
+      fail "${artifact_name} VERSION must contain exactly one commit"
+    release_json_version="$(json_string_value "${package_root}/release.json" version)" ||
+      fail "${artifact_name} release.json must contain exactly one string version"
+    release_json_commit="$(json_string_value "${package_root}/release.json" commit)" ||
+      fail "${artifact_name} release.json must contain exactly one string commit"
+    [[ "$archive_version" == "$server_version" ]] ||
+      fail "${artifact_name} VERSION version ${archive_version} does not match ${server_version}"
+    [[ "$archive_commit" == "$server_manifest_commit" ]] ||
+      fail "${artifact_name} VERSION commit ${archive_commit} does not match manifest commit ${server_manifest_commit}"
+    [[ "$release_json_version" == "$server_version" ]] ||
+      fail "${artifact_name} release.json version ${release_json_version} does not match ${server_version}"
+    [[ "$release_json_commit" == "$server_manifest_commit" ]] ||
+      fail "${artifact_name} release.json commit ${release_json_commit} does not match manifest commit ${server_manifest_commit}"
+  fi
 
   if [[ "$artifact_name" == *linux* ]]; then
     [[ -f "${package_root}/systemd/cheesewaf.service" ]] ||

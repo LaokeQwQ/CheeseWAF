@@ -4,11 +4,9 @@
 
 ## 生产构建边界
 
-1. `@agent-eyes/agent-eyes`、code-inspector、`codex-acp` 以及依赖它们的布局检查脚本只能用于本地开发和测试；本地开发也必须显式设置 `CHEESEWAF_AGENT_EYES=1` 才能启用。
-2. 它们不得进入生产 JavaScript、Go 发布包、Docker 运行时镜像、安装包、生产依赖清单或运行时配置。
-3. 生产/发布构建必须设置 `CHEESEWAF_AGENT_EYES=0`，并使用 `npm ci --ignore-scripts`；不得执行该依赖的 monorepo `postinstall`。
-4. Web 构建完成后必须执行产物检查，发现 `agent-eyes`、`code-inspector` 或 `codex-acp` 标记时构建失败。
-5. 生产容器只复制 Web 静态产物和 Go 二进制，不复制 `node_modules`、测试工具、编辑器插件或 Agent 工具链。
+1. 生产/发布构建必须使用 `npm ci --ignore-scripts`，依赖版本以锁文件为准，不执行依赖生命周期脚本。
+2. Web 构建完成后必须执行产物边界检查，拒绝依赖目录、源码目录、符号链接和不安全的归档成员路径。
+3. 生产容器只复制 Web 静态产物和 Go 二进制，不复制 `node_modules`、测试工具、编辑器插件或开发工具链。
 
 ## 配置与运行数据边界
 

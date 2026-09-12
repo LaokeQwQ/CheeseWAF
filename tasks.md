@@ -215,12 +215,12 @@ Session、Origin 凭据、密码、私钥和原始请求正文。raw 包要求�
 
 ### 2026-09-05 全量回归与生产产物检查
 
-验证命令：`go test ./...`、`go vet ./...`、`CHEESEWAF_AGENT_EYES=0 bash scripts/ci/build-web.sh`。
+验证命令：`go test ./...`、`go vet ./...`、`bash scripts/ci/build-web.sh`。
 
 验证结果：完整 Go 测试退出码 0，语义引擎测试约 305 秒；`go vet ./...` 退出码 0；
 生产 Web 构建退出码 0，
-构建预算检查通过（1 个初始 preload、6 个主题样式表），并在构建产物中未发现
-`agent-eyes`、`code-inspector` 或 `codex-acp` 标记。构建使用了 `npm ci --ignore-scripts`。
+构建预算检查通过（1 个初始 preload、6 个主题样式表），产物边界检查未发现
+依赖目录、源码目录、符号链接或不安全归档路径。构建使用了 `npm ci --ignore-scripts`。
 
 注意：Vite 仍输出一个关于 `vite.proxy` 扩展名的非阻断警告；尝试改成 `.ts`
 会触发 TypeScript `TS5097`，因此保留当前可构建写法，不隐藏警告。
@@ -804,7 +804,7 @@ Session 和一次性确认 ID。`BeginConfirmation` 由服务端记录告警开�
   `git diff --check`：通过。
 - CWEDP、NetLease、Approval、Token、AI 和 Handler 定向 race/vet：通过。
 - `npm test`：70 个测试文件、462 个测试通过；`npm run typecheck`、
-  `CHEESEWAF_AGENT_EYES=0 npm run build` 和产物预算/标记扫描通过。
+  `npm run build` 和产物预算/边界扫描通过。
 - `bash scripts/acceptance/get-started.sh --static-contract` 与 `--smoke`：通过，
   包含 temporary 可运行、production fail-closed、运行时目录隔离和清理验证。
 - 根仓库 `bash scripts/ci/verify-ci-static.sh`：通过；Hugo 文档站中英文 106/104 页、
@@ -892,7 +892,7 @@ TokenService、KMS、透明/耐久审计和插件 sidecar 接成一个启动单�
 - TokenService、严格 Token 身份边界、180 天无活动清理、policy epoch 二次校验、持久化幂等和 deny-only Redis cache；永不过期仍要求注入强确认 Gate。
 - 诊断信封加密、本地持久队列、统一审计 journal/outbox/spool、KMS/keyring/2-of-3 恢复 contract，以及 single-node/production/full Ansible/Pigsty 交接剧本。
 
-本批新鲜验证：`go test ./internal/controlplane/... -race -count=1`、`go test ./internal/storage/... -race -count=1`、`go test ./internal/cwedp/... -race -count=1`、`go test ./internal/crp/... -count=1`、`go test ./internal/diagnostics/envelope ./internal/diagnostics/queue -race -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/tokens/... -race -count=1`、相关 `go vet` 和 `git diff --check` 通过。前端 `npm test` 为 70 个文件/462 个测试，typecheck、`CHEESEWAF_AGENT_EYES=0 npm run build`、Get Started static/smoke、CI 静态门禁和 Hugo EN106/ZH104 均通过。
+本批新鲜验证：`go test ./internal/controlplane/... -race -count=1`、`go test ./internal/storage/... -race -count=1`、`go test ./internal/cwedp/... -race -count=1`、`go test ./internal/crp/... -count=1`、`go test ./internal/diagnostics/envelope ./internal/diagnostics/queue -race -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/tokens/... -race -count=1`、相关 `go vet` 和 `git diff --check` 通过。前端 `npm test` 为 70 个文件/462 个测试，typecheck、`npm run build`、Get Started static/smoke、CI 静态门禁和 Hugo EN106/ZH104 均通过。
 
 验收矩阵当前为 10 项通过、3 项显式失败、0 项跳过。失败项是临时→生产迁移与 Session 失效的端到端接线、CRP activation 的 CLI/服务挂载、临时联网确认的生产 Session/网络 enforcement。独立 `cheesewaf-control` 二进制仍在实现中；主 `cheesewaf serve` 的 production profile 在完整启动单元接好前继续 fail-closed。
 
@@ -959,7 +959,7 @@ Token 身份复核同步到 API 和 middleware：Name/Notes 作为展示文本�
 - 最新 NetLease 生命周期改动后的增量验证：`go test`、`go test -race`、`go vet` 覆盖 `internal/cli`、`internal/cwedp/transport`、`internal/netlease` 均通过。
 - 在 NetLease 生命周期改动之后重新执行的全仓编译扫描 `GOCACHE=/private/tmp/cheesewaf-all-compile-final go test ./... -run '^$' -count=1`、全仓 `go vet ./...`、`gofmt -l cmd internal` 和 `git diff --check` 均通过；变更包完整 race 也均通过。
 - Approval/PG 变更后的普通、race、vet 和格式检查通过；持久 Gate 仍需后续真实 PostgreSQL adapter 恢复/篡改集成测试与 production service wiring，不能据此宣称审批服务已上线。
-- Web：70 个测试文件、465 个测试、`npm run typecheck`、`CHEESEWAF_AGENT_EYES=0 bash scripts/ci/build-web.sh`、预算和 marker scan 通过。
+- Web：70 个测试文件、465 个测试、`npm run typecheck`、`bash scripts/ci/build-web.sh`、预算和产物边界扫描通过。
 - 验收脚本：`python3 -m unittest discover -s scripts/acceptance -p '*_test.py'`、`bash scripts/acceptance/acceptance-matrix_test.sh` 通过；static matrix 生成 14 通过、8 失败、0 跳过。失败项均保留为环境限制或未接线 blocker，没有改成 skipped。
 
 遗留风险：主服务仍未挂载完整 migration/CRP/CWEDP/NetLease/Approval/Token 生产生命周期；CheeseSec 外部仓库仍保留各自的其他脏改动，尚未提交或推送。
@@ -991,7 +991,7 @@ Token 身份复核同步到 API 和 middleware：Name/Notes 作为展示文本�
 - `go test ./internal/ai/... -count=1`、对应 `-race` 和 `go vet ./internal/ai/...` 在允许 loopback 的受控环境通过。
 - `python3 -m unittest discover -s scripts/acceptance -p '*_test.py'` 与 `bash scripts/acceptance/acceptance-matrix_test.sh` 通过；允许 loopback 的 static matrix 为 19 通过、4 失败、0 跳过，失败项继续保留 migration/session、CRP activation/rollback 和 temporary-network 生产生命周期 blocker。
 - 当前全仓 `go test ./... -count=1` 通过（semantic 约 340 秒）；全仓编译、`go vet ./...`、`gofmt -l cmd internal` 和 `git diff --check` 通过。
-- Web 当前为 70 个测试文件、465 个测试通过；`npm run typecheck`、`CHEESEWAF_AGENT_EYES=0 bash scripts/ci/build-web.sh` 和 193 文件生产 marker scan 通过。
+- Web 当前为 70 个测试文件、465 个测试通过；`npm run typecheck`、`bash scripts/ci/build-web.sh` 和 193 文件生产产物边界扫描通过。
 - Get Started 的 `--static-contract` 与 `--smoke` 均通过，运行数据只写入临时目录并完成清理。
 
 遗留风险：Approval 仍缺少生产 credential verifier、服务生命周期和 AI destructive consumer 接线；诊断运行时仍缺对象存储异步复制、签名目标回执、跨进程 replay guard 和主 `serve` 挂载；主服务的 migration、CRP、CWEDP/NetLease、Token/Approval 生产生命周期仍未全部接通。
@@ -1055,11 +1055,11 @@ Dependabot/CodeQL 复核结果：
 - 当前工作树在角色切片落地后重新执行 `go test ./... -run '^$' -count=1` 与 `go vet ./...`，全部包通过；`gofmt -l cmd internal` 和全仓 `git diff --check` 无输出。
 - Web `npm test -- --run` 为 70 个测试文件、465 个测试通过；测试输出中的预期 ErrorBoundary `boom` 与 jsdom/localStorage 警告没有造成失败。
 - CheeseSec_Docs Hugo 构建通过，EN 108 / ZH 106；CheeseSec_Plugin_Docs 的 workflow/schema/link/commercial/offline/test/secret-scan 门禁通过；CheeseSec_Plugin 的 workflow/schema/commercial/offline/15 项测试/secret-scan 门禁通过。
-- 生产 Web 构建使用 `npm ci --ignore-scripts` 和 `CHEESEWAF_AGENT_EYES=0`，完整 dist marker scan 与预算检查通过；随后生成 Linux amd64 preview 包，SHA-256 为 `4882c58abbd64d89005076de39180ea904f0b70a621ae1a6af577ae08df65279`。
+- 生产 Web 构建使用 `npm ci --ignore-scripts`，完整 dist 产物边界扫描与预算检查通过；随后生成 Linux amd64 preview 包，SHA-256 为 `4882c58abbd64d89005076de39180ea904f0b70a621ae1a6af577ae08df65279`。
 
 隔离测试服务器此前没有 CheeseWAF 二进制、目录、systemd 单元或监听器。预览部署使用独立的 `cheesewaf-preview` 系统用户、`/opt/cheesewaf-preview`、`/etc/cheesewaf-preview`、`/var/lib/cheesewaf-preview`、`/var/log/cheesewaf-preview` 和 `cheesewaf-preview.service`；未修改现有 PostgreSQL 17.11 或 Redis 8.0.2，两者仍只监听 loopback。
 
-预览服务当前 active、未启用开机自启，代理和管理端分别只监听服务器 `127.0.0.1:18080` 与 `127.0.0.1:19443`。`GET /api/setup/status` 返回 `needs_setup: true`，`.setup_complete` 不存在，`setup.url` 权限为 `0600`；因此确实是刚部署、尚未提交设置向导的状态。管理端没有直接暴露公网，当前通过本机 SSH 隧道访问 `http://127.0.0.1:19443/setup`。
+在 2026-09-11 的受控 SSH 复核中，预览服务曾处于 active 且未启用开机自启。代理和管理端分别只监听服务器 `127.0.0.1:18080` 与 `127.0.0.1:19443`。当时 `GET /api/setup/status` 返回 `needs_setup: true`，`.setup_complete` 不存在，`setup.url` 权限为 `0600`，所以那次复核确认服务处于刚部署、尚未提交设置向导的状态。该状态依赖临时服务器进程，不代表进程会长期保留。本轮复核已恢复本机 SSH 隧道，`GET /api/setup/status` 再次返回 `needs_setup: true`，所以当前可以通过 `http://127.0.0.1:19443/setup` 查看设置向导。这个地址只在本机隧道存活时有效，不是公网预览地址；当前隧道没有转发数据面 `127.0.0.1:18080`。
 
 回滚边界：停止并禁用（当前本就未启用）`cheesewaf-preview.service`，删除该独立 unit 与四个 preview 目录即可；正式 CheeseWAF 路径、数据库服务和其他系统服务不在本次预览部署范围内。
 
@@ -1078,4 +1078,63 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 - 环境检查行采用「状态与标签 / 数值」两列布局，避免 `MB/s` 和磁盘标签被拆开。
 - 2 核 / 2 GB 主机推荐 `low`（轻量）；档位页提供「选择方案」按钮。选择高于或低于本机建议的档位只提示 warning，仍可继续。
 - 前端 42 项定向测试、类型检查、生产构建和 marker scan 通过；1280 px、390 px、320 px 假数据浏览器验收通过。
-- 产品版本源已更新为 `0.3.9`，正式版标签使用 `v0.3.9`；本次发布不使用 GitHub Pre-release 标记。商业化架构中尚未接线的验收项继续按现状记录，不因发版改写状态。
+- 产品版本源已更新为 `0.3.9`，并创建了指向 master 提交的 `v0.3.9` tag。稳定版 GitHub Release 尚未生成：tag 工作流在 Windows Authenticode 校验阶段因 `WINDOWS_CERT_P12` 未配置而失败。自动生成的 Alpha 预发布记录不等于稳定版发布。商业化架构中尚未接线的验收项继续按现状记录，不因创建 tag 改写状态。
+
+### 2026-09-11 发布复核与外部依赖
+
+范围：复核 master 晋升、`v0.3.9` tag、Dependabot 告警、插件文档 PR、Cloudflare Pages 构建和临时预览服务状态。
+
+实际结果：
+
+- CheeseWAF 已按 `dev → canary → master` 顺序晋升。master 提交为 `cc96e2d8bad9a1378a73711e3c3e5039d56bccd7`，`v0.3.9` tag 指向同一提交。
+- master 的三平台测试、CodeQL、Web 构建、跨平台编译、发行物构建和 macOS DMG 构建均通过。
+- tag 工作流 `34651525489` 的 `release-artifacts` 在验证 `cheesewaf-amd64-windows-0.3.9-setup.exe` 时报告 `No signature found`，同时记录 `WINDOWS_CERT_P12` 为空。该工作流没有创建稳定版 GitHub Release。
+- Dependabot #23 和 #24 已变为 `fixed`。Hono `4.13.7` 已进入 master 的 `web/package-lock.json`；旧 PR #430 已关闭。
+- CheeseSec_Plugin_Docs PR #7 的 `handbook-checks / validate` 已通过，但 main 分支仍要求独立 code-owner 审批。PR #8 与 #7 使用同一提交，已关闭为重复 PR。
+- CheeseSec_pages 的 CI 构建已通过，但工作流因缺少 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID` 跳过部署。当前不能把文档构建写成 Cloudflare 已发布。
+
+验证证据：
+
+- `gh run view 34649209066`：master CI 完成且成功。
+- `gh run view 34649209055`：master CodeQL 完成且成功。
+- `gh run view 34651525489 --job 103437836071 --log-failed`：稳定发行物校验因 Windows Authenticode 无签名失败。
+- `git rev-parse v0.3.9^{}`：结果为 `cc96e2d8bad9a1378a73711e3c3e5039d56bccd7`。
+- `gh api repos/LaokeQwQ/CheeseWAF/dependabot/alerts`：告警 #23、#24 均为 `fixed`。
+- `gh pr view 7 --repo LaokeQwQ/CheeseSec_Plugin_Docs`：检查成功，状态仍为 `BLOCKED`。
+- 临时服务器只读探测：本轮本机 SSH 隧道的 `http://127.0.0.1:19443/setup` 返回 HTTP 200，`GET /api/setup/status` 返回 `needs_setup: true`；公网端口探测仍未形成可用入口，没有执行远程修改。
+
+历史结论（已被 2026-09-12 的服务器优先策略取代）：当时工作流仍把 Windows 和 macOS 签名凭据作为稳定发布条件。插件文档 PR 仍需要独立 code-owner 审批；Cloudflare Pages 部署仍需要 Cloudflare 凭据。阶段 1 至阶段 7 中列出的主服务生产接线、CRP 控制面、CWEDP 节点编排、对象复制和空网演练仍未完成，不能把当前 tag 或构建结果写成商业化架构全部交付。
+
+历史行动项（已被取代）：不再补齐桌面签名凭据后重跑旧 tag。当前做法是先把服务器优先工作流晋升到 `master`，确认旧 tag 尚未产生 GitHub Release，再在受保护的 `master` 当前提交上重新创建 `v0.3.9`。插件文档和 Cloudflare Pages 的外部依赖，以及主服务生产接线和端到端演练，仍按各自未完成项继续处理。
+
+### 2026-09-12 服务器版稳定发布策略修正
+
+前一节记录的是 2026-09-11 当时的工作流状态。经过同类服务器 WAF 的发行方式复核，Windows Authenticode 和 macOS Developer ID 不再作为 CheeseWAF 服务器版稳定发布的前置条件。Windows 与 macOS 包仍可由完整档位的分支或手动工作流生成，但它们属于可选的操作端构建。
+
+本次改动：
+
+- 新增 `scripts/ci/release-targets.sh`，`CHEESEWAF_RELEASE_PROFILE=server` 默认只生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64；`full` 继续保留原来的七个平台目标。
+- `vMAJOR.MINOR.PATCH` 标签在 `.github/workflows/ci.yml` 中使用 `server` 档位，跳过 macOS DMG 任务，不再下载桌面产物。
+- `scripts/ci/verify-release.sh` 新增 `CHEESEWAF_SIGNING_SCOPE=server`，继续检查归档、校验和、元数据和内容，不检查桌面平台证书。
+- `scripts/ci/publish-prerelease.sh` 按实际存在的文件生成发布说明，不再列出不存在的 Windows 或 macOS 包。
+- GitHub 和 Forgejo 的 actionlint 改用固定版本、带摘要校验的 `scripts/ci/run-actionlint.sh`。原来的 Go 包入口 `github.com/rhysd/actionlint/cmd/actionlint@v1.7.7` 在当前版本不存在，已一并修正。
+- 标签、事件类型等 GitHub 上下文先通过环境变量传入 shell，稳定标签再按精确语义版本格式判断，避免把可控 ref 名直接插入 Bash。
+- `server` 档位和稳定发布器都拒绝 Windows、macOS、DMG 等桌面发行物；Forgejo 的分支/手动构建不再接收 Windows 签名凭据。
+- 稳定发布目录采用显式白名单，只允许三份 Linux 归档、校验和、SBOM 和对应的 Sigstore bundle；未知扩展名或远端已有的额外资产都会使发布失败。
+- 三份 Linux 归档内的 `VERSION` 与 `release.json` 必须和发布清单使用相同的版本与 40 位提交 SHA。文件名正确但内部元数据错误时，检查会失败。
+- 稳定标签必须同时匹配 `scripts/ci/product-version` 并指向受保护的 `master` 当前提交。发布前还会通过 GitHub API 解析远端标签；带注释的标签会继续解析到最终提交。标签缺失或提交不一致时，不会创建或上传 Release。
+- 稳定版的 Sigstore 身份精确绑定当前标签。已有稳定 Release 只做下载和校验，不会重新生成 SBOM、替换文件或改写说明。
+- GitHub `publish-release` 环境已配置必需审批和自定义部署策略，只允许 `v*` 标签进入。仓库目前只有一名管理员，因此暂时允许该管理员审批自己的发布；每次审批仍会留在 GitHub 的部署记录中。
+- 中英文 README 与 `docs/acceptance-matrix.md` 已改为服务器优先的发行说明。前一节关于“稳定发布仍需要 Windows 和 macOS 签名凭据”的判断只保留为历史证据，不再作为当前服务器版发布条件。
+
+验证证据：
+
+- `bash scripts/ci/package-release_profile_test.sh` 通过。
+- `bash scripts/ci/verify-stable-tag_test.sh` 通过，覆盖版本不符、非 `master` 当前提交和恶意 ref 名。
+- `bash scripts/ci/verify-release_test.sh` 通过，包含 Windows/macOS 严格签名的原有负向用例，以及归档内部版本或提交不一致时必须失败的 `server` 用例。
+- `bash scripts/ci/publish-prerelease_test.sh` 通过。Linux-only 稳定说明不再列出桌面包；远端标签缺失、标签提交变化、错误 Release 目标和额外远端文件都会失败。测试还会直接执行发布说明里的 Sigstore 命令，防止换行符错误。
+- `bash scripts/ci/run-actionlint.sh -shellcheck= -pyflakes= -color .github/workflows/*.yml` 通过。
+- `bash scripts/ci/verify-ci-static.sh` 通过。
+- 使用 `CHEESEWAF_RELEASE_PROFILE=server CHEESEWAF_REF_NAME=v0.3.9` 实际打包，得到 3 个 Linux 归档，没有生成 Windows、macOS 或 DMG 文件；`CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server` 的静态发行物检查通过。
+
+2026-09-12 提交前交接状态：改动位于 `codex/beta-v0.3.9-ui-docs` 工作树，尚未晋升到 `master`，也没有重新创建稳定版 Release。执行时必须先提交并通过主仓库 CI、CodeQL 和发布检查，再按现有分支流程晋升并重新触发 `v0.3.9` 稳定发布。CRP、主服务生产接线、插件文档 code-owner 审批和 Cloudflare Pages 凭据等其他遗留项不因本次发布策略修正而自动完成。

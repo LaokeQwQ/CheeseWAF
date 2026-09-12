@@ -2132,7 +2132,7 @@ const enUS = {
     probeDiskOk: 'Disk writable',
     probeIntegrity: 'Probe completeness',
     probeIntegrityComplete: 'Completed',
-    probeIntegrityIncomplete: 'Incomplete',
+    probeIntegrityIncomplete: 'Timed Out',
     probeNotesTitle: 'Probe notes',
     probeStatusPass: 'Pass',
     probeStatusWarn: 'Warning',

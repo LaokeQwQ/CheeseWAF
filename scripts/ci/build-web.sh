@@ -25,10 +25,10 @@ if [[ -d "${repo_root}/web/types" ]]; then
 fi
 
 pushd "$work_web" >/dev/null
-# agent-eyes postinstall runs `pnpm build` and fails without a monorepo layout;
-# the published package ships usable dist, so skip lifecycle scripts on CI install.
-CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts
-CHEESEWAF_AGENT_EYES=0 npm run build
+# Release builds skip dependency lifecycle scripts and build only from the
+# checked-in package lock and source tree.
+npm ci --no-audit --no-fund --ignore-scripts
+npm run build
 popd >/dev/null
 
 rm -rf "${repo_root}/web/dist"
@@ -39,4 +39,4 @@ rm -rf "$embed_dir"
 mkdir -p "$embed_dir"
 cp -R "${work_web}/dist/." "$embed_dir/"
 printf 'keep\n' >"${embed_dir}/.keep"
-node "${work_web}/scripts/verify-production-markers.mjs" "${repo_root}/web/dist" "${embed_dir}"
+python3 "${repo_root}/scripts/acceptance/production_artifact_scan.py"

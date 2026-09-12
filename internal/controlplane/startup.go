@@ -341,18 +341,8 @@ func Bootstrap(ctx context.Context, opts StartupOptions) (StartupResult, error) 
 		if err := authorizeInitialState(ctx, opts.InitialAuthorizer, *opts.InitialState); err != nil {
 			return fail(StartupStageSnapshot, ErrStartupInitialState, "administrator did not authorize initial state", err)
 		}
-		initialMachine, createErr := NewStateMachine(clusterID, nil)
-		if createErr != nil {
-			return fail(StartupStageSnapshot, ErrStartupInitialState, "initial state machine creation failed", createErr)
-		}
-		if _, createErr = initialMachine.InstallLeadership(consensusState.Term, consensusState.LeaderID); createErr != nil {
-			return fail(StartupStageSnapshot, ErrStartupInitialState, "initial leadership checkpoint failed", createErr)
-		}
 		request := *opts.InitialState
-		if request.Digest == "" {
-			request.Digest = Digest(request.Payload)
-		}
-		commit, createErr := initialMachine.Propose(Proposal{LeaderID: consensusState.LeaderID, ExpectedEpoch: initialMachine.Snapshot().Epoch, ExpectedRevision: 0, Version: request.Version, Payload: request.Payload, Digest: request.Digest, Nonce: request.Nonce})
+		commit, createErr := startupCommitForLeadership(clusterID, consensusState, request)
 		if createErr != nil {
 			return fail(StartupStageSnapshot, ErrStartupInitialState, "initial desired state proposal failed", createErr)
 		}
@@ -519,20 +509,56 @@ func startupCommitFromState(state State, nonce string) (Commit, error) {
 	return Commit{State: state, Fence: FenceToken{ClusterID: state.ClusterID, LeaderID: state.LeaderID, Epoch: state.Epoch, Revision: state.Revision, Digest: state.Desired.Digest, Nonce: nonce}}, nil
 }
 
-func startupCommitForLeadership(clusterID string, leadership State, request InitialStateRequest) (Commit, error) {
-	if leadership.ClusterID != clusterID || leadership.Revision != 0 || leadership.LeaderID == "" || leadership.Term == 0 || leadership.Epoch == 0 || leadership.WriteFrozen {
+// NewInitialCommit creates the protected revision-one commit for an already
+// established leader. The leadership generation is copied exactly from the
+// supplied snapshot; it is never reconstructed by incrementing a fresh state
+// machine from epoch one. A frozen revision-zero snapshot is accepted because
+// the coordinator intentionally holds its live machine frozen until the
+// caller validates the resulting fence and resumes writes.
+func NewInitialCommit(clusterID string, leadership State, request InitialStateRequest) (Commit, error) {
+	return newInitialCommitAt(clusterID, leadership, request, time.Now)
+}
+
+func newInitialCommitAt(clusterID string, leadership State, request InitialStateRequest, now func() time.Time) (Commit, error) {
+	if err := validateInitialStateRequest(request, clusterID); err != nil {
+		return Commit{}, fmt.Errorf("%w: %v", ErrStartupInitialState, err)
+	}
+	if leadership.ClusterID != clusterID || leadership.Revision != 0 || leadership.LeaderID == "" || leadership.Term == 0 || leadership.Epoch == 0 || !startupPayloadEmpty(leadership) {
 		return Commit{}, ErrInvalidCommit
+	}
+	if now == nil {
+		now = time.Now
+	}
+	updatedAt := now().UTC()
+	if updatedAt.IsZero() {
+		return Commit{}, fmt.Errorf("%w: initial commit timestamp is zero", ErrInvalidCommit)
 	}
 	digest := request.Digest
 	if digest == "" {
 		digest = Digest(request.Payload)
 	}
 	state := State{
-		ClusterID: clusterID, LeaderID: leadership.LeaderID, Term: leadership.Term, Epoch: leadership.Epoch, Revision: 1,
-		Desired:   DesiredState{Version: request.Version, Digest: digest, Payload: append([]byte(nil), request.Payload...)},
-		UpdatedAt: time.Now().UTC(), NonceLedger: map[string]Revision{request.Nonce: 1},
+		ClusterID: clusterID,
+		LeaderID:  leadership.LeaderID,
+		Term:      leadership.Term,
+		Epoch:     leadership.Epoch,
+		Revision:  1,
+		Desired: DesiredState{
+			Version: request.Version,
+			Digest:  digest,
+			Payload: append([]byte(nil), request.Payload...),
+		},
+		UpdatedAt:   updatedAt,
+		NonceLedger: map[string]Revision{request.Nonce: 1},
 	}
 	return startupCommitFromState(state, request.Nonce)
+}
+
+func startupCommitForLeadership(clusterID string, leadership State, request InitialStateRequest) (Commit, error) {
+	if leadership.WriteFrozen {
+		return Commit{}, ErrInvalidCommit
+	}
+	return NewInitialCommit(clusterID, leadership, request)
 }
 
 func startupPayloadEquivalent(a, b State) bool {
