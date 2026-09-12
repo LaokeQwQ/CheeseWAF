@@ -193,9 +193,10 @@ func Validate(cfg *Config) error {
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.AI.Provider)) {
-	case "", "openai", "anthropic":
+	case "", "openai", "openai-responses", "openai_responses", "openai-response", "openai_response",
+		"openai-chat", "openai_chat", "openai-chat-completions", "openai_chat_completions", "anthropic":
 	default:
-		return fmt.Errorf("ai.provider must be openai or anthropic")
+		return fmt.Errorf("ai.provider must be openai, openai-responses, openai-chat, or anthropic")
 	}
 	if cfg.AI.Enabled {
 		if err := validateAIModelConfig("ai", cfg.AI.RuntimeModelConfig(), true); err != nil {
@@ -1396,9 +1397,10 @@ func validateAIModelConfig(prefix string, model AIModelConfig, enabled bool) err
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(model.Provider)) {
-	case "", "openai", "anthropic":
+	case "", "openai", "openai-responses", "openai_responses", "openai-response", "openai_response",
+		"openai-chat", "openai_chat", "openai-chat-completions", "openai_chat_completions", "anthropic":
 	default:
-		return fmt.Errorf("%s.provider must be openai or anthropic", prefix)
+		return fmt.Errorf("%s.provider must be openai, openai-responses, openai-chat, or anthropic", prefix)
 	}
 	if !enabled && strings.TrimSpace(model.APIBase) == "" && strings.TrimSpace(model.Model) == "" {
 		return nil
