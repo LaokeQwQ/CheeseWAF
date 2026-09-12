@@ -89,13 +89,42 @@ func TestPoWResponseUsesOpaqueV2AndLegacyMigrationToggle(t *testing.T) {
 	if len(auth) != 1 || !strings.HasPrefix(auth[0], "CheeseWAF-Compute ") {
 		t.Fatalf("auth=%v", auth)
 	}
-	metadata := auth[0]
-	if end := strings.LastIndex(metadata, `"`); end >= 0 {
-		metadata = metadata[end+1:]
-	}
-	if strings.Contains(strings.ToLower(metadata), "sha") || strings.Contains(strings.ToLower(metadata), "difficulty") || strings.Contains(auth[0], "PoW") || strings.Contains(metadata, "work=") {
+	if powHeaderLeaksAlgorithmDetails(auth[0]) {
 		t.Fatalf("algorithm details leaked: %s", auth[0])
 	}
+}
+
+func TestPoWHeaderLeakCheckIgnoresOpaqueTokenContents(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		leaks  bool
+	}{
+		{name: "opaque token", header: `CheeseWAF-Compute challenge="opaque-PoW-token", target=2`},
+		{name: "hash algorithm", header: `CheeseWAF-Compute challenge="opaque", algorithm=sha256`, leaks: true},
+		{name: "difficulty", header: `CheeseWAF-Compute challenge="opaque", difficulty=2`, leaks: true},
+		{name: "proof of work label", header: `CheeseWAF-Compute challenge="opaque", mode=PoW`, leaks: true},
+		{name: "work parameter", header: `CheeseWAF-Compute challenge="opaque", work=2`, leaks: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := powHeaderLeaksAlgorithmDetails(tc.header); got != tc.leaks {
+				t.Fatalf("powHeaderLeaksAlgorithmDetails(%q)=%v, want %v", tc.header, got, tc.leaks)
+			}
+		})
+	}
+}
+
+func powHeaderLeaksAlgorithmDetails(header string) bool {
+	publicMetadata := header
+	const challengePrefix = `challenge="`
+	if start := strings.Index(publicMetadata, challengePrefix); start >= 0 {
+		valueStart := start + len(challengePrefix)
+		if end := strings.Index(publicMetadata[valueStart:], `"`); end >= 0 {
+			publicMetadata = publicMetadata[:valueStart] + publicMetadata[valueStart+end:]
+		}
+	}
+	publicMetadata = strings.ToLower(publicMetadata)
+	return strings.Contains(publicMetadata, "sha") || strings.Contains(publicMetadata, "difficulty") || strings.Contains(publicMetadata, "pow") || strings.Contains(publicMetadata, "work=")
 }
 
 func TestPolicyExemptsConfiguredPath(t *testing.T) {
