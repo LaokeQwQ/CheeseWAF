@@ -171,30 +171,36 @@ func TestIdentityAndAddressPersistenceUsesSecureModes(t *testing.T) {
 
 func proposedCommit(t *testing.T, status Status, revision controlplane.Revision, nonce string) controlplane.Commit {
 	t.Helper()
-	machine, err := controlplane.NewStateMachine(status.ClusterID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := machine.InstallLeadership(status.Term, status.LeaderID); err != nil {
-		t.Fatal(err)
-	}
 	if revision > 0 {
 		// The helper is only used for a first commit in this file. Keeping this
 		// assertion explicit prevents tests from silently manufacturing a CAS baseline.
 		t.Fatalf("unexpected non-zero baseline revision %d", revision)
 	}
-	commit, err := machine.Propose(controlplane.Proposal{
-		LeaderID:         status.LeaderID,
-		ExpectedEpoch:    machine.Snapshot().Epoch,
-		ExpectedRevision: 0,
-		Version:          "v1",
-		Payload:          []byte(`{"mode":"observe"}`),
-		Nonce:            nonce,
-	})
-	if err != nil {
-		t.Fatal(err)
+	if status.ClusterID == "" || status.LeaderID == "" || status.Term == 0 || status.Epoch == 0 {
+		t.Fatalf("cannot construct proposal from incomplete leader status: %+v", status)
 	}
-	return commit
+	payload := []byte(`{"mode":"observe"}`)
+	digest := controlplane.Digest(payload)
+	nextRevision := revision + 1
+	return controlplane.Commit{
+		State: controlplane.State{
+			ClusterID:   status.ClusterID,
+			LeaderID:    status.LeaderID,
+			Term:        status.Term,
+			Epoch:       status.Epoch,
+			Revision:    nextRevision,
+			Desired:     controlplane.DesiredState{Version: "v1", Digest: digest, Payload: payload},
+			NonceLedger: map[string]controlplane.Revision{nonce: nextRevision},
+		},
+		Fence: controlplane.FenceToken{
+			ClusterID: status.ClusterID,
+			LeaderID:  status.LeaderID,
+			Epoch:     status.Epoch,
+			Revision:  nextRevision,
+			Digest:    digest,
+			Nonce:     nonce,
+		},
+	}
 }
 
 func TestNewRejectsTemporaryProfileAndImplicitMode(t *testing.T) {
