@@ -53,7 +53,6 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@agent-eyes/agent-eyes": "^0.1.8",
     "@tailwindcss/vite": "^4.1.11",
     "@testing-library/react": "^16.3.2",
     "@types/d3-geo": "^3.1.1",
@@ -71,13 +70,6 @@
     "vitest": "^4.1.11"
   },
   "overrides": {
-    "hono": "^4.13.7",
-    "fast-uri": "^3.1.7",
-    "nanoid": "^3.3.18",
-    "@hono/node-server": "^2.0.5",
-    "@ai-sdk/provider-utils": "^5.0.12",
-    "@ai-sdk/gateway": {
-      "@ai-sdk/provider-utils": "^5.0.12"
-    }
+    "nanoid": "^3.3.18"
   }
 }
