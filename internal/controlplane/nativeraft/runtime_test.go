@@ -179,28 +179,25 @@ func proposedCommit(t *testing.T, status Status, revision controlplane.Revision,
 	if status.ClusterID == "" || status.LeaderID == "" || status.Term == 0 || status.Epoch == 0 {
 		t.Fatalf("cannot construct proposal from incomplete leader status: %+v", status)
 	}
-	payload := []byte(`{"mode":"observe"}`)
-	digest := controlplane.Digest(payload)
-	nextRevision := revision + 1
-	return controlplane.Commit{
-		State: controlplane.State{
-			ClusterID:   status.ClusterID,
-			LeaderID:    status.LeaderID,
-			Term:        status.Term,
-			Epoch:       status.Epoch,
-			Revision:    nextRevision,
-			Desired:     controlplane.DesiredState{Version: "v1", Digest: digest, Payload: payload},
-			NonceLedger: map[string]controlplane.Revision{nonce: nextRevision},
+	commit, err := controlplane.NewInitialCommit(status.ClusterID, controlplane.State{
+		ClusterID: status.ClusterID,
+		LeaderID:  status.LeaderID,
+		Term:      status.Term,
+		Epoch:     status.Epoch,
+		Revision:  revision,
+	}, controlplane.InitialStateRequest{
+		Version: "v1",
+		Payload: []byte(`{"mode":"observe"}`),
+		Nonce:   nonce,
+		Confirmation: controlplane.InitialStateConfirmation{
+			ID:    "test-confirmation",
+			Actor: "test",
 		},
-		Fence: controlplane.FenceToken{
-			ClusterID: status.ClusterID,
-			LeaderID:  status.LeaderID,
-			Epoch:     status.Epoch,
-			Revision:  nextRevision,
-			Digest:    digest,
-			Nonce:     nonce,
-		},
+	})
+	if err != nil {
+		t.Fatalf("construct initial commit: %v", err)
 	}
+	return commit
 }
 
 func TestNewRejectsTemporaryProfileAndImplicitMode(t *testing.T) {
@@ -356,14 +353,22 @@ func TestProtectedInitialCommitCanReplicateWhileStartupFreezeIsHeld(t *testing.T
 	defer node.Close()
 	status := waitForLeader(t, node)
 	node.Machine().FreezeWrites("control-plane startup incomplete")
-	candidate, err := controlplane.NewStateMachine("cluster-a", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := candidate.InstallLeadership(status.Term, status.LeaderID); err != nil {
-		t.Fatal(err)
-	}
-	commit, err := candidate.Propose(controlplane.Proposal{LeaderID: status.LeaderID, ExpectedEpoch: status.Epoch, Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-1"})
+	commit, err := controlplane.NewInitialCommit(status.ClusterID, controlplane.State{
+		ClusterID:   status.ClusterID,
+		LeaderID:    status.LeaderID,
+		Term:        status.Term,
+		Epoch:       status.Epoch,
+		Revision:    status.Revision,
+		WriteFrozen: true,
+	}, controlplane.InitialStateRequest{
+		Version: "v1",
+		Payload: []byte(`{"mode":"observe"}`),
+		Nonce:   "initial-1",
+		Confirmation: controlplane.InitialStateConfirmation{
+			ID:    "test-confirmation",
+			Actor: "test",
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

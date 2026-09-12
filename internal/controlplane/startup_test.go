@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type startupDurableFake struct {
@@ -541,7 +542,9 @@ func TestBootstrapCreatesFirstCommitOnlyAfterProtectedConfirmation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	leader := State{ClusterID: "cluster-a", LeaderID: "node-a", Term: 1, Epoch: 1, WriteFrozen: false}
+	// Startup may observe a leader after one or more prior term changes. The
+	// protected revision-one commit must preserve that exact generation.
+	leader := State{ClusterID: "cluster-a", LeaderID: "node-a", Term: 7, Epoch: 3, WriteFrozen: false}
 	request := &InitialStateRequest{Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-1", Confirmation: InitialStateConfirmation{ID: "confirmation-1", Actor: "admin", Reason: "initialize cluster"}}
 	log := []string{}
 	consensus := &startupConsensusFake{state: leader, log: &log}
@@ -558,11 +561,36 @@ func TestBootstrapCreatesFirstCommitOnlyAfterProtectedConfirmation(t *testing.T)
 	if err != nil || !result.Ready {
 		t.Fatalf("confirmed initial bootstrap failed: result=%+v err=%v", result, err)
 	}
-	if committed.Revision != 1 || committed.Desired.Digest != Digest(request.Payload) {
-		t.Fatalf("durable first commit=%+v, want revision 1 and payload digest", committed)
+	if committed.Revision != 1 || committed.Term != leader.Term || committed.Epoch != leader.Epoch || committed.Desired.Digest != Digest(request.Payload) {
+		t.Fatalf("durable first commit=%+v, want revision 1, leadership generation %d/%d and payload digest", committed, leader.Term, leader.Epoch)
 	}
 	if result.Fence.Nonce != request.Nonce || result.State.Revision != 1 || result.State.WriteFrozen {
 		t.Fatalf("confirmed initial state result=%+v, want writable revision 1", result)
+	}
+}
+
+func TestNewInitialCommitPreservesLeadershipGenerationAndTimestamp(t *testing.T) {
+	leadership := State{
+		ClusterID: "cluster-a", LeaderID: "node-a", Term: 11, Epoch: 5,
+		Revision: 0, WriteFrozen: true,
+	}
+	request := InitialStateRequest{
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-fixed-time",
+		Confirmation: InitialStateConfirmation{ID: "confirmation-fixed-time", Actor: "admin"},
+	}
+	wantTime := time.Date(2026, time.September, 12, 9, 30, 0, 0, time.UTC)
+	commit, err := newInitialCommitAt("cluster-a", leadership, request, func() time.Time { return wantTime })
+	if err != nil {
+		t.Fatalf("newInitialCommitAt failed: %v", err)
+	}
+	if commit.State.Term != leadership.Term || commit.State.Epoch != leadership.Epoch || commit.State.LeaderID != leadership.LeaderID {
+		t.Fatalf("commit leadership=%+v, want %+v", commit.State, leadership)
+	}
+	if !commit.State.UpdatedAt.Equal(wantTime) || commit.State.UpdatedAt.IsZero() {
+		t.Fatalf("commit UpdatedAt=%v, want %v", commit.State.UpdatedAt, wantTime)
+	}
+	if commit.State.Revision != 1 || commit.State.WriteFrozen || commit.State.NonceLedger[request.Nonce] != 1 {
+		t.Fatalf("commit state=%+v, want writable revision-one state", commit.State)
 	}
 }
 
