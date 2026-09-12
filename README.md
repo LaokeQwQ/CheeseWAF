@@ -159,19 +159,15 @@ Recommended for Linux physical servers and virtual machines for direct execution
 
 #### Step 1: Download and Extract Release Archive
 
-Download an **Alpha-** pre-release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or the matching Actions artifact. The version portion is `beta` on `master`, `PreTest` on `canary`, and `dev` on `dev`; these wildcard patterns cover every channel:
+Stable `vMAJOR.MINOR.PATCH` releases are server-first. They guarantee Linux archives plus the signed checksum and SBOM metadata. Download a stable release from [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases), or use the matching **Alpha-** pre-release and Actions artifact for branch testing. The version portion is `beta` on `master`, `PreTest` on `canary`, and `dev` on `dev`.
 
 | File | Platform |
 | --- | --- |
 | `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
 | `cheesewaf-arm64-linux-*.tar.gz` | Linux ARM64 |
 | `cheesewaf-loong64-linux-*.tar.gz` | Linux LoongArch64 |
-| `cheesewaf-amd64-darwin-*.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-arm64-darwin-*.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-amd64-windows-*.exe` | Windows x86_64 single-file CLI |
-| `cheesewaf-arm64-windows-*.exe` | Windows ARM64 single-file CLI |
-| `cheesewaf-amd64-windows-*.zip` | Windows x86_64 portable folder |
-| `cheesewaf-arm64-windows-*.zip` | Windows ARM64 portable folder |
+
+Windows and macOS packages are optional operator builds. They are produced by full-profile branch or manual workflows and are not required for a stable server release. When they are present, verify `SHA256SUMS` before running them; platform code signing may not be available.
 
 ```bash
 # Linux x86_64 example
@@ -293,7 +289,7 @@ Administrator usernames use the exact value entered. The server rejects leading,
 
 ### 3. Windows Deployment (CLI, Zip, NSIS)
 
-Three Windows shapes. The CLI is one `cheesewaf.exe`. The zip adds configs, the Web UI, and the local controller. NSIS is the graphical installer.
+Windows packages are optional operator builds, not a requirement for the stable server release. The CLI is one `cheesewaf.exe`. The zip adds configs, the Web UI, and the local controller. NSIS is the graphical installer. Verify `SHA256SUMS` before running a package; platform code signing may not be available.
 
 #### Option A: Single-file CLI
 
@@ -343,7 +339,7 @@ Windows releases bundle a lightweight local GUI controller bound strictly to loo
 1. Download `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
 2. Open the disk image and drag **CheeseWAF** into **Applications**.
 3. Open CheeseWAF from Launchpad or Applications. It starts the local controller (start / stop / open the Web console).
-4. Signed and notarized releases should open normally. For an ad-hoc PreTest developer build only, Control-click the app in Applications, choose **Open**, and confirm the one-time prompt.
+4. A build with Developer ID signing and notarization should open normally. Branch and manual builds may use ad-hoc signing and show a one-time system prompt. Verify `SHA256SUMS` before opening the app.
 
 Runtime files go to `~/Library/Application Support/CheeseWAF`. The same payload is also in `cheesewaf-*-darwin-*.tar.gz` if you only want the CLI.
 

@@ -38,7 +38,9 @@
 | `CHEESEWAF_OUTBOUND_TLS_URL` | `scripts/ci/docker-build.sh` | 出站 HTTPS 检查 URL，默认 `https://example.com` |
 | `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认 `0.3.9` |
 | `CHEESEWAF_REF_NAME` / `CHEESEWAF_COMMIT` / `CHEESEWAF_RUN_NUMBER` / `CHEESEWAF_BUILD_TIME` | `scripts/ci/package-release.sh`、`.github/workflows/ci.yml`、`.forgejo/workflows/ci.yml` | 发布元数据（分支/提交/构建号/时间） |
-| `CHEESEWAF_RELEASE_DIR` / `CHEESEWAF_RELEASE_WORK_DIR` / `CHEESEWAF_TARGETS` | `scripts/ci/package-release.sh`、CI workflows | 发布输出目录、工作目录与目标平台列表 |
+| `CHEESEWAF_RELEASE_PROFILE` | `scripts/ci/release-targets.sh`、CI workflows | 发布目标档位。`server` 默认生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64；`full` 默认保留全部跨平台目标 |
+| `CHEESEWAF_RELEASE_DIR` / `CHEESEWAF_RELEASE_WORK_DIR` / `CHEESEWAF_TARGETS` | `scripts/ci/package-release.sh`、CI workflows | 发布输出目录、工作目录与目标平台列表。设置 `CHEESEWAF_TARGETS` 时会覆盖档位默认目标；`server` 档位只接受三个 Linux 目标，拒绝 Windows/macOS 目标 |
+| `CHEESEWAF_REQUIRE_SIGNING` / `CHEESEWAF_SIGNING_SCOPE` | `scripts/ci/verify-release.sh`、CI workflows | 发行物签名检查模式与范围。稳定服务器版使用 `1` + `server`，强制服务器发行物边界并跳过桌面证书检查；完整档位可使用 `all`、`windows` 或 `macos` |
 | `CHEESEWAF_SETUP_TOKEN` | `scripts/ci/docker-build.sh`、`scripts/ci/verify-ci-static.sh` | CI 冒烟/静态验证时固定首次安装令牌（运行时同名字段见上表） |
 | `CHEESEWAF_SQLMAP_DOCKER_IMAGE` / `CHEESEWAF_XSSTRIKE_DOCKER_IMAGE` / `CHEESEWAF_NUCLEI_DOCKER_IMAGE` / `CHEESEWAF_ZAP_DOCKER_IMAGE` / `CHEESEWAF_TEST_SCANNER_IMAGE` | `cmd/cheesewaf-corpus/gate.go`、`cmd/cheesewaf-corpus/main_test.go` | 语料扫描工具镜像覆盖 |
 | `CHEESEWAF_CAPTCHA_BROWSER` / `CHEESEWAF_CAPTCHA_BROWSER_HARNESS` / `CHEESEWAF_CAPTCHA_HARNESS` / `CHEESEWAF_CAPTCHA_HARNESS_REPORT` / `CHEESEWAF_CAPTCHA_INTEGRATION` | `internal/captcha`、`scripts/e2e/captcha-*` | captcha 行为/集成测试工具 |

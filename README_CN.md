@@ -172,19 +172,15 @@ CheeseWAF 针对不同基础设施环境提供四种独立的部署方式。
 
 #### 步骤 1：下载并解压发行包
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载 **Alpha-** 预发布包，或从 Actions 产物里取同一套文件。版本字段在 `master` 为 `beta`、`canary` 为 `PreTest`、`dev` 为 `dev`；下列通配符覆盖全部渠道：
+稳定版 `vMAJOR.MINOR.PATCH` 按服务器场景发布，只保证 Linux 发行包，以及带有 Sigstore 签名的校验和与 SBOM 元数据。从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载稳定版；分支测试使用 **Alpha-** 预发布包或对应的 Actions 产物。`master` 的版本字段是 `beta`，`canary` 是 `PreTest`，`dev` 是 `dev`。
 
 | 文件 | 平台 |
 | --- | --- |
 | `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
 | `cheesewaf-arm64-linux-*.tar.gz` | Linux ARM64 |
 | `cheesewaf-loong64-linux-*.tar.gz` | Linux 龙芯 |
-| `cheesewaf-amd64-darwin-*.tar.gz` / `.dmg` | macOS Intel |
-| `cheesewaf-arm64-darwin-*.tar.gz` / `.dmg` | macOS Apple Silicon |
-| `cheesewaf-amd64-windows-*.exe` | Windows x86_64 单文件 CLI |
-| `cheesewaf-arm64-windows-*.exe` | Windows ARM64 单文件 CLI |
-| `cheesewaf-amd64-windows-*.zip` | Windows x86_64 便携目录 |
-| `cheesewaf-arm64-windows-*.zip` | Windows ARM64 便携目录 |
+
+Windows 和 macOS 包属于可选的操作端构建，只在完整档位的分支或手动工作流中生成，不是稳定服务器版的必需产物。下载后先核对 `SHA256SUMS`；这些包可能没有对应的平台签名。
 
 ```bash
 # Linux x86_64 示例
@@ -305,7 +301,7 @@ docker compose logs -f cheesewaf
 
 ### 3. Windows 部署（单文件 CLI、Zip、NSIS）
 
-三种形态：单文件 CLI 就是一个 `cheesewaf.exe`；zip 另带配置、管理界面和本地控制器；NSIS 是图形安装器。
+Windows 包属于可选的操作端构建，不是稳定服务器版的必需产物。单文件 CLI 就是一个 `cheesewaf.exe`；zip 另带配置、管理界面和本地控制器；NSIS 是图形安装器。运行前请先核对 `SHA256SUMS`，这些包可能没有平台签名。
 
 #### 方式 A：单文件 CLI
 
@@ -355,7 +351,7 @@ Windows 发行包中包含专用的本地控制器，仅监听本地回环地址
 1. 下载 `cheesewaf-arm64-darwin-*.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*.dmg`（Intel）。
 2. 打开镜像，把 **CheeseWAF** 拖进「应用程序」。
 3. 从启动台或「应用程序」打开 CheeseWAF。会启动本地控制面板，用来启动、停止和打开 Web 控制台。
-4. 已签名并完成公证的发行包可以直接打开。只有本地 ad-hoc PreTest 开发包被系统拦截时，才在「应用程序」中对应用点按右键，选择「打开」并确认一次性提示。
+4. 带有 Developer ID 签名并完成公证的构建可以直接打开。分支和手动构建可能使用 ad-hoc 签名，系统会显示一次性提示。打开前请先核对 `SHA256SUMS`。
 
 运行数据在 `~/Library/Application Support/CheeseWAF`。如果只要命令行，也可以继续用 `cheesewaf-*-darwin-*.tar.gz`。
 

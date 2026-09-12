@@ -71,7 +71,7 @@ jobs:
         run: bash scripts/ci/verify-ci-static.sh
       - name: Validate GitHub Actions workflows
         shell: bash
-        run: bash scripts/ci/go-env.sh go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -shellcheck= -pyflakes= -color .github/workflows/*.yml
+        run: bash scripts/ci/run-actionlint.sh -shellcheck= -pyflakes= -color .github/workflows/*.yml
       - name: Verify Ansible syntax
         shell: bash
         run: bash scripts/ci/verify-ansible.sh
@@ -453,7 +453,17 @@ jobs:
           node-version: 24.18.0
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install packaging tools
+      - name: Verify stable tag provenance
+        if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+        shell: bash
+        env:
+          CHEESEWAF_REF_NAME: ${{ github.ref_name }}
+          CHEESEWAF_TAG_COMMIT: ${{ github.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin master
+          CHEESEWAF_MASTER_REF=FETCH_HEAD bash scripts/ci/verify-stable-tag.sh
+      - name: Install full-profile packaging tools
+        if: ${{ !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) }}
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nsis zip osslsigncode
       - name: Package branch release artifacts
         shell: bash
@@ -461,18 +471,26 @@ jobs:
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
           CHEESEWAF_RUN_NUMBER: ${{ github.run_number }}
           CHEESEWAF_COMMIT: ${{ github.sha }}
-          # Branch artifacts stay available without signing credentials. Only tag-triggered packaging can resolve them.
-          WINDOWS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_P12 || '' }}
-          WINDOWS_CERT_PASSWORD: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_PASSWORD || '' }}
+          CHEESEWAF_RELEASE_PROFILE: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && 'server' || 'full' }}"
+          # Desktop signing credentials are only consulted by full-profile tag builds.
+          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_P12 || '' }}"
+          WINDOWS_CERT_PASSWORD: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_PASSWORD || '' }}"
         run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
       - name: Verify branch release artifacts
         shell: bash
         env:
-          WINDOWS_CERT_P12: ${{ github.ref_type == 'tag' && secrets.WINDOWS_CERT_P12 || '' }}
+          CHEESEWAF_EVENT_NAME: ${{ github.event_name }}
+          CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
+          CHEESEWAF_REF_NAME: ${{ github.ref_name }}
+          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_P12 || '' }}"
         run: |
-          signing_mode=1
-          if [[ "${{ github.ref_type }}" != "tag" ]]; then signing_mode=warn; fi
-          CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=windows \
+          signing_mode=warn
+          signing_scope=all
+          if [[ "$CHEESEWAF_EVENT_NAME" == "push" && "$CHEESEWAF_REF_TYPE" == "tag" && "$CHEESEWAF_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            signing_mode=1
+            signing_scope=server
+          fi
+          CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE="$signing_scope" \
             bash scripts/ci/verify-release.sh release
       - name: Upload branch release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -484,7 +502,7 @@ jobs:
 
   package-macos-dmg:
     name: package-macos-dmg
-    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
+    if: "(github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))) && !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v'))"
     runs-on: macos-latest
     needs:
       - release-artifacts
@@ -511,6 +529,7 @@ jobs:
       - name: Verify macOS disk images
         shell: bash
         env:
+          CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
           MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
           MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
           APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
@@ -518,7 +537,7 @@ jobs:
           APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
         run: |
           signing_mode=1
-          if [[ "${{ github.ref_type }}" != "tag" ]]; then signing_mode=warn; fi
+          if [[ "$CHEESEWAF_REF_TYPE" != "tag" ]]; then signing_mode=warn; fi
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=macos \
             bash scripts/ci/verify-release.sh release
       - name: Upload macOS disk images
@@ -573,7 +592,6 @@ jobs:
     environment: publish-release
     needs:
       - release-artifacts
-      - package-macos-dmg
     permissions:
       contents: write
       id-token: write
@@ -586,11 +604,6 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
-          path: release
-      - name: Download macOS disk images
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}-dmg
           path: release
       - name: Install syft
         run: bash scripts/ci/install-syft.sh
