@@ -78,50 +78,9 @@ GATES = [
      "go test ./internal/approval ./internal/recovery ./internal/audit -run 'Test.*(Audit|Recovery|Checkpoint|EncryptedSpool|Runtime)' -count=1", "audit chains, critical durability, threshold recovery, encrypted spool, and runtime contracts pass",
      "go test ./internal/approval ./internal/recovery ./internal/audit -run 'Test.*(Replay|Stale|Corrupt|Rejects|Regression|WithoutDurable)' -count=1", "replay, stale fences, corruption, regressions, and unavailable durable channels are rejected"),
     ("production_artifact_scan", "production artifact scan", True, "published static assets and build controls", [],
-     "python3 scripts/acceptance/production_artifact_scan.py", "artifact directories contain no agent-eyes, code-inspector, or codex-acp markers and build disables agent tooling",
-     "if rg -n -i 'agent-eyes|code-inspector|codex-acp' web/dist internal/webui/dist release 2>/dev/null; then exit 1; else echo 'negative marker scan found no forbidden production strings'; fi", "a forbidden marker or absent production output fails closed"),
+     "python3 scripts/acceptance/production_artifact_scan.py", "artifact trees and archives contain no dependency directories, source-only Web trees, links, or unsafe paths",
+     "if find web/dist internal/webui/dist release -type l -o -path '*/node_modules/*' 2>/dev/null | grep -q .; then exit 1; else echo 'negative artifact boundary scan found no links or dependency trees'; fi", "links, dependency trees, source-only paths, unsafe archive members, or absent output fail closed"),
 ]
-
-ARTIFACT_SCAN = r'''import pathlib, tarfile, zipfile
-root = pathlib.Path(__file__).resolve().parents[2]
-markers = (b"agent-eyes", b"code-inspector", b"codex-acp")
-seen = 0
-def check(name, data):
-    for marker in markers:
-        if marker in data.lower():
-            raise SystemExit(f"forbidden production marker {marker.decode()} in {name}")
-def inspect(path):
-    global seen
-    seen += 1
-    if path.suffixes[-2:] == [".tar", ".gz"]:
-        with tarfile.open(path, "r:gz") as archive:
-            for member in archive.getmembers():
-                if member.isfile(): check(f"{path}:{member.name}", archive.extractfile(member).read())
-    elif path.suffix == ".zip":
-        with zipfile.ZipFile(path) as archive:
-            for member in archive.infolist():
-                if not member.is_dir(): check(f"{path}:{member.filename}", archive.read(member))
-    else:
-        check(path, path.read_bytes())
-for directory in (root / "web/dist", root / "internal/webui/dist", root / "release"):
-    if directory.exists():
-        for path in directory.rglob("*"):
-            if path.is_file(): inspect(path)
-if seen == 0:
-    raise SystemExit("no production artifact directory found; scan cannot pass")
-text = (root / "scripts/ci/build-web.sh").read_text(encoding="utf-8")
-if "CHEESEWAF_AGENT_EYES=0" not in text or "npm ci --no-audit --no-fund --ignore-scripts" not in text:
-    raise SystemExit("production build does not disable Agent tooling")
-print(f"production artifact marker scan passed ({seen} files)")
-'''
-
-
-def write_artifact_helper():
-    path = ROOT / "scripts/acceptance/production_artifact_scan.py"
-    path.write_text(ARTIFACT_SCAN, encoding="utf-8")
-    path.chmod(0o700)
-    return path
-
 
 def sanitize(text):
     text = re.sub(r"(?i)(postgres(?:ql)?://[^\s/@:]+:)[^\s/@]+(@)", r"\1[REDACTED]\2", text)
@@ -138,7 +97,7 @@ def run_probe(work, gate_id, side, command):
     # and would make an otherwise valid probe fail before package setup.
     acceptance_cache = os.environ.get("CHEESEWAF_ACCEPTANCE_GOCACHE", "/tmp/cheesewaf-acceptance-gocache")
     pathlib.Path(acceptance_cache).mkdir(parents=True, exist_ok=True)
-    environment.update({"CHEESEWAF_AGENT_EYES": "0", "GOTOOLCHAIN": "local", "GOWORK": "off", "GOPROXY": "off", "GOCACHE": acceptance_cache})
+    environment.update({"GOTOOLCHAIN": "local", "GOWORK": "off", "GOPROXY": "off", "GOCACHE": acceptance_cache})
     result = subprocess.run(["bash", "-o", "pipefail", "-c", effective], cwd=ROOT, text=True, capture_output=True, env=environment)
     raw = result.stdout + result.stderr
     if result.returncode == 0 and command.startswith("go test "):

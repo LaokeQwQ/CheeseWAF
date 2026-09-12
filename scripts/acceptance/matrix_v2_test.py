@@ -1,5 +1,8 @@
 import importlib.util
+import io
 import pathlib
+import stat
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -39,16 +42,106 @@ class AcceptanceMatrixV2Tests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             matrix.main(["--static", "--report", str(ROOT / "acceptance-report.json")])
 
-    def test_artifact_scanner_rejects_marker_in_zip_member(self):
+    def test_artifact_scanner_rejects_dependency_tree_in_zip_member(self):
         with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
             root = pathlib.Path(directory)
             (root / "web/dist").mkdir(parents=True)
             (root / "internal/webui/dist").mkdir(parents=True)
             (root / "release").mkdir()
             (root / "scripts/ci").mkdir(parents=True)
-            (root / "scripts/ci/build-web.sh").write_text("CHEESEWAF_AGENT_EYES=0\\nnpm ci --no-audit --no-fund --ignore-scripts\\n", encoding="utf-8")
+            (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\\n", encoding="utf-8")
             with zipfile.ZipFile(root / "web/dist" / "bundle.zip", "w") as archive:
-                archive.writestr("assets/app.js", "code-inspector")
+                archive.writestr("node_modules/dev-only/index.js", "development dependency")
+            with self.assertRaises(SystemExit):
+                scanner.scan(root)
+
+    def test_artifact_scanner_rejects_source_tree_at_dist_root(self):
+        with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
+            root = pathlib.Path(directory)
+            (root / "web/dist/src").mkdir(parents=True)
+            (root / "web/dist/src/leak.js").write_text("source leak", encoding="utf-8")
+            (root / "internal/webui/dist").mkdir(parents=True)
+            (root / "release").mkdir()
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                scanner.scan(root)
+
+    def test_artifact_scanner_rejects_unsafe_zip_paths(self):
+        for member_name in ("C:/Windows/System32/escape", "C:drive-relative", "/absolute/escape", "../escape"):
+            with self.subTest(member_name=member_name):
+                with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
+                    root = pathlib.Path(directory)
+                    (root / "web/dist").mkdir(parents=True)
+                    (root / "internal/webui/dist").mkdir(parents=True)
+                    (root / "release").mkdir()
+                    (root / "scripts/ci").mkdir(parents=True)
+                    (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\n", encoding="utf-8")
+                    with zipfile.ZipFile(root / "web/dist" / "bundle.zip", "w") as archive:
+                        archive.writestr(member_name, "unsafe path")
+                    with self.assertRaises(SystemExit):
+                        scanner.scan(root)
+
+    def test_artifact_scanner_rejects_nested_archive(self):
+        with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
+            root = pathlib.Path(directory)
+            (root / "web/dist").mkdir(parents=True)
+            (root / "internal/webui/dist").mkdir(parents=True)
+            (root / "release").mkdir()
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\n", encoding="utf-8")
+            nested = io.BytesIO()
+            with zipfile.ZipFile(nested, "w") as archive:
+                archive.writestr("node_modules/dev-only/index.js", "development dependency")
+            with zipfile.ZipFile(root / "release" / "outer.zip", "w") as archive:
+                archive.writestr("nested.zip", nested.getvalue())
+            with self.assertRaises(SystemExit):
+                scanner.scan(root)
+
+    def test_artifact_scanner_rejects_tar_special_member(self):
+        with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
+            root = pathlib.Path(directory)
+            (root / "web/dist").mkdir(parents=True)
+            (root / "internal/webui/dist").mkdir(parents=True)
+            (root / "release").mkdir()
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\n", encoding="utf-8")
+            with tarfile.open(root / "release" / "bundle.tar.gz", "w:gz") as archive:
+                member = tarfile.TarInfo("device")
+                member.type = tarfile.CHRTYPE
+                archive.addfile(member)
+            with self.assertRaises(SystemExit):
+                scanner.scan(root)
+
+    def test_artifact_scanner_inspects_top_level_tgz(self):
+        with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
+            root = pathlib.Path(directory)
+            (root / "web/dist").mkdir(parents=True)
+            (root / "internal/webui/dist").mkdir(parents=True)
+            (root / "release").mkdir()
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\n", encoding="utf-8")
+            payload = b"development dependency"
+            with tarfile.open(root / "release" / "bundle.tgz", "w:gz") as archive:
+                member = tarfile.TarInfo("node_modules/dev-only/index.js")
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+            with self.assertRaises(SystemExit):
+                scanner.scan(root)
+
+    def test_artifact_scanner_rejects_zip_special_member(self):
+        with tempfile.TemporaryDirectory(prefix="cheesewaf-artifact-test-") as directory:
+            root = pathlib.Path(directory)
+            (root / "web/dist").mkdir(parents=True)
+            (root / "internal/webui/dist").mkdir(parents=True)
+            (root / "release").mkdir()
+            (root / "scripts/ci").mkdir(parents=True)
+            (root / "scripts/ci/build-web.sh").write_text("npm ci --no-audit --no-fund --ignore-scripts\n", encoding="utf-8")
+            member = zipfile.ZipInfo("device")
+            member.create_system = 3
+            member.external_attr = (stat.S_IFCHR | 0o600) << 16
+            with zipfile.ZipFile(root / "release" / "bundle.ZIP", "w") as archive:
+                archive.writestr(member, b"")
             with self.assertRaises(SystemExit):
                 scanner.scan(root)
 

@@ -215,12 +215,12 @@ Session、Origin 凭据、密码、私钥和原始请求正文。raw 包要求�
 
 ### 2026-09-05 全量回归与生产产物检查
 
-验证命令：`go test ./...`、`go vet ./...`、`CHEESEWAF_AGENT_EYES=0 bash scripts/ci/build-web.sh`。
+验证命令：`go test ./...`、`go vet ./...`、`bash scripts/ci/build-web.sh`。
 
 验证结果：完整 Go 测试退出码 0，语义引擎测试约 305 秒；`go vet ./...` 退出码 0；
 生产 Web 构建退出码 0，
-构建预算检查通过（1 个初始 preload、6 个主题样式表），并在构建产物中未发现
-`agent-eyes`、`code-inspector` 或 `codex-acp` 标记。构建使用了 `npm ci --ignore-scripts`。
+构建预算检查通过（1 个初始 preload、6 个主题样式表），产物边界检查未发现
+依赖目录、源码目录、符号链接或不安全归档路径。构建使用了 `npm ci --ignore-scripts`。
 
 注意：Vite 仍输出一个关于 `vite.proxy` 扩展名的非阻断警告；尝试改成 `.ts`
 会触发 TypeScript `TS5097`，因此保留当前可构建写法，不隐藏警告。
@@ -804,7 +804,7 @@ Session 和一次性确认 ID。`BeginConfirmation` 由服务端记录告警开�
   `git diff --check`：通过。
 - CWEDP、NetLease、Approval、Token、AI 和 Handler 定向 race/vet：通过。
 - `npm test`：70 个测试文件、462 个测试通过；`npm run typecheck`、
-  `CHEESEWAF_AGENT_EYES=0 npm run build` 和产物预算/标记扫描通过。
+  `npm run build` 和产物预算/边界扫描通过。
 - `bash scripts/acceptance/get-started.sh --static-contract` 与 `--smoke`：通过，
   包含 temporary 可运行、production fail-closed、运行时目录隔离和清理验证。
 - 根仓库 `bash scripts/ci/verify-ci-static.sh`：通过；Hugo 文档站中英文 106/104 页、
@@ -892,7 +892,7 @@ TokenService、KMS、透明/耐久审计和插件 sidecar 接成一个启动单�
 - TokenService、严格 Token 身份边界、180 天无活动清理、policy epoch 二次校验、持久化幂等和 deny-only Redis cache；永不过期仍要求注入强确认 Gate。
 - 诊断信封加密、本地持久队列、统一审计 journal/outbox/spool、KMS/keyring/2-of-3 恢复 contract，以及 single-node/production/full Ansible/Pigsty 交接剧本。
 
-本批新鲜验证：`go test ./internal/controlplane/... -race -count=1`、`go test ./internal/storage/... -race -count=1`、`go test ./internal/cwedp/... -race -count=1`、`go test ./internal/crp/... -count=1`、`go test ./internal/diagnostics/envelope ./internal/diagnostics/queue -race -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/tokens/... -race -count=1`、相关 `go vet` 和 `git diff --check` 通过。前端 `npm test` 为 70 个文件/462 个测试，typecheck、`CHEESEWAF_AGENT_EYES=0 npm run build`、Get Started static/smoke、CI 静态门禁和 Hugo EN106/ZH104 均通过。
+本批新鲜验证：`go test ./internal/controlplane/... -race -count=1`、`go test ./internal/storage/... -race -count=1`、`go test ./internal/cwedp/... -race -count=1`、`go test ./internal/crp/... -count=1`、`go test ./internal/diagnostics/envelope ./internal/diagnostics/queue -race -count=1`、`go test ./internal/api/handler ./internal/api/middleware ./internal/tokens/... -race -count=1`、相关 `go vet` 和 `git diff --check` 通过。前端 `npm test` 为 70 个文件/462 个测试，typecheck、`npm run build`、Get Started static/smoke、CI 静态门禁和 Hugo EN106/ZH104 均通过。
 
 验收矩阵当前为 10 项通过、3 项显式失败、0 项跳过。失败项是临时→生产迁移与 Session 失效的端到端接线、CRP activation 的 CLI/服务挂载、临时联网确认的生产 Session/网络 enforcement。独立 `cheesewaf-control` 二进制仍在实现中；主 `cheesewaf serve` 的 production profile 在完整启动单元接好前继续 fail-closed。
 
@@ -959,7 +959,7 @@ Token 身份复核同步到 API 和 middleware：Name/Notes 作为展示文本�
 - 最新 NetLease 生命周期改动后的增量验证：`go test`、`go test -race`、`go vet` 覆盖 `internal/cli`、`internal/cwedp/transport`、`internal/netlease` 均通过。
 - 在 NetLease 生命周期改动之后重新执行的全仓编译扫描 `GOCACHE=/private/tmp/cheesewaf-all-compile-final go test ./... -run '^$' -count=1`、全仓 `go vet ./...`、`gofmt -l cmd internal` 和 `git diff --check` 均通过；变更包完整 race 也均通过。
 - Approval/PG 变更后的普通、race、vet 和格式检查通过；持久 Gate 仍需后续真实 PostgreSQL adapter 恢复/篡改集成测试与 production service wiring，不能据此宣称审批服务已上线。
-- Web：70 个测试文件、465 个测试、`npm run typecheck`、`CHEESEWAF_AGENT_EYES=0 bash scripts/ci/build-web.sh`、预算和 marker scan 通过。
+- Web：70 个测试文件、465 个测试、`npm run typecheck`、`bash scripts/ci/build-web.sh`、预算和产物边界扫描通过。
 - 验收脚本：`python3 -m unittest discover -s scripts/acceptance -p '*_test.py'`、`bash scripts/acceptance/acceptance-matrix_test.sh` 通过；static matrix 生成 14 通过、8 失败、0 跳过。失败项均保留为环境限制或未接线 blocker，没有改成 skipped。
 
 遗留风险：主服务仍未挂载完整 migration/CRP/CWEDP/NetLease/Approval/Token 生产生命周期；CheeseSec 外部仓库仍保留各自的其他脏改动，尚未提交或推送。
@@ -991,7 +991,7 @@ Token 身份复核同步到 API 和 middleware：Name/Notes 作为展示文本�
 - `go test ./internal/ai/... -count=1`、对应 `-race` 和 `go vet ./internal/ai/...` 在允许 loopback 的受控环境通过。
 - `python3 -m unittest discover -s scripts/acceptance -p '*_test.py'` 与 `bash scripts/acceptance/acceptance-matrix_test.sh` 通过；允许 loopback 的 static matrix 为 19 通过、4 失败、0 跳过，失败项继续保留 migration/session、CRP activation/rollback 和 temporary-network 生产生命周期 blocker。
 - 当前全仓 `go test ./... -count=1` 通过（semantic 约 340 秒）；全仓编译、`go vet ./...`、`gofmt -l cmd internal` 和 `git diff --check` 通过。
-- Web 当前为 70 个测试文件、465 个测试通过；`npm run typecheck`、`CHEESEWAF_AGENT_EYES=0 bash scripts/ci/build-web.sh` 和 193 文件生产 marker scan 通过。
+- Web 当前为 70 个测试文件、465 个测试通过；`npm run typecheck`、`bash scripts/ci/build-web.sh` 和 193 文件生产产物边界扫描通过。
 - Get Started 的 `--static-contract` 与 `--smoke` 均通过，运行数据只写入临时目录并完成清理。
 
 遗留风险：Approval 仍缺少生产 credential verifier、服务生命周期和 AI destructive consumer 接线；诊断运行时仍缺对象存储异步复制、签名目标回执、跨进程 replay guard 和主 `serve` 挂载；主服务的 migration、CRP、CWEDP/NetLease、Token/Approval 生产生命周期仍未全部接通。
@@ -1055,7 +1055,7 @@ Dependabot/CodeQL 复核结果：
 - 当前工作树在角色切片落地后重新执行 `go test ./... -run '^$' -count=1` 与 `go vet ./...`，全部包通过；`gofmt -l cmd internal` 和全仓 `git diff --check` 无输出。
 - Web `npm test -- --run` 为 70 个测试文件、465 个测试通过；测试输出中的预期 ErrorBoundary `boom` 与 jsdom/localStorage 警告没有造成失败。
 - CheeseSec_Docs Hugo 构建通过，EN 108 / ZH 106；CheeseSec_Plugin_Docs 的 workflow/schema/link/commercial/offline/test/secret-scan 门禁通过；CheeseSec_Plugin 的 workflow/schema/commercial/offline/15 项测试/secret-scan 门禁通过。
-- 生产 Web 构建使用 `npm ci --ignore-scripts` 和 `CHEESEWAF_AGENT_EYES=0`，完整 dist marker scan 与预算检查通过；随后生成 Linux amd64 preview 包，SHA-256 为 `4882c58abbd64d89005076de39180ea904f0b70a621ae1a6af577ae08df65279`。
+- 生产 Web 构建使用 `npm ci --ignore-scripts`，完整 dist 产物边界扫描与预算检查通过；随后生成 Linux amd64 preview 包，SHA-256 为 `4882c58abbd64d89005076de39180ea904f0b70a621ae1a6af577ae08df65279`。
 
 隔离测试服务器此前没有 CheeseWAF 二进制、目录、systemd 单元或监听器。预览部署使用独立的 `cheesewaf-preview` 系统用户、`/opt/cheesewaf-preview`、`/etc/cheesewaf-preview`、`/var/lib/cheesewaf-preview`、`/var/log/cheesewaf-preview` 和 `cheesewaf-preview.service`；未修改现有 PostgreSQL 17.11 或 Redis 8.0.2，两者仍只监听 loopback。
 

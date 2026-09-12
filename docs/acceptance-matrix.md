@@ -47,7 +47,7 @@
 | temporary_network_confirmation | 显式本地 temporary-online broker | 一次性确认、密码复核、直连 IP/TLS pin、结果与 revoke 耐久元数据审计、session/lease 清理 | 主 `serve`、插件控制面和持久租约生命周期尚未接入该本地探针；CWEDP 使用独立 broker-bound transport，生产控制面尚无可创建该 broker 并传递可撤销管理 Session 的适配器 | failed，保留未接线 blocker |
 | digest_resume | CWEDP 三摘要与断点续传 | HELLO、Range、切源、quarantine | digest、offset、chunk、budget 边界拒绝 | 通过即算 |
 | audit_recovery_rollback | audit/recovery/rollback contract | 哈希链、耐久通道、阈值恢复 | replay、stale、corrupt、regression 拒绝 | 通过即算 |
-| production_artifact_scan | Web/release 产物门禁 | 扫描实际产物且 build 设置 CHEESEWAF_AGENT_EYES=0、npm ci --ignore-scripts | marker 或缺失产物 fail-closed | 通过即算 |
+| production_artifact_scan | Web/release 产物门禁 | 扫描实际产物，构建使用 `npm ci --ignore-scripts` | 依赖目录、源码目录、符号链接、不安全归档路径或缺失产物均 fail-closed | 通过即算 |
 | cleanup_no_tracked_pollution | 清理与工作区污染 | 子进程结束、临时根删除、源模板和 git status 不变 | 任一差异导致失败 | 通过即算 |
 
 JSON 报告的 schema_version 为 2，summary 包含 total、passed、failed、skipped（固定为 0）。每个 gate 至少包含：
@@ -58,6 +58,6 @@ JSON 报告的 schema_version 为 2，summary 包含 total、passed、failed、s
     positive: status, command, assertion, evidence
     negative: status, command, assertion, evidence
 
-cleanup 对象记录 runtime_removed、processes_stopped、source_template_unchanged 和 tracked_worktree_unchanged。产物扫描使用二进制内容、tar.gz/zip 成员和文本文件扫描 agent-eyes、code-inspector、codex-acp；不存在可扫描产物时也失败，避免空目录假绿。
+cleanup 对象记录 runtime_removed、processes_stopped、source_template_unchanged 和 tracked_worktree_unchanged。产物扫描检查目录、tar.gz/zip 成员、符号链接与路径边界；不存在可扫描产物时也失败，避免空目录假绿。
 
 矩阵退出码为：所有 gate 通过且 skipped 为 0 时返回 0；任一 gate failed 时返回 1。已知未接线能力的失败是发布和迁移决策输入，不得改写成 skipped。

@@ -56,10 +56,10 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not typecheck the dashboard"
   grep -Fq 'npm run build' "$workflow" ||
     fail "${workflow} does not build the dashboard"
-  grep -A8 -Fx '  web-build:' "$workflow" | grep -Fq 'CHEESEWAF_AGENT_EYES: "0"' ||
-    fail "${workflow} web-build must explicitly disable Agent Eyes"
   grep -Fq 'npm run test:scripts' "$workflow" ||
     fail "${workflow} web-build must run build gate script tests"
+  grep -Fq "python3 -m unittest discover -s scripts/acceptance -p '*_test.py'" "$workflow" ||
+    fail "${workflow} must run acceptance helper regression tests"
   grep -Fq 'bash scripts/ci/run-corpus-governance.sh' "$workflow" ||
     fail "${workflow} does not run the corpus governance gate"
   grep -Fq 'bash scripts/ci/run-semantic-benchmark.sh' "$workflow" ||
@@ -325,14 +325,16 @@ grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
   fail "Ansible unit must start cheesewaf serve"
 grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
   fail "web build must copy UI files into the embedded dist directory"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' scripts/ci/build-web.sh ||
-  fail "isolated web build must disable Agent Eyes during npm install"
-grep -Fq 'verify-production-markers.mjs' scripts/ci/build-web.sh ||
-  fail "isolated web build must scan production markers after copying outputs"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' deploy/docker/Dockerfile ||
-  fail "Docker Web stage must disable Agent Eyes during npm install"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm run build' deploy/docker/Dockerfile ||
-  fail "Docker Web stage must disable Agent Eyes during npm build"
+grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' scripts/ci/build-web.sh ||
+  fail "isolated web build must install from the lockfile without lifecycle scripts"
+grep -Fq 'production_artifact_scan.py' scripts/ci/build-web.sh ||
+  fail "isolated web build must scan production artifact boundaries after copying outputs"
+grep -Fq 'node scripts/verify-build-budget.mjs' web/package.json ||
+  fail "npm Web builds must run the build budget and artifact boundary gate"
+grep -Fq 'scanProductionTree(distDir)' web/scripts/verify-build-budget.mjs ||
+  fail "every npm Web build must scan the generated dist tree"
+grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' deploy/docker/Dockerfile ||
+  fail "Docker Web stage must install from the lockfile without lifecycle scripts"
 grep -Fq 'COPY --from=web /src/web/dist/' deploy/docker/Dockerfile ||
   fail "runtime image must copy only the built Web dist from the Web stage"
 grep -Fq 'RUN chmod 0644 /usr/share/cheesewaf/config/cheesewaf.yaml' deploy/docker/Dockerfile ||
@@ -429,9 +431,7 @@ grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
 grep -A1 'canary)' scripts/ci/channel-from-git.sh | grep -Fq 'echo PreTest' ||
   fail "local canary channel must match package-release PreTest metadata"
 grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
-  fail "make web-build must skip agent-eyes postinstall"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
-  fail "make web-build must disable Agent Eyes during npm install"
+  fail "make web-build must install from the lockfile without lifecycle scripts"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
   fail "GoReleaser archives must keep one binary per platform; channel packages ship cheesewaf-gui"
 fi

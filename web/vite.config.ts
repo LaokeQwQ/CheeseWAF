@@ -1,16 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { codeInspectorPlugin } from '@agent-eyes/agent-eyes';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BACKEND_PROXY_PATTERN } from './vite.proxy';
 
 const sourcemap = process.env.VITE_SOURCEMAP === 'true';
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
-// Agent Eyes is an explicit local-development opt-in. Production and normal
-// builds must never register the inspector plugin or emit its runtime hooks.
-const enableAgentEyes = process.env.NODE_ENV !== 'production' && process.env.CHEESEWAF_AGENT_EYES === '1';
 
 export default defineConfig({
   resolve: {
@@ -18,22 +14,7 @@ export default defineConfig({
       '@': path.resolve(projectRoot, 'src'),
     },
   },
-  plugins: [
-    // code-inspector must register before @vitejs/plugin-react
-    ...(enableAgentEyes
-      ? [
-          codeInspectorPlugin({
-            bundler: 'vite',
-            showSwitch: true,
-            agent: {
-              acp: { command: 'codex-acp' },
-            },
-          }),
-        ]
-      : []),
-    react(),
-    tailwindcss(),
-  ],
+  plugins: [react(), tailwindcss()],
   server: {
     host: '127.0.0.1',
     port: 5173,

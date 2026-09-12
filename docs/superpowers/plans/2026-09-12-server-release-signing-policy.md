@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Keep `@agent-eyes/agent-eyes`, code-inspector, and `codex-acp` out of production artifacts.
+- Keep dependency directories, source-only Web trees, and development tooling out of production artifacts.
 - Keep runtime data outside tracked templates and source files.
 - Preserve the existing promotion path and stable tag format `vMAJOR.MINOR.PATCH`.
 - Do not expose or add signing secrets.

@@ -64,6 +64,9 @@ jobs:
       - name: Verify CI and release policy
         shell: bash
         run: bash scripts/ci/verify-ci-static.sh
+      - name: Test acceptance helpers
+        shell: bash
+        run: python3 -m unittest discover -s scripts/acceptance -p '*_test.py'
       - name: Validate GitHub Actions workflows
         shell: bash
         run: bash scripts/ci/run-actionlint.sh -shellcheck= -pyflakes= -color .github/workflows/*.yml
@@ -136,8 +139,6 @@ jobs:
   web-build:
     name: web-build
     runs-on: ubuntu-latest
-    env:
-      CHEESEWAF_AGENT_EYES: "0"
     steps:
       - name: Checkout
         uses: https://data.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -147,7 +148,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         shell: bash
-        run: CHEESEWAF_AGENT_EYES=0 npm ci --ignore-scripts
+        run: npm ci --ignore-scripts
       - name: Run CAPTCHA contract tests
         working-directory: web
         shell: bash
@@ -159,7 +160,7 @@ jobs:
       - name: Install pinned coverage provider
         working-directory: web
         shell: bash
-        run: CHEESEWAF_AGENT_EYES=0 npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
+        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
       - name: Run dashboard tests with coverage
         working-directory: web
         shell: bash
@@ -202,7 +203,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         shell: bash
-        run: CHEESEWAF_AGENT_EYES=0 npm ci --ignore-scripts
+        run: npm ci --ignore-scripts
       - name: Audit web dependencies
         working-directory: web
         shell: bash
