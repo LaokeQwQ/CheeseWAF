@@ -1103,6 +1103,38 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 - `gh pr view 7 --repo LaokeQwQ/CheeseSec_Plugin_Docs`：检查成功，状态仍为 `BLOCKED`。
 - 临时服务器只读探测：本轮本机 SSH 隧道的 `http://127.0.0.1:19443/setup` 返回 HTTP 200，`GET /api/setup/status` 返回 `needs_setup: true`；公网端口探测仍未形成可用入口，没有执行远程修改。
 
-遗留风险：稳定发布仍需要 GitHub `publish-release` 环境中的 Windows 和 macOS 签名凭据；插件文档 PR 仍需要独立 code-owner 审批；Cloudflare Pages 部署仍需要 Cloudflare 凭据。阶段 1 至阶段 7 中列出的主服务生产接线、CRP 控制面、CWEDP 节点编排、对象复制和空网演练仍未完成，不能把当前 tag 或构建结果写成商业化架构全部交付。
+历史结论（已被 2026-09-12 的服务器优先策略取代）：当时工作流仍把 Windows 和 macOS 签名凭据作为稳定发布条件。插件文档 PR 仍需要独立 code-owner 审批；Cloudflare Pages 部署仍需要 Cloudflare 凭据。阶段 1 至阶段 7 中列出的主服务生产接线、CRP 控制面、CWEDP 节点编排、对象复制和空网演练仍未完成，不能把当前 tag 或构建结果写成商业化架构全部交付。
 
-下一步：补齐签名凭据后重跑现有 `v0.3.9` tag 工作流；取得独立 code-owner 审批后合并 PR #7；补齐 Cloudflare 凭据后重新执行文档部署；随后按 `tasks.md` 中的未完成项继续做主服务生产接线和端到端演练。
+历史行动项（已被取代）：不再补齐桌面签名凭据后重跑旧 tag。当前做法是先把服务器优先工作流晋升到 `master`，确认旧 tag 尚未产生 GitHub Release，再在受保护的 `master` 当前提交上重新创建 `v0.3.9`。插件文档和 Cloudflare Pages 的外部依赖，以及主服务生产接线和端到端演练，仍按各自未完成项继续处理。
+
+### 2026-09-12 服务器版稳定发布策略修正
+
+前一节记录的是 2026-09-11 当时的工作流状态。经过同类服务器 WAF 的发行方式复核，Windows Authenticode 和 macOS Developer ID 不再作为 CheeseWAF 服务器版稳定发布的前置条件。Windows 与 macOS 包仍可由完整档位的分支或手动工作流生成，但它们属于可选的操作端构建。
+
+本次改动：
+
+- 新增 `scripts/ci/release-targets.sh`，`CHEESEWAF_RELEASE_PROFILE=server` 默认只生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64；`full` 继续保留原来的七个平台目标。
+- `vMAJOR.MINOR.PATCH` 标签在 `.github/workflows/ci.yml` 中使用 `server` 档位，跳过 macOS DMG 任务，不再下载桌面产物。
+- `scripts/ci/verify-release.sh` 新增 `CHEESEWAF_SIGNING_SCOPE=server`，继续检查归档、校验和、元数据和内容，不检查桌面平台证书。
+- `scripts/ci/publish-prerelease.sh` 按实际存在的文件生成发布说明，不再列出不存在的 Windows 或 macOS 包。
+- GitHub 和 Forgejo 的 actionlint 改用固定版本、带摘要校验的 `scripts/ci/run-actionlint.sh`。原来的 Go 包入口 `github.com/rhysd/actionlint/cmd/actionlint@v1.7.7` 在当前版本不存在，已一并修正。
+- 标签、事件类型等 GitHub 上下文先通过环境变量传入 shell，稳定标签再按精确语义版本格式判断，避免把可控 ref 名直接插入 Bash。
+- `server` 档位和稳定发布器都拒绝 Windows、macOS、DMG 等桌面发行物；Forgejo 的分支/手动构建不再接收 Windows 签名凭据。
+- 稳定发布目录采用显式白名单，只允许三份 Linux 归档、校验和、SBOM 和对应的 Sigstore bundle；未知扩展名或远端已有的额外资产都会使发布失败。
+- 三份 Linux 归档内的 `VERSION` 与 `release.json` 必须和发布清单使用相同的版本与 40 位提交 SHA。文件名正确但内部元数据错误时，检查会失败。
+- 稳定标签必须同时匹配 `scripts/ci/product-version` 并指向受保护的 `master` 当前提交。发布前还会通过 GitHub API 解析远端标签；带注释的标签会继续解析到最终提交。标签缺失或提交不一致时，不会创建或上传 Release。
+- 稳定版的 Sigstore 身份精确绑定当前标签。已有稳定 Release 只做下载和校验，不会重新生成 SBOM、替换文件或改写说明。
+- GitHub `publish-release` 环境已配置必需审批和自定义部署策略，只允许 `v*` 标签进入。仓库目前只有一名管理员，因此暂时允许该管理员审批自己的发布；每次审批仍会留在 GitHub 的部署记录中。
+- 中英文 README 与 `docs/acceptance-matrix.md` 已改为服务器优先的发行说明。前一节关于“稳定发布仍需要 Windows 和 macOS 签名凭据”的判断只保留为历史证据，不再作为当前服务器版发布条件。
+
+验证证据：
+
+- `bash scripts/ci/package-release_profile_test.sh` 通过。
+- `bash scripts/ci/verify-stable-tag_test.sh` 通过，覆盖版本不符、非 `master` 当前提交和恶意 ref 名。
+- `bash scripts/ci/verify-release_test.sh` 通过，包含 Windows/macOS 严格签名的原有负向用例，以及归档内部版本或提交不一致时必须失败的 `server` 用例。
+- `bash scripts/ci/publish-prerelease_test.sh` 通过。Linux-only 稳定说明不再列出桌面包；远端标签缺失、标签提交变化、错误 Release 目标和额外远端文件都会失败。测试还会直接执行发布说明里的 Sigstore 命令，防止换行符错误。
+- `bash scripts/ci/run-actionlint.sh -shellcheck= -pyflakes= -color .github/workflows/*.yml` 通过。
+- `bash scripts/ci/verify-ci-static.sh` 通过。
+- 使用 `CHEESEWAF_RELEASE_PROFILE=server CHEESEWAF_REF_NAME=v0.3.9` 实际打包，得到 3 个 Linux 归档，没有生成 Windows、macOS 或 DMG 文件；`CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server` 的静态发行物检查通过。
+
+2026-09-12 提交前交接状态：改动位于 `codex/beta-v0.3.9-ui-docs` 工作树，尚未晋升到 `master`，也没有重新创建稳定版 Release。执行时必须先提交并通过主仓库 CI、CodeQL 和发布检查，再按现有分支流程晋升并重新触发 `v0.3.9` 稳定发布。CRP、主服务生产接线、插件文档 code-owner 审批和 Cloudflare Pages 凭据等其他遗留项不因本次发布策略修正而自动完成。

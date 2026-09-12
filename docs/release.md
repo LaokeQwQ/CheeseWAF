@@ -8,17 +8,23 @@
 
 `dev`、`canary` 和 `master` 只用于开发、预览和稳定分支构建。它们不是正式版本标签。
 
-分支构建中的 Windows 压缩包允许在没有签名凭证时生成，日志会明确标记为未签名；这类产物不能替代正式版本。正式标签必须提供 `WINDOWS_CERT_P12` 和对应密码，签名校验缺失时发布应失败。
+稳定 `vMAJOR.MINOR.PATCH` 版本采用服务器优先档位：工作流只生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64 归档，并要求 `SHA256SUMS`、Sigstore 签名和 SBOM 校验。稳定服务器版不依赖 Windows Authenticode 或 macOS Developer ID 凭据。
+
+分支和手动工作流可以使用完整档位生成 Windows 与 macOS 操作端包。它们没有稳定服务器版的交付保证，可能没有平台签名；下载后先核对 `SHA256SUMS`。这类可选包不能改变稳定版的服务器交付范围。
 
 管理端的 MapLibre 浏览器依赖是按需加载的单体 chunk，不会进入首屏预加载。构建会为该依赖保留单独的 1 MiB 上限，并对其他异常大的 JavaScript chunk 直接失败；因此看到 MapLibre 体积预算而不是首屏告警时，应先检查懒加载和预算门禁。
 
 ## 发布正式版本
 
 1. 确认 `dev` 的检查全部通过，并按项目分支规则逐级合入 `canary` 和 `master`。
-2. 在 `master` 上创建并推送 `vMAJOR.MINOR.PATCH` 标签。
-3. 标签工作流会运行 GoReleaser、生成各平台压缩包、`SHA256SUMS` 和软件物料清单。
-4. 发布前核对工作流中的签名检查。没有签名凭证时，工作流必须失败，不得把未签名产物标成正式版本。
+2. 确认标签版本与 `scripts/ci/product-version` 一致，再在 `master` 当前提交上创建并推送 `vMAJOR.MINOR.PATCH` 标签。工作流会在打包前重新核对版本和 `master` 提交。发布前还会解析 GitHub 上的标签对象；带注释的标签会先解析到最终提交。任一结果不一致，工作流都会停止。
+3. 标签工作流会生成服务器档位的 Linux 压缩包、`SHA256SUMS`、SBOM 和发布元数据；稳定发布不依赖桌面打包任务。
+4. `publish-release` 环境只接受 `v*` 标签，并要求明确批准。批准前核对归档内容、`SHA256SUMS`、Sigstore 签名和 SBOM。每个归档内的 `VERSION` 与 `release.json` 必须和发布清单使用相同的版本与提交。若另行构建桌面操作端包，再单独检查对应平台的签名状态。
 5. 发布后下载一个目标平台的压缩包，核对 `SHA256SUMS`，再执行启动冒烟测试。
+
+Sigstore 验证会绑定当前标签对应的工作流身份，例如 `.github/workflows/ci.yml@refs/tags/v0.3.9`。脚本不会接受同一仓库中其他稳定标签的签名身份。
+
+如果同名稳定 Release 已存在，脚本只下载并验证现有文件。它不会重新生成 SBOM、替换文件或改写发布说明。远端文件缺失、多出未登记文件或内容与当前归档不一致时，发布会停止。
 
 正式版本的发布说明应记录数据库版本、配置兼容性和已知限制。不要用开发分支构建替代正式版本。
 
