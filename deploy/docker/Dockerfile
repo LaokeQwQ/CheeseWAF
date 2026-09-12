@@ -26,14 +26,12 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
-# Skip lifecycle scripts: @agent-eyes postinstall needs pnpm and is dev-only for source maps.
-RUN CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts
+RUN npm ci --no-audit --no-fund --ignore-scripts
 COPY web/index.html web/tsconfig.json web/tsconfig.app.json web/tsconfig.node.json web/vite.config.ts web/vite.proxy.ts ./
 COPY web/public ./public
 COPY web/scripts ./scripts
 COPY web/src ./src
-COPY web/types ./types
-RUN CHEESEWAF_AGENT_EYES=0 npm run build
+RUN npm run build
 
 FROM ${RUNTIME_IMAGE}
 # Pin UID/GID so CI tmpfs mounts and compose can match the non-root runtime user.

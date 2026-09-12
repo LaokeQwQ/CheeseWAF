@@ -161,7 +161,7 @@ web-test:
 
 ## web-build: Build the React dashboard
 web-build:
-	cd web && CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts && CHEESEWAF_AGENT_EYES=0 npm run build
+	cd web && npm ci --no-audit --no-fund --ignore-scripts && npm run build
 
 ## security-corpus: Run curated attack/benign corpus against the semantic analyzer
 security-corpus:

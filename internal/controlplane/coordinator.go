@@ -62,18 +62,13 @@ func (c *Coordinator) Initialize(ctx context.Context, request InitialStateReques
 		c.machine.FreezeWrites("initial state requires established leader")
 		return Commit{}, fmt.Errorf("%w: initial state requires an established leader", ErrStartupInitialState)
 	}
-	candidate, err := NewStateMachine(current.ClusterID, nil)
+	// Build the commit from the already-established leadership snapshot. A
+	// coordinator deliberately keeps its live machine frozen during startup;
+	// constructing a fresh machine and calling InstallLeadership would reset
+	// every non-zero leadership epoch back to one and create a stale fence.
+	commit, err := NewInitialCommit(current.ClusterID, current, request)
 	if err != nil {
-		c.machine.FreezeWrites("initial state candidate creation failed")
-		return Commit{}, err
-	}
-	if _, err := candidate.InstallLeadership(current.Term, current.LeaderID); err != nil {
-		c.machine.FreezeWrites("initial leadership checkpoint failed")
-		return Commit{}, err
-	}
-	commit, err := candidate.Propose(Proposal{LeaderID: current.LeaderID, ExpectedEpoch: current.Epoch, ExpectedRevision: 0, Version: request.Version, Payload: request.Payload, Digest: request.Digest, Nonce: request.Nonce})
-	if err != nil {
-		c.machine.FreezeWrites("initial desired state proposal failed")
+		c.machine.FreezeWrites("initial desired state commit construction failed")
 		return Commit{}, err
 	}
 	if err := c.consensus.Propose(ctx, commit); err != nil {

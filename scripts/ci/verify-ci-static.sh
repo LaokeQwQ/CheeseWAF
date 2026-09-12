@@ -38,8 +38,8 @@ for workflow in "${workflow_files[@]}"; do
   fi
   grep -Fq "govulncheck@${GOVULNCHECK_VERSION}" "$workflow" ||
     fail "${workflow} does not pin govulncheck ${GOVULNCHECK_VERSION}"
-  grep -Fq "actionlint@${ACTIONLINT_VERSION}" "$workflow" ||
-    fail "${workflow} does not pin actionlint ${ACTIONLINT_VERSION}"
+  grep -Fq 'bash scripts/ci/run-actionlint.sh' "$workflow" ||
+    fail "${workflow} must use the pinned actionlint runner"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh format' "$workflow" ||
     fail "${workflow} does not enforce gofmt"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh vet' "$workflow" ||
@@ -56,10 +56,10 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not typecheck the dashboard"
   grep -Fq 'npm run build' "$workflow" ||
     fail "${workflow} does not build the dashboard"
-  grep -A8 -Fx '  web-build:' "$workflow" | grep -Fq 'CHEESEWAF_AGENT_EYES: "0"' ||
-    fail "${workflow} web-build must explicitly disable Agent Eyes"
   grep -Fq 'npm run test:scripts' "$workflow" ||
     fail "${workflow} web-build must run build gate script tests"
+  grep -Fq "python3 -m unittest discover -s scripts/acceptance -p '*_test.py'" "$workflow" ||
+    fail "${workflow} must run acceptance helper regression tests"
   grep -Fq 'bash scripts/ci/run-corpus-governance.sh' "$workflow" ||
     fail "${workflow} does not run the corpus governance gate"
   grep -Fq 'bash scripts/ci/run-semantic-benchmark.sh' "$workflow" ||
@@ -111,6 +111,16 @@ grep -Fq 'SEMANTIC_BENCH_OUTPUT="/tmp/semantic-bench-check.json"' <<<"$makefile_
   fail "semantic benchmark runner must be executable"
 [[ -x scripts/ci/test-go-windows.sh ]] ||
   fail "Windows Go test runner must be executable"
+[[ -x scripts/ci/run-actionlint.sh ]] ||
+  fail "actionlint runner must be executable"
+[[ -x scripts/ci/stable-release-policy.sh ]] ||
+  fail "stable release allowlist policy must be executable"
+[[ -x scripts/ci/verify-stable-tag.sh ]] ||
+  fail "stable tag provenance verifier must be executable"
+[[ -x scripts/ci/verify-stable-tag_test.sh ]] ||
+  fail "stable tag provenance regression test must be executable"
+grep -Fq 'ACTIONLINT_VERSION' scripts/ci/run-actionlint.sh ||
+  fail "actionlint runner must read the pinned version"
 bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifact_test.sh scripts/ci/run-semantic-benchmark.sh scripts/ci/run-authorized-blind-lab.sh scripts/ci/run-authorized-blind-lab_test.sh scripts/ci/test-go-windows.sh ||
   fail "evaluation, benchmark, and blind-lab scripts must pass bash syntax validation"
 grep -Fq 'bash scripts/ci/test-go-windows.sh' .github/workflows/ci.yml ||
@@ -207,7 +217,7 @@ grep -Fq 'web/dist/index.html' .goreleaser.yaml ||
   fail "GoReleaser archive must include the UI entrypoint"
 grep -Fq 'cp -R web/dist "${package_root}/web/dist"' scripts/ci/package-release.sh ||
   fail "branch release packages must distribute UI under web/dist"
-grep -Fq 'linux/loong64' scripts/ci/package-release.sh ||
+grep -Fq 'linux/loong64' scripts/ci/release-targets.sh ||
   fail "branch release packages must include linux/loong64"
 grep -Fq 'systemd/cheesewaf.service' scripts/ci/package-release.sh ||
   fail "Linux packages must include the systemd unit"
@@ -247,6 +257,59 @@ grep -Fq 'scripts/ci/publish-release.sh' .github/workflows/ci.yml ||
   fail "CI must publish stable vMAJOR.MINOR.PATCH releases"
 grep -Fq -- "- 'v*'" .github/workflows/ci.yml ||
   fail "CI must run on stable version tags"
+grep -Fq 'CHEESEWAF_RELEASE_PROFILE:' .github/workflows/ci.yml ||
+  fail "stable release packaging must select an explicit release profile"
+grep -Fq "&& 'server' || 'full'" .github/workflows/ci.yml ||
+  fail "stable version tags must use the server release profile"
+grep -Fq 'signing_scope=server' .github/workflows/ci.yml ||
+  fail "stable release verification must use the server signing scope"
+grep -Fq 'CHEESEWAF_MASTER_REF=FETCH_HEAD bash scripts/ci/verify-stable-tag.sh' .github/workflows/ci.yml ||
+  fail "stable release packaging must bind the tag to protected master"
+grep -Fq 'git fetch --no-tags --depth=1 origin master' .github/workflows/ci.yml ||
+  fail "stable release provenance check must fetch protected master"
+grep -Fq 'does not match product version' scripts/ci/package-release.sh ||
+  fail "stable release packaging must bind the tag to product-version"
+grep -Fq 'stable_release_validate_top_level' scripts/ci/verify-release.sh ||
+  fail "server verification must use the fail-closed stable asset allowlist"
+grep -Fq 'stable_release_validate_top_level' scripts/ci/publish-prerelease.sh ||
+  fail "stable publishing must use the fail-closed stable asset allowlist"
+grep -Fq 'verify_existing_stable_release' scripts/ci/publish-prerelease.sh ||
+  fail "stable release reruns must verify the immutable release before returning"
+grep -Fq 'existing stable release contains an unclassified asset' scripts/ci/publish-prerelease.sh ||
+  fail "stable release reruns must reject remote assets outside the local invariant"
+grep -Fq 'resolve_remote_tag_commit' scripts/ci/publish-prerelease.sh ||
+  fail "stable publishing must resolve and peel the authoritative remote tag"
+grep -Fq 'remote stable tag ${tag} points to' scripts/ci/publish-prerelease.sh ||
+  fail "stable publishing must bind the remote tag to the manifest commit"
+grep -Fq -- '--verify-tag' scripts/ci/publish-prerelease.sh ||
+  fail "stable release creation must fail instead of creating a missing tag"
+grep -Fq "identity_flag='--certificate-identity'" scripts/ci/publish-prerelease.sh ||
+  fail "stable Sigstore verification must use an exact certificate identity"
+grep -Fq 'release_json_commit' scripts/ci/verify-release.sh ||
+  fail "server release verification must bind archive release.json commits to the manifest"
+grep -Fq 'archive_version' scripts/ci/verify-release.sh ||
+  fail "server release verification must bind archive VERSION metadata to the manifest"
+grep -Fq 'CHEESEWAF_REF_NAME: ${{ github.ref_name }}' .github/workflows/ci.yml ||
+  fail "release verification must pass the ref name through the environment"
+grep -Fq '"$CHEESEWAF_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$' .github/workflows/ci.yml ||
+  fail "stable release verification must validate the environment ref as exact semver"
+if grep -nE '\[\[.*\$\{\{[[:space:]]*github\.' .github/workflows/ci.yml .forgejo/workflows/ci.yml; then
+  fail "workflow expressions must not be interpolated directly into shell conditionals"
+fi
+grep -Fq "if: \${{ !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) }}" .github/workflows/ci.yml ||
+  fail "stable server tags must not install desktop packaging tools"
+if awk '
+  /^  publish-release:/ { in_release = 1; next }
+  in_release && /^  [A-Za-z0-9_-]+:/ { exit found ? 0 : 1 }
+  in_release && /package-macos-dmg/ { found = 1 }
+  END { if (in_release) exit found ? 0 : 1 }
+' .github/workflows/ci.yml; then
+  fail "stable publish must not depend on the macOS desktop packaging job"
+fi
+[[ -x scripts/ci/release-targets.sh ]] ||
+  fail "release target selector must be executable"
+grep -Fq 'source "${script_dir}/release-targets.sh"' scripts/ci/package-release.sh ||
+  fail "package-release.sh must use the shared release target selector"
 grep -Fq 'linux/amd64,linux/arm64' scripts/ci/docker-build.sh ||
   fail "container CI must build linux/amd64 and linux/arm64"
 grep -Fq 'dst: systemd/cheesewaf.service' .goreleaser.yaml ||
@@ -262,14 +325,16 @@ grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
   fail "Ansible unit must start cheesewaf serve"
 grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
   fail "web build must copy UI files into the embedded dist directory"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' scripts/ci/build-web.sh ||
-  fail "isolated web build must disable Agent Eyes during npm install"
-grep -Fq 'verify-production-markers.mjs' scripts/ci/build-web.sh ||
-  fail "isolated web build must scan production markers after copying outputs"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' deploy/docker/Dockerfile ||
-  fail "Docker Web stage must disable Agent Eyes during npm install"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm run build' deploy/docker/Dockerfile ||
-  fail "Docker Web stage must disable Agent Eyes during npm build"
+grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' scripts/ci/build-web.sh ||
+  fail "isolated web build must install from the lockfile without lifecycle scripts"
+grep -Fq 'production_artifact_scan.py' scripts/ci/build-web.sh ||
+  fail "isolated web build must scan production artifact boundaries after copying outputs"
+grep -Fq 'node scripts/verify-build-budget.mjs' web/package.json ||
+  fail "npm Web builds must run the build budget and artifact boundary gate"
+grep -Fq 'scanProductionTree(distDir)' web/scripts/verify-build-budget.mjs ||
+  fail "every npm Web build must scan the generated dist tree"
+grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' deploy/docker/Dockerfile ||
+  fail "Docker Web stage must install from the lockfile without lifecycle scripts"
 grep -Fq 'COPY --from=web /src/web/dist/' deploy/docker/Dockerfile ||
   fail "runtime image must copy only the built Web dist from the Web stage"
 grep -Fq 'RUN chmod 0644 /usr/share/cheesewaf/config/cheesewaf.yaml' deploy/docker/Dockerfile ||
@@ -366,9 +431,7 @@ grep -Fq 'scripts/ci/channel-from-git.sh' Makefile ||
 grep -A1 'canary)' scripts/ci/channel-from-git.sh | grep -Fq 'echo PreTest' ||
   fail "local canary channel must match package-release PreTest metadata"
 grep -Fq 'npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
-  fail "make web-build must skip agent-eyes postinstall"
-grep -Fq 'CHEESEWAF_AGENT_EYES=0 npm ci --no-audit --no-fund --ignore-scripts' Makefile ||
-  fail "make web-build must disable Agent Eyes during npm install"
+  fail "make web-build must install from the lockfile without lifecycle scripts"
 if grep -Fq 'id: cheesewaf-gui' .goreleaser.yaml; then
   fail "GoReleaser archives must keep one binary per platform; channel packages ship cheesewaf-gui"
 fi
@@ -494,7 +557,7 @@ for signing_secret in \
   APPLE_API_KEY \
   APPLE_API_KEY_ID \
   APPLE_API_ISSUER; do
-  grep -Fq "github.ref_type == 'tag' && secrets.${signing_secret}" .github/workflows/ci.yml ||
+  grep -Eq "github\.ref_type == 'tag'.*secrets\.${signing_secret}" .github/workflows/ci.yml ||
     fail "${signing_secret} must only be resolved for tag-triggered signing"
 done
 grep -Fq "github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'" .github/workflows/ci.yml ||
@@ -533,16 +596,17 @@ grep -Fq 'signing_mode=1' .github/workflows/ci.yml ||
   fail "GitHub release CI must explicitly force signing when credentials exist"
 grep -Fq 'CHEESEWAF_REQUIRE_SIGNING="$signing_mode"' .github/workflows/ci.yml ||
   fail "GitHub release CI must pass its explicit signing mode"
-grep -Fq 'CHEESEWAF_REQUIRE_SIGNING="$signing_mode"' .forgejo/workflows/ci.yml ||
-  fail "Forgejo release CI must pass its explicit signing mode"
-grep -Fq 'CHEESEWAF_SIGNING_SCOPE=windows' .github/workflows/ci.yml ||
-  fail "GitHub Windows release verification must use the Windows signing scope"
+grep -Fq 'CHEESEWAF_REQUIRE_SIGNING=warn CHEESEWAF_SIGNING_SCOPE=all' .forgejo/workflows/ci.yml ||
+  fail "Forgejo branch release CI must keep signing advisory-only"
+grep -Fq 'signing_scope=all' .github/workflows/ci.yml ||
+  fail "GitHub full-profile release verification must keep the all-platform signing scope"
 grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
   fail "GitHub macOS release verification must use the macOS signing scope"
-grep -Fq 'WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}' .forgejo/workflows/ci.yml ||
-  fail "Forgejo packaging must receive the Windows signing secret"
-grep -Fq 'apt-get install -y --no-install-recommends nsis zip osslsigncode' .forgejo/workflows/ci.yml ||
-  fail "Forgejo release packaging must install its signing and archive tools"
+if grep -Fq 'secrets.WINDOWS_CERT' .forgejo/workflows/ci.yml; then
+  fail "Forgejo branch and manual builds must not receive Windows signing secrets"
+fi
+grep -Fq 'apt-get install -y --no-install-recommends nsis zip' .forgejo/workflows/ci.yml ||
+  fail "Forgejo release packaging must install its archive tools"
 grep -Fq 'run_with_timeout 900 xcrun notarytool' scripts/ci/package-macos-dmg.sh ||
   fail "macOS notarization must have a bounded wait"
 grep -Fq 'security delete-keychain "$signing_keychain"' scripts/ci/package-macos-dmg.sh ||
@@ -625,6 +689,8 @@ fi
 
 bash scripts/ci/generate-release-metadata_test.sh
 bash scripts/ci/rewrite-release-checksums_test.sh
+bash scripts/ci/package-release_profile_test.sh
+bash scripts/ci/verify-stable-tag_test.sh
 bash scripts/ci/publish-prerelease_test.sh
 bash scripts/ci/verify-release_test.sh
 

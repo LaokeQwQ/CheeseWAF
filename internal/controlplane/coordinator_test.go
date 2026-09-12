@@ -433,6 +433,31 @@ func TestCoordinatorInitializeRequiresExplicitConfirmationAndPersistsFirstCommit
 	}
 }
 
+func TestCoordinatorInitializePreservesCurrentLeadershipGeneration(t *testing.T) {
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
+	if _, err := m.InstallLeadership(2, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	m.FreezeWrites("control-plane startup incomplete")
+	current := m.Snapshot()
+	consensus.current = current
+	durable.state = current
+	request := InitialStateRequest{
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-epoch-2",
+		Confirmation: InitialStateConfirmation{ID: "confirmation-epoch-2", Actor: "admin"},
+	}
+	commit, err := coordinator.Initialize(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Initialize at epoch %d failed: %v", current.Epoch, err)
+	}
+	if commit.State.Term != current.Term || commit.State.Epoch != current.Epoch || commit.State.LeaderID != current.LeaderID {
+		t.Fatalf("initial commit leadership=%+v, want term=%d epoch=%d leader=%q", commit.State, current.Term, current.Epoch, current.LeaderID)
+	}
+	if len(consensus.proposals) != 1 || len(durable.commits) != 1 {
+		t.Fatalf("initial commit stores=%d/%d, want one each", len(consensus.proposals), len(durable.commits))
+	}
+}
+
 func TestCoordinatorInitializeRejectsMissingConfirmation(t *testing.T) {
 	_, coordinator, _, _ := newCoordinatorFixture(t)
 	_, err := coordinator.Initialize(context.Background(), InitialStateRequest{Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-1"})

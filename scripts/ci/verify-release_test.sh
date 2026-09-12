@@ -41,13 +41,15 @@ make_package() {
   local branch="$2"
   local channel="$3"
   local with_gui="$4"
+  local version="${5:-0.1.0-PreTest}"
+  local commit="${6:-abc123}"
   mkdir -p "${dest}/web/dist" "${dest}/configs"
   printf '<html></html>\n' >"${dest}/web/dist/index.html"
   printf 'listen: 127.0.0.1:8080\n' >"${dest}/configs/cheesewaf.yaml"
-  printf 'version=0.1.0-PreTest\nchannel=%s\nbranch=%s\ncommit=abc123\nbuild_time=2026-08-20T00:00:00Z\n' \
-    "$channel" "$branch" >"${dest}/VERSION"
-  printf '{\n  "name": "CheeseWAF",\n  "version": "0.1.0-PreTest",\n  "channel": "%s",\n  "branch": "%s"\n}\n' \
-    "$channel" "$branch" >"${dest}/release.json"
+  printf 'version=%s\nchannel=%s\nbranch=%s\ncommit=%s\nbuild_time=2026-08-20T00:00:00Z\n' \
+    "$version" "$channel" "$branch" "$commit" >"${dest}/VERSION"
+  printf '{\n  "name": "CheeseWAF",\n  "version": "%s",\n  "channel": "%s",\n  "branch": "%s",\n  "commit": "%s"\n}\n' \
+    "$version" "$channel" "$branch" "$commit" >"${dest}/release.json"
   : >"${dest}/cheesewaf"
   chmod +x "${dest}/cheesewaf"
   : >"${dest}/waf-cli"
@@ -216,6 +218,65 @@ if FAKE_SPCTL_OUTPUT=$'/tmp/CheeseWAF.app: not accepted\nsource=Notarized Develo
 fi
 FAKE_SPCTL_OUTPUT=$'/tmp/CheeseWAF.app: accepted\nsource=Notarized Developer ID' \
   run_macos_signing_static || fail "anchored successful macOS assessment must pass"
+
+server_commit='0123456789abcdef0123456789abcdef01234567'
+server_ok="${tmp}/server-ok"
+mkdir -p "${server_ok}/pkg/systemd"
+make_package "${server_ok}/pkg" stable stable no 0.1.0 "$server_commit"
+printf '[Service]\nExecStart=/usr/local/bin/cheesewaf serve\n' >"${server_ok}/pkg/systemd/cheesewaf.service"
+printf 'CheeseWAF release artifacts\nversion: 0.1.0\nrelease_tag: v0.1.0\nrelease_kind: stable\ncommit: %s\n' \
+  "$server_commit" >"${server_ok}/release-manifest.txt"
+tar -C "$server_ok" -czf "${server_ok}/cheesewaf-amd64-linux-0.1.0.tar.gz" pkg
+tar -C "$server_ok" -czf "${server_ok}/cheesewaf-arm64-linux-0.1.0.tar.gz" pkg
+tar -C "$server_ok" -czf "${server_ok}/cheesewaf-loong64-linux-0.1.0.tar.gz" pkg
+rewrite_sums "$server_ok"
+if ! CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_ok"; then
+  fail "server signing scope must allow a release without platform signing tools"
+fi
+
+server_bad_version="${tmp}/server-bad-version"
+cp -R "$server_ok" "$server_bad_version"
+sed -i.bak 's/^version=0.1.0$/version=9.9.9/' "${server_bad_version}/pkg/VERSION"
+rm "${server_bad_version}/pkg/VERSION.bak"
+tar -C "$server_bad_version" -czf "${server_bad_version}/cheesewaf-amd64-linux-0.1.0.tar.gz" pkg
+rewrite_sums "$server_bad_version"
+if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_bad_version"; then
+  fail "server signing scope must reject an archive whose VERSION version differs from the manifest"
+fi
+
+server_bad_commit="${tmp}/server-bad-commit"
+cp -R "$server_ok" "$server_bad_commit"
+sed -i.bak "s/${server_commit}/ffffffffffffffffffffffffffffffffffffffff/" "${server_bad_commit}/pkg/release.json"
+rm "${server_bad_commit}/pkg/release.json.bak"
+tar -C "$server_bad_commit" -czf "${server_bad_commit}/cheesewaf-arm64-linux-0.1.0.tar.gz" pkg
+rewrite_sums "$server_bad_commit"
+if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_bad_commit"; then
+  fail "server signing scope must reject an archive whose release.json commit differs from the manifest"
+fi
+
+server_incomplete="${tmp}/server-incomplete"
+cp -R "$server_ok" "$server_incomplete"
+rm "${server_incomplete}/cheesewaf-arm64-linux-0.1.0.tar.gz" \
+  "${server_incomplete}/cheesewaf-loong64-linux-0.1.0.tar.gz"
+rewrite_sums "$server_incomplete"
+if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_incomplete"; then
+  fail "server signing scope must require all three Linux architectures"
+fi
+
+server_unknown="${tmp}/server-unknown"
+cp -R "$server_ok" "$server_unknown"
+printf 'unexpected package\n' >"${server_unknown}/cheesewaf-amd64-linux-0.1.0.deb"
+if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_unknown"; then
+  fail "server signing scope must reject unclassified top-level assets"
+fi
+
+server_with_desktop="${tmp}/server-with-desktop"
+cp -R "$server_ok" "$server_with_desktop"
+: >"${server_with_desktop}/cheesewaf-amd64-windows-0.1.0.exe"
+rewrite_sums "$server_with_desktop"
+if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_with_desktop"; then
+  fail "server signing scope must reject desktop artifacts"
+fi
 
 if CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=windows run_static "$channel_ok"; then
   fail "strict Windows signing scope must reject a release without top-level PE artifacts"
