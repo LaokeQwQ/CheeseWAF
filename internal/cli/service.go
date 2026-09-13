@@ -36,6 +36,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
+	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
 	webshellprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/webshell"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
@@ -320,6 +321,8 @@ func runServe(ctx context.Context) error {
 		Clock:                         clock,
 		ManagementTokenCleanupContext: runtimeCtx,
 		ApprovalHTTP:                  productionApprovalHTTP(productionDeps),
+		OTAClient:                     configuredOTAClient(cfg),
+		OTAState:                      configuredOTAState(cfg),
 		TimeSync:                      timeSync,
 		ClusterIdentity:               clusterIdentityService,
 		ClusterHeartbeats:             clusterHeartbeats,
@@ -332,9 +335,13 @@ func runServe(ctx context.Context) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
 		},
 	})
+	adminHandler, err := edgeOriginProtectedAdminHandler(cfg, adminRouter, authSecret, clock)
+	if err != nil {
+		return err
+	}
 	admin := &http.Server{
 		Addr:              cfg.Server.AdminListen,
-		Handler:           adminHandlerWithClock(cfg, adminRouter, authSecret, clock),
+		Handler:           adminHandler,
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -458,6 +465,53 @@ func productionApprovalHTTP(deps *ProductionDependencies) *handler.ApprovalHTTPH
 		return nil
 	}
 	return deps.ApprovalHTTP
+}
+
+const (
+	edgeOriginHMACEnv         = "CHEESEWAF_EDGE_ORIGIN_HMAC"
+	cloudflareAccessIDEnv     = "CHEESEWAF_CF_ACCESS_CLIENT_ID"
+	cloudflareAccessSecretEnv = "CHEESEWAF_CF_ACCESS_CLIENT_SECRET"
+)
+
+func edgeOriginProtectedAdminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) (http.Handler, error) {
+	handler := adminHandlerWithClock(cfg, apiHandler, authSecret, clock)
+	hmacSecret := os.Getenv(edgeOriginHMACEnv)
+	accessID := os.Getenv(cloudflareAccessIDEnv)
+	accessSecret := os.Getenv(cloudflareAccessSecretEnv)
+	if hmacSecret == "" {
+		if accessID != "" || accessSecret != "" {
+			return nil, fmt.Errorf("%s and %s require %s", cloudflareAccessIDEnv, cloudflareAccessSecretEnv, edgeOriginHMACEnv)
+		}
+		return handler, nil
+	}
+	if (accessID == "") != (accessSecret == "") {
+		return nil, fmt.Errorf("%s and %s must be configured together", cloudflareAccessIDEnv, cloudflareAccessSecretEnv)
+	}
+	return middleware.VerifyEdgeOriginWithAccess(handler, []byte(hmacSecret), accessID, accessSecret, clock), nil
+}
+
+func configuredOTAClient(cfg *config.Config) handler.OTAClient {
+	if cfg == nil || !cfg.Update.OTA.Enabled || cfg.Update.OTA.Server == "" {
+		return nil
+	}
+	client, err := ota.NewClient(ota.ClientOptions{BaseURL: cfg.Update.OTA.Server})
+	if err != nil {
+		log.Printf("OTA read-only client disabled: %v", err)
+		return nil
+	}
+	return client
+}
+
+func configuredOTAState(cfg *config.Config) handler.OTAStateReader {
+	if cfg == nil || !cfg.Update.OTA.Enabled || cfg.Setup.DataDir == "" {
+		return nil
+	}
+	state, err := ota.NewFileStateStore(filepath.Join(cfg.Setup.DataDir, "ota", "last-known-good.json"))
+	if err != nil {
+		log.Printf("OTA last-known-good state disabled: %v", err)
+		return nil
+	}
+	return state
 }
 
 // openProductionManagementStore is retained for embedded callers and legacy

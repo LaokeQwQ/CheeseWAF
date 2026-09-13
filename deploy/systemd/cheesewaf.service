@@ -9,6 +9,9 @@ User=cheesewaf
 Group=cheesewaf
 WorkingDirectory=/var/lib/cheesewaf
 Environment=CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
+# Optional Cloudflare edge-origin trust values. The file is provisioned by
+# the host secret mechanism and is never stored in this repository.
+EnvironmentFile=-/etc/cheesewaf/edge-origin.env
 ExecStart=/usr/local/bin/cheesewaf serve --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf
 Restart=on-failure
 RestartSec=5s
