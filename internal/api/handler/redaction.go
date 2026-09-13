@@ -66,7 +66,7 @@ func systemConfigView(cfg *config.Config) map[string]any {
 		"update":        update,
 		"vulnerability": vulnerability,
 		"capabilities": map[string]any{
-			"ota_updates":         map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
+			"ota_updates":         map[string]any{"available": false, "reason": "EXECUTOR_UNAVAILABLE", "message": "OTA remains read-only until CRP/CWEDP activation is wired"},
 			"vulnerability_feeds": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
 			"bot_challenge_redis": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED", "message": "bot challenge state uses the in-process memory backend; storage.redis does not change it"},
 		},

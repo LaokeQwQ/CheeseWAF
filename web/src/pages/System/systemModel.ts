@@ -23,7 +23,7 @@ const fallbackAPIAuth: APISecAuthConfig = {
 
 export const fallbackSystem: SystemConfig = {
   capabilities: {
-    ota_updates: { available: false, reason: 'NOT_IMPLEMENTED' },
+    ota_updates: { available: false, reason: 'EXECUTOR_UNAVAILABLE' },
     vulnerability_feeds: { available: false, reason: 'NOT_IMPLEMENTED' },
     bot_challenge_redis: { available: false, reason: 'NOT_IMPLEMENTED' },
   },

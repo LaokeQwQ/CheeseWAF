@@ -1,0 +1,13 @@
+# Rendered by deploy/ansible when the edge-origin hand-off is enabled.
+# Tunnel credentials and Access policy state stay outside this repository.
+tunnel: "{{ cheesewaf_cloudflare_tunnel_id }}"
+credentials-file: "{{ cheesewaf_cloudflare_credentials_file }}"
+
+ingress:
+  - hostname: "{{ cheesewaf_edge_origin_hostname }}"
+    service: "{{ cheesewaf_edge_origin_service }}"
+    originRequest:
+      originServerName: "{{ cheesewaf_edge_origin_server_name }}"
+      caPool: "{{ cheesewaf_edge_origin_ca_pool }}"
+      noTLSVerify: false
+  - service: http_status:404

@@ -13,6 +13,22 @@ cheesewaf_management_acl: []
 cheesewaf_management_audit_sink: ""
 cheesewaf_management_rollback_ref: ""
 
+# Cloudflare Tunnel is an optional remote transport for the loopback admin
+# listener. Tunnel credentials and the Edge HMAC/Access environment file stay
+# in the host secret store; these defaults never contain secret values.
+cheesewaf_edge_origin_enabled: false
+cheesewaf_edge_origin_start: false
+cheesewaf_edge_origin_hostname: origin-admin.cheesesec.com
+cheesewaf_edge_origin_service: https://127.0.0.1:9443
+cheesewaf_edge_origin_server_name: admin.cheesesec.com
+cheesewaf_edge_origin_ca_pool: /etc/cheesewaf/certs/admin-ca.pem
+cheesewaf_edge_origin_env_file: /etc/cheesewaf/edge-origin.env
+cheesewaf_cloudflared_binary: /usr/bin/cloudflared
+cheesewaf_cloudflared_config: /etc/cloudflared/cheesewaf-origin.yml
+cheesewaf_cloudflared_state_dir: /var/lib/cloudflared
+cheesewaf_cloudflare_tunnel_id: ""
+cheesewaf_cloudflare_credentials_file: /etc/cloudflared/cheesewaf-origin.json
+
 # Production control-plane dependencies are deliberately empty. Production
 # inventories must provide these values through an external secret mechanism.
 cheesewaf_management_postgresql_dsn: ""

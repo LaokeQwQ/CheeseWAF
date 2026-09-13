@@ -1357,6 +1357,31 @@ export type SystemCapability = {
 	reason: string;
 };
 
+export type OTAReleaseCandidate = {
+  release_id: string;
+  version: string;
+  release_sequence: number;
+  resource_url: string;
+  crp_sha256: string;
+  manifest_sha256: string;
+  signature_set_sha256: string;
+  source_root: string;
+  trust_level: string;
+  signature_status: string;
+  index_sequence?: number;
+};
+
+export type OTAStatus = {
+  enabled: boolean;
+  available: boolean;
+  candidate_available: boolean;
+  read_only: boolean;
+  channel: string;
+  reason: string;
+  message?: string;
+  candidate?: OTAReleaseCandidate;
+};
+
 export type VersionInfo = {
   version: string;
   commit: string;

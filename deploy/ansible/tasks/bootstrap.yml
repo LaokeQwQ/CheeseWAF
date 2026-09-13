@@ -51,6 +51,94 @@
         state: present
       when: cheesewaf_prepare_host | bool or cheesewaf_cwedp_agent_enabled | bool
 
+    - name: Inspect external Cloudflare Tunnel and edge secret files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+        get_checksum: false
+      loop:
+        - "{{ cheesewaf_edge_origin_ca_pool }}"
+        - "{{ cheesewaf_edge_origin_env_file }}"
+        - "{{ cheesewaf_cloudflare_credentials_file }}"
+      register: cheesewaf_edge_origin_files
+      when: cheesewaf_edge_origin_enabled | bool
+
+    - name: Refuse an incomplete Cloudflare origin hand-off
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists | default(false)
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+        fail_msg: Cloudflare origin hand-off requires regular CA, credential and edge-secret files managed outside Git
+      loop: "{{ cheesewaf_edge_origin_files.results | default([]) }}"
+      when: cheesewaf_edge_origin_enabled | bool
+      no_log: true
+
+    - name: Require restricted permissions on the edge secret and tunnel credential files
+      ansible.builtin.assert:
+        that:
+          - item.stat.mode | default('') in ['0600', '0640']
+        fail_msg: Cloudflare edge secret and tunnel credential files must be mode 0600 or 0640
+      loop: "{{ cheesewaf_edge_origin_files.results | default([]) }}"
+      loop_control:
+        index_var: cheesewaf_edge_origin_file_index
+      when:
+        - cheesewaf_edge_origin_enabled | bool
+        - cheesewaf_edge_origin_file_index | int > 0
+      no_log: true
+
+    - name: Create Cloudflare Tunnel directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+      loop:
+        - "{{ cheesewaf_cloudflared_config | dirname }}"
+        - "{{ cheesewaf_cloudflared_state_dir }}"
+      when: cheesewaf_edge_origin_enabled | bool
+
+    - name: Render the fixed origin-admin Tunnel configuration
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../cloudflare/origin-admin-tunnel.yml"
+        dest: "{{ cheesewaf_cloudflared_config }}"
+        owner: root
+        group: root
+        mode: '0640'
+      when: cheesewaf_edge_origin_enabled | bool
+      notify:
+        - Reload systemd after CheeseWAF unit changes
+        - Restart Cloudflare origin-admin tunnel after an intentional change
+
+    - name: Install the hardened origin-admin Tunnel systemd unit
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../cloudflare/origin-admin-tunnel.service"
+        dest: /etc/systemd/system/cheesewaf-origin-admin-tunnel.service
+        owner: root
+        group: root
+        mode: '0644'
+      when: cheesewaf_edge_origin_enabled | bool
+      notify:
+        - Reload systemd after CheeseWAF unit changes
+        - Restart Cloudflare origin-admin tunnel after an intentional change
+
+    - name: Enable and start the origin-admin Tunnel only after explicit opt-in
+      ansible.builtin.systemd_service:
+        name: cheesewaf-origin-admin-tunnel
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: cheesewaf_edge_origin_enabled | bool and cheesewaf_edge_origin_start | bool
+
+    - name: Keep the origin-admin Tunnel installed but stopped until opt-in
+      ansible.builtin.systemd_service:
+        name: cheesewaf-origin-admin-tunnel
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      when: cheesewaf_edge_origin_enabled | bool and not (cheesewaf_edge_origin_start | bool)
+
     - name: Create runtime hand-off directory
       ansible.builtin.file:
         path: "{{ cheesewaf_runtime_dir }}"
