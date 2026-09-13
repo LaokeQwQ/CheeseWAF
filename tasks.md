@@ -22,8 +22,8 @@
 | 3 | CWEDP 分发、离线模式、网络租约 | 协议、NetLease、HTTP/file transport、PG ResumeStore 已有独立实现和定向证据 / 主服务与节点编排待做 | `internal/cwedp` 及 `internal/cwedp/postgres` 覆盖协商、不可变 SourceRegistry、来源独立性、隔离源、分块续传、三摘要、切换上限、总包/单块字节预算、幂等和 offset fencing；`internal/cwedp/transport` 与 `internal/netlease` 强制 broker-bound adapter、HTTPS、CA/client cert/NodeID/leaf pin、Range 和 pre-dial fail-closed；尚未接入主 serve、节点注册、插件安装或生产编排 |
 | 4 | broker、诊断队列、信封加密、对象复制 | broker、canonical envelope、持久队列、组合 runtime 和 diagnostics PG metadata 已验证 / 对象复制与外部回执待做 | `internal/diagnostics` 覆盖固定 Schema、raw 三重确认、AES-GCM/AAD、不可复用 KEK 代次、持久队列、replay reserve/commit/release、worker 完成错误可观察、metadata-only 审计，以及真实 PG Cancel/claim/outbox 往返；对象存储复制、目标回执和完整启动接线仍待做 |
 | 5 | 审批、Token、恢复和审计状态机 | ApprovalGate、Token、迁移恢复与 PG 持久适配器已有证据 / 生产服务生命周期待做 | `internal/approval` 已覆盖批次原子持久化、事件 hash/binding、durable epoch CAS 和 epoch+record+events 一致恢复快照；`internal/tokens`、`internal/tokens/postgres`、`internal/cli/migration` 覆盖 180 天清理、Token 重放、通知、v1/v2 recovery 和真实 PG 往返；真实 credential verifier、生产审计 outbox 和主服务挂载仍待做 |
-| 6 | 插件商店、OTA、开发规范和双语手册 | 文档/仓库基线已验证 / 服务待做 | `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 已建立并推送；商店 API、OTA、签名服务和运行时仍未实现 |
-| 7 | 全量验收、生产构建和空网演练 | 已执行多轮分项验收，完整 gate 仍未通过 | static matrix、全仓 Go 编译/vet/完整回归、Web 构建和真实 PG/Redis 证据已保存；受控 loopback 的 native-raft/CWEDP 证据已保存；受限 sandbox 仍可能产生环境失败，主服务接线和空网演练仍未完成 |
+| 6 | 插件商店、OTA、开发规范和双语手册 | 边缘路由、契约和 OTA 只读检查已实现 / 线上资源待配置 | Pages Worker、R2 键映射、Origin HMAC、Tunnel 配置、OTA 客户端和只读状态接口已有本地证据；Cloudflare 账号、R2 桶、域名、Access ACL、Tunnel 和 CRP/CWEDP 激活仍未完成 |
+| 7 | 全量验收、生产构建和空网演练 | 分项检查通过 / 生产切换待做 | Pages 51 项单元测试、Web 470 项测试、OTA race、API/CLI 回归、Ansible 离线检查和 Wrangler dry-run 已通过；全量 Go 回归曾出现一次 native-raft 选主超时，单测连续 3 次重跑通过；线上空网演练仍未完成 |
 
 ## 2026-09-05 当前交接
 
@@ -149,6 +149,30 @@ Lease、离线设置、CRP 安装或 OTA。
 contract；再接入导入服务前先补持久化与审计事件模型。
 
 ## 后续交接模板
+
+### 2026-09-13 Cloudflare Pages/Workers 分流接线
+
+范围：把适合边缘读取的商店、OTA、策略、schema 和内容寻址资源留在 Cloudflare，把控制台、管理 API、认证、审批、CRP/CWEDP、诊断、SSE 和 WebSocket 固定回源到 CheeseWAF loopback 管理端口。
+
+实际改动：
+
+- `CheeseSec_pages` 增加 Host/路径白名单、R2 发布物读取、Range 响应、ETag、缓存策略、固定 Origin 回源和 HMAC 信封；构建使用 `npm ci --ignore-scripts`，并增加产物边界检查。提交 `e238bf0`，已推送到 Pages PR #2。
+- `CheeseSec_Plugin` 和 `CheeseSec_Plugin_Docs` 增加固定路径、缓存类别、R2 来源角色和中英文边缘路由契约。Plugin PR #8、Plugin_Docs PR #9 已推送。
+- CheeseWAF 增加 `VerifyEdgeOrigin`、写请求 ID 重放保护、可选 Cloudflare Access 身份校验、OTA 严格只读客户端、last-known-good 文件存储、`GET /api/system/ota` 和只读候选版本展示。提交 `af6816fd`，已推送到 PR #444 的 `dev` 目标。
+- `CheeseSec_Plugin` 增加确定性 `build_publication_bundle.py` 和默认只读的 `publish_r2.sh`。只有显式 `--apply` 才会写 R2，序号回退直接拒绝。
+- Ansible 增加 origin-admin Tunnel 模板、systemd 单元、外部凭据文件检查和回滚说明。管理端口仍为 `127.0.0.1:9443`，`admin_public` 保持 `false`。
+
+验证命令与结果：
+
+- `CheeseSec_pages`: `npm ci --ignore-scripts`、`npm run typecheck`、`npm test`（51 项）、`npm run build`、`npm run check:artifacts`、`npx wrangler deploy --dry-run` 均通过。
+- `CheeseSec_Plugin`: `validate_repo.py`、`validate_commercial_contracts.py`、18 项测试和脚本语法检查通过。
+- `CheeseSec_Plugin_Docs`: `validate_docs.py`、`validate_commercial_contracts.py` 和 2 项测试通过。
+- CheeseWAF: `go test ./internal/ota -race`、API/CLI/中间件回归、`go vet` 和 `deploy/ansible/verify-offline.sh` 通过；`go test ./...` 的一次 native-raft 选主超时在同一环境连续 3 次单测重跑通过，需在 CI 再观察。
+- Cloudflare `wrangler whoami` 返回未登录，因此没有执行生产部署；dry-run 只证明配置可解析，不证明 R2、域名、Access 或 Tunnel 已存在。
+
+遗留风险：Cloudflare 生产账号和资源尚未提供；Worker Secret、Tunnel 凭据、Origin HMAC 和 Access ACL 不能写入 Git；OTA 目前只读，CRP 验签后的 CWEDP staging、审批、激活和回滚还没有接入主服务。临时测试服务器也没有经过该域名和 Tunnel 的端到端验收，因此不能给出线上预览地址。
+
+下一步：先在 Cloudflare 创建 staging R2 桶和自定义域名，注入最小权限 Secret，使用空索引做 `GET`、`HEAD`、`Range`、`404`、`405`、`421` 和回源 HMAC 验收；再在测试服务器启用 Tunnel，验证 `/health/ready`、登录、CSRF、SSE 和 WebSocket，最后才评估生产切换。
 
 ### 2026-09-05 阶段 3 网络策略与 Socket Lease contract
 

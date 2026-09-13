@@ -218,6 +218,9 @@ func (s *FileStateStore) Load(_ context.Context) (LastKnownGood, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return LastKnownGood{}, fmt.Errorf("%w: state file must be a regular file", ErrStateInvalid)
 	}
+	if err := validateStateFilePermissions(s.Path, info); err != nil {
+		return LastKnownGood{}, fmt.Errorf("%w: %v", ErrStateInvalid, err)
+	}
 	file, err := os.Open(s.Path)
 	if err != nil {
 		return LastKnownGood{}, err
@@ -276,7 +279,7 @@ func (s *FileStateStore) Save(_ context.Context, state LastKnownGood) error {
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := protectStateFile(temporaryName); err != nil {
 		_ = temporary.Close()
 		return err
 	}
@@ -296,5 +299,15 @@ func (s *FileStateStore) Save(_ context.Context, state LastKnownGood) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, s.Path)
+	if err := replaceStateFileAtomic(temporaryName, s.Path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(s.Path)
+	if err != nil {
+		return err
+	}
+	if err := validateStateFilePermissions(s.Path, info); err != nil {
+		return fmt.Errorf("%w: %v", ErrStateInvalid, err)
+	}
+	return nil
 }

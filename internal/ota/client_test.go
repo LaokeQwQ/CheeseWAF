@@ -208,8 +208,20 @@ func TestFileStateStoreIsAtomicAndStrict(t *testing.T) {
 	if got != state {
 		t.Fatalf("state=%+v, want %+v", got, state)
 	}
-	if mode := func() os.FileMode { info, _ := os.Stat(path); return info.Mode().Perm() }(); mode != 0o600 {
-		t.Fatalf("state mode=%o, want 600", mode)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if err := validateStateFilePermissions(path, info); err != nil {
+		t.Fatalf("state file permissions: %v", err)
+	}
+
+	newer := LastKnownGood{IndexSequence: 5, ReleaseSequence: 4, ReleaseID: "official/demo@1.1.0#2", UpdatedAt: time.Unix(1_800_000_100, 0).UTC()}
+	if err := store.Save(context.Background(), newer); err != nil {
+		t.Fatalf("replace state: %v", err)
+	}
+	if got, err := store.Load(context.Background()); err != nil || got != newer {
+		t.Fatalf("state after replacement=%+v err=%v, want %+v", got, err, newer)
 	}
 }
 
