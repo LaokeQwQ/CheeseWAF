@@ -1162,3 +1162,26 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 - 使用 `CHEESEWAF_RELEASE_PROFILE=server CHEESEWAF_REF_NAME=v0.3.9` 实际打包，得到 3 个 Linux 归档，没有生成 Windows、macOS 或 DMG 文件；`CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server` 的静态发行物检查通过。
 
 2026-09-12 提交前交接状态：改动位于 `codex/beta-v0.3.9-ui-docs` 工作树，尚未晋升到 `master`，也没有重新创建稳定版 Release。执行时必须先提交并通过主仓库 CI、CodeQL 和发布检查，再按现有分支流程晋升并重新触发 `v0.3.9` 稳定发布。CRP、主服务生产接线、插件文档 code-owner 审批和 Cloudflare Pages 凭据等其他遗留项不因本次发布策略修正而自动完成。
+
+### 2026-09-14 PR 收敛、晋升与发布复核
+
+范围：收敛主仓库 Dependabot 与商业化功能 PR，按 `dev → canary → master` 晋升，并复核服务器优先发布、Pages/Plugin 外部门禁和验收矩阵。
+
+实际结果：
+
+- CheeseWAF #448（Vitest 与 coverage-v8 5.0.0 配对升级）、#444（边缘信任、只读 OTA 和跨平台状态文件）、#422（SQLite 1.58）、#428（react-router-dom 7.18.3）以及此前的 #423、#424、#425、#429 均在最新基线下通过完整 CI/CodeQL 后合并；#426/#427 因只升级一半 Vitest 依赖而关闭为 #448 的替代 PR。
+- 晋升 PR #449 和 #450 均通过 required CI/CodeQL 后合并。远端分支现为 `dev=72b4dfe9`、`canary=e33310dd`、`master=3a6e43e0`。主仓库 Dependabot 队列为空，#23/#24 等安全告警为 `fixed`。
+- master push 的核心 CI、CodeQL、服务器/完整产物和 macOS 打包均有成功证据。自动 Alpha 预发布曾短暂创建，随后按“不要 Pre-release”要求删除了精确 tag/release；当前工作流已改为只有手动 `workflow_dispatch` 且显式勾选 `publish_prerelease=true` 才能发布 Alpha。
+- 稳定 `v0.3.9` 仍为非 draft、非 prerelease 的 Beta Release，但 tag 指向旧提交 `dbdfc6fd`；当前 master 为 `3a6e43e0`。稳定 tag 校验会拒绝复用旧版本，不能移动或重写该 tag；下一次正式发布必须先提升产品版本。
+- CheeseSec_pages PR #2 已统一 Worker 名称、刷新 8 个 npm 安全告警（`npm audit` 为 0），本地和 GitHub 检查通过；Cloudflare Workers Builds 仍以 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 失败，需 Cloudflare 账号侧读取日志和核对 R2/域名/构建资源。
+- CheeseSec_Plugin #8 与 CheeseSec_Plugin_Docs #9 的验证检查均通过，但仓库只配置当前所有者为 code owner，仍需要独立审阅，未绕过保护规则合并。
+
+验证证据：
+
+- 主仓库 PR #422、#428、#444、#448、#449、#450 的 required CI 与 CodeQL 均为成功；`gh pr list --state open` 无主仓库开放 PR。
+- `GOCACHE=/tmp/cheesewaf-acceptance-gocache bash scripts/acceptance/matrix.sh --static`：19 项通过、4 项失败、0 项跳过；四项失败准确对应主 serve migration/session、CRP activation/rollback 和 temporary-network 生产接线，未改写 `implemented` 标志。
+- 当前本地工作树 `git diff --check` 和 Go 格式检查通过；Pages 安全分支的 `npm ci --ignore-scripts`、51 项测试、typecheck、构建、产物边界和 Wrangler dry-run 通过。
+
+遗留风险：主服务仍缺完整 production `WireServe`/consumer 生命周期、CRP durable authorization/provider/sidecar、CWEDP/NetLease 控制面挂载、对象存储回执和空网演练；Pages provider 资源与 Plugin/Docs 独立审阅仍是外部阻塞。测试服务器公网端口虽可探测，但 SSH 认证和 HTTP 入口未形成可用预览，不能据此宣称部署完成。
+
+下一步：先由 Cloudflare 账号持有人读取 provider build 日志并准备 staging 资源；下一版发布前提升 `product-version`，重新走服务器档位 stable tag 流程；生产接线按验收矩阵四项 blocker 分片实现，保持默认 fail-closed。

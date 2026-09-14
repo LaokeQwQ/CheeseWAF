@@ -85,6 +85,15 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not pin the attack minimum for the semantic gate"
 done
 
+github_workflow=.github/workflows/ci.yml
+grep -Fq 'publish_prerelease:' "$github_workflow" ||
+  fail "${github_workflow} must expose an explicit publish_prerelease input"
+grep -Fq "if: github.event_name == 'workflow_dispatch' && inputs.publish_prerelease == true" "$github_workflow" ||
+  fail "${github_workflow} must require an explicit manual pre-release opt-in"
+if grep -Fq "if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref_name == 'master' || github.ref_name == 'canary')" "$github_workflow"; then
+  fail "${github_workflow} must not publish pre-releases on branch pushes"
+fi
+
 # Keep the local structured benchmark target behavior aligned with the script:
 # command-line Make overrides must reach the runner instead of silently falling
 # back to its defaults.
