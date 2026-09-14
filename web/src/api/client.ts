@@ -3,6 +3,7 @@ import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResul
 import { queryClient } from '../queryClient';
 import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AIProviderOpsResponse, AISelfLearningReport, AIUsageSnapshot, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { ScheduledTaskHistoryEntry, TimeSyncStatus } from '../types/api';
+import type { OTAStatus } from '../types/api';
 import { cacheAccount, clearAccount } from '../authProfile';
 
 export const apiClient = axios.create({
@@ -835,6 +836,10 @@ export function recoverUser2FA(id: string, password: string, confirmUsername: st
 
 export function fetchSystemConfig() {
   return unwrap<SystemConfig>(apiClient.get('/system'));
+}
+
+export function fetchOTAStatus() {
+  return unwrap<OTAStatus>(apiClient.get('/system/ota'));
 }
 
 export function fetchTimeSyncStatus() {
