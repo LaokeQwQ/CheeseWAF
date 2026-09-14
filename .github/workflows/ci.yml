@@ -16,6 +16,12 @@ run-name: CI
       - 'Alpha-*'
       - 'v*'
   workflow_dispatch:
+    inputs:
+      publish_prerelease:
+        description: Publish an Alpha pre-release from canary or master
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -552,7 +558,7 @@ jobs:
 
   publish-prerelease:
     name: publish-prerelease
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref_name == 'master' || github.ref_name == 'canary')
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_prerelease == true && (github.ref_name == 'master' || github.ref_name == 'canary')
     runs-on: ubuntu-latest
     environment: publish-prerelease
     needs:

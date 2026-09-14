@@ -204,6 +204,8 @@ CheeseWAF 针对主流运维基础设施提供灵活的部署支持。
 
 生产环境推荐使用带有完整签名的正式发布版本。访问 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应架构的软件包：
 
+稳定版 `vMAJOR.MINOR.PATCH` 采用服务器优先档位，只保证 Linux 发行包。Windows 和 macOS 包只会在分支构建或手动触发的 `full` 档位构建中生成，属于可选操作端包，可能没有平台签名，不属于稳定服务器版的交付保证。
+
 | 发行包名称 | 适用架构 |
 | :--- | :--- |
 | `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
@@ -317,7 +319,7 @@ docker compose logs -f cheesewaf
 
 ### 3. Windows 部署（单文件 CLI、Zip、NSIS）
 
-Windows 构建适用于本地调试与桌面运维管理：
+Windows 构建适用于本地调试与桌面运维管理。此类包来自分支构建或手动触发的 `full` 档位，不在稳定服务器版发行包中：
 
 - **方式 A：单文件 CLI**：下载 `cheesewaf-amd64-windows-*.exe`，直接在 PowerShell 中执行 `.\cheesewaf.exe setup` 与 `.\cheesewaf.exe serve`。
 - **方式 B：便携 ZIP 包**：解压后包含配置文件与本地控制组件，执行 `.\cheesewaf.exe serve --data-dir .\data` 即可运行。
@@ -326,6 +328,8 @@ Windows 构建适用于本地调试与桌面运维管理：
 ---
 
 ### 4. macOS 部署（DMG 与便携包）
+
+此类包来自分支构建或手动触发的 `full` 档位，不在稳定服务器版发行包中：
 
 1. 下载适用于当前架构的安装镜像：`cheesewaf-arm64-darwin-*.dmg`（Apple Silicon）或 `cheesewaf-amd64-darwin-*.dmg`（Intel）。
 2. 打开镜像并将 **CheeseWAF** 拖入「应用程序」文件夹。
