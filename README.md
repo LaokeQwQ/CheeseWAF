@@ -204,6 +204,8 @@ Recommended for Linux physical servers and virtual machines requiring minimal re
 
 Download the official release archive matching your server architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
 
+Stable `vMAJOR.MINOR.PATCH` releases are server-first and contain Linux archives only. Windows and macOS packages are produced by branch or manually dispatched `full` profile builds; they are optional, may be unsigned, and are not part of the stable server release guarantee.
+
 | Archive Name | Architecture |
 | :--- | :--- |
 | `cheesewaf-amd64-linux-*.tar.gz` | Linux x86_64 |
@@ -317,7 +319,7 @@ Navigate to `https://127.0.0.1:9443/setup` on the host machine (containers gener
 
 ### 3. Windows Deployment (CLI, Zip, NSIS)
 
-Designed for desktop testing and local operations:
+Designed for desktop testing and local operations. These packages come from a branch or manually dispatched `full` profile build, not from the stable server release:
 
 - **Option A: Standalone CLI**: Download `cheesewaf-amd64-windows-*.exe` and run `.\cheesewaf.exe setup` and `.\cheesewaf.exe serve` directly in PowerShell.
 - **Option B: Portable ZIP**: Extract the archive to access default configuration files and run `.\cheesewaf.exe serve --data-dir .\data`.
@@ -326,6 +328,8 @@ Designed for desktop testing and local operations:
 ---
 
 ### 4. macOS Deployment (DMG & Portable Tarball)
+
+These packages come from a branch or manually dispatched `full` profile build, not from the stable server release:
 
 1. Download the installer image matching your hardware: `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
 2. Open the DMG and drag **CheeseWAF** into the Applications folder.

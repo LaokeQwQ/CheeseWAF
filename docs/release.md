@@ -8,6 +8,8 @@
 
 `dev`、`canary` 和 `master` 只用于开发、预览和稳定分支构建。它们不是正式版本标签。
 
+分支推送只生成并校验构建产物，不会自动创建 Alpha 预发布。只有在 GitHub Actions 中手动运行工作流，并明确将 `publish_prerelease` 设为 `true`，才允许从 `canary` 或 `master` 发布 Alpha；稳定版发布仍只使用 `vMAJOR.MINOR.PATCH` 标签和 `publish-release` 环境审批。
+
 稳定 `vMAJOR.MINOR.PATCH` 版本采用服务器优先档位：工作流只生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64 归档，并要求 `SHA256SUMS`、Sigstore 签名和 SBOM 校验。稳定服务器版不依赖 Windows Authenticode 或 macOS Developer ID 凭据。
 
 分支和手动工作流可以使用完整档位生成 Windows 与 macOS 操作端包。它们没有稳定服务器版的交付保证，可能没有平台签名；下载后先核对 `SHA256SUMS`。这类可选包不能改变稳定版的服务器交付范围。
