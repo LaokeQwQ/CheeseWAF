@@ -17,6 +17,25 @@
       - cheesewaf_cwedp_data_dir is match('^/\S+$')
     fail_msg: service identity and runtime paths must be absolute strict values
 
+- name: Validate optional Cloudflare origin hand-off
+  ansible.builtin.assert:
+    that:
+      - cheesewaf_deployment_entrypoint in ['production', 'full']
+      - cheesewaf_management_listen is match('^127\.0\.0\.1:[0-9]{1,5}$')
+      - cheesewaf_edge_origin_hostname is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,126}$')
+      - cheesewaf_edge_origin_service == 'https://127.0.0.1:9443'
+      - cheesewaf_edge_origin_server_name is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,126}$')
+      - cheesewaf_edge_origin_ca_pool is match('^/\S+$')
+      - cheesewaf_edge_origin_env_file is match('^/\S+$')
+      - cheesewaf_cloudflared_binary is match('^/\S+$')
+      - cheesewaf_cloudflared_config is match('^/\S+$')
+      - cheesewaf_cloudflared_state_dir is match('^/\S+$')
+      - cheesewaf_cloudflare_tunnel_id is match('^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$')
+      - cheesewaf_cloudflare_credentials_file is match('^/\S+$')
+      - not (cheesewaf_edge_origin_start | bool) or (cheesewaf_provision_only | bool)
+    fail_msg: Cloudflare origin hand-off requires a loopback admin listener, fixed HTTPS service, tunnel identity and external secret files
+  when: cheesewaf_edge_origin_enabled | bool
+
 - name: Reject plugin and CRP mutation through Ansible
   ansible.builtin.assert:
     that:
@@ -60,6 +79,8 @@
       - not (cheesewaf_pigsty_enabled | bool)
       - not (cheesewaf_provision_only | bool)
       - not (cheesewaf_cwedp_agent_start | bool)
+      - not (cheesewaf_edge_origin_enabled | bool)
+      - not (cheesewaf_edge_origin_start | bool)
     fail_msg: temporary must not provision PostgreSQL or Redis
   when: cheesewaf_deployment_entrypoint == 'single-node'
 

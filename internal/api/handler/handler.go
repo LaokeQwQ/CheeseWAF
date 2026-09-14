@@ -36,6 +36,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -72,6 +73,8 @@ type Handler struct {
 	clusterConsensusMu             sync.Mutex
 	ACMEIssuer                     acme.Issuer
 	TimeSync                       TimeSyncService
+	OTAClient                      OTAClient
+	OTAState                       OTAStateReader
 	LoginCAPTCHAState              *loginCAPTCHAState
 	CAPTCHAAssets                  captchaassets.Store
 	CAPTCHAAssetReferences         *captchaassets.ReferenceManager
@@ -345,6 +348,8 @@ type Options struct {
 	ClusterHeartbeats                   *cluster.HeartbeatRegistry
 	ACMEIssuer                          acme.Issuer
 	TimeSync                            TimeSyncService
+	OTAClient                           OTAClient
+	OTAState                            OTAStateReader
 	SetupToken                          string
 	SetupDrafts                         *setup.DraftStore
 	RunSetupProbe                       func(context.Context, string) setup.ProbeResult
@@ -357,6 +362,17 @@ type Options struct {
 	CAPTCHAAssets                       captchaassets.Store
 	Clock                               timekeeper.Clock
 	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
+}
+
+// OTAClient is the read-only index boundary. It can propose a candidate but
+// cannot install or activate a CRP package.
+type OTAClient interface {
+	Check(context.Context, ota.Request) (ota.Candidate, error)
+}
+
+// OTAStateReader exposes only the persisted last-known-good sequence.
+type OTAStateReader interface {
+	Load(context.Context) (ota.LastKnownGood, error)
 }
 
 // ManagementTokenConfirmation carries the transient proof for an exceptional
@@ -422,6 +438,8 @@ func New(opts Options) *Handler {
 		ClusterHeartbeats:                   opts.ClusterHeartbeats,
 		ACMEIssuer:                          opts.ACMEIssuer,
 		TimeSync:                            opts.TimeSync,
+		OTAClient:                           opts.OTAClient,
+		OTAState:                            opts.OTAState,
 		LoginCAPTCHAState:                   newLoginCAPTCHAState(),
 		CAPTCHAAssets:                       assetStore,
 		CAPTCHAAssetReferences:              assetRefs,

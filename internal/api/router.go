@@ -41,6 +41,8 @@ type Options struct {
 	CAPTCHAAssets                       captchaassets.Store
 	Clock                               timekeeper.Clock
 	TimeSync                            handler.TimeSyncService
+	OTAClient                           handler.OTAClient
+	OTAState                            handler.OTAStateReader
 	ManagementTokenConfirmationVerifier handler.ManagementTokenConfirmationVerifier
 	// ApprovalHTTP is an optional, fully configured high-risk ApprovalGate
 	// transport. It is mounted only inside the authenticated management API
@@ -121,6 +123,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		CAPTCHAAssets:                       opts.CAPTCHAAssets,
 		Clock:                               clock,
 		TimeSync:                            opts.TimeSync,
+		OTAClient:                           opts.OTAClient,
+		OTAState:                            opts.OTAState,
 		ManagementTokenConfirmationVerifier: opts.ManagementTokenConfirmationVerifier,
 	})
 	h.StartManagementAPITokenCleanup(opts.ManagementTokenCleanupContext)
@@ -188,6 +192,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(require("write:monitor")).Delete("/notifications", h.ClearNotifications)
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/version", h.Version)
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/system", h.System)
+			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/system/ota", h.OTAStatus)
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/system/time-sync", h.TimeSyncStatus)
 			r.With(require("write:system")).Post("/system/time-sync/reselect", h.ReselectTimeSync)
 			r.With(require("write:system")).Post("/system/time-sync/sync", h.SyncTimeNow)

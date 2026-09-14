@@ -104,11 +104,15 @@ func TestSystemExposesUnavailableUpdateCapabilitiesAndEffectiveDisabledState(t *
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode system response: %v", err)
 	}
-	for _, capability := range []string{"ota_updates", "vulnerability_feeds"} {
+	for _, capability := range []string{"vulnerability_feeds"} {
 		got := response.Data.Capabilities[capability]
 		if got.Available || got.Reason != "NOT_IMPLEMENTED" {
 			t.Fatalf("capability %q = %+v, want unavailable NOT_IMPLEMENTED", capability, got)
 		}
+	}
+	otaCapability := response.Data.Capabilities["ota_updates"]
+	if otaCapability.Available || otaCapability.Reason != "EXECUTOR_UNAVAILABLE" {
+		t.Fatalf("OTA capability = %+v, want executor unavailable", otaCapability)
 	}
 	if response.Data.Update.OTA.Enabled || response.Data.Update.OTA.AutoUpdateRules || response.Data.Update.OTA.AutoUpdateBinary {
 		t.Fatalf("effective OTA state was not disabled: %+v", response.Data.Update.OTA)
