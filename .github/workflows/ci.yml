@@ -215,7 +215,7 @@ jobs:
         run: npm run test:scripts
       - name: Install pinned coverage provider
         working-directory: web
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@4.1.11
+        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.0
       - name: Run dashboard tests with coverage
         working-directory: web
         run: npm test -- --coverage
