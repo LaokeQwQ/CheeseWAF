@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/go-chi/chi/v5"
@@ -48,6 +50,78 @@ func (h *Handler) System(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) Version(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, version.Current())
+}
+
+// OTAStatus performs a read-only index check when a client has been wired by
+// the launcher. A candidate is informational until CRP/CWEDP activation and
+// approval are available, so this endpoint never installs or changes config.
+func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
+	cfg := h.currentConfig()
+	if cfg == nil {
+		writeError(w, http.StatusServiceUnavailable, "OTA_STATE_UNAVAILABLE", "OTA configuration is unavailable")
+		return
+	}
+	status := map[string]any{
+		"enabled":             cfg.Update.OTA.Enabled,
+		"available":           false,
+		"candidate_available": false,
+		"read_only":           true,
+		"channel":             cfg.Update.OTA.Channel,
+		"reason":              "DISABLED",
+	}
+	if !cfg.Update.OTA.Enabled {
+		writeData(w, status)
+		return
+	}
+	status["reason"] = "EXECUTOR_UNAVAILABLE"
+	if h.OTAClient == nil {
+		status["message"] = "OTA index client is not wired"
+		writeData(w, status)
+		return
+	}
+	var currentIndex, currentRelease uint64
+	if h.OTAState != nil {
+		state, err := h.OTAState.Load(r.Context())
+		if err != nil && !errors.Is(err, ota.ErrStateNotFound) {
+			status["reason"] = "STATE_INVALID"
+			status["message"] = "last-known-good OTA state is unavailable"
+			writeData(w, status)
+			return
+		}
+		currentIndex, currentRelease = state.IndexSequence, state.ReleaseSequence
+	}
+	candidate, err := h.OTAClient.Check(r.Context(), ota.Request{
+		Channel:                cfg.Update.OTA.Channel,
+		CurrentIndexSequence:   currentIndex,
+		CurrentReleaseSequence: currentRelease,
+	})
+	if err != nil {
+		status["reason"] = otaStatusReason(err)
+		status["message"] = err.Error()
+		writeData(w, status)
+		return
+	}
+	status["candidate_available"] = true
+	status["candidate"] = candidate
+	status["message"] = "candidate is read-only until CRP/CWEDP activation is wired"
+	writeData(w, status)
+}
+
+func otaStatusReason(err error) string {
+	switch {
+	case errors.Is(err, ota.ErrSequenceRollback):
+		return "SEQUENCE_ROLLBACK"
+	case errors.Is(err, ota.ErrSignatureRejected):
+		return "SIGNATURE_REJECTED"
+	case errors.Is(err, ota.ErrWithdrawnRelease):
+		return "WITHDRAWN"
+	case errors.Is(err, ota.ErrUpToDate):
+		return "UP_TO_DATE"
+	case errors.Is(err, ota.ErrRedirect):
+		return "REDIRECT_REJECTED"
+	default:
+		return "ORIGIN_UNREACHABLE"
+	}
 }
 
 type systemPayload struct {

@@ -4,6 +4,9 @@ server:
     listen: "127.0.0.1:8080"
     listen_tls: ""
     listen_http3: ""
+    # Keep the management listener on loopback. Remote console/API access is
+    # terminated by Cloudflare Tunnel and still requires Access, Origin HMAC,
+    # Session, CSRF and RBAC checks.
     admin_listen: "127.0.0.1:9443"
     admin_public: false
     admin_tls:

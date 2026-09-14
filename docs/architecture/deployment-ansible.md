@@ -79,6 +79,26 @@ release 目录，回滚只需把 current 指向已审核的旧摘要并重新加
 临时 token 或日志写回模板、Git 跟踪文件或 Ansible 输出。所有涉及密钥值的断言和命令均使用
 no_log。
 
+## Cloudflare Tunnel 与边缘回源
+
+Cloudflare 远程访问只使用可选的 `cheesewaf_edge_origin_enabled`。启用后，预检固定检查
+`cheesewaf_management_listen=127.0.0.1:9443`、`https://127.0.0.1:9443` 上游、Tunnel
+身份、管理端证书链以及外部凭据文件。Tunnel 配置写入
+`/etc/cloudflared/cheesewaf-origin.yml`，systemd 单元是
+`cheesewaf-origin-admin-tunnel.service`。
+
+Worker 传入的 `X-CheeseSec-Edge-Request-Id`、时间戳和 HMAC 由 CheeseWAF 中间件验证。
+验证只增加传输层条件，不会创建 Session、提升权限或跳过 CSRF、RBAC 和审计。写请求的
+请求 ID 在短时间内不能重复使用。Cloudflare Access 身份如果配置，必须与 HMAC 一起由
+外部 secret 文件提供。
+
+建议先用 `cheesewaf_edge_origin_start=false` 只渲染配置并检查文件，再在变更审批后设为
+`true`。回滚顺序是：先移除 Worker 的回源路由，再停止并禁用 Tunnel，恢复上一版
+`cheesewaf.service` 和边缘变量；公开 Pages、商店、OTA、资源读取面不依赖 Tunnel。
+
+Ansible 不复制 Tunnel Token、Access 凭据、Origin HMAC 或私钥。它只检查这些文件存在、是
+普通文件且权限受限，并写入不含密钥的配置和 systemd 单元。
+
 ## 幂等和离线验收
 
 预检任务无副作用，可直接 --check。主机变更任务在 check-mode 下整体跳过并打印计划，避免

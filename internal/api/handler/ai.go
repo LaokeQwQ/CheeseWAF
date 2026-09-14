@@ -112,13 +112,43 @@ type aiSelfLearningRunPayload struct {
 	Language string `json:"language"`
 }
 
-const aiLongRequestTimeout = 5 * time.Minute
-
-var (
+const (
+	aiLongRequestTimeout            = 5 * time.Minute
 	providerFirstEventSlowAfter     = 10 * time.Second
 	providerWaitingProgressInterval = 10 * time.Second
-	processAIUsageStore             atomic.Pointer[ai.UsageStore]
 )
+
+var processAIUsageStore atomic.Pointer[ai.UsageStore]
+
+type providerWaitSignal interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type providerWaitTimerFactory interface {
+	NewTimer(time.Duration) providerWaitSignal
+	NewTicker(time.Duration) providerWaitSignal
+}
+
+type systemProviderTimer struct{ timer *time.Timer }
+
+func (timer *systemProviderTimer) C() <-chan time.Time { return timer.timer.C }
+func (timer *systemProviderTimer) Stop()               { timer.timer.Stop() }
+
+type systemProviderTicker struct{ ticker *time.Ticker }
+
+func (ticker *systemProviderTicker) C() <-chan time.Time { return ticker.ticker.C }
+func (ticker *systemProviderTicker) Stop()               { ticker.ticker.Stop() }
+
+type systemProviderWaitTimerFactory struct{}
+
+func (systemProviderWaitTimerFactory) NewTimer(interval time.Duration) providerWaitSignal {
+	return &systemProviderTimer{timer: time.NewTimer(interval)}
+}
+
+func (systemProviderWaitTimerFactory) NewTicker(interval time.Duration) providerWaitSignal {
+	return &systemProviderTicker{ticker: time.NewTicker(interval)}
+}
 
 const (
 	maxAIUsageRange      = 90 * 24 * time.Hour
@@ -1446,6 +1476,26 @@ func appendProviderFailure(answer, language string, err error) string {
 }
 
 func providerStreamEmitter(ctx context.Context, language, phase string, record func(ai.AssistantTraceEvent)) (ai.StreamEmitter, func()) {
+	return providerStreamEmitterWithTimers(
+		ctx,
+		language,
+		phase,
+		record,
+		providerFirstEventSlowAfter,
+		providerWaitingProgressInterval,
+		systemProviderWaitTimerFactory{},
+	)
+}
+
+func providerStreamEmitterWithTimers(
+	ctx context.Context,
+	language string,
+	phase string,
+	record func(ai.AssistantTraceEvent),
+	slowAfter time.Duration,
+	progressInterval time.Duration,
+	timers providerWaitTimerFactory,
+) (ai.StreamEmitter, func()) {
 	first := make(chan struct{})
 	done := make(chan struct{})
 	var firstOnce sync.Once
@@ -1456,15 +1506,16 @@ func providerStreamEmitter(ctx context.Context, language, phase string, record f
 		})
 	}
 	go func() {
-		slowAfter := providerFirstEventSlowAfter
 		if slowAfter <= 0 {
-			slowAfter = 10 * time.Second
+			slowAfter = providerFirstEventSlowAfter
 		}
-		progressInterval := providerWaitingProgressInterval
 		if progressInterval <= 0 {
 			progressInterval = slowAfter
 		}
-		timer := time.NewTimer(slowAfter)
+		if timers == nil {
+			timers = systemProviderWaitTimerFactory{}
+		}
+		timer := timers.NewTimer(slowAfter)
 		defer timer.Stop()
 		select {
 		case <-first:
@@ -1473,14 +1524,14 @@ func providerStreamEmitter(ctx context.Context, language, phase string, record f
 			return
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-timer.C():
 			record(ai.AssistantTraceEvent{
 				Type:    "provider_first_event_slow",
 				Mode:    phase,
 				Message: localizedProviderSlowMessage(language, phase),
 			})
 		}
-		ticker := time.NewTicker(progressInterval)
+		ticker := timers.NewTicker(progressInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -1490,7 +1541,7 @@ func providerStreamEmitter(ctx context.Context, language, phase string, record f
 				return
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-ticker.C():
 				record(ai.AssistantTraceEvent{
 					Type:    "provider_waiting_progress",
 					Mode:    phase,
