@@ -238,6 +238,15 @@ type Authorization struct {
 	ExpiresAt     time.Time            `json:"expires_at"`
 }
 
+func cloneAuthorization(authorization Authorization) Authorization {
+	authorization.Request.Descriptor = cloneDescriptor(authorization.Request.Descriptor)
+	if authorization.Confirmation != nil {
+		confirmation := *authorization.Confirmation
+		authorization.Confirmation = &confirmation
+	}
+	return authorization
+}
+
 // ControlPlaneClient obtains, continuously revalidates, and finally consumes
 // one authorization. Implementations must fail closed when transport proof is
 // unavailable.
@@ -305,7 +314,7 @@ func (c *HTTPControlPlaneClient) Authorize(ctx context.Context, request Authoriz
 			c.mu.Unlock()
 			return Authorization{}, fmt.Errorf("%w: duplicate confirmation id", ErrTransportProtocol)
 		}
-		c.pending[authorization.Confirmation.ID] = authorization
+		c.pending[authorization.Confirmation.ID] = cloneAuthorization(authorization)
 		c.mu.Unlock()
 	}
 	return authorization, nil

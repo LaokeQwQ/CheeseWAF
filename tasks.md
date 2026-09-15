@@ -1185,3 +1185,32 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 遗留风险：主服务仍缺完整 production `WireServe`/consumer 生命周期、CRP durable authorization/provider/sidecar、CWEDP/NetLease 控制面挂载、对象存储回执和空网演练；Pages provider 资源与 Plugin/Docs 独立审阅仍是外部阻塞。测试服务器公网端口虽可探测，但 SSH 认证和 HTTP 入口未形成可用预览，不能据此宣称部署完成。
 
 下一步：先由 Cloudflare 账号持有人读取 provider build 日志并准备 staging 资源；下一版发布前提升 `product-version`，重新走服务器档位 stable tag 流程；生产接线按验收矩阵四项 blocker 分片实现，保持默认 fail-closed。
+
+### 2026-09-15 产品优先级与未来功能清单
+
+共享建议用于调整实施顺序，不替代已经确认的 1–133 项架构决策。当前优先验证单节点的安装、站点接入和留观模式，再验证可解释日志、本地备份恢复、升级回滚和长期运行。生产模式继续要求 PostgreSQL 和 native-raft，不会改成 SQLite 或静默回退。没有部署验证的集群、CRP、CWEDP 和外部控制面继续记录为未完成。
+
+以下能力列入未来功能，不作为当前版本的交付条件：
+
+- 执行沙箱和独立留观区的工作流扩展。
+- 整体快照、站点快照和按快照恢复。
+- 自动任务的统一编排和定时巡检扩展。
+- S3 兼容对象存储备份。
+- AI 余额的持续检测与告警。
+- 情报大屏优化。
+- 通用回调和 Webhook。
+- 飞书、微信、QQ、Telegram 机器人插件。
+
+这份清单不移除已经实现的调度器、AI 余额查询或请求复核能力。未来功能必须复用现有的权限快照、审批、审计、加密和恢复约束。实现前先补需求、数据保留、失败恢复和验收证据，不能用占位接口替代可运行能力。`v0.3.9` 的非 Pre-release 属性和现有稳定标签保持不变。
+
+### 2026-09-15 CRP 授权快照修复与 Cloudflare 构建诊断
+
+范围：在远端 `dev=12a24aa037bf8f5eb3d0df81a20a98bc8ecf68d6` 的独立临时副本修复 CRP 描述符元数据丢失和待确认授权共享可变数据的问题；不覆盖主工作区既有的 AI、OTA 和交接修改。
+
+实际改动：`cloneDescriptor` 保留 metadata 并复制映射；客户端 pending 授权和 `MemoryAuthorizationState` 的 Put/Get 复制 confirmation、capabilities 和 metadata。修改输入或返回值不能改变已保存的授权；被修改的授权在远程验证前拒绝，原始 confirmation 仍能一次性消费。
+
+验证证据：新增回归测试先复现 metadata 丢失、Put/Get 输入别名和客户端绑定检查失效。客户端 confirmation、capability 和 metadata 三类独立修改均有 RED/GREEN 证据。`go test ./... -count=1 -timeout=600s`、`go test -race ./internal/crp/... -count=1` 和 `go vet ./internal/crp/... ./internal/cli` 均通过。本轮没有取得新的 PostgreSQL 实例，不能把默认跳过的 DSN 集成测试写成真实 PG 证据。
+
+Cloudflare 诊断：Chrome 中 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 的静态构建成功，`npx wrangler versions upload` 因 `cheesesec-publication-index-prod` 不存在返回 `10085`。R2 控制台进一步要求开通按量计费订阅并接受条款；执行代理没有点击订阅、创建凭据或开放公开访问。账号持有人完成 R2 开通后，才能创建既定私有桶并重跑构建。该问题不是 Worker 名称、兼容日期或 Astro 构建失败。
+
+遗留风险：快照修复不提供耐久 authorization state/provider/审计或 sidecar 部署。主 `serve` 的生产依赖绑定、CRP activation/rollback 和临时联网生命周期仍待实现，验收矩阵的 `implemented` 标志不变。本轮改动先在本地保存，未推送、晋升或改写发行记录。
