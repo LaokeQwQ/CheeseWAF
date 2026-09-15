@@ -930,10 +930,11 @@ func (s *Service) replaceActive(key string, sidecar Sidecar) {
 func cloneDescriptor(descriptor SidecarDescriptor) SidecarDescriptor {
 	descriptor.Capabilities = append([]string(nil), descriptor.Capabilities...)
 	if descriptor.Metadata != nil {
-		descriptor.Metadata = map[string]string{}
+		metadata := make(map[string]string, len(descriptor.Metadata))
 		for key, value := range descriptor.Metadata {
-			descriptor.Metadata[key] = value
+			metadata[key] = value
 		}
+		descriptor.Metadata = metadata
 	}
 	return descriptor
 }

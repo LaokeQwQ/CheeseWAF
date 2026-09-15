@@ -102,7 +102,7 @@ func (s *MemoryAuthorizationState) Put(ctx context.Context, authorization Author
 	if len(s.pending) >= s.limit {
 		return ErrAuthorizationState
 	}
-	s.pending[authorization.ID] = authorization
+	s.pending[authorization.ID] = cloneAuthorization(authorization)
 	return nil
 }
 
@@ -126,7 +126,7 @@ func (s *MemoryAuthorizationState) Get(ctx context.Context, id string) (Authoriz
 		}
 		return Authorization{}, ErrAuthorizationNotFound
 	}
-	return authorization, nil
+	return cloneAuthorization(authorization), nil
 }
 
 func (s *MemoryAuthorizationState) Consume(ctx context.Context, authorization Authorization) error {

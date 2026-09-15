@@ -107,6 +107,11 @@ identity 和 expected revision。acknowledgement 必须回显 authorization ID�
 canary probes、active mode 和最终 RuntimeStore 提交之间反复调用 `validate`。任何一次验证拒绝、
 超时或 transport 故障都会停止新 sidecar，并保持 staged/current/previous 不变。
 
+客户端和 `MemoryAuthorizationState` 保存独立的授权快照。快照复制 confirmation、descriptor
+的 capabilities 和 metadata；descriptor 克隆保留全部 metadata。修改 authorize/Get 的返回值，
+或者修改 Put 之后的输入，都不能改变待确认授权。修改后的授权不能通过绑定检查。
+`MemoryAuthorizationState` 仍是有界的进程内状态，不提供重启恢复或跨进程耐久性。
+
 confirmation 在客户端进程内是一次性的。`RuntimeStore` 的最终 authorizer 通过同一个 mTLS
 control-plane client 调用 `consume`；本地 pending entry 在发出请求前即删除，因此网络结果不明
 时也不能重放原 confirmation，重试必须获取新的 authorization。只有 consume 成功、RuntimeStore
