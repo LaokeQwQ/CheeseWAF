@@ -1214,3 +1214,17 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 Cloudflare 诊断：Chrome 中 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 的静态构建成功，`npx wrangler versions upload` 因 `cheesesec-publication-index-prod` 不存在返回 `10085`。R2 控制台进一步要求开通按量计费订阅并接受条款；执行代理没有点击订阅、创建凭据或开放公开访问。账号持有人完成 R2 开通后，才能创建既定私有桶并重跑构建。该问题不是 Worker 名称、兼容日期或 Astro 构建失败。
 
 遗留风险：快照修复不提供耐久 authorization state/provider/审计或 sidecar 部署。主 `serve` 的生产依赖绑定、CRP activation/rollback 和临时联网生命周期仍待实现，验收矩阵的 `implemented` 标志不变。本轮改动先在本地保存，未推送、晋升或改写发行记录。
+
+### 2026-09-18 隔离集成与 DMG 生命周期回归
+
+基线重新同步到远端 `dev=12a24aa037bf8f5eb3d0df81a20a98bc8ecf68d6`。旧工作区中的 AI Responses 和 OTA 平台状态文件与远端对象哈希一致，不作为新改动重复提交。CRP 授权快照修复已合入本地隔离分支 `codex/commercialization-integration-20260918`；macOS DMG 修复只增加受控卸载、失败收口和对应回归，不改服务器优先发布策略。
+
+验证证据：
+
+- `go test ./internal/crp/... ./internal/cli -count=1 -timeout=180s` 通过。
+- `go test -race ./internal/crp/... -count=1 -timeout=240s` 通过。
+- `bash scripts/ci/package-macos-dmg_lifecycle_test.sh` 通过，覆盖双镜像连续打包、busy/force、无关错误、info 失败和超时、force 超时、convert 抑制及退出清理。
+- `bash scripts/ci/verify-ci-static.sh` 通过；脚本中的预期失败输出属于负向用例，最终门禁返回成功。
+- `bash -n scripts/ci/package-macos-dmg.sh scripts/ci/package-macos-dmg_lifecycle_test.sh` 与 `git diff --check` 通过。
+
+本地隔离分支尚未推送。验收矩阵仍为生产接线未完成状态，未修改 `implemented` 标志。下一批优先处理默认 production `WireServe`、temporary→production Session/credential 交接和生产消费者生命周期；缺少真实 consumer 时继续 fail-closed。

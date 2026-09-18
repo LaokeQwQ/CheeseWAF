@@ -702,5 +702,6 @@ bash scripts/ci/package-release_profile_test.sh
 bash scripts/ci/verify-stable-tag_test.sh
 bash scripts/ci/publish-prerelease_test.sh
 bash scripts/ci/verify-release_test.sh
+bash scripts/ci/package-macos-dmg_lifecycle_test.sh
 
 echo "CI static regression checks passed."
