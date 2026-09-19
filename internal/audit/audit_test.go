@@ -183,6 +183,106 @@ func TestEncryptedSpoolDoesNotContainPlaintextAndReplayIsIdempotent(t *testing.T
 	}
 }
 
+type ackCountingSpool struct {
+	*MemoryEncryptedSpool
+	acks int
+}
+
+func (s *ackCountingSpool) Ack(ctx context.Context, entry SpoolEntry) error {
+	s.acks++
+	return s.MemoryEncryptedSpool.Ack(ctx, entry)
+}
+
+func TestRuntimeReplayConflictDoesNotAdvanceOrAcknowledgeSpool(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := seed.Append(ctx, testEvent("conflicting-event", EventClassCritical))
+	if err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	key := []byte(strings.Repeat("r", 32))
+	memorySpool, err := NewMemoryEncryptedSpool(key, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spool := &ackCountingSpool{MemoryEncryptedSpool: memorySpool}
+	conflictEvent := testEvent("conflicting-event", EventClassNormal)
+	conflictEvent.Action = "config.conflict"
+	conflict := Record{Sequence: 2, Event: conflictEvent, PreviousHash: first.Hash}
+	conflict.Hash = hashRecord(conflict)
+	if err := spool.Put(ctx, Commit{Record: conflict}); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	if err := replay.Replay(ctx); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("conflicting replay error=%v, want ErrReplayConflict", err)
+	}
+	if spool.acks != 0 {
+		t.Fatalf("conflicting replay acknowledgements=%d, want 0", spool.acks)
+	}
+	if replay.head.Sequence != first.Sequence || replay.head.Hash != first.Hash {
+		t.Fatalf("conflicting replay advanced head: got=%+v want=%+v", replay.head, first)
+	}
+	if got := replay.events[first.Event.EventID]; got.Hash != first.Hash || got.Event.Action != first.Event.Action {
+		t.Fatalf("conflicting replay replaced in-memory event: %+v", got)
+	}
+	rows, err := journal.Records(ctx, "control", 0, 10)
+	if err != nil || len(rows) != 1 || rows[0].Hash != first.Hash {
+		t.Fatalf("journal changed after conflict: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestRuntimeReplayExactDuplicateMayAcknowledgeDurableSpool(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := seed.Append(ctx, testEvent("exact-replay", EventClassCritical))
+	if err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	memorySpool, err := NewMemoryEncryptedSpool([]byte(strings.Repeat("i", 32)), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spool := &ackCountingSpool{MemoryEncryptedSpool: memorySpool}
+	if err := spool.Put(ctx, Commit{Record: record}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	if err := replay.Replay(ctx); err != nil {
+		t.Fatalf("exact duplicate replay failed: %v", err)
+	}
+	if spool.acks != 1 {
+		t.Fatalf("exact duplicate acknowledgements=%d, want 1", spool.acks)
+	}
+}
+
 func corruptJournalForTest(j *MemoryJournal, stream string, index int, mutate func(*Record)) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
