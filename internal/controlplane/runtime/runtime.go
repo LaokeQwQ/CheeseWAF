@@ -158,7 +158,8 @@ func OpenWithDependencies(ctx context.Context, opts Options, deps Dependencies) 
 		}
 	}
 	r := &Runtime{opts: opts, machine: deps.Machine, consensus: deps.Consensus, closeDeps: deps.Close, status: Status{Profile: opts.Profile, ClusterID: opts.ClusterID, NodeID: opts.NodeID, Phase: PhaseStarting, UpdatedAt: time.Now().UTC()}}
-	result, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: opts.Profile, ClusterID: opts.ClusterID, Machine: deps.Machine, Durable: deps.Durable, Consensus: deps.Consensus, Fencer: deps.Fencer})
+	checkpoint, _ := deps.Consensus.(controlplane.LeadershipCheckpointStore)
+	result, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: opts.Profile, ClusterID: opts.ClusterID, Machine: deps.Machine, Durable: deps.Durable, Consensus: deps.Consensus, Fencer: deps.Fencer, LeadershipCheckpoint: checkpoint})
 	if err != nil {
 		r.setStatusFromState(PhaseFrozen, false, "control-plane startup failed", deps.Machine.Snapshot())
 		return nil, scrubError(err)

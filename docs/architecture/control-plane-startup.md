@@ -17,7 +17,7 @@ PostgreSQL、native-raft 和管理面适配器都应遵守这份契约。当前 
 5. `ConsensusBootstrap.Health` 检查成员、term 和当前领导状态。
 6. `ConsensusStore.Current` 读取共识快照。
    PG 和共识快照必须逐字段一致。
-   需要比较 cluster、term、epoch、revision、leader、desired digest、payload、冻结状态和 nonce ledger。
+   需要比较 cluster、term、epoch、revision、leader、desired digest、payload、冻结状态、`UpdatedAt` 和 nonce ledger。
 7. 在临时状态机中校验快照，并检查它没有回退本机已经保存的 last-known-good revision、epoch 或 term。
 8. `FenceBootstrap.Establish` 返回与快照绑定的 fencing token。
    token 的 cluster、leader、epoch、revision、digest 和 nonce 必须匹配。
@@ -31,11 +31,25 @@ nonce 以及严格的管理员确认 ID、操作者和原因；如果配置了�
 `InitialStateAuthorizer`，还必须通过该授权边界。首次提交仍按 consensus → PG
 顺序持久化，任一步失败都保持冻结。
 
+`Coordinator` 先把提交写入 Raft，再保存到 PostgreSQL。进程可能在两步之间退出。
+启动流程只处理两种有明确边界的恢复情况：
+
+- PostgreSQL 已有状态，Raft 恰好多一个 revision。共识实现必须通过
+  `CurrentCommit` 返回最后一条完整提交。启动流程会校验 fence、nonce、payload、
+  nonce ledger、领导信息和 `UpdatedAt`，然后把这条提交原样保存到 PostgreSQL。
+- 首次提交只存在于 Raft。调用方仍须提供匹配的 `InitialStateRequest`，并再次通过
+  管理员授权。启动流程会取回原始 revision 1 提交，不会根据当前快照重建时间戳或
+  fence。如果提交后领导权已经变化，系统先保存原始提交，再单独保存领导权检查点。
+
+revision 差距大于 1、共识端无法返回完整提交，或任一字段不一致时，启动会保持冻结。
+它不会根据当前快照猜测缺失的历史提交。
+
 如果两份快照的 desired payload、revision 和 nonce ledger 完全一致，但 term、
-epoch 或 leader 不同，启动只能调用显式的 `LeadershipCheckpointStore`。该边界
+epoch、leader 或 `UpdatedAt` 不同，启动只能调用显式的 `LeadershipCheckpointStore`。该边界
 负责验证并记录 leadership-only 变化；缺少能力、返回改变 payload 的结果或 PG
 无法持久化 checkpoint 时，启动失败并保持 last-known-good，不能直接用较新的
-共识快照覆盖 PostgreSQL。
+共识快照覆盖 PostgreSQL。native-raft 会让领导权时间戳保持单调。新 leader 的本机
+时钟即使落后，也不会生成早于上一份共识状态的 `UpdatedAt`。
 
 实现不能在 fencing 成功前暴露未验证的快照，也不能用 PG 较旧快照覆盖本机较新的 last-known-good。
 

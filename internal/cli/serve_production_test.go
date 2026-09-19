@@ -215,6 +215,7 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 		t.Fatal(err)
 	}
 	control.state = consensus.machine.Snapshot()
+	consensus.state = control.state
 	opts := testProductionStartupOptions(t)
 	var wired bool
 	factory := ProductionDependencyFactory{
@@ -345,6 +346,7 @@ func TestOpenProductionDependenciesRejectsInvalidApprovalCapabilityBeforeWire(t 
 				t.Fatal(err)
 			}
 			control.state = consensus.machine.Snapshot()
+			consensus.state = control.state
 			approval := newProductionApprovalFake(uint64(control.state.Epoch))
 			tc.apply(approval)
 			var wired bool

@@ -87,13 +87,17 @@ type Runtime struct {
 	closed          bool
 	leadershipReady bool
 	bindings        *peerBindings
+	consensusState  controlplane.State
+	lastCommit      controlplane.Commit
+	hasLastCommit   bool
 }
 
 type command struct {
-	Kind     string              `json:"kind"`
-	Term     uint64              `json:"term,omitempty"`
-	LeaderID string              `json:"leader_id,omitempty"`
-	Commit   controlplane.Commit `json:"commit,omitempty"`
+	Kind      string              `json:"kind"`
+	Term      uint64              `json:"term,omitempty"`
+	LeaderID  string              `json:"leader_id,omitempty"`
+	UpdatedAt time.Time           `json:"updated_at,omitempty"`
+	Commit    controlplane.Commit `json:"commit,omitempty"`
 }
 
 func New(opts Options) (*Runtime, error) {
@@ -239,7 +243,7 @@ func New(opts Options) (*Runtime, error) {
 	config.SnapshotInterval = 20 * time.Minute
 	config.SnapshotThreshold = 1024
 	config.LogOutput = io.Discard
-	r := &Runtime{opts: opts, machine: machine, logs: logs, transport: transport, snapshots: snapshots, notify: notify, existing: existing, done: make(chan struct{}), bindings: bindings}
+	r := &Runtime{opts: opts, machine: machine, logs: logs, transport: transport, snapshots: snapshots, notify: notify, existing: existing, done: make(chan struct{}), bindings: bindings, consensusState: cloneRuntimeState(machine.Snapshot())}
 	r.raft, err = raft.NewRaft(config, r, logs, logs, snapshots, transport)
 	if err != nil {
 		_ = transport.Close()
@@ -357,11 +361,35 @@ func (r *Runtime) Current(ctx context.Context, clusterID string) (controlplane.S
 	if r.raft == nil || r.raft.State() == raft.Shutdown {
 		return controlplane.State{}, ErrClosed
 	}
-	state := r.machine.Snapshot()
+	state := r.consensusSnapshot()
 	if state.ClusterID != clusterID || state.LeaderID == "" || state.Term == 0 {
 		return controlplane.State{}, controlplane.ErrStateNotFound
 	}
 	return state, nil
+}
+
+// CurrentCommit returns the exact latest desired-state commit retained by the
+// replicated FSM. Leadership checkpoints may advance term/epoch metadata
+// without changing this commit, so callers must still compare Current before
+// using it for one-step durable recovery.
+func (r *Runtime) CurrentCommit(ctx context.Context, clusterID string) (controlplane.Commit, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return controlplane.Commit{}, err
+	}
+	if clusterID != r.opts.ClusterID || r.raft == nil || r.raft.State() == raft.Shutdown {
+		return controlplane.Commit{}, controlplane.ErrStateNotFound
+	}
+	r.mu.RLock()
+	commit, ok := cloneRuntimeCommit(r.lastCommit), r.hasLastCommit
+	state := cloneRuntimeState(r.consensusState)
+	r.mu.RUnlock()
+	if !ok || !sameNativePayload(commit.State, state) {
+		return controlplane.Commit{}, controlplane.ErrStateNotFound
+	}
+	return commit, nil
 }
 
 func (r *Runtime) Propose(ctx context.Context, commit controlplane.Commit) error {
@@ -371,31 +399,34 @@ func (r *Runtime) Propose(ctx context.Context, commit controlplane.Commit) error
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	r.propose.Lock()
+	defer r.propose.Unlock()
 	current := r.machine.Snapshot()
-	initial := isProtectedInitialCommit(current, commit)
-	if initial {
+	if r.commitAlreadyReplicated(current, commit) {
+		return r.ensureLeaderForReplicatedRetry()
+	}
+	protectedInitial := isProtectedInitialCommit(current, commit)
+	if protectedInitial {
 		if err := r.ensureLeaderForInitial(); err != nil {
 			return err
 		}
 	} else if err := r.ensureLeader(); err != nil {
 		return err
 	}
-	r.propose.Lock()
-	defer r.propose.Unlock()
-	current = r.machine.Snapshot()
+	initial := isInitialCommit(current, commit)
 	if err := validateIncomingCommit(current, commit); err != nil {
 		return err
 	}
-	canonical := commit
 	if !initial {
-		proposal := controlplane.Proposal{LeaderID: current.LeaderID, ExpectedEpoch: current.Epoch, ExpectedRevision: current.Revision, Version: commit.State.Desired.Version, Payload: append([]byte(nil), commit.State.Desired.Payload...), Digest: commit.State.Desired.Digest, Nonce: commit.Fence.Nonce}
-		var err error
-		canonical, err = r.machine.Propose(proposal)
-		if err != nil {
+		// The coordinator obtains this exact commit from the same state machine.
+		// Re-proposing here would advance the tentative revision a second time
+		// before Raft replicates it. Validate the proposal source instead, then
+		// put the exact immutable commit in the log.
+		if err := r.machine.ValidateCommit(commit); err != nil {
 			return err
 		}
 	}
-	data, err := json.Marshal(command{Kind: "commit", Commit: canonical})
+	data, err := json.Marshal(command{Kind: "commit", Commit: commit})
 	if err != nil {
 		return err
 	}
@@ -410,6 +441,40 @@ func (r *Runtime) Propose(ctx context.Context, commit controlplane.Commit) error
 	return nil
 }
 
+func (r *Runtime) commitAlreadyReplicated(current controlplane.State, commit controlplane.Commit) bool {
+	r.mu.RLock()
+	lastCommit, hasLastCommit := cloneRuntimeCommit(r.lastCommit), r.hasLastCommit
+	r.mu.RUnlock()
+	if !hasLastCommit || !runtimeCommitsEquivalent(lastCommit, commit) {
+		return false
+	}
+	if current.ClusterID != commit.State.ClusterID || current.LeaderID != commit.State.LeaderID || current.Term != commit.State.Term || current.Epoch != commit.State.Epoch || current.Revision != commit.State.Revision ||
+		current.Desired.Version != commit.State.Desired.Version || current.Desired.Digest != commit.State.Desired.Digest || string(current.Desired.Payload) != string(commit.State.Desired.Payload) ||
+		commit.Fence.ClusterID != current.ClusterID || commit.Fence.LeaderID != current.LeaderID || commit.Fence.Epoch != current.Epoch || commit.Fence.Revision != current.Revision ||
+		commit.Fence.Digest != current.Desired.Digest || commit.State.WriteFrozen || commit.State.FreezeReason != "" || commit.State.UpdatedAt.IsZero() ||
+		commit.State.Desired.Digest != controlplane.Digest(commit.State.Desired.Payload) || !controlplane.ValidIdentity(commit.State.Desired.Version) || !controlplane.ValidIdentity(commit.Fence.Nonce) ||
+		len(current.NonceLedger) != len(commit.State.NonceLedger) || commit.State.NonceLedger[commit.Fence.Nonce] != current.Revision {
+		return false
+	}
+	for nonce, revision := range current.NonceLedger {
+		if commit.State.NonceLedger[nonce] != revision {
+			return false
+		}
+	}
+	return r.machine.ValidateFence(commit.Fence) == nil
+}
+
+func (r *Runtime) ensureLeaderForReplicatedRetry() error {
+	if r == nil || r.raft == nil || r.raft.State() != raft.Leader {
+		return controlplane.ErrNotLeader
+	}
+	state := r.machine.Snapshot()
+	if state.LeaderID != r.NodeID() || state.Term != r.raft.CurrentTerm() || !r.healthReady() {
+		return controlplane.ErrNotLeader
+	}
+	return nil
+}
+
 func (r *Runtime) Establish(ctx context.Context, state controlplane.State) (controlplane.FenceToken, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -417,10 +482,10 @@ func (r *Runtime) Establish(ctx context.Context, state controlplane.State) (cont
 	if err := ctx.Err(); err != nil {
 		return controlplane.FenceToken{}, err
 	}
-	if err := r.ensureLeader(); err != nil {
+	if err := r.ensureLeaderForReplicatedRetry(); err != nil {
 		return controlplane.FenceToken{}, err
 	}
-	current := r.machine.Snapshot()
+	current := r.consensusSnapshot()
 	if state.ClusterID != current.ClusterID || state.LeaderID != current.LeaderID || state.Term != current.Term || state.Epoch != current.Epoch || state.Revision == 0 || state.Revision != current.Revision || state.Desired.Digest != current.Desired.Digest {
 		return controlplane.FenceToken{}, ErrFenceStale
 	}
@@ -512,7 +577,7 @@ func (r *Runtime) CheckpointLeadership(ctx context.Context, durable, consensus c
 	if leaderAddr == "" || leaderID == "" || consensus.LeaderID != string(leaderID) || consensus.Term != r.raft.CurrentTerm() || consensus.WriteFrozen {
 		return controlplane.State{}, controlplane.ErrNotLeader
 	}
-	current := r.machine.Snapshot()
+	current := r.consensusSnapshot()
 	if !sameNativePayload(current, consensus) || current.LeaderID != consensus.LeaderID || current.Term != consensus.Term || current.Epoch != consensus.Epoch || current.Revision != consensus.Revision {
 		return controlplane.State{}, ErrFenceStale
 	}
@@ -619,7 +684,7 @@ func (r *Runtime) persistLeadership() error {
 	if state.LeaderID == r.NodeID() && state.Term == term && !state.WriteFrozen {
 		return nil
 	}
-	data, err := json.Marshal(command{Kind: "leadership", Term: term, LeaderID: r.NodeID()})
+	data, err := json.Marshal(command{Kind: "leadership", Term: term, LeaderID: r.NodeID(), UpdatedAt: time.Now().UTC()})
 	if err != nil {
 		return err
 	}
@@ -634,34 +699,93 @@ func (r *Runtime) Apply(log *raft.Log) interface{} {
 	}
 	switch cmd.Kind {
 	case "leadership":
-		_, err := r.machine.InstallLeadership(cmd.Term, cmd.LeaderID)
+		machineState, err := r.machine.InstallLeadership(cmd.Term, cmd.LeaderID)
+		if err != nil {
+			return err
+		}
+		r.mu.Lock()
+		next, err := advanceConsensusLeadership(r.consensusState, machineState, cmd)
+		if err == nil {
+			r.consensusState = next
+		}
+		r.mu.Unlock()
 		return err
 	case "commit":
-		return r.machine.LoadSnapshot(cmd.Commit.State)
+		if err := r.machine.LoadSnapshot(cmd.Commit.State); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		r.consensusState = cloneRuntimeState(cmd.Commit.State)
+		r.lastCommit = cloneRuntimeCommit(cmd.Commit)
+		r.hasLastCommit = true
+		r.mu.Unlock()
+		return nil
 	default:
 		return fmt.Errorf("unknown native-raft command kind %q", cmd.Kind)
 	}
 }
 
 func (r *Runtime) Snapshot() (raft.FSMSnapshot, error) {
-	return &fsmSnapshot{state: r.machine.Snapshot()}, nil
+	r.mu.RLock()
+	snapshot := persistedSnapshot{Version: 1, State: cloneRuntimeState(r.consensusState)}
+	if r.hasLastCommit {
+		commit := cloneRuntimeCommit(r.lastCommit)
+		snapshot.LastCommit = &commit
+	}
+	r.mu.RUnlock()
+	return &fsmSnapshot{snapshot: snapshot}, nil
 }
 
 func (r *Runtime) Restore(reader io.ReadCloser) error {
 	defer reader.Close()
-	var state controlplane.State
-	if err := json.NewDecoder(reader).Decode(&state); err != nil {
+	data, err := io.ReadAll(reader)
+	if err != nil {
 		return err
 	}
-	return r.machine.LoadSnapshot(state)
+	var snapshot persistedSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil || snapshot.Version != 1 {
+		var legacy controlplane.State
+		if legacyErr := json.Unmarshal(data, &legacy); legacyErr != nil {
+			if err != nil {
+				return err
+			}
+			return legacyErr
+		}
+		snapshot = persistedSnapshot{State: legacy}
+	}
+	if snapshot.LastCommit != nil {
+		if !validRuntimeSnapshotCommit(*snapshot.LastCommit, snapshot.State) {
+			return controlplane.ErrInvalidCommit
+		}
+	}
+	if err := r.machine.LoadSnapshot(snapshot.State); err != nil {
+		return err
+	}
+	r.machine.FreezeWrites("native-raft leadership unavailable")
+	r.mu.Lock()
+	r.consensusState = cloneRuntimeState(snapshot.State)
+	r.hasLastCommit = false
+	r.lastCommit = controlplane.Commit{}
+	if snapshot.LastCommit != nil {
+		r.lastCommit = cloneRuntimeCommit(*snapshot.LastCommit)
+		r.hasLastCommit = true
+	}
+	r.mu.Unlock()
+	return nil
+}
+
+type persistedSnapshot struct {
+	Version    int                  `json:"version"`
+	State      controlplane.State   `json:"state"`
+	LastCommit *controlplane.Commit `json:"last_commit,omitempty"`
 }
 
 type fsmSnapshot struct {
-	state controlplane.State
+	snapshot persistedSnapshot
 }
 
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
-	if err := json.NewEncoder(sink).Encode(s.state); err != nil {
+	if err := json.NewEncoder(sink).Encode(s.snapshot); err != nil {
 		_ = sink.Cancel()
 		return err
 	}
@@ -680,14 +804,118 @@ func validateIncomingCommit(current controlplane.State, commit controlplane.Comm
 	if commit.State.Revision != current.Revision+1 || commit.Fence.Revision != commit.State.Revision {
 		return controlplane.ErrStaleRevision
 	}
-	if commit.State.WriteFrozen || commit.State.Desired.Digest == "" || commit.State.Desired.Digest != controlplane.Digest(commit.State.Desired.Payload) || commit.Fence.Digest != commit.State.Desired.Digest || !controlplane.ValidIdentity(commit.State.Desired.Version) || !controlplane.ValidIdentity(commit.Fence.Nonce) || commit.State.NonceLedger[commit.Fence.Nonce] != commit.State.Revision {
+	if commit.State.WriteFrozen || commit.State.FreezeReason != "" || commit.State.UpdatedAt.IsZero() || commit.State.Desired.Digest == "" || commit.State.Desired.Digest != controlplane.Digest(commit.State.Desired.Payload) || commit.Fence.Digest != commit.State.Desired.Digest || !controlplane.ValidIdentity(commit.State.Desired.Version) || !controlplane.ValidIdentity(commit.Fence.Nonce) || !nonceLedgerExtendsCurrent(current.NonceLedger, commit.State.NonceLedger, commit.Fence.Nonce, commit.State.Revision) {
 		return controlplane.ErrInvalidCommit
 	}
 	return nil
 }
 
+func nonceLedgerExtendsCurrent(current, next map[string]controlplane.Revision, nonce string, revision controlplane.Revision) bool {
+	if len(next) != len(current)+1 || next[nonce] != revision {
+		return false
+	}
+	if _, reused := current[nonce]; reused {
+		return false
+	}
+	for existing, existingRevision := range current {
+		if next[existing] != existingRevision {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneRuntimeCommit(commit controlplane.Commit) controlplane.Commit {
+	clone := commit
+	clone.State.Desired.Payload = append([]byte(nil), commit.State.Desired.Payload...)
+	clone.State.NonceLedger = make(map[string]controlplane.Revision, len(commit.State.NonceLedger))
+	for nonce, revision := range commit.State.NonceLedger {
+		clone.State.NonceLedger[nonce] = revision
+	}
+	return clone
+}
+
+func cloneRuntimeState(state controlplane.State) controlplane.State {
+	clone := state
+	clone.Desired.Payload = append([]byte(nil), state.Desired.Payload...)
+	clone.NonceLedger = make(map[string]controlplane.Revision, len(state.NonceLedger))
+	for nonce, revision := range state.NonceLedger {
+		clone.NonceLedger[nonce] = revision
+	}
+	return clone
+}
+
+func (r *Runtime) consensusSnapshot() controlplane.State {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return cloneRuntimeState(r.consensusState)
+}
+
+func advanceConsensusLeadership(current, machineState controlplane.State, cmd command) (controlplane.State, error) {
+	if cmd.Term == 0 || !controlplane.ValidIdentity(cmd.LeaderID) || current.ClusterID == "" || machineState.ClusterID != current.ClusterID {
+		return controlplane.State{}, controlplane.ErrInvalidCommit
+	}
+	if cmd.Term < current.Term || (cmd.Term == current.Term && cmd.LeaderID != current.LeaderID) {
+		return controlplane.State{}, controlplane.ErrLeadershipConflict
+	}
+	if cmd.Term == current.Term && cmd.LeaderID == current.LeaderID {
+		return cloneRuntimeState(current), nil
+	}
+	if current.Epoch == ^controlplane.Epoch(0) {
+		return controlplane.State{}, controlplane.ErrInvalidCommit
+	}
+	updatedAt := cmd.UpdatedAt.UTC()
+	if updatedAt.IsZero() {
+		// Legacy logs did not carry a deterministic timestamp. Keep them
+		// readable, but all newly written commands bind the leader timestamp.
+		updatedAt = machineState.UpdatedAt.UTC()
+	}
+	if updatedAt.Before(current.UpdatedAt) {
+		// A newly elected leader may have a slower wall clock than the previous
+		// leader. Raft state timestamps are monotonic metadata, so clock skew
+		// must not turn a valid leadership change into a PostgreSQL regression.
+		updatedAt = current.UpdatedAt.UTC()
+	}
+	next := cloneRuntimeState(current)
+	next.LeaderID = cmd.LeaderID
+	next.Term = cmd.Term
+	next.Epoch++
+	next.WriteFrozen = false
+	next.FreezeReason = ""
+	next.UpdatedAt = updatedAt
+	if machineState.LeaderID != next.LeaderID || machineState.Term != next.Term || machineState.Epoch != next.Epoch || !sameNativePayload(machineState, next) {
+		return controlplane.State{}, controlplane.ErrInvalidCommit
+	}
+	return next, nil
+}
+
+func validRuntimeSnapshotCommit(commit controlplane.Commit, state controlplane.State) bool {
+	return !commit.State.WriteFrozen && commit.State.FreezeReason == "" && !commit.State.UpdatedAt.IsZero() &&
+		commit.Fence.ClusterID == commit.State.ClusterID && commit.Fence.LeaderID == commit.State.LeaderID && commit.Fence.Epoch == commit.State.Epoch &&
+		commit.Fence.Revision == commit.State.Revision && commit.Fence.Digest == commit.State.Desired.Digest && commit.State.NonceLedger[commit.Fence.Nonce] == commit.State.Revision &&
+		commit.State.Desired.Digest == controlplane.Digest(commit.State.Desired.Payload) && sameNativePayload(commit.State, state)
+}
+
+func runtimeCommitsEquivalent(a, b controlplane.Commit) bool {
+	if a.Fence != b.Fence || a.State.ClusterID != b.State.ClusterID || a.State.LeaderID != b.State.LeaderID || a.State.Term != b.State.Term || a.State.Epoch != b.State.Epoch || a.State.Revision != b.State.Revision ||
+		a.State.Desired.Version != b.State.Desired.Version || a.State.Desired.Digest != b.State.Desired.Digest || string(a.State.Desired.Payload) != string(b.State.Desired.Payload) ||
+		a.State.WriteFrozen != b.State.WriteFrozen || a.State.FreezeReason != b.State.FreezeReason || !a.State.UpdatedAt.Equal(b.State.UpdatedAt) || len(a.State.NonceLedger) != len(b.State.NonceLedger) {
+		return false
+	}
+	for nonce, revision := range a.State.NonceLedger {
+		if b.State.NonceLedger[nonce] != revision {
+			return false
+		}
+	}
+	return true
+}
+
 func isProtectedInitialCommit(current controlplane.State, commit controlplane.Commit) bool {
-	return current.Revision == 0 && current.WriteFrozen && current.LeaderID != "" && current.Term != 0 && current.Epoch != 0 && commit.State.Revision == 1 && commit.State.LeaderID == current.LeaderID && commit.State.Term == current.Term && commit.State.Epoch == current.Epoch
+	return current.WriteFrozen && isInitialCommit(current, commit)
+}
+
+func isInitialCommit(current controlplane.State, commit controlplane.Commit) bool {
+	return current.Revision == 0 && current.LeaderID != "" && current.Term != 0 && current.Epoch != 0 && commit.State.Revision == 1 && commit.State.LeaderID == current.LeaderID && commit.State.Term == current.Term && commit.State.Epoch == current.Epoch
 }
 
 func nonceForRevision(ledger map[string]controlplane.Revision, revision controlplane.Revision) string {

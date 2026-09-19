@@ -1228,3 +1228,56 @@ Cloudflare 诊断：Chrome 中 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 的�
 - `bash -n scripts/ci/package-macos-dmg.sh scripts/ci/package-macos-dmg_lifecycle_test.sh` 与 `git diff --check` 通过。
 
 本地隔离分支尚未推送。验收矩阵仍为生产接线未完成状态，未修改 `implemented` 标志。下一批优先处理默认 production `WireServe`、temporary→production Session/credential 交接和生产消费者生命周期；缺少真实 consumer 时继续 fail-closed。
+
+### 2026-09-19 production serve 候选接线审查与回撤
+
+范围：在隔离分支尝试 production `WireServe` 核心纵切片，并按 `/pua` 要求进行独立反方审查；不修改验收矩阵计分器或 `implemented` 标志。
+
+审查结论：候选实现只把依赖健康探针、控制面快照和 fence 包装成 readiness，没有让实际管理写入经过 `controlplane.Coordinator`。它会把原先“缺真实 consumer 时拒绝启动”的门禁降级为 TOCTOU 探针，因此不能作为生产接线提交。基于 HTTP method 的门禁还会误伤只读 POST；管理 API Token 认证在门禁前更新 `LastUsedAt`，被拒请求仍可能产生配置写入。
+
+进一步只读审计确认，当前 control-plane 契约也不能直接由 Handler 拼接：`StateMachine.Propose` 已推进本地 revision，而共享同一 state machine 的 native-raft `Propose` 会再次提案，非初始真实组合会产生 stale revision；配置更新还横跨 runtime、YAML、management PostgreSQL、Raft 和 control PostgreSQL，现有补偿逻辑不能提供跨存储原子性。正确顺序应先由 Coordinator 独占 proposal+apply 生命周期，并让 native-raft 复制 exact commit，再设计版本化 desired-state codec、fenced materializer、幂等 nonce 和失败后的冻结/调和。
+
+处理结果：
+
+- 候选 production binding、动态写门禁和相应测试已从工作树全部回撤；默认 factory 继续不提供 `WireServe`，production profile 保持 fail-closed。
+- 所有宣称“核心 binding 已完成”的架构文档和规划状态已回撤；现有文档继续明确主服务生产消费者尚未完成。
+- 独立审查指出的原始依赖错误泄露、`UpdatedAt` 比较、只读 POST、认证副作用和 timeout 上限均未以局部补丁掩盖，因为根本消费者边界尚未成立。
+- 现有两个隔离提交（CRP immutable authorization snapshot、macOS DMG detach lifecycle）保持不变，未推送。
+
+下一步顺序：
+
+1. 为 `Coordinator` 增加拥有 proposal+apply 的单一入口，并修正 native-raft exact-commit 复制契约；先用共享 state machine 的真实组合回归证明 revision 只增长一次。
+2. 设计不含 DSN、Token、证书和密钥的版本化 management desired-state payload，以及控制面提交成功、本地物化失败后的冻结/重试调和。
+3. 将 API Token 使用记账移出 desired-state YAML，并枚举所有绕过 `commitConfigMutation` 的写路径。
+4. 只有单个真实配置 mutation 端点通过 fence、幂等、故障注入和跨存储边界测试后，才重新讨论默认 `WireServe`；站点等 management DB-first 操作在具备 outbox 或 fence-aware transaction 前继续拒绝 production。
+
+边界：本轮审查和回撤不是 production switch 的实现完成证据。验收矩阵四项生产 blocker 保持失败，未提交、未推送、未晋升或发布。
+
+### 2026-09-19 exact commit 与受限崩溃恢复
+
+范围：完成上一节第 1 项，修正 `Coordinator`、native-raft 和启动恢复之间的提交所有权。默认 production `WireServe` 仍保持关闭。
+
+已完成：
+
+- `Coordinator.ProposeAndApply` 现在负责生成一次提交、写入共识和保存到 PostgreSQL。native-raft 只复制这条提交，不再让共享状态机重复提案。非初始提交的 revision 只增长一次。
+- 重试会复用原始 `Commit`。比较范围包括 fence、nonce、payload、nonce ledger、领导信息、冻结状态和 `UpdatedAt`。相同 fence 对应不同内容时会拒绝请求。
+- 首次提交和普通提交都支持结果不明确后的精确重试。预先取消的请求、等待期间取消的调用和旧领导代次的重试不会冻结新的健康领导代次。
+- native-raft 快照保存规范状态和最后一条完整提交。重启后，本地冻结提示与 Raft 中的规范状态分开处理；新领导建立后会清除启动冻结。
+- 领导权检查点的 `UpdatedAt` 使用单调规则。新 leader 的本机时钟落后时，不会让共识状态时间倒退，也不会触发 PostgreSQL 的回退拒绝。
+- 启动恢复只接受 Raft 恰好多一个 revision 的情况。系统通过 `CurrentCommit` 取回原始提交并逐字段验证。首次提交仍要求匹配的 `InitialStateRequest` 和管理员授权。领导权已变化时，系统先保存原始提交，再保存独立的领导权检查点。
+- 审计 spool 的冲突重放修复已保存在本地提交 `81765df5`。相同 key 对应不同内容时不再被当作幂等成功。
+
+验证证据：
+
+- `go test ./internal/controlplane/... -count=1 -timeout=300s` 通过。
+- `go test ./internal/cli/... -count=1 -timeout=300s` 通过。
+- `go test ./... -count=1 -timeout=600s` 通过。
+- `go test -race ./internal/controlplane ./internal/controlplane/nativeraft ./internal/controlplane/runtime -count=1 -timeout=420s` 通过。
+- `go vet ./internal/controlplane/... ./internal/cli/...`、`gofmt` 检查和 `git diff --check` 通过。
+- 新增真实共享状态机与 native-raft 组合测试，覆盖普通提交、首次提交、响应丢失、PostgreSQL 保存失败、Raft 快照重启和精确恢复。
+- 新增启动测试，覆盖普通提交只差一个 revision、首次提交后领导权变化、伪造时间戳、缺少完整提交和较大 revision 差距。时钟偏差测试覆盖新 leader 落后 1 分钟的情况。
+- `/pua` 独立复审确认原先的初始化恢复问题和领导权时间倒退问题均已关闭，当前没有新的 Critical 或 Important 发现。
+
+未完成：尚未把版本化 management desired-state payload、受 fencing 保护的本地物化器和失败后的重试协调接入管理 API。真实 PostgreSQL 的恢复组合测试也未在本轮运行。验收矩阵的 production blocker 与 `implemented` 标志保持不变。本地分支尚未推送、晋升或发布。
+
+下一步继续执行上一节第 2～4 项：先定义不包含 DSN、Token、证书或密钥的 payload，再选一个真实配置修改接口验证 fence、幂等和故障恢复。完整消费者通过前，不启用默认 `WireServe`。

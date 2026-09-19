@@ -253,12 +253,13 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	}
 
 	startup, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{
-		Profile:   config.StorageProfileProduction,
-		ClusterID: opts.ClusterID,
-		Machine:   consensus.Machine(),
-		Durable:   control,
-		Consensus: consensus,
-		Fencer:    consensus,
+		Profile:              config.StorageProfileProduction,
+		ClusterID:            opts.ClusterID,
+		Machine:              consensus.Machine(),
+		Durable:              control,
+		Consensus:            consensus,
+		Fencer:               consensus,
+		LeadershipCheckpoint: productionLeadershipCheckpoint(consensus),
 	})
 	if err != nil || startup.Stage != controlplane.StartupStageReady || !startup.Ready {
 		return fail("control-plane Bootstrap did not reach ready", err)
@@ -316,6 +317,11 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	}
 	deps.Ready = true
 	return deps, nil
+}
+
+func productionLeadershipCheckpoint(consensus ProductionConsensusDependency) controlplane.LeadershipCheckpointStore {
+	checkpoint, _ := consensus.(controlplane.LeadershipCheckpointStore)
+	return checkpoint
 }
 
 // validateProductionApprovalDependency enforces the approval capability

@@ -58,6 +58,7 @@ func (f *startupDurableFake) AppendCommit(_ context.Context, commit Commit) erro
 	if f.append != nil {
 		f.append(commit)
 	}
+	f.state = commit.State
 	return nil
 }
 
@@ -71,12 +72,14 @@ func (f *startupDurableFake) CheckpointLeadership(_ context.Context, state State
 }
 
 type startupConsensusFake struct {
-	state   State
-	err     error
-	log     *[]string
-	backend string
-	states  []State
-	index   int
+	state     State
+	commit    Commit
+	err       error
+	commitErr error
+	log       *[]string
+	backend   string
+	states    []State
+	index     int
 }
 
 func (f *startupConsensusFake) Backend() string {
@@ -113,7 +116,23 @@ func (f *startupConsensusFake) Current(context.Context, string) (State, error) {
 
 func (f *startupConsensusFake) Propose(_ context.Context, commit Commit) error {
 	f.state = commit.State
+	f.commit = commit
 	return nil
+}
+
+func (f *startupConsensusFake) CurrentCommit(context.Context, string) (Commit, error) {
+	*f.log = append(*f.log, "consensus.current_commit")
+	if f.commitErr != nil {
+		return Commit{}, f.commitErr
+	}
+	if f.commit.State.ClusterID == "" {
+		return Commit{}, ErrStateNotFound
+	}
+	return cloneCommit(f.commit), nil
+}
+
+func (f *startupConsensusFake) CheckpointLeadership(_ context.Context, _, consensus State) (State, error) {
+	return consensus, nil
 }
 
 type startupFenceFake struct {
@@ -237,6 +256,104 @@ func TestBootstrapProductionRejectsDivergentSnapshotsAndKeepsLastKnownGood(t *te
 	}
 	if machine.Snapshot().Revision != 1 || !machine.Snapshot().WriteFrozen {
 		t.Fatalf("last-known-good snapshot was not retained safely: %+v", machine.Snapshot())
+	}
+}
+
+func TestBootstrapRecoversOneExactConsensusAheadCommitThenCheckpointsLeadership(t *testing.T) {
+	machine, durableState, _ := startupCommittedState(t)
+	upstream, _, _ := startupCommittedState(t)
+	commit, err := upstream.Propose(Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 1,
+		Version: "v2", Payload: []byte(`{"mode":"enforce"}`), Nonce: "nonce-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upstream.InstallCommit(commit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := upstream.InstallLeadership(2, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	consensusState := upstream.Snapshot()
+	fence := FenceToken{
+		ClusterID: consensusState.ClusterID, LeaderID: consensusState.LeaderID, Epoch: consensusState.Epoch,
+		Revision: consensusState.Revision, Digest: consensusState.Desired.Digest, Nonce: "nonce-2",
+	}
+	log := []string{}
+	appendCount := 0
+	durable := &startupDurableFake{state: durableState, log: &log, append: func(got Commit) {
+		appendCount++
+		if !commitsEquivalent(got, commit) {
+			t.Errorf("recovered commit=%+v, want exact raft commit=%+v", got, commit)
+		}
+	}}
+	consensus := &startupConsensusFake{state: consensusState, commit: commit, log: &log}
+	result, err := Bootstrap(context.Background(), StartupOptions{
+		Profile: StorageProfileProduction, ClusterID: "cluster-a", Machine: machine,
+		Durable: durable, Consensus: consensus, Fencer: &startupFenceFake{token: fence, log: &log},
+		LeadershipCheckpoint: consensus,
+	})
+	if err != nil {
+		t.Fatalf("one-step exact recovery failed: %v", err)
+	}
+	if !result.Ready || result.State.Revision != 2 || result.State.LeaderID != "node-b" {
+		t.Fatalf("recovery result=%+v, want ready revision 2 on node-b", result)
+	}
+	if appendCount != 1 || durable.checkpoints != 1 {
+		t.Fatalf("recovery writes append=%d checkpoints=%d, want 1/1", appendCount, durable.checkpoints)
+	}
+}
+
+func TestBootstrapRejectsConsensusAheadCommitThatIsNotExact(t *testing.T) {
+	machine, durableState, _ := startupCommittedState(t)
+	upstream, _, _ := startupCommittedState(t)
+	commit, err := upstream.Propose(Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 1,
+		Version: "v2", Payload: []byte(`{"mode":"enforce"}`), Nonce: "nonce-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upstream.InstallCommit(commit); err != nil {
+		t.Fatal(err)
+	}
+	consensusState := upstream.Snapshot()
+	tampered := cloneCommit(commit)
+	tampered.State.UpdatedAt = commit.State.UpdatedAt.Add(-time.Second)
+	log := []string{}
+	appendCount := 0
+	result, err := Bootstrap(context.Background(), StartupOptions{
+		Profile: StorageProfileProduction, ClusterID: "cluster-a", Machine: machine,
+		Durable:   &startupDurableFake{state: durableState, log: &log, append: func(Commit) { appendCount++ }},
+		Consensus: &startupConsensusFake{state: consensusState, commit: tampered, log: &log},
+		Fencer:    &startupFenceFake{token: commit.Fence, log: &log},
+	})
+	if err == nil || !errors.Is(err, ErrStartupDiverged) {
+		t.Fatalf("non-exact recovery result=%+v err=%v, want ErrStartupDiverged", result, err)
+	}
+	if appendCount != 0 || !machine.Snapshot().WriteFrozen {
+		t.Fatalf("non-exact recovery performed durable write or unfreezed machine: append=%d state=%+v", appendCount, machine.Snapshot())
+	}
+}
+
+func TestBootstrapRejectsConsensusGapLargerThanOne(t *testing.T) {
+	machine, durableState, _ := startupCommittedState(t)
+	consensusState := durableState
+	consensusState.Revision = durableState.Revision + 2
+	log := []string{}
+	appendCount := 0
+	result, err := Bootstrap(context.Background(), StartupOptions{
+		Profile: StorageProfileProduction, ClusterID: "cluster-a", Machine: machine,
+		Durable:   &startupDurableFake{state: durableState, log: &log, append: func(Commit) { appendCount++ }},
+		Consensus: &startupConsensusFake{state: consensusState, log: &log},
+		Fencer:    &startupFenceFake{log: &log},
+	})
+	if err == nil || !errors.Is(err, ErrStartupDiverged) || result.Ready {
+		t.Fatalf("multi-revision gap result=%+v err=%v, want fail-closed divergence", result, err)
+	}
+	if appendCount != 0 {
+		t.Fatalf("multi-revision gap appended %d commits", appendCount)
 	}
 }
 
@@ -641,6 +758,10 @@ func TestBootstrapInitialStateCallsExternalAuthorizerBeforePersistence(t *testin
 
 func TestBootstrapRecoversInitialCommitFromConsensusIntoMissingDurableStore(t *testing.T) {
 	_, committed, _ := startupCommittedState(t)
+	exactCommit, err := startupCommitFromState(committed, "nonce-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	machine, err := NewStateMachine("cluster-a", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -650,7 +771,7 @@ func TestBootstrapRecoversInitialCommitFromConsensusIntoMissingDurableStore(t *t
 	durable := &startupDurableFake{log: &log, loadErr: ErrStateNotFound}
 	var appended Commit
 	durable.append = func(commit Commit) { appended = commit }
-	consensus := &startupConsensusFake{state: committed, log: &log}
+	consensus := &startupConsensusFake{state: committed, commit: exactCommit, log: &log}
 	fencer := &startupFenceFake{log: &log}
 	fencer.onEstablish = func(state State) { fencer.token = fenceForState(state) }
 	authorized := 0
@@ -664,6 +785,73 @@ func TestBootstrapRecoversInitialCommitFromConsensusIntoMissingDurableStore(t *t
 	}
 	if authorized != 1 || appended.State.Revision != 1 || appended.Fence.Nonce != request.Nonce || appended.State.Desired.Digest != request.Digest {
 		t.Fatalf("recovery authorization/appended commit mismatch: authorized=%d commit=%+v", authorized, appended)
+	}
+}
+
+func TestBootstrapRejectsInitialRecoveryWithoutExactConsensusCommit(t *testing.T) {
+	_, committed, _ := startupCommittedState(t)
+	machine, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &InitialStateRequest{
+		Version: committed.Desired.Version, Payload: append([]byte(nil), committed.Desired.Payload...), Digest: committed.Desired.Digest, Nonce: "nonce-1",
+		Confirmation: InitialStateConfirmation{ID: "confirmation-recover-missing", Actor: "admin", Reason: "recover initial commit"},
+	}
+	log := []string{}
+	appendCount := 0
+	result, err := Bootstrap(context.Background(), StartupOptions{
+		Profile: StorageProfileProduction, ClusterID: "cluster-a", Machine: machine,
+		Durable:   &startupDurableFake{log: &log, loadErr: ErrStateNotFound, append: func(Commit) { appendCount++ }},
+		Consensus: &startupConsensusFake{state: committed, log: &log}, Fencer: &startupFenceFake{log: &log}, InitialState: request,
+		InitialAuthorizer: startupInitialAuthorizerFunc(func(context.Context, InitialStateRequest) error { return nil }),
+	})
+	if err == nil || !errors.Is(err, ErrStartupDiverged) || result.Ready {
+		t.Fatalf("missing exact initial commit result=%+v err=%v, want fail-closed divergence", result, err)
+	}
+	if appendCount != 0 {
+		t.Fatalf("missing exact initial commit appended %d commits", appendCount)
+	}
+}
+
+func TestBootstrapRecoversExactInitialCommitBeforeLeadershipCheckpoint(t *testing.T) {
+	_, original, _ := startupCommittedState(t)
+	exactCommit, err := startupCommitFromState(original, "nonce-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := original
+	current.LeaderID = "node-b"
+	current.Term = original.Term + 1
+	current.Epoch = original.Epoch + 1
+	current.UpdatedAt = original.UpdatedAt.Add(time.Minute)
+	machine, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &InitialStateRequest{
+		Version: original.Desired.Version, Payload: append([]byte(nil), original.Desired.Payload...), Digest: original.Desired.Digest, Nonce: "nonce-1",
+		Confirmation: InitialStateConfirmation{ID: "confirmation-recover-leadership", Actor: "admin", Reason: "recover exact initial commit"},
+	}
+	log := []string{}
+	var appended Commit
+	durable := &startupDurableFake{log: &log, loadErr: ErrStateNotFound, append: func(commit Commit) { appended = cloneCommit(commit) }}
+	consensus := &startupConsensusFake{state: current, commit: exactCommit, log: &log}
+	fencer := &startupFenceFake{token: fenceForState(current), log: &log}
+	result, err := Bootstrap(context.Background(), StartupOptions{
+		Profile: StorageProfileProduction, ClusterID: "cluster-a", Machine: machine,
+		Durable: durable, Consensus: consensus, Fencer: fencer, InitialState: request,
+		InitialAuthorizer:    startupInitialAuthorizerFunc(func(context.Context, InitialStateRequest) error { return nil }),
+		LeadershipCheckpoint: consensus,
+	})
+	if err != nil || !result.Ready {
+		t.Fatalf("exact initial recovery with changed leadership failed: result=%+v err=%v", result, err)
+	}
+	if !commitsEquivalent(appended, exactCommit) {
+		t.Fatalf("durable append=%+v, want original raft commit=%+v", appended, exactCommit)
+	}
+	if durable.checkpoints != 1 || result.State.LeaderID != current.LeaderID || result.State.Term != current.Term || result.State.Epoch != current.Epoch {
+		t.Fatalf("checkpoint/result mismatch: checkpoints=%d result=%+v", durable.checkpoints, result)
 	}
 }
 
