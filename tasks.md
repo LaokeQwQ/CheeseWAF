@@ -1530,3 +1530,38 @@ Dependabot 只读审计显示没有开放依赖 PR；Plugin/Docs 的独立审查
 - `CheeseSec_Docs` 本地 `main` 新增 `ecc63d5 ci: add weekly dependabot updates`，针对实际存在的根 `go.mod` 和 GitHub Actions 配置，每周更新、目标分支 `main`；YAML 字段断言、`go mod verify` 和 `git diff --check` 通过，未 push。
 
 边界：本条只记录本地证据，不自动创建 Cloudflare 资源、不使用未提供的凭据、不推送外部仓库；Plugin/Plugin Docs 的独立 code-owner 审查与 Pages 生产资源仍是外部交付阻塞。
+
+### 2026-09-21 temporary-network production composition seam
+
+范围：把 temporary-online 的现有一次性生命周期收敛到生产组合根的显式 provider 边界；不把
+本地 broker、`AllowLocalWithoutManagementSession` 或裸 CWEDP HTTP adapter 当作生产能力，也不修改
+验收矩阵的 `implemented` 状态。
+
+已完成：
+
+- `ProductionDependencyFactory` 新增显式 `OpenTemporaryNetwork` provider；默认 factory 不提供该
+  provider，生产启动因此继续 fail-closed。
+- provider 输入绑定已打开的 management store、control-plane policy epoch、严格非空
+  `ManagementSessionID` 和 `DurableAuditSink`；缺失、错绑或非 durable 审计均拒绝。
+- `ProductionServeWiring` 只向 serving layer 暴露一次性 `TemporaryHTTPExecutor` 与由
+  `NewHTTPAdapter` 生成的 lease-bound CWEDP adapter，不暴露 broker、socket 或可复用 HTTP client。
+- provider 输出由 `ProductionTemporaryNetworkWiring` 持有并幂等清理；启动失败、serve wiring 拒绝和
+  正常关闭都走同一 cleanup 路径。
+- `transport.ValidateLeaseBoundAdapter` 拒绝任意伪造/离线 adapter 进入该 production seam；现有
+  `Puller` 生命周期没有被扩张，避免把 response body 关闭误写成 lease/session 已撤销。
+
+验证证据：
+
+- `go test ./internal/cli ./internal/cwedp/transport -count=1`：通过。
+- `go test -race ./internal/cli ./internal/cwedp/transport -count=1`：通过。
+- `go vet ./internal/cli ./internal/cwedp/transport`：通过。
+- `go test ./... -count=1 -timeout=600s`：通过。
+- `go test -race ./internal/ai ./internal/api ./internal/api/handler ./internal/controlplane/desiredstate ./internal/cli ./internal/cwedp/transport -count=1 -timeout=600s`：通过。
+- `go vet ./...`、CodeQL Go extraction、`bash scripts/ci/verify-ci-static.sh`：通过。
+- `bash scripts/acceptance/acceptance-matrix_test.sh`：通过；静态矩阵仍为 19 passed / 4 failed /
+  0 skipped，失败仍是 migration/session、CRP activation、CRP rollback 和 temporary-network
+  production lifecycle。
+
+边界：该提交（`8aa97237`）只是 production composition seam，不是外部控制面、持久租约 provider、
+CRP sidecar 或空网演练的完成证明。当前分支仍未 push、未创建 PR、未晋升 master、未发行新版；既有
+正式 `v0.3.9` 标签和发布资产保持不变。
