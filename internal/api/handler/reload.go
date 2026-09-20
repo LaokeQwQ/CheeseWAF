@@ -116,7 +116,7 @@ func (h *Handler) applyLiveRuntime(candidate *config.Config) error {
 		}
 	}
 	if h.OnProtectionChanged != nil {
-		if err := h.OnProtectionChanged(candidate.Protection); err != nil {
+		if err := h.ApplyProtectionRuntime(candidate); err != nil {
 			return err
 		}
 	}

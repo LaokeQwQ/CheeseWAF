@@ -614,10 +614,7 @@ func (h *Handler) commitProtectionConfig(next config.ProtectionConfig) error {
 			return nil
 		},
 		func(candidate *config.Config) error {
-			if h.OnProtectionChanged == nil {
-				return nil
-			}
-			return h.OnProtectionChanged(candidate.Protection)
+			return h.ApplyProtectionRuntime(candidate)
 		},
 	)
 	return err

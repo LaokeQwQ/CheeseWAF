@@ -92,9 +92,7 @@ func (h *Handler) Protection(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) commitProtectionMutation(w http.ResponseWriter, mutate func(*config.ProtectionConfig) error) (*config.Config, bool) {
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		return mutate(&candidate.Protection)
-	}, func(candidate *config.Config) error {
-		return h.notifyProtectionConfigChanged(candidate.Protection)
-	})
+	}, h.ApplyProtectionRuntime)
 	if err == nil {
 		return committed, true
 	}

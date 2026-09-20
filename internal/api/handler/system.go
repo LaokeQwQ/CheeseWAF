@@ -349,7 +349,7 @@ func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config
 		}
 	}
 	if req.Protection != nil {
-		if err := h.notifyProtectionConfigChanged(candidate.Protection); err != nil {
+		if err := h.ApplyProtectionRuntime(candidate); err != nil {
 			return err
 		}
 	}
