@@ -112,7 +112,12 @@
   field-presence-aware patch。Handler 不接受客户端的 leader/epoch/revision/nonce，不读取本地
   YAML 生成 proposal，也不回显内部 commit/nonce；未注入 consumer 时两个入口均返回
   `503 PROTECTION_POLICY_UNAVAILABLE`，不会回退到旧的本地写入。这个 seam 只约束调用边界，
-  不等于生产控制面已接线。
+  不等于生产控制面已接线；若本地配置冻结或集群保护模式先命中，HTTP/AI 仍按既有的
+  `423`/保护模式错误优先返回，再到 consumer 缺失检查。
+- AI 入口在 consumer 提供 `ProtectionPolicyCoordinatorPreviewConsumer` 时，会把审批 diff
+  绑定到控制面预览快照。绑定值只用于服务端审批摘要校验，不展示给操作员；执行前重新取得
+  绑定，若控制面状态已经变化则以 `preview is stale` fail-closed，禁止把旧 diff 套到新状态。
+  已接线 consumer 若不支持预览绑定，AI 入口拒绝执行，不回退到本地预览。
 - 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
   wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。
@@ -126,5 +131,5 @@
 编码器的定向测试覆盖规范字节、摘要、重复键、未知字段、尾随文档、缺失字段、非法枚举、
 大小和 UTF-8 边界，以及导出文档的二次检查。Handler 定向测试覆盖 consumer 缺失时的
 fail-closed、主体与 patch 透传、客户端 fencing 字段不生效、响应不泄露 nonce/commit，以及
-AI 入口复用同一个 consumer。真实 API、物化器和跨存储恢复测试完成后，才能把这个配置修改
+AI 入口复用同一个 consumer、控制面预览漂移拒绝。真实 API、物化器和跨存储恢复测试完成后，才能把这个配置修改
 标记为可用于生产环境。

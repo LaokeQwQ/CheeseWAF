@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -34,11 +36,76 @@ func (s *protectionPolicyMutatorStub) Prepare(current config.ProtectionPolicyCon
 }
 
 type protectionPolicyCoordinatorStub struct {
-	actor   string
-	patch   desiredstate.ProtectionPolicyPatch
-	result  desiredstate.ProtectionPolicyCoordinationResult
-	err     error
-	handler *Handler
+	actor                string
+	patch                desiredstate.ProtectionPolicyPatch
+	result               desiredstate.ProtectionPolicyCoordinationResult
+	err                  error
+	handler              *Handler
+	applyCalls           int
+	previewActorOverride *string
+}
+
+type writeOnlyProtectionPolicyCoordinatorStub struct{}
+
+func (writeOnlyProtectionPolicyCoordinatorStub) ProposeAndApply(context.Context, string, desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationResult, error) {
+	return desiredstate.ProtectionPolicyCoordinationResult{}, nil
+}
+
+func testProtectionPolicyPreviewBinding(before, after config.ProtectionPolicyConfig) string {
+	raw, _ := json.Marshal(struct {
+		Before config.ProtectionPolicyConfig `json:"before"`
+		After  config.ProtectionPolicyConfig `json:"after"`
+	}{Before: before, After: after})
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *protectionPolicyCoordinatorStub) preview(actor string, patch desiredstate.ProtectionPolicyPatch) desiredstate.ProtectionPolicyCoordinationPreview {
+	if s.previewActorOverride != nil {
+		actor = *s.previewActorOverride
+	}
+	var before config.ProtectionPolicyConfig
+	if s.handler != nil && s.handler.currentConfig() != nil {
+		before = s.handler.currentConfig().Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	} else {
+		before = s.result.Mutation.Before
+	}
+	after := before
+	if patch.WebAttack != nil {
+		after.WebAttack = *patch.WebAttack
+	}
+	if patch.APISecurity != nil {
+		after.APISecurity = *patch.APISecurity
+	}
+	if patch.BotCC != nil {
+		after.BotCC = *patch.BotCC
+	}
+	if patch.ThreatIntel != nil {
+		after.ThreatIntel = *patch.ThreatIntel
+	}
+	return desiredstate.ProtectionPolicyCoordinationPreview{
+		Mutation: desiredstate.ProtectionPolicyMutation{Actor: actor, Before: before, After: after},
+		Binding:  testProtectionPolicyPreviewBinding(before, after),
+	}
+}
+
+func (s *protectionPolicyCoordinatorStub) Preview(_ context.Context, actor string, patch desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationPreview, error) {
+	if s.err != nil {
+		return desiredstate.ProtectionPolicyCoordinationPreview{}, s.err
+	}
+	return s.preview(actor, patch), nil
+}
+
+func (s *protectionPolicyCoordinatorStub) ProposeAndApplyWithPreview(ctx context.Context, actor string, patch desiredstate.ProtectionPolicyPatch, binding string) (desiredstate.ProtectionPolicyCoordinationResult, error) {
+	preview, err := s.Preview(ctx, actor, patch)
+	if err != nil {
+		return desiredstate.ProtectionPolicyCoordinationResult{}, err
+	}
+	if binding != preview.Binding {
+		return desiredstate.ProtectionPolicyCoordinationResult{}, errors.New("test control-plane preview binding is stale")
+	}
+	s.applyCalls++
+	return s.ProposeAndApply(ctx, actor, patch)
 }
 
 func (s *protectionPolicyCoordinatorStub) ProposeAndApply(_ context.Context, actor string, patch desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationResult, error) {

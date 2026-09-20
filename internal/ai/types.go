@@ -79,6 +79,35 @@ type ToolPreviewer interface {
 	Preview(ctx context.Context, args map[string]any) (string, error)
 }
 
+// ToolPreviewResolver returns the operator-visible diff and an optional
+// opaque binding used to revalidate the exact state observed during preview.
+// The binding is never shown to the operator; it is only persisted as a
+// digest by the approval store and compared again immediately before execute.
+// Tools that read a durable control-plane snapshot should implement this
+// instead of relying on a local configuration-only preview.
+type ToolPreviewResolver interface {
+	ResolvePreview(ctx context.Context, args map[string]any) (diff string, binding string, err error)
+}
+
+type toolPreviewBindingContextKey struct{}
+
+// ContextWithToolPreviewBinding carries an opaque, server-created preview
+// binding from approval revalidation into the corresponding tool execution.
+// It is deliberately not serializable or operator-controlled.
+func ContextWithToolPreviewBinding(ctx context.Context, binding string) context.Context {
+	return context.WithValue(ctx, toolPreviewBindingContextKey{}, binding)
+}
+
+// ToolPreviewBindingFromContext returns the preview binding attached by the
+// assistant approval flow, if any.
+func ToolPreviewBindingFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	binding, _ := ctx.Value(toolPreviewBindingContextKey{}).(string)
+	return binding
+}
+
 // ToolPermissioner declares an additional RBAC permission required by a tool.
 // The assistant keeps the declaration optional so existing tools remain
 // compatible while sensitive data readers can enforce their own scope.

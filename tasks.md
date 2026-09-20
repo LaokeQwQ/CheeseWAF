@@ -1438,7 +1438,11 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
   已注入时只透传 authenticated claims 的原始 `Subject` 和 patch。客户端提交的
   `leader_id`、`expected_epoch`、`expected_revision`、`nonce` 等字段不会进入 patch，也不会被响应回显。
 - AI `set_protection_level` 在显式审批成功后复用同一个 consumer；缺少认证 actor 或 consumer
-  时 fail-closed，不再调用本地 `commitProtectionConfig`。`Preview` 仍是纯本地 diff，不提交控制面。
+  时 fail-closed，不再调用本地 `commitProtectionConfig`。未接线 consumer 时 `Preview` 仍只用于
+  本地待审批展示；提供预览能力的 consumer 则返回控制面绑定快照。
+- 当 consumer 提供 `ProtectionPolicyCoordinatorPreviewConsumer` 时，AI 审批 diff 绑定到控制面
+  预览快照；执行前重新校验 opaque binding。控制面状态在审批后变化时，审批以 `preview is stale`
+  拒绝，且不调用策略 consumer。已接线 consumer 若不支持预览绑定，AI 入口 fail-closed。
 - 新增 Handler/AI 回归：consumer 缺失、主体/patch 透传、客户端 fencing 字段隔离、响应不泄露
   nonce/commit，以及测试 consumer 下的审批执行和 stream 结果。
 
@@ -1446,7 +1450,12 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
 
 - `gofmt -w internal/api/handler/... internal/api/router.go`
 - `go test ./internal/api/handler ./internal/api -count=1`：通过。
-- `git diff --check`：待本轮最终静态门禁一并复核。
+- `go test ./internal/ai ./internal/controlplane/desiredstate ./internal/api/handler -count=1`：预览绑定与漂移拒绝回归通过。
+- `go test ./... -count=1 -timeout=600s`：全仓通过。
+- `go test -race ./internal/ai ./internal/api/handler ./internal/api ./internal/controlplane/desiredstate -count=1 -timeout=420s`：通过。
+- `go vet ./internal/ai ./internal/api/handler ./internal/api ./internal/controlplane/desiredstate`：通过。
+- `bash scripts/ci/verify-ci-static.sh`：通过。
+- `git diff --check`：通过。
 
 边界：这只是调用边界 contract。当前 `internal/cli/service.go` 仍未向 `api.NewRouter` 注入真实
 consumer，生产 `WireServe` 继续缺依赖即拒绝；四项 acceptance blocker、验收矩阵的

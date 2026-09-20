@@ -23,6 +23,15 @@ type ProtectionPolicyCoordinationResult struct {
 	Commit   controlplane.Commit
 }
 
+// ProtectionPolicyCoordinationPreview is an operator-visible mutation
+// preview plus an opaque server-created binding. The binding is persisted only
+// through the AI approval digest and must be checked again by the lifecycle
+// owner immediately before applying the patch.
+type ProtectionPolicyCoordinationPreview struct {
+	Mutation ProtectionPolicyMutation
+	Binding  string
+}
+
 // ProtectionPolicyCoordinatorService is the control-plane consumer for the
 // pure protection-policy mutator. It intentionally has no HTTP, Handler,
 // runtime, YAML or materializer dependency. The actor lives only in the

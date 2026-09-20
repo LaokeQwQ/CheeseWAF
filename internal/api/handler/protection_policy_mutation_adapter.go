@@ -22,6 +22,11 @@ var ErrProtectionPolicyMutationUnavailable = errors.New("protection policy mutat
 // YAML/runtime writer.
 var ErrProtectionPolicyCoordinatorUnavailable = errors.New("protection policy coordinator consumer is unavailable")
 
+// ErrProtectionPolicyCoordinatorPreviewUnavailable indicates that a wired
+// policy consumer cannot bind an AI approval to a control-plane snapshot.
+// The AI path must refuse the mutation rather than fall back to a local diff.
+var ErrProtectionPolicyCoordinatorPreviewUnavailable = errors.New("protection policy coordinator preview is unavailable")
+
 // ProtectionPolicyCoordinatorConsumer owns the complete protection-policy
 // lifecycle after an authenticated caller supplies a field-presence patch:
 // control-plane snapshot/fencing, nonce generation, consensus + durable
@@ -33,6 +38,16 @@ var ErrProtectionPolicyCoordinatorUnavailable = errors.New("protection policy co
 // local configuration snapshot.
 type ProtectionPolicyCoordinatorConsumer interface {
 	ProposeAndApply(context.Context, string, desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationResult, error)
+}
+
+// ProtectionPolicyCoordinatorPreviewConsumer extends the write consumer with
+// a snapshot-bound preview and an apply method that enforces its opaque
+// binding. This prevents an approved AI diff from silently applying to a
+// newer control-plane state.
+type ProtectionPolicyCoordinatorPreviewConsumer interface {
+	ProtectionPolicyCoordinatorConsumer
+	Preview(context.Context, string, desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationPreview, error)
+	ProposeAndApplyWithPreview(context.Context, string, desiredstate.ProtectionPolicyPatch, string) (desiredstate.ProtectionPolicyCoordinationResult, error)
 }
 
 func (h *Handler) protectionPolicyCoordinatorOrError(w http.ResponseWriter) ProtectionPolicyCoordinatorConsumer {

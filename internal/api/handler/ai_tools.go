@@ -583,6 +583,44 @@ func (t setProtectionLevelTool) Preview(_ context.Context, args map[string]any) 
 	return diffJSON(before, after)
 }
 
+// ResolvePreview binds the approval preview to a control-plane snapshot when
+// the lifecycle owner provides that stronger seam. A nil consumer keeps the
+// existing local preview for pending-approval UX, but a wired consumer that
+// cannot bind previews fails closed rather than approving a drifting diff.
+func (t setProtectionLevelTool) ResolvePreview(ctx context.Context, args map[string]any) (string, string, error) {
+	patch, _, _, err := t.protectionPolicyPatch(args)
+	if err != nil {
+		return "", "", err
+	}
+	if t.Handler == nil || t.Handler.protectionPolicyCoordinator == nil {
+		diff, err := t.Preview(ctx, args)
+		return diff, diff, err
+	}
+	consumer, ok := t.Handler.protectionPolicyCoordinator.(ProtectionPolicyCoordinatorPreviewConsumer)
+	if !ok {
+		return "", "", ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	actor := ai.ApprovalActorFromContext(ctx)
+	if !controlplane.ValidIdentity(actor.Subject) {
+		return "", "", fmt.Errorf("protection policy preview requires an authenticated actor")
+	}
+	preview, err := consumer.Preview(ctx, actor.Subject, patch)
+	if err != nil {
+		return "", "", err
+	}
+	diff, err := diffJSON(preview.Mutation.Before, preview.Mutation.After)
+	if err != nil {
+		return "", "", err
+	}
+	if preview.Mutation.Actor != actor.Subject {
+		return "", "", fmt.Errorf("protection policy coordinator returned an invalid preview actor binding")
+	}
+	if preview.Binding == "" {
+		return "", "", ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	return diff, preview.Binding, nil
+}
+
 func (t setProtectionLevelTool) Execute(ctx context.Context, args map[string]any) (*ai.ToolResult, error) {
 	patch, _, _, err := t.protectionPolicyPatch(args)
 	if err != nil {
@@ -598,7 +636,15 @@ func (t setProtectionLevelTool) Execute(ctx context.Context, args map[string]any
 	if t.Handler == nil || t.Handler.protectionPolicyCoordinator == nil {
 		return nil, ErrProtectionPolicyCoordinatorUnavailable
 	}
-	result, err := t.Handler.protectionPolicyCoordinator.ProposeAndApply(ctx, actor.Subject, patch)
+	consumer, ok := t.Handler.protectionPolicyCoordinator.(ProtectionPolicyCoordinatorPreviewConsumer)
+	if !ok {
+		return nil, ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	binding := ai.ToolPreviewBindingFromContext(ctx)
+	if binding == "" {
+		return nil, ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	result, err := consumer.ProposeAndApplyWithPreview(ctx, actor.Subject, patch, binding)
 	if err != nil {
 		return nil, err
 	}
