@@ -104,6 +104,9 @@
 - 已补充纯 Coordinator consumer：`ProtectionPolicyCoordinatorService` 组合上述 mutator 与
   `Coordinator.ProposeAndApply`，保留 actor 仅供授权/审计，返回 exact commit 供持久化失败后用
   `Apply` 重试；它不依赖 Handler、HTTP、AI、YAML、runtime 或 materializer，缺依赖即拒绝构造。
+- 已补充本地跨层回归：真实 Coordinator consumer 生成的 commit 交给真实
+  `ProtectionPolicyApplier`，验证 YAML/runtime callback 顺序、exact materialization retry 幂等、
+  journal `applied` 以及 DSN、路径和节点 secret 等本地字段不被 desired-state 覆盖。
 - 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
   wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。

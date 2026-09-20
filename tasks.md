@@ -1407,10 +1407,15 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
   canonical proposal 交给 `Coordinator.ProposeAndApply`，并保留持久化失败返回的 exact commit，
   让上层通过 `Apply` 原样重试而不生成第二个 nonce/revision。Coordinator 重试安装 commit 后仍
   保持 `WriteFrozen`，必须由上层显式恢复写入；服务不自动放宽该边界。
+- 新增 `internal/controlplane/materializer/coordinator_integration_test.go`：用内存 consensus/durable
+  seam 串起真实 Coordinator consumer 与 `ProtectionPolicyApplier`，验证提交后的四轴策略只写入
+  节点策略字段，保留 DSN、路径和 Bot secret，journal 最终为 `applied`，同一 commit 重试不重复
+  YAML/runtime callback。
 
 验证证据：
 
 - `go test ./internal/controlplane/desiredstate -count=1`：通过。
+- `go test ./internal/controlplane/materializer -count=1`：通过。
 - `go test -race ./internal/controlplane/desiredstate -count=1`：通过。
 - `go vet ./internal/controlplane/desiredstate`：通过。
 - `git diff --check`：通过。
