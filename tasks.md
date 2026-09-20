@@ -1488,3 +1488,34 @@ validator 和 policy epoch 收敛到一个不可拆分的 `ProductionServeWiring
 consumer、策略 coordinator/materializer、迁移切换与隔离 PG/Redis/native-raft/Approval 端到端
 证据；acceptance 仍保留 migration/session、CRP activation/rollback 和 temporary-network 四项
 阻塞，`v0.3.9`、远端分支和稳定版发行均未改动。
+
+### 2026-09-20 production wiring compatibility and epoch fence follow-up
+
+范围：收口组合根审查指出的两个 P1 缺口，不启用默认 production `WireServe`，不移动或重打既有
+`v0.3.9` 标签。
+
+已完成：
+
+- 保留导出的旧 `ProductionDependencyFactory.WireServe(context.Context, *ProductionDependencies)`
+  入口，新增首选的 `WireServeWithWiring(context.Context, ProductionServeWiring)`；两者同时配置或
+  都未配置时均 fail-closed，避免嵌入式 launcher 被无意破坏。
+- `ApprovalHTTPHandler.PolicyEpoch()` 直接读取真实 Gate 的当前 fencing epoch；`ServeWiring()`
+  同时校验 provider、handler Gate 与 control-plane startup snapshot，且继续校验 ApprovalHTTP
+  的 Session validator 与 management store 为同一实例。
+- 回归覆盖 typed/legacy wiring、冲突 callback、Gate epoch 漂移和 cleanup；默认 factory 仍不提供
+  serve callback。
+
+验证证据：
+
+- `go test ./... -count=1 -timeout=600s`：通过。
+- `go test -race ./internal/ai ./internal/api ./internal/api/handler ./internal/controlplane/desiredstate ./internal/cli -count=1 -timeout=600s`：通过。
+- `go vet ./...`：通过。
+- `GOCACHE=/tmp/cheesewaf-codeql-gocache-52bb7045 bash scripts/ci/codeql-go-extract.sh`：通过。
+- `bash scripts/ci/verify-ci-static.sh`：通过（脚本中的 `::error::` 为既有负向回归样例，最终退出码为 0）。
+- `bash scripts/acceptance/acceptance-matrix_test.sh`：通过；静态矩阵保持 19 passed / 4 failed / 0 skipped，
+  失败仍为 migration/session、CRP activation、CRP rollback 和 temporary-network production evidence。
+
+边界：当前分支仅在本地隔离工作树，未 push、未创建 PR、未晋升 master、未发行新版；既有正式
+`v0.3.9` 发行谱系保持不变。CheeseSec_Plugin、CheeseSec_Plugin_Docs 和 CheeseSec_Docs 的
+Dependabot 只读审计显示没有开放依赖 PR；Plugin/Docs 的独立审查与 Cloudflare Pages/Workers
+生产资源仍是外部交付事项，不能用本地提交替代。
