@@ -88,6 +88,11 @@
   审计记录，再通过受控恢复流程修复；该状态不能作为自动重试成功的证据。runtime callback 已
   产生副作用后即使 context 被取消，也会使用不可取消的继续上下文尝试补偿；补偿目标不可证明
   或补偿失败时写入 `compensation_pending`；上层协调器必须据此冻结后续写入。
+- 已完成本地 Handler/CLI 适配 contract：`Handler.ConfigSnapshot`、
+  `Handler.PersistMaterializedConfig` 和 `NewProtectionPolicyMaterializer` 已将节点本地
+  YAML、runtime callback、journal/LKG 组合为可测试的单节点物化器。适配器要求真实的
+  `OnProtectionChanged` 回调和运行目录，缺失时 fail-closed；它不会发布 Handler 内存快照，
+  也不会自行创建 proposal。
 - 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
   wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。

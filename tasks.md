@@ -1345,3 +1345,33 @@ endpoint、PG、Redis 或默认 `WireServe`。
 
 未完成：生产 wiring、真实 YAML/runtime/rollback adapter、Coordinator/endpoint 接入和默认 `WireServe`；
 `v0.3.9` 未移动或改写。
+
+### 2026-09-20 Handler/CLI materializer adapter contract
+
+范围：把节点本地物化器与现有 Handler 的配置快照、YAML 持久化和 protection runtime callback
+组合起来，验证这一层可以被未来的 Coordinator consumer 调用；本轮不改变生产 `WireServe`、
+`PUT /api/protection/policy` 或 AI 写路径。
+
+实际改动：
+
+- 新增 `internal/cli/materializer_adapter.go`。`NewProtectionPolicyMaterializer` 要求非空
+  Handler、真实 `OnProtectionChanged` callback 和运行目录；journal 固定落在
+  `<runtime>/materializer`，缺少任一条件即拒绝构造。
+- 新增 `internal/cli/materializer_adapter_test.go`。真实 `StateMachine` 生成 exact commit，
+  经过 Handler 的 ConfigSnapshot/PersistMaterializedConfig/ApplyProtectionRuntime 完成 YAML、
+  runtime callback、journal/LKG；相同 commit 重试不会重复 runtime side effect，receipt 不含
+  DSN、证书路径或本地 secret，Handler 内存配置不会被 persistence-only adapter 发布。
+- 修复 `scripts/ci/codeql-go-extract.sh` 的 fail-open：默认包或已发现的 `captchae2e` 包在
+  单包测试提取失败、构建失败时返回非零；只有确实未发现可选包时才跳过该组。
+
+验证证据：
+
+- `go test ./internal/cli ./internal/api/handler ./internal/controlplane/... -count=1` 通过。
+- `bash scripts/ci/codeql-go-extract.sh` 通过，覆盖默认与 `captchae2e` 提取；输出包含
+  `internal/cli`、`internal/controlplane/materializer` 和 e2e fixture 的成功编译。
+- `bash -n scripts/ci/codeql-go-extract.sh`、`git diff --check` 通过。
+
+当前边界：`PUT /api/protection/policy` 与 AI `setProtectionLevel` 仍走旧的本地
+`commitConfigMutation`，没有 Coordinator proposal、exact commit materializer replay 或生产
+consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 production blocker、
+`v0.3.9` 标签和外部仓库状态均未改写。
