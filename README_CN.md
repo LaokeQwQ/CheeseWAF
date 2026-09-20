@@ -231,7 +231,11 @@ sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
 sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 sudo cp -R web/dist/. /usr/share/cheesewaf/web/
-sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+# 仅在运行时配置不存在时初始化一次；之后只编辑运行时副本，
+# 不要修改版本库中的 configs/cheesewaf.yaml 模板。
+if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
+  sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+fi
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
