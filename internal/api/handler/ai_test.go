@@ -1347,14 +1347,17 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 	var reloaded bool
+	coordinator := &protectionPolicyCoordinatorStub{}
 	handler := New(Options{
-		Config:     &cfg,
-		ConfigPath: configPath,
+		Config:                      &cfg,
+		ConfigPath:                  configPath,
+		ProtectionPolicyCoordinator: coordinator,
 		OnProtectionChanged: func(config.ProtectionConfig) error {
 			reloaded = true
 			return nil
 		},
 	})
+	coordinator.handler = handler
 	router := chi.NewRouter()
 	router.Post("/execute", handler.ExecuteAITool)
 	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
@@ -1501,6 +1504,18 @@ func TestAIProtectionToolDoesNotPublishConfigWhenRuntimeRejects(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Protection.Policy, before) {
 		t.Fatalf("config changed after runtime failure: before=%+v after=%+v", before, cfg.Protection.Policy)
+	}
+}
+
+func TestAIProtectionToolFailsClosedWithoutCoordinatorOrActor(t *testing.T) {
+	cfg := config.Default()
+	tool := setProtectionLevelTool{Handler: New(Options{Config: &cfg})}
+	if _, err := tool.Execute(context.Background(), map[string]any{"area": "bot_cc", "level": "high"}); err == nil || !strings.Contains(err.Error(), "authenticated actor") {
+		t.Fatalf("missing actor did not fail closed: %v", err)
+	}
+	ctx := ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "operator-a", SessionID: "session-a", Role: "admin"})
+	if _, err := tool.Execute(ctx, map[string]any{"area": "bot_cc", "level": "high"}); !errors.Is(err, ErrProtectionPolicyCoordinatorUnavailable) {
+		t.Fatalf("missing coordinator error = %v, want %v", err, ErrProtectionPolicyCoordinatorUnavailable)
 	}
 }
 
@@ -1843,7 +1858,9 @@ func newAIApprovalStreamFixture(t *testing.T, mutate func(*config.Config)) aiApp
 		t.Fatalf("save config: %v", err)
 	}
 	store := ai.NewApprovalStore()
-	handler := New(Options{Config: &cfg, ConfigPath: configPath, AssistantApprovals: store})
+	coordinator := &protectionPolicyCoordinatorStub{}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath, AssistantApprovals: store, ProtectionPolicyCoordinator: coordinator})
+	coordinator.handler = handler
 	router := chi.NewRouter()
 	router.Get("/tools", handler.AITools)
 	router.Post("/execute", handler.ExecuteAITool)

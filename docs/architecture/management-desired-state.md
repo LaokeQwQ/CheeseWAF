@@ -107,6 +107,12 @@
 - 已补充本地跨层回归：真实 Coordinator consumer 生成的 commit 交给真实
   `ProtectionPolicyApplier`，验证 YAML/runtime callback 顺序、exact materialization retry 幂等、
   journal `applied` 以及 DSN、路径和节点 secret 等本地字段不被 desired-state 覆盖。
+- 已补充 Handler-facing 的高层 consumer seam：HTTP `PUT /protection/policy` 与 AI
+  `set_protection_level` 只能向注入的 `ProtectionPolicyCoordinatorConsumer` 传递认证主体和
+  field-presence-aware patch。Handler 不接受客户端的 leader/epoch/revision/nonce，不读取本地
+  YAML 生成 proposal，也不回显内部 commit/nonce；未注入 consumer 时两个入口均返回
+  `503 PROTECTION_POLICY_UNAVAILABLE`，不会回退到旧的本地写入。这个 seam 只约束调用边界，
+  不等于生产控制面已接线。
 - 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
   wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。
@@ -118,5 +124,7 @@
 ## 验收证据
 
 编码器的定向测试覆盖规范字节、摘要、重复键、未知字段、尾随文档、缺失字段、非法枚举、
-大小和 UTF-8 边界，以及导出文档的二次检查。真实 API、物化器和跨存储恢复测试完成后，
-才能把这个配置修改标记为可用于生产环境。
+大小和 UTF-8 边界，以及导出文档的二次检查。Handler 定向测试覆盖 consumer 缺失时的
+fail-closed、主体与 patch 透传、客户端 fencing 字段不生效、响应不泄露 nonce/commit，以及
+AI 入口复用同一个 consumer。真实 API、物化器和跨存储恢复测试完成后，才能把这个配置修改
+标记为可用于生产环境。

@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"net/http"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 )
 
@@ -11,6 +15,61 @@ import (
 // this error keeps future adapters fail-closed instead of silently falling
 // back to the legacy local config writer.
 var ErrProtectionPolicyMutationUnavailable = errors.New("protection policy mutation service is unavailable")
+
+// ErrProtectionPolicyCoordinatorUnavailable indicates that the end-to-end
+// control-plane consumer was not deliberately wired. HTTP and AI write paths
+// must surface this as unavailable instead of falling back to the node-local
+// YAML/runtime writer.
+var ErrProtectionPolicyCoordinatorUnavailable = errors.New("protection policy coordinator consumer is unavailable")
+
+// ProtectionPolicyCoordinatorConsumer owns the complete protection-policy
+// lifecycle after an authenticated caller supplies a field-presence patch:
+// control-plane snapshot/fencing, nonce generation, consensus + durable
+// commit, and node-local materialization. Handler must not implement any of
+// those steps or accept fencing metadata from the request body.
+//
+// The returned mutation is the non-sensitive policy result. Implementations
+// must not require the caller to provide a nonce, leader, epoch, revision, or
+// local configuration snapshot.
+type ProtectionPolicyCoordinatorConsumer interface {
+	ProposeAndApply(context.Context, string, desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationResult, error)
+}
+
+func (h *Handler) protectionPolicyCoordinatorOrError(w http.ResponseWriter) ProtectionPolicyCoordinatorConsumer {
+	if h == nil || h.protectionPolicyCoordinator == nil {
+		writeError(w, http.StatusServiceUnavailable, "PROTECTION_POLICY_UNAVAILABLE", ErrProtectionPolicyCoordinatorUnavailable.Error())
+		return nil
+	}
+	return h.protectionPolicyCoordinator
+}
+
+func protectionPolicyActorFromRequest(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil || !controlplane.ValidIdentity(claims.Subject) {
+		return "", false
+	}
+	return claims.Subject, true
+}
+
+func writeProtectionPolicyCoordinatorError(w http.ResponseWriter, err error) {
+	status := http.StatusServiceUnavailable
+	code := "PROTECTION_POLICY_UNAVAILABLE"
+	if errors.Is(err, controlplane.ErrInvalidProposal) {
+		status = http.StatusBadRequest
+		code = "PROTECTION_POLICY_INVALID"
+	} else if errors.Is(err, controlplane.ErrNotLeader) ||
+		errors.Is(err, controlplane.ErrStaleEpoch) ||
+		errors.Is(err, controlplane.ErrStaleRevision) ||
+		errors.Is(err, controlplane.ErrStaleFence) ||
+		errors.Is(err, controlplane.ErrWritesFrozen) {
+		status = http.StatusConflict
+		code = "PROTECTION_POLICY_CONFLICT"
+	}
+	writeError(w, status, code, err.Error())
+}
 
 // PrepareProtectionPolicyMutation prepares a desired-state proposal from the
 // handler's immutable policy snapshot. This method has no persistence,

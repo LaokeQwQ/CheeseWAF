@@ -134,9 +134,14 @@ type Handler struct {
 	// router. A later lifecycle owner may inject the side-effect-free desired
 	// state seam after coordinator/materializer submission is complete.
 	protectionPolicyMutator desiredstate.ProtectionPolicyMutator
-	OnAPISecChanged         func(config.APISecConfig) error
-	OnBlockPageChanged      func(config.BlockPageConfig) error
-	OnTimeSyncChanged       func(config.TimeSyncConfig) error
+	// protectionPolicyCoordinator is intentionally nil in the current
+	// production router. A lifecycle owner must inject the complete
+	// control-plane/consensus/materializer consumer before policy writes are
+	// enabled; nil is fail-closed.
+	protectionPolicyCoordinator ProtectionPolicyCoordinatorConsumer
+	OnAPISecChanged             func(config.APISecConfig) error
+	OnBlockPageChanged          func(config.BlockPageConfig) error
+	OnTimeSyncChanged           func(config.TimeSyncConfig) error
 }
 
 type captchaAssetRuntime struct {
@@ -362,6 +367,7 @@ type Options struct {
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
 	ProtectionPolicyMutator             desiredstate.ProtectionPolicyMutator
+	ProtectionPolicyCoordinator         ProtectionPolicyCoordinatorConsumer
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
@@ -464,6 +470,7 @@ func New(opts Options) *Handler {
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
 		protectionPolicyMutator:             opts.ProtectionPolicyMutator,
+		protectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,

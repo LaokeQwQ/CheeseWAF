@@ -1424,3 +1424,31 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
 真实 YAML/runtime/rollback adapter、生产 `WireServe` 和跨存储故障注入仍未完成。验收矩阵中的 production serve migration/session、CRP activation/rollback
 和 temporary-network 四项 blocker 保持失败，不能把本 contract 标记为生产能力；下一步应在不改变
 默认 fail-closed 的前提下，补一个真实 consumer 的 fence、幂等、故障注入和恢复测试。
+
+### 2026-09-20 Handler/AI 高层 protection-policy consumer seam
+
+范围：继续上一条 desired-state contract，但不启用生产 `WireServe`，不伪造控制面或物化器已上线。
+
+已完成：
+
+- 新增 `ProtectionPolicyCoordinatorConsumer` 注入边界，HTTP 与 AI 共用同一条高层调用约定；
+  Handler 只传认证主体和 field-presence-aware `ProtectionPolicyPatch`，不接触 Coordinator、
+  StateMachine、YAML、runtime 或 nonce 重试细节。
+- `PUT /api/protection/policy` 在 consumer 缺失时返回 `503 PROTECTION_POLICY_UNAVAILABLE`；
+  已注入时只透传 authenticated claims 的原始 `Subject` 和 patch。客户端提交的
+  `leader_id`、`expected_epoch`、`expected_revision`、`nonce` 等字段不会进入 patch，也不会被响应回显。
+- AI `set_protection_level` 在显式审批成功后复用同一个 consumer；缺少认证 actor 或 consumer
+  时 fail-closed，不再调用本地 `commitProtectionConfig`。`Preview` 仍是纯本地 diff，不提交控制面。
+- 新增 Handler/AI 回归：consumer 缺失、主体/patch 透传、客户端 fencing 字段隔离、响应不泄露
+  nonce/commit，以及测试 consumer 下的审批执行和 stream 结果。
+
+验证证据：
+
+- `gofmt -w internal/api/handler/... internal/api/router.go`
+- `go test ./internal/api/handler ./internal/api -count=1`：通过。
+- `git diff --check`：待本轮最终静态门禁一并复核。
+
+边界：这只是调用边界 contract。当前 `internal/cli/service.go` 仍未向 `api.NewRouter` 注入真实
+consumer，生产 `WireServe` 继续缺依赖即拒绝；四项 acceptance blocker、验收矩阵的
+`implemented` 标志和 `v0.3.9` 均保持不变。下一步应实现生命周期拥有者的 snapshot/fence/nonce、
+exact commit retry 和 Coordinator→materializer 回调，再以故障注入证明成功后才允许启用该注入。

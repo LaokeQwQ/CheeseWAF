@@ -13,6 +13,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -581,20 +583,29 @@ func (t setProtectionLevelTool) Preview(_ context.Context, args map[string]any) 
 	return diffJSON(before, after)
 }
 
-func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) (*ai.ToolResult, error) {
-	before, after, err := t.nextPolicy(args)
+func (t setProtectionLevelTool) Execute(ctx context.Context, args map[string]any) (*ai.ToolResult, error) {
+	patch, _, _, err := t.protectionPolicyPatch(args)
 	if err != nil {
 		return nil, err
 	}
 	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
 		return nil, err
 	}
-	next := t.Handler.currentConfig().Protection
-	next.Policy = after
-	if err := t.Handler.commitProtectionConfig(next); err != nil {
+	actor := ai.ApprovalActorFromContext(ctx)
+	if !controlplane.ValidIdentity(actor.Subject) {
+		return nil, fmt.Errorf("protection policy mutation requires an authenticated actor")
+	}
+	if t.Handler == nil || t.Handler.protectionPolicyCoordinator == nil {
+		return nil, ErrProtectionPolicyCoordinatorUnavailable
+	}
+	result, err := t.Handler.protectionPolicyCoordinator.ProposeAndApply(ctx, actor.Subject, patch)
+	if err != nil {
 		return nil, err
 	}
-	diff, _ := diffJSON(before, after)
+	if result.Mutation.Actor != actor.Subject {
+		return nil, fmt.Errorf("protection policy coordinator returned an invalid actor binding")
+	}
+	diff, _ := diffJSON(result.Mutation.Before, result.Mutation.After)
 	return &ai.ToolResult{Success: true, Output: "global protection level updated", Diff: diff}, nil
 }
 
@@ -624,34 +635,55 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 	if t.Handler == nil || t.Handler.currentConfig() == nil {
 		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, fmt.Errorf("handler config is nil")
 	}
+	patch, _, _, err := t.protectionPolicyPatch(args)
+	if err != nil {
+		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, err
+	}
+	before := t.Handler.currentConfig().Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	after := before
+	if patch.WebAttack != nil {
+		after.WebAttack = *patch.WebAttack
+	}
+	if patch.APISecurity != nil {
+		after.APISecurity = *patch.APISecurity
+	}
+	if patch.BotCC != nil {
+		after.BotCC = *patch.BotCC
+	}
+	if patch.ThreatIntel != nil {
+		after.ThreatIntel = *patch.ThreatIntel
+	}
+	return before, after, nil
+}
+
+func (t setProtectionLevelTool) protectionPolicyPatch(args map[string]any) (desiredstate.ProtectionPolicyPatch, string, string, error) {
 	area, ok := stringArg(args, "area")
 	if !ok {
-		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, fmt.Errorf("area is required")
+		return desiredstate.ProtectionPolicyPatch{}, "", "", fmt.Errorf("area is required")
 	}
 	level, ok := stringArg(args, "level")
 	if !ok {
-		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, fmt.Errorf("level is required")
+		return desiredstate.ProtectionPolicyPatch{}, "", "", fmt.Errorf("level is required")
 	}
 	area = normalizeProtectionArea(area)
 	level = normalizeProtectionLevel(level)
 	if !config.IsProtectionLevel(level) || level == "" {
-		return config.ProtectionPolicyConfig{}, config.ProtectionPolicyConfig{}, fmt.Errorf("invalid protection level %q", level)
+		return desiredstate.ProtectionPolicyPatch{}, area, level, fmt.Errorf("invalid protection level %q", level)
 	}
-	before := t.Handler.currentConfig().Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
-	after := before
+	patch := desiredstate.ProtectionPolicyPatch{}
 	switch area {
 	case "web_attack":
-		after.WebAttack = level
+		patch.WebAttack = &level
 	case "api_security":
-		after.APISecurity = level
+		patch.APISecurity = &level
 	case "bot_cc":
-		after.BotCC = level
+		patch.BotCC = &level
 	case "threat_intel":
-		after.ThreatIntel = level
+		patch.ThreatIntel = &level
 	default:
-		return before, after, fmt.Errorf("invalid protection area %q", area)
+		return desiredstate.ProtectionPolicyPatch{}, area, level, fmt.Errorf("invalid protection area %q", area)
 	}
-	return before, after, nil
+	return patch, area, level, nil
 }
 
 func ensureAssistantConfigWritable(h *Handler) error {
