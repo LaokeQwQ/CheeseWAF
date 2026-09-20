@@ -18,6 +18,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/nativeraft"
 	controlpostgres "github.com/LaokeQwQ/CheeseWAF/internal/controlplane/postgres"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/transport"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	storagepostgres "github.com/LaokeQwQ/CheeseWAF/internal/storage/postgres"
 )
@@ -27,13 +29,17 @@ var (
 	// health probes but the request-serving layer did not explicitly bind them.
 	// A healthy backend is not sufficient evidence that cheesewaf serve can
 	// safely consume it.
-	ErrProductionServeWiringUnavailable   = errors.New("production serve wiring is unavailable")
-	ErrProductionRedisUnavailable         = errors.New("production Redis dependency is unavailable")
-	ErrProductionApprovalUnavailable      = errors.New("production approval dependency is unavailable")
-	ErrProductionApprovalHTTPUnavailable  = errors.New("production approval HTTP handler is unavailable")
-	ErrProductionApprovalEpochUnavailable = errors.New("production approval policy epoch is unavailable")
-	ErrProductionApprovalEpochMismatch    = errors.New("production approval policy epoch does not match control-plane epoch")
-	ErrProductionServeWiringConflict      = errors.New("production serve wiring callbacks are mutually exclusive")
+	ErrProductionServeWiringUnavailable      = errors.New("production serve wiring is unavailable")
+	ErrProductionRedisUnavailable            = errors.New("production Redis dependency is unavailable")
+	ErrProductionApprovalUnavailable         = errors.New("production approval dependency is unavailable")
+	ErrProductionApprovalHTTPUnavailable     = errors.New("production approval HTTP handler is unavailable")
+	ErrProductionApprovalEpochUnavailable    = errors.New("production approval policy epoch is unavailable")
+	ErrProductionApprovalEpochMismatch       = errors.New("production approval policy epoch does not match control-plane epoch")
+	ErrProductionServeWiringConflict         = errors.New("production serve wiring callbacks are mutually exclusive")
+	ErrProductionTemporaryNetworkUnavailable = errors.New("production temporary network provider is unavailable")
+	ErrProductionTemporaryNetworkSession     = errors.New("production temporary network management session is invalid")
+	ErrProductionTemporaryNetworkAudit       = errors.New("production temporary network audit sink is unavailable")
+	ErrProductionTemporaryNetworkAdapter     = errors.New("production temporary network adapter is not lease-bound")
 )
 
 // ProductionStartupOptions is deliberately separate from the serializable
@@ -54,6 +60,11 @@ type ProductionStartupOptions struct {
 	// fencing generation; they are not serialized configuration fields.
 	ManagementStore storage.Store
 	ApprovalEpoch   uint64
+	// ManagementSessionID and AuditSink are runtime-only inputs for the
+	// production temporary-network provider. They must come from an
+	// authenticated launcher rather than local CLI state.
+	ManagementSessionID string
+	AuditSink           netlease.DurableAuditSink
 }
 
 // ProductionControlDependency is the control-plane PostgreSQL adapter. It is
@@ -94,10 +105,60 @@ type ProductionApprovalDependency interface {
 // the request-serving layer. It binds the management store, control-plane
 // readiness snapshot, and approval HTTP transport to one policy epoch.
 type ProductionServeWiring struct {
-	ManagementStore storage.Store
-	Startup         controlplane.StartupResult
-	ApprovalHTTP    *handler.ApprovalHTTPHandler
-	PolicyEpoch     uint64
+	ManagementStore       storage.Store
+	Startup               controlplane.StartupResult
+	ApprovalHTTP          *handler.ApprovalHTTPHandler
+	PolicyEpoch           uint64
+	TemporaryHTTPExecutor netlease.TemporaryHTTPExecutor
+	CWEDPAdapter          transport.Adapter
+}
+
+// ProductionTemporaryNetworkOptions is the narrow input contract for the
+// production temporary-network provider. The provider must bind every value
+// into its returned lifecycle before exposing external egress.
+type ProductionTemporaryNetworkOptions struct {
+	ManagementStore     storage.Store
+	PolicyEpoch         uint64
+	ManagementSessionID string
+	AuditSink           netlease.DurableAuditSink
+}
+
+// ProductionTemporaryNetworkWiring owns the only network capabilities that
+// production serve may receive. It exposes neither a broker, socket, nor a
+// reusable HTTP client. Close is idempotent and owned by ProductionDependencies.
+type ProductionTemporaryNetworkWiring struct {
+	TemporaryHTTPExecutor netlease.TemporaryHTTPExecutor
+	CWEDPAdapter          transport.Adapter
+
+	closeOnce sync.Once
+	closeErr  error
+	closeFn   func() error
+}
+
+// NewProductionTemporaryNetworkWiring validates and wraps provider output.
+// A production adapter must be the capability stamped by NewHTTPAdapter.
+func NewProductionTemporaryNetworkWiring(executor netlease.TemporaryHTTPExecutor, adapter transport.Adapter, closeFn func() error) (*ProductionTemporaryNetworkWiring, error) {
+	if isNilProductionDependency(executor) || isNilProductionDependency(adapter) || closeFn == nil {
+		return nil, ErrProductionTemporaryNetworkUnavailable
+	}
+	if err := transport.ValidateLeaseBoundAdapter(adapter); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProductionTemporaryNetworkAdapter, err)
+	}
+	return &ProductionTemporaryNetworkWiring{TemporaryHTTPExecutor: executor, CWEDPAdapter: adapter, closeFn: closeFn}, nil
+}
+
+// Close releases provider-owned resources exactly once, including when later
+// serve wiring or startup cancellation rejects the composition.
+func (w *ProductionTemporaryNetworkWiring) Close() error {
+	if w == nil {
+		return nil
+	}
+	w.closeOnce.Do(func() {
+		if w.closeFn != nil {
+			w.closeErr = w.closeFn()
+		}
+	})
+	return w.closeErr
 }
 
 // ProductionDependencyFactory opens each production dependency. Every opener
@@ -109,6 +170,9 @@ type ProductionDependencyFactory struct {
 	OpenConsensus  func(context.Context, nativeraft.Options) (ProductionConsensusDependency, error)
 	OpenRedis      func(context.Context, redis.Config) (ProductionHealthDependency, error)
 	OpenApproval   func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error)
+	// OpenTemporaryNetwork is intentionally absent from the default factory.
+	// A production launcher must explicitly provide the session-bound provider.
+	OpenTemporaryNetwork func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error)
 	// WireServe is the legacy production composition hook. Keep it for
 	// embedding launchers compiled against the original API.
 	WireServe func(context.Context, *ProductionDependencies) error
@@ -121,15 +185,16 @@ type ProductionDependencyFactory struct {
 // startup attempt. Close is idempotent and always runs in reverse dependency
 // order, including when Bootstrap or final serve wiring fails.
 type ProductionDependencies struct {
-	Management   storage.Store
-	Control      ProductionControlDependency
-	Consensus    ProductionConsensusDependency
-	Redis        ProductionHealthDependency
-	Approval     ProductionApprovalDependency
-	ApprovalHTTP *handler.ApprovalHTTPHandler
-	Startup      controlplane.StartupResult
-	Serve        ProductionServeWiring
-	Ready        bool
+	Management       storage.Store
+	Control          ProductionControlDependency
+	Consensus        ProductionConsensusDependency
+	Redis            ProductionHealthDependency
+	Approval         ProductionApprovalDependency
+	ApprovalHTTP     *handler.ApprovalHTTPHandler
+	TemporaryNetwork *ProductionTemporaryNetworkWiring
+	Startup          controlplane.StartupResult
+	Serve            ProductionServeWiring
+	Ready            bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -161,6 +226,12 @@ func (d *ProductionDependencies) Close() error {
 				d.closeErr = err
 			}
 		}
+		close(func() error {
+			if d.TemporaryNetwork == nil {
+				return nil
+			}
+			return d.TemporaryNetwork.Close()
+		})
 		close(func() error {
 			if d.Approval == nil {
 				return nil
@@ -217,11 +288,16 @@ func (d *ProductionDependencies) ServeWiring() (ProductionServeWiring, error) {
 	if providerEpoch != controlEpoch || handlerEpoch != providerEpoch {
 		return ProductionServeWiring{}, fmt.Errorf("%w: provider=%d handler=%d control-plane=%d", ErrProductionServeWiringUnavailable, providerEpoch, handlerEpoch, controlEpoch)
 	}
+	if d.TemporaryNetwork == nil || isNilProductionDependency(d.TemporaryNetwork.TemporaryHTTPExecutor) || isNilProductionDependency(d.TemporaryNetwork.CWEDPAdapter) {
+		return ProductionServeWiring{}, fmt.Errorf("%w: %w", ErrProductionServeWiringUnavailable, ErrProductionTemporaryNetworkUnavailable)
+	}
 	return ProductionServeWiring{
-		ManagementStore: d.Management,
-		Startup:         d.Startup,
-		ApprovalHTTP:    d.ApprovalHTTP,
-		PolicyEpoch:     controlEpoch,
+		ManagementStore:       d.Management,
+		Startup:               d.Startup,
+		ApprovalHTTP:          d.ApprovalHTTP,
+		PolicyEpoch:           controlEpoch,
+		TemporaryHTTPExecutor: d.TemporaryNetwork.TemporaryHTTPExecutor,
+		CWEDPAdapter:          d.TemporaryNetwork.CWEDPAdapter,
 	}, nil
 }
 
@@ -249,6 +325,11 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 			return nil, fmt.Errorf("%w: %w: %s", config.ErrProductionStorageUnavailable, ErrProductionRedisUnavailable, stage)
 		case errors.Is(err, ErrProductionApprovalUnavailable):
 			return nil, fmt.Errorf("%w: %w: %s: %w", config.ErrProductionStorageUnavailable, ErrProductionApprovalUnavailable, stage, err)
+		case errors.Is(err, ErrProductionTemporaryNetworkUnavailable),
+			errors.Is(err, ErrProductionTemporaryNetworkSession),
+			errors.Is(err, ErrProductionTemporaryNetworkAudit),
+			errors.Is(err, ErrProductionTemporaryNetworkAdapter):
+			return nil, fmt.Errorf("%w: %s: %w", config.ErrProductionStorageUnavailable, stage, err)
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			return nil, fmt.Errorf("%w: %s: %w", config.ErrProductionStorageUnavailable, stage, err)
 		default:
@@ -354,6 +435,27 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 		return fail("approval dependency contract is incomplete", err)
 	}
 	deps.ApprovalHTTP = provider.ApprovalHTTP()
+	if err := validateProductionApprovalHTTPBinding(provider, deps.ApprovalHTTP, uint64(startup.State.Epoch)); err != nil {
+		return fail("approval HTTP binding is incomplete", err)
+	}
+	if err := validateProductionTemporaryNetworkOptions(opts, management, uint64(startup.State.Epoch), factory.OpenTemporaryNetwork); err != nil {
+		return fail("production temporary network contract is incomplete", err)
+	}
+	temporaryNetwork, err := factory.OpenTemporaryNetwork(ctx, ProductionTemporaryNetworkOptions{
+		ManagementStore:     management,
+		PolicyEpoch:         uint64(startup.State.Epoch),
+		ManagementSessionID: opts.ManagementSessionID,
+		AuditSink:           opts.AuditSink,
+	})
+	if temporaryNetwork != nil {
+		deps.TemporaryNetwork = temporaryNetwork
+	}
+	if err != nil || temporaryNetwork == nil {
+		if err == nil {
+			err = ErrProductionTemporaryNetworkUnavailable
+		}
+		return fail("production temporary network provider could not be opened", err)
+	}
 	wiring, err := deps.ServeWiring()
 	if err != nil {
 		return fail("production serve wiring contract is incomplete", err)
@@ -400,6 +502,37 @@ func validateProductionApprovalDependency(value any, expectedEpoch uint64) (Prod
 		return nil, fmt.Errorf("%w: %w: approval=%d control-plane=%d", ErrProductionApprovalUnavailable, ErrProductionApprovalEpochMismatch, policyEpoch, expectedEpoch)
 	}
 	return provider, nil
+}
+
+func validateProductionApprovalHTTPBinding(provider ProductionApprovalDependency, approvalHTTP *handler.ApprovalHTTPHandler, expectedEpoch uint64) error {
+	if provider == nil || approvalHTTP == nil || expectedEpoch == 0 {
+		return ErrProductionServeWiringUnavailable
+	}
+	providerEpoch := provider.PolicyEpoch()
+	handlerEpoch := approvalHTTP.PolicyEpoch()
+	if providerEpoch == 0 || handlerEpoch == 0 || providerEpoch != expectedEpoch || handlerEpoch != providerEpoch {
+		return fmt.Errorf("%w: provider=%d handler=%d control-plane=%d", ErrProductionServeWiringUnavailable, providerEpoch, handlerEpoch, expectedEpoch)
+	}
+	return nil
+}
+
+func validateProductionTemporaryNetworkOptions(opts ProductionStartupOptions, management storage.Store, epoch uint64, opener func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error)) error {
+	if opener == nil {
+		return ErrProductionTemporaryNetworkUnavailable
+	}
+	if isNilProductionDependency(management) || (opts.ManagementStore != nil && opts.ManagementStore != management) {
+		return fmt.Errorf("%w: management store is not bound", ErrProductionTemporaryNetworkUnavailable)
+	}
+	if epoch == 0 || (opts.ApprovalEpoch != 0 && opts.ApprovalEpoch != epoch) {
+		return fmt.Errorf("%w: control-plane policy epoch is not bound", ErrProductionTemporaryNetworkUnavailable)
+	}
+	if !controlplane.ValidIdentity(opts.ManagementSessionID) {
+		return ErrProductionTemporaryNetworkSession
+	}
+	if isNilProductionDependency(opts.AuditSink) || !opts.AuditSink.Durable() {
+		return ErrProductionTemporaryNetworkAudit
+	}
+	return nil
 }
 
 func dependencyContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
