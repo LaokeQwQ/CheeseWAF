@@ -217,6 +217,17 @@ func NewGate(policyEpoch uint64) *Gate {
 	return &Gate{policyEpoch: policyEpoch, requests: make(map[string]Record), usedIDs: make(map[string]struct{}), confirmationOwners: make(map[string]string), durableSequences: make(map[string]uint64)}
 }
 
+// PolicyEpoch returns the fencing generation currently enforced by the gate.
+// A nil gate has no valid epoch and therefore reports zero.
+func (g *Gate) PolicyEpoch() uint64 {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.policyEpoch
+}
+
 // NewGateWithPersistence binds a durable approval ledger. The persistence is
 // optional by design; callers that need durability must opt in explicitly.
 func NewGateWithPersistence(policyEpoch uint64, persistence Persistence) (*Gate, error) {

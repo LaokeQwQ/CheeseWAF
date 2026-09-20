@@ -111,6 +111,25 @@ type ApprovalHTTPHandler struct {
 	challenges map[string]approvalChallengeState
 }
 
+// SessionValidator returns the validator bound to this approval transport.
+// Production composition uses this to keep approval sessions on the same
+// management-store lifetime as the rest of the authenticated API.
+func (h *ApprovalHTTPHandler) SessionValidator() middleware.SessionValidator {
+	if h == nil {
+		return nil
+	}
+	return h.sessionValidator
+}
+
+// PolicyEpoch returns the epoch enforced by the underlying approval Gate.
+// It deliberately reads the Gate rather than a duplicated provider field.
+func (h *ApprovalHTTPHandler) PolicyEpoch() uint64 {
+	if h == nil || h.gate == nil {
+		return 0
+	}
+	return h.gate.PolicyEpoch()
+}
+
 type approvalChallengeState struct {
 	challenge ApprovalChallenge
 	session   ApprovalSession
