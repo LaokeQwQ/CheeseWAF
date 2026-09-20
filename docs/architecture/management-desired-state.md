@@ -93,6 +93,14 @@
   YAML、runtime callback、journal/LKG 组合为可测试的单节点物化器。适配器要求真实的
   `OnProtectionChanged` 回调和运行目录，缺失时 fail-closed；它不会发布 Handler 内存快照，
   也不会自行创建 proposal。
+- 已完成本地 mutation preparation contract：`ProtectionPolicyMutationService` 只接收当前
+  四轴策略和 field-presence-aware partial patch，严格校验 actor、leader、nonce 身份，合并
+  默认值并生成带 expected epoch/revision、nonce、canonical payload 和 digest 的
+  `controlplane.Proposal`。该服务无持久化、网络、Handler、HTTP 或 runtime 副作用；`Actor`
+  只保留给后续授权/审计层，不能把身份字段写进复制的策略 payload。
+- Handler 现在只提供显式的 `PrepareProtectionPolicyMutation` 注入 seam：它读取不可变策略快照、
+  透传请求并在未注入 mutator 时 fail-closed；当前 production router 没有注入它，也不会因此
+  绕过旧的本地写路径或宣称 endpoint 已接线。
 - 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
   wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。

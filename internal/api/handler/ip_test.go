@@ -14,7 +14,64 @@ import (
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 )
+
+type protectionPolicyMutatorStub struct {
+	current config.ProtectionPolicyConfig
+	request desiredstate.ProtectionPolicyMutationRequest
+	result  desiredstate.ProtectionPolicyMutation
+	called  bool
+}
+
+func (s *protectionPolicyMutatorStub) Prepare(current config.ProtectionPolicyConfig, request desiredstate.ProtectionPolicyMutationRequest) (desiredstate.ProtectionPolicyMutation, error) {
+	s.current = current
+	s.request = request
+	s.called = true
+	return s.result, nil
+}
+
+func TestPrepareProtectionPolicyMutationUsesInjectedSnapshotOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelLow,
+		APISecurity: config.ProtectionLevelHigh,
+		BotCC:       config.ProtectionLevelSmart,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	stub := &protectionPolicyMutatorStub{result: desiredstate.ProtectionPolicyMutation{Actor: "prepared"}}
+	h := New(Options{Config: &cfg, ProtectionPolicyMutator: stub})
+	request := desiredstate.ProtectionPolicyMutationRequest{Actor: "operator-a", LeaderID: "node-a", Nonce: "nonce-1"}
+
+	mutation, err := h.PrepareProtectionPolicyMutation(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stub.called {
+		t.Fatal("injected mutator was not called")
+	}
+	if stub.current != cfg.Protection.Policy {
+		t.Fatalf("mutator current policy = %+v, want %+v", stub.current, cfg.Protection.Policy)
+	}
+	if stub.request.Actor != request.Actor || stub.request.LeaderID != request.LeaderID || stub.request.Nonce != request.Nonce {
+		t.Fatalf("mutator request = %+v, want actor=%q leader=%q nonce=%q", stub.request, request.Actor, request.LeaderID, request.Nonce)
+	}
+	if mutation.Actor != "prepared" {
+		t.Fatalf("mutation = %+v, want injected result", mutation)
+	}
+	if cfg.Protection.Policy != stub.current {
+		t.Fatalf("handler changed policy while preparing mutation: got %+v want %+v", cfg.Protection.Policy, stub.current)
+	}
+}
+
+func TestPrepareProtectionPolicyMutationFailsClosedWhenNotInjected(t *testing.T) {
+	cfg := config.Default()
+	h := New(Options{Config: &cfg})
+	_, err := h.PrepareProtectionPolicyMutation(desiredstate.ProtectionPolicyMutationRequest{})
+	if !errors.Is(err, ErrProtectionPolicyMutationUnavailable) {
+		t.Fatalf("error = %v, want %v", err, ErrProtectionPolicyMutationUnavailable)
+	}
+}
 
 func TestUpdateIPAccessRulesRuntimeFailureDoesNotCommitConfig(t *testing.T) {
 	cfg := config.Default()

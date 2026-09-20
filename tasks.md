@@ -1375,3 +1375,44 @@ endpoint、PG、Redis 或默认 `WireServe`。
 `commitConfigMutation`，没有 Coordinator proposal、exact commit materializer replay 或生产
 consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 production blocker、
 `v0.3.9` 标签和外部仓库状态均未改写。
+
+### 2026-09-20 主仓库 owner 门禁补齐
+
+审计发现主仓库此前没有 `.github/CODEOWNERS`，但交接记录把 CODEOWNERS 审查写成已启用。
+新增文件为主仓库默认 owner 以及 workflow、CI 脚本、部署、控制面、CRP/CWEDP/NetLease 和
+架构/计划文档的显式 owner 规则。该文件只声明审查责任，不绕过 GitHub/Forgejo 分支保护，
+也不替代外部 CheeseSec 仓库的独立 code-owner 审查。
+
+### 2026-09-20 protection-policy mutation preparation contract
+
+范围：为后续真实管理写路径准备单一的 mutation preparation contract。本条只记录
+`internal/controlplane/desiredstate/ProtectionPolicyMutationService` 的本地、无副作用行为，
+不改变 `docs/superpowers/plans/2026-09-05-commercial-grilling-plan.md` 的 1–133 项决策基线。
+
+已完成：
+
+- field-presence-aware partial patch 会先与当前策略合并；空的当前策略先补默认值，四个策略轴
+  最终都经过已有的 `management.v1/protection.policy` 校验。
+- actor、leader、nonce 使用严格身份校验，拒绝前后空白、控制字符和不可见格式字符；输入的
+  当前策略不会被服务修改。
+- 结果只包含 `Before`、`After` 和带 expected epoch/revision、leader、nonce、canonical payload
+  与 digest 的 `controlplane.Proposal`。`Actor` 留给后续授权/审计层，敏感配置和完整 Config
+  不进入 proposal。
+- 服务不写 YAML、journal、runtime、PostgreSQL、Raft，也不调用 Handler、HTTP 或 AI；这些副作用
+  仍由 Coordinator、物化器和真实 consumer 负责。
+- Handler 现在只暴露一个显式、可注入的 `PrepareProtectionPolicyMutation` seam：它读取不可变的
+  当前策略快照并透传 request；未注入 mutator 时返回明确错误，不会静默回退旧的本地配置写入。
+  这仍不是 endpoint/AI 接线，生产 router 当前继续保持未注入状态。
+
+验证证据：
+
+- `go test ./internal/controlplane/desiredstate -count=1`：通过。
+- `go test -race ./internal/controlplane/desiredstate -count=1`：通过。
+- `go vet ./internal/controlplane/desiredstate`：通过。
+- `git diff --check`：通过。
+
+未完成与下一步：`PUT /protection/policy`、AI `setProtectionLevel` 尚未真正提交该服务产出的 proposal，
+`Coordinator` proposal+apply 生命周期、真实 YAML/runtime/rollback adapter、生产 `WireServe`
+和跨存储故障注入仍未完成。验收矩阵中的 production serve migration/session、CRP activation/rollback
+和 temporary-network 四项 blocker 保持失败，不能把本 contract 标记为生产能力；下一步应在不改变
+默认 fail-closed 的前提下，补一个真实 consumer 的 fence、幂等、故障注入和恢复测试。

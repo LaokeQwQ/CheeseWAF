@@ -1,0 +1,12 @@
+# Protect CI policy, release tooling, and security-sensitive runtime code.
+* @LaokeQwQ
+/.forgejo/ @LaokeQwQ
+/.github/ @LaokeQwQ
+/deploy/ @LaokeQwQ
+/scripts/ci/ @LaokeQwQ
+/internal/controlplane/ @LaokeQwQ
+/internal/crp/ @LaokeQwQ
+/internal/cwedp/ @LaokeQwQ
+/internal/netlease/ @LaokeQwQ
+/docs/architecture/ @LaokeQwQ
+/docs/superpowers/ @LaokeQwQ

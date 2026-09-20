@@ -73,15 +73,16 @@ compile_tests() {
   printf '%s\n' "${pkgs[@]}" | xargs -P "${jobs}" -n 1 -I{} bash -c '
     set +e
     pkg="$1"
-    shift
+    failures_file="$2"
+    shift 2
     bash scripts/ci/go-env.sh go test "$@" "$pkg"
     status=$?
     if [[ $status -ne 0 ]]; then
-      echo "${pkg}" >> "$2"
+      echo "${pkg}" >> "$failures_file"
       echo "::error::go test -c failed for ${pkg}"
     fi
     exit "$status"
-  ' _ {} "${test_base[@]}" "$failures_file" || true
+  ' _ {} "$failures_file" "${test_base[@]}" || true
   if [[ -s "$failures_file" ]]; then
     echo "::error::one or more Go test extraction compiles failed (tags=${tags:-default})"
     sort -u "$failures_file" >&2

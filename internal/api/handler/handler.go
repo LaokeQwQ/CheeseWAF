@@ -34,6 +34,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/orchestrate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/traffic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
@@ -129,9 +130,13 @@ type Handler struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
-	OnAPISecChanged                     func(config.APISecConfig) error
-	OnBlockPageChanged                  func(config.BlockPageConfig) error
-	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	// protectionPolicyMutator is intentionally nil in the current production
+	// router. A later lifecycle owner may inject the side-effect-free desired
+	// state seam after coordinator/materializer submission is complete.
+	protectionPolicyMutator desiredstate.ProtectionPolicyMutator
+	OnAPISecChanged         func(config.APISecConfig) error
+	OnBlockPageChanged      func(config.BlockPageConfig) error
+	OnTimeSyncChanged       func(config.TimeSyncConfig) error
 }
 
 type captchaAssetRuntime struct {
@@ -356,6 +361,7 @@ type Options struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
+	ProtectionPolicyMutator             desiredstate.ProtectionPolicyMutator
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
@@ -457,6 +463,7 @@ func New(opts Options) *Handler {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		protectionPolicyMutator:             opts.ProtectionPolicyMutator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,

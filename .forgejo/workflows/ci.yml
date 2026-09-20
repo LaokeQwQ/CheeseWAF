@@ -70,6 +70,9 @@ jobs:
       - name: Validate GitHub Actions workflows
         shell: bash
         run: bash scripts/ci/run-actionlint.sh -shellcheck= -pyflakes= -color .github/workflows/*.yml
+      - name: Validate Forgejo workflow YAML and actions
+        shell: bash
+        run: bash scripts/ci/verify-forgejo-workflow.sh
       - name: Verify Ansible syntax
         shell: bash
         run: bash scripts/ci/verify-ansible.sh
