@@ -1300,3 +1300,19 @@ Cloudflare 诊断：Chrome 中 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 的�
 - 定向测试覆盖规范字节和摘要、五个枚举值、重复键、未知字段、尾随 JSON、大小与 UTF-8 边界、部分状态拒绝和导出文档二次检查。
 
 未完成：`/protection/policy` 还没有接入 `Coordinator`、精确 `Commit` 和检查 fencing token 的物化器、运行时和 YAML 回滚、跨存储故障注入。默认生产模式的 `WireServe` 仍保持失败即拒绝的状态。下一步先补编码器与物化器的集成测试，再实现一个真实配置修改端点。
+
+### 2026-09-20 node-local materializer journal/LKG contract
+
+范围：在现有 `management.v1/protection.policy` codec 和 exact commit/fence contract 之上，新增仅节点本地的 journal/LKG 安全边界。本轮不接入 Handler、YAML、runtime、endpoint 或生产 `WireServe`。
+
+已完成：
+
+- 新增 `internal/controlplane/materializer`，定义固定 `materializer.v1` receipt schema、exact cluster/leader/epoch/revision/version/digest/nonce metadata、canonical typed payload 和 `prepared`、`yaml_persisted`、`runtime_applied`、`compensation_pending`、`applied` phases。
+- Receipt 只接受现有 typed `management.v1/protection.policy` payload，拒绝通用 Config、未知字段、非 canonical JSON、尾随 JSON、超大文件、非法 digest 和敏感/非 schema payload；不写入 DSN、TLS private key 或 Bot secret。
+- `JournalStore` 将 journal/LKG 各写为两份完全相同的 0600 JSON；目录保持 0700；写入使用 temp + file fsync + rename + parent-directory fsync，并暴露窄的 fsync/rename fault-injection hooks。
+- 读取拒绝 symlink、非 regular、非 0600 receipt 和不安全目标目录；一份格式损坏而另一份完整时只读回退，主备均有效但内容不同或均不可判定时 fail-closed，不清空运行数据。
+- `ValidateTransition`/`Compare` 独立维护本地物化顺序：旧 epoch/revision、同 revision 的 digest/nonce/payload 冲突和 phase 回退均拒绝；不把 `StateMachine.ValidateFence` 的 historical revision 语义当作物化允许。
+
+验证证据：`go test ./internal/controlplane/materializer -count=1`、`go test -race ./internal/controlplane/materializer -count=1`、`go vet ./internal/controlplane/materializer`、`go test ./internal/controlplane/... -count=1`、`git diff --check`。
+
+未完成：Handler/YAML/runtime/compensation adapter、真实本地配置写入、跨存储协调和生产 `WireServe`/endpoint 仍未接入；`v0.3.9` 未移动或改写。
