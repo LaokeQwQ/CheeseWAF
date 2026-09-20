@@ -35,3 +35,12 @@ payload 时，带管理员确认对象的 `InitialStateRequest` 才能生成 rev
 | SQLite | 临时模式/兼容路径 | 生产模式静默回退的管理真相 |
 
 这些边界是 contract，不代表对应后端已经接入。实现状态必须在 `tasks.md` 和发布说明中单独标记。
+
+## Desired State 载荷边界
+
+控制面不能把完整 `config.Config` 或任意 `json.RawMessage` 当作期望状态。当前允许复制的
+第一种载荷是 `management.v1/protection.policy`。它的字段、规范 JSON、摘要和 1 KiB 上限
+见 [管理控制面的期望状态载荷](management-desired-state.md)。真实配置修改必须先经过对应的
+固定字段编码器，再由 `Coordinator` 提交精确的 `Commit`。物化器还必须检查 fencing token、
+nonce、载荷和摘要，然后合并回节点本地配置。编码器本身不等于 API 或生产消费者已经可用。
+默认生产模式的 `WireServe` 仍保持失败即拒绝的状态。

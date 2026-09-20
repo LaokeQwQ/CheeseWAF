@@ -1281,3 +1281,22 @@ Cloudflare 诊断：Chrome 中 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 的�
 未完成：尚未把版本化 management desired-state payload、受 fencing 保护的本地物化器和失败后的重试协调接入管理 API。真实 PostgreSQL 的恢复组合测试也未在本轮运行。验收矩阵的 production blocker 与 `implemented` 标志保持不变。本地分支尚未推送、晋升或发布。
 
 下一步继续执行上一节第 2～4 项：先定义不包含 DSN、Token、证书或密钥的 payload，再选一个真实配置修改接口验证 fence、幂等和故障恢复。完整消费者通过前，不启用默认 `WireServe`。
+
+### 2026-09-20 management.v1 desired-state codec
+
+范围：继续上一节精确 `Commit` 之后的第 2 项。先为真实配置修改设计不携带 DSN、Token、证书、密钥或本地路径的固定字段期望状态载荷。本轮不接入生产模式的 `WireServe`，也不把编码器当作物化器。
+
+已完成：
+
+- 新增 `internal/controlplane/desiredstate`，定义 `management.v1/protection.policy`。
+- payload 只包含 `web_attack`、`api_security`、`bot_cc`、`threat_intel` 四个完整策略轴；每个值只能是 `off`、`low`、`smart`、`high` 或 `strict`。
+- 编码返回固定字段顺序的规范 JSON 和同一字节串的小写 SHA-256 摘要；解码拒绝未知字段、重复键、缺失字段、尾随文档、非规范 JSON、非法 UTF-8、非法枚举和超过 1 KiB 的载荷。
+- 导出文档转回配置时再次执行 `Validate`，不能通过直接构造导出结构绕过策略校验。
+- 新增 [管理控制面的期望状态载荷](docs/architecture/management-desired-state.md)，并在控制面说明中写明编码器、`Coordinator` 和检查 fencing token 的物化器分别负责什么。
+
+验证证据：
+
+- `go test ./internal/controlplane/desiredstate -count=1` 通过。
+- 定向测试覆盖规范字节和摘要、五个枚举值、重复键、未知字段、尾随 JSON、大小与 UTF-8 边界、部分状态拒绝和导出文档二次检查。
+
+未完成：`/protection/policy` 还没有接入 `Coordinator`、精确 `Commit` 和检查 fencing token 的物化器、运行时和 YAML 回滚、跨存储故障注入。默认生产模式的 `WireServe` 仍保持失败即拒绝的状态。下一步先补编码器与物化器的集成测试，再实现一个真实配置修改端点。

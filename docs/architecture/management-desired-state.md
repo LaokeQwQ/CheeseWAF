@@ -1,0 +1,87 @@
+# 管理控制面的期望状态载荷（management.v1）
+
+本文说明管理控制面目前可以复制的第一种配置载荷。它只包含
+`PUT /protection/policy` 的完整防护策略快照。它没有把管理 API、物化器或生产模式的
+`WireServe` 接入。实际进度以 `tasks.md` 为准。
+
+## 范围
+
+控制面保存版本明确、可验证、可重放的期望配置，不保存节点的完整 `config.Config`。
+完整配置中会出现本地路径、数据库连接、凭据、证书、密钥和运行时状态。这些值只能留在
+节点本地配置或受保护的管理存储中，不能进入 Raft、控制面 PostgreSQL 或审计事件。
+
+这个阶段只允许下面这个固定文档：
+
+```json
+{"version":"management.v1","kind":"protection.policy","spec":{"web_attack":"smart","api_security":"high","bot_cc":"low","threat_intel":"off"}}
+```
+
+## 字段与值
+
+| JSON 路径 | 类型 | 约束 |
+|---|---|---|
+| `version` | string | 必须是 `management.v1` |
+| `kind` | string | 必须是 `protection.policy` |
+| `spec.web_attack` | string | `off`、`low`、`smart`、`high` 或 `strict` |
+| `spec.api_security` | string | 同上 |
+| `spec.bot_cc` | string | 同上 |
+| `spec.threat_intel` | string | 同上 |
+
+四个策略轴都是完整快照。HTTP 层可以接受局部修改，但必须先和当前节点配置合并，
+再生成包含四个字段的文档。局部 patch 不能直接作为可提交的期望状态。
+
+## 编码和检查规则
+
+`internal/controlplane/desiredstate` 是唯一的编码和解码入口：
+
+1. 编码只接受完整、有效的 `config.ProtectionPolicyConfig`，生成字段顺序固定的 JSON，
+   并返回这段字节的小写 SHA-256 摘要（digest）。
+2. 解码会拒绝未知字段、重复对象键、缺失字段、空值、非法枚举、错误的
+   `version`/`kind`、尾随 JSON 文档、非 UTF-8 载荷和非规范 JSON（包括空白或字段
+   顺序变化）。
+3. 载荷上限为 1 KiB。超过上限时，JSON 解码前就会返回错误。
+4. `ProtectionPolicyDocument.Config` 会再次检查导出的文档值，避免调用方通过
+   直接构造或修改导出字段绕过校验。
+5. proposal 必须提交本包生成的规范字节和对应摘要。调用方不能把原始 HTTP body、
+   完整 `config.Config` 或未经本包检查的 `json.RawMessage` 直接放入
+   `controlplane.Proposal`。
+
+摘要绑定实际提交的字节，不绑定解码后的结构。因此，PostgreSQL、native-raft 和重试
+路径会把同一份提交识别为同一个字节序列。
+
+## 计划中的物化顺序
+
+接入真实写入路径前，必须按下面的顺序实现：
+
+1. Handler 在节点本地快照上合并并检查局部请求。身份字段不能被静默修剪。
+2. Handler 通过本约定生成完整策略和摘要。`Coordinator` 独占一次
+   `ProposeAndApply` 调用。
+3. `Coordinator` 使用 expected epoch、expected revision、leader、一次性 nonce 和精确的
+   `Commit`。native-raft 只复制这份 `Commit`，不会重复提案。
+4. 物化器先检查 `Commit` 中的 fencing token、nonce、载荷和摘要，再把四个策略轴合并
+   回节点本地配置。
+5. 物化器会检查合并后的完整本地配置，然后按既有的运行时、YAML 和发布通知补偿顺序
+   应用。任一步失败时，保留 last-known-good 配置、冻结新的写入，并用同一份 `Commit`
+   重试。
+6. 重试时不能重新编码、重新生成时间戳或创建第二个 revision。全部成功后才能解除冻结。
+
+站点、Token、AI、调度器和其他完整配置修改还不能复用这个编码器。每种新的期望状态类型
+都必须有独立的字段范围、敏感字段审查、物化器和
+故障注入测试。
+
+## 当前状态与非目标
+
+- 已完成：`management.v1/protection.policy` 的固定字段文档、规范 JSON、摘要、严格解码
+  和单元测试。
+- 还没有完成：将 `/protection/policy` 接入 `Coordinator`、检查 fencing token 的物化器、
+  运行时和 YAML 回滚、跨存储故障注入，以及生产模式的 `WireServe`。
+- 在这些工作完成前，生产模式的 `WireServe` 必须保持失败即拒绝的状态。读取快照或通过
+  readiness 探针，都不能替代真实的消费者。
+- 本文不改变 `configs/cheesewaf.yaml` 模板和运行时配置副本的边界，也不允许把密钥、
+  DSN、Token、证书、私钥或本地路径写入 Git。
+
+## 验收证据
+
+编码器的定向测试覆盖规范字节、摘要、重复键、未知字段、尾随文档、缺失字段、非法枚举、
+大小和 UTF-8 边界，以及导出文档的二次检查。真实 API、物化器和跨存储恢复测试完成后，
+才能把这个配置修改标记为可用于生产环境。
