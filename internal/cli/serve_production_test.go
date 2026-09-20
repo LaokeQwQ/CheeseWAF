@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,9 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/nativeraft"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/transport"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -245,6 +249,8 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 	control.state = consensus.machine.Snapshot()
 	consensus.state = control.state
 	opts := testProductionStartupOptions(t)
+	opts.ManagementSessionID = "management-session"
+	opts.AuditSink = durableTestAuditSink(t)
 	var wired bool
 	var order []string
 	factory := ProductionDependencyFactory{
@@ -268,9 +274,15 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 			order = append(order, "approval")
 			return newProductionApprovalFake(opts.ApprovalEpoch, manager), nil
 		},
+		OpenTemporaryNetwork: func(_ context.Context, options ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error) {
+			if options.ManagementStore != manager || options.PolicyEpoch == 0 || options.ManagementSessionID != opts.ManagementSessionID || options.AuditSink != opts.AuditSink {
+				t.Fatalf("temporary network options were not bound: %+v", options)
+			}
+			return testTemporaryNetworkWiring(t), nil
+		},
 		WireServeWithWiring: func(_ context.Context, wiring ProductionServeWiring) error {
 			order = append(order, "wire")
-			if wiring.ManagementStore != manager || wiring.SessionValidator != manager || wiring.PolicyEpoch != uint64(wiring.Startup.State.Epoch) || wiring.ApprovalHTTP == nil {
+			if wiring.ManagementStore != manager || wiring.SessionValidator != manager || wiring.PolicyEpoch != uint64(wiring.Startup.State.Epoch) || wiring.ApprovalHTTP == nil || wiring.TemporaryHTTPExecutor == nil || wiring.CWEDPAdapter == nil {
 				t.Fatalf("serve wiring lost lifecycle-bound dependencies: %+v", wiring)
 			}
 			wired = true
@@ -302,6 +314,31 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 	if !control.closed || !consensus.closed {
 		t.Fatalf("ready production resources were not closed: control=%t consensus=%t", control.closed, consensus.closed)
 	}
+}
+
+func durableTestAuditSink(t *testing.T) netlease.DurableAuditSink {
+	t.Helper()
+	sink, err := netlease.NewFileAuditSink(filepath.Join(t.TempDir(), "audit", "netlease.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sink
+}
+
+func testTemporaryNetworkWiring(t *testing.T) *ProductionTemporaryNetworkWiring {
+	t.Helper()
+	adapter := transport.NewHTTPAdapter(&netlease.Broker{}, "lease-1", netlease.RequestScope{})
+	wiring, err := NewProductionTemporaryNetworkWiring(testTemporaryHTTPExecutor{}, adapter, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wiring
+}
+
+type testTemporaryHTTPExecutor struct{}
+
+func (testTemporaryHTTPExecutor) ExecuteTemporaryHTTP(context.Context, netlease.TemporaryHTTPExecution) (netlease.HTTPResponse, error) {
+	return netlease.HTTPResponse{}, nil
 }
 
 func TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy(t *testing.T) {
@@ -342,7 +379,7 @@ func TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy(t 
 		},
 	}
 	deps, err := OpenProductionDependencies(context.Background(), opts, factory)
-	if deps != nil || !errors.Is(err, ErrProductionServeWiringUnavailable) {
+	if deps != nil || !errors.Is(err, ErrProductionTemporaryNetworkUnavailable) {
 		t.Fatalf("unwired production result = deps:%v err:%v", deps, err)
 	}
 	if !control.closed || !consensus.closed {
@@ -480,6 +517,61 @@ func TestProductionDependenciesServeWiringRejectsDetachedSessionValidator(t *tes
 	}
 	if _, err := deps.ServeWiring(); !errors.Is(err, ErrProductionServeWiringUnavailable) || !strings.Contains(err.Error(), "session validator") {
 		t.Fatalf("detached validator error=%v, want lifecycle binding rejection", err)
+	}
+}
+
+func TestValidateProductionTemporaryNetworkOptionsRejectsMissingProviderSessionAndAudit(t *testing.T) {
+	manager, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "manager.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	audit := durableTestAuditSink(t)
+	open := func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error) {
+		return testTemporaryNetworkWiring(t), nil
+	}
+	base := ProductionStartupOptions{ManagementSessionID: "management-session", AuditSink: audit}
+	tests := []struct {
+		name string
+		opts ProductionStartupOptions
+		open func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error)
+		want error
+	}{
+		{name: "missing provider", opts: base, want: ErrProductionTemporaryNetworkUnavailable},
+		{name: "missing management session", opts: ProductionStartupOptions{AuditSink: audit}, open: open, want: ErrProductionTemporaryNetworkSession},
+		{name: "non durable audit", opts: ProductionStartupOptions{ManagementSessionID: "management-session", AuditSink: netlease.NewMemoryAuditSinkForTesting()}, open: open, want: ErrProductionTemporaryNetworkAudit},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateProductionTemporaryNetworkOptions(tc.opts, manager, 7, tc.open)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("validation error=%v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProductionTemporaryNetworkWiringRejectsUnboundAdapterAndClosesOnce(t *testing.T) {
+	_, err := NewProductionTemporaryNetworkWiring(testTemporaryHTTPExecutor{}, transport.AdapterFunc(func(context.Context, transport.Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (io.ReadCloser, error) {
+		return nil, nil
+	}), func() error { return nil })
+	if !errors.Is(err, ErrProductionTemporaryNetworkAdapter) {
+		t.Fatalf("unbound adapter error=%v, want ErrProductionTemporaryNetworkAdapter", err)
+	}
+	closed := 0
+	wiring := testTemporaryNetworkWiring(t)
+	wiring.closeFn = func() error {
+		closed++
+		return nil
+	}
+	if err := wiring.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := wiring.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 1 {
+		t.Fatalf("provider cleanup calls=%d, want one", closed)
 	}
 }
 

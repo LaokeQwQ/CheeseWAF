@@ -61,6 +61,17 @@ var (
 	errSourceChanged          = errors.New("CWEDP source changed during transfer")
 )
 
+// ValidateLeaseBoundAdapter verifies the production online-adapter capability
+// without exposing the broker, socket, or HTTP client to the caller. Offline
+// file adapters and arbitrary Adapter implementations are intentionally not
+// accepted at a production temporary-network composition boundary.
+func ValidateLeaseBoundAdapter(adapter Adapter) error {
+	if !isBoundHTTPAdapter(adapter) {
+		return ErrNetleaseRequired
+	}
+	return nil
+}
+
 // Endpoint is a trusted control-plane registration. URL is data only after
 // the source ID and kind have been matched against this immutable record.
 // A caller cannot make an arbitrary URL downloadable by placing it in an
