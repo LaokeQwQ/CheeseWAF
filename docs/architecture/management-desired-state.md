@@ -101,6 +101,9 @@
 - Handler 现在只提供显式的 `PrepareProtectionPolicyMutation` 注入 seam：它读取不可变策略快照、
   透传请求并在未注入 mutator 时 fail-closed；当前 production router 没有注入它，也不会因此
   绕过旧的本地写路径或宣称 endpoint 已接线。
+- 已补充纯 Coordinator consumer：`ProtectionPolicyCoordinatorService` 组合上述 mutator 与
+  `Coordinator.ProposeAndApply`，保留 actor 仅供授权/审计，返回 exact commit 供持久化失败后用
+  `Apply` 重试；它不依赖 Handler、HTTP、AI、YAML、runtime 或 materializer，缺依赖即拒绝构造。
 - 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
   wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。

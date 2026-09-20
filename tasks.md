@@ -1403,6 +1403,10 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
 - Handler 现在只暴露一个显式、可注入的 `PrepareProtectionPolicyMutation` seam：它读取不可变的
   当前策略快照并透传 request；未注入 mutator 时返回明确错误，不会静默回退旧的本地配置写入。
   这仍不是 endpoint/AI 接线，生产 router 当前继续保持未注入状态。
+- 新增 `ProtectionPolicyCoordinatorService` 作为纯 control-plane consumer：它只把已准备的
+  canonical proposal 交给 `Coordinator.ProposeAndApply`，并保留持久化失败返回的 exact commit，
+  让上层通过 `Apply` 原样重试而不生成第二个 nonce/revision。Coordinator 重试安装 commit 后仍
+  保持 `WriteFrozen`，必须由上层显式恢复写入；服务不自动放宽该边界。
 
 验证证据：
 
@@ -1411,8 +1415,7 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
 - `go vet ./internal/controlplane/desiredstate`：通过。
 - `git diff --check`：通过。
 
-未完成与下一步：`PUT /protection/policy`、AI `setProtectionLevel` 尚未真正提交该服务产出的 proposal，
-`Coordinator` proposal+apply 生命周期、真实 YAML/runtime/rollback adapter、生产 `WireServe`
-和跨存储故障注入仍未完成。验收矩阵中的 production serve migration/session、CRP activation/rollback
+未完成与下一步：`PUT /protection/policy`、AI `setProtectionLevel` 尚未真正调用该 consumer，
+真实 YAML/runtime/rollback adapter、生产 `WireServe` 和跨存储故障注入仍未完成。验收矩阵中的 production serve migration/session、CRP activation/rollback
 和 temporary-network 四项 blocker 保持失败，不能把本 contract 标记为生产能力；下一步应在不改变
 默认 fail-closed 的前提下，补一个真实 consumer 的 fence、幂等、故障注入和恢复测试。
