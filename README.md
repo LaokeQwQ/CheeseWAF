@@ -233,7 +233,11 @@ sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
 sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 sudo cp -R web/dist/. /usr/share/cheesewaf/web/
-sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+# Initialize the runtime copy only when it does not already exist; edit this
+# runtime file afterwards, never the tracked configs/cheesewaf.yaml template.
+if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
+  sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+fi
 sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
 sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
