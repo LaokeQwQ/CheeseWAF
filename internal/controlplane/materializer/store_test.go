@@ -189,6 +189,45 @@ func TestJournalStorePrimaryBackupBehavior(t *testing.T) {
 	}
 }
 
+func TestJournalStoreMirrorPartialWriteFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	renameCalls := 0
+	store, err := NewJournalStore(root, Hooks{
+		Rename: func(src, dst string) error {
+			renameCalls++
+			if renameCalls == 4 {
+				return errors.New("injected backup rename failure")
+			}
+			return os.Rename(src, dst)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := testStoreReceipt(t, PhasePrepared)
+	if err := store.SaveJournal(prepared); err != nil {
+		t.Fatal(err)
+	}
+	next := prepared.Clone()
+	next.Phase = PhaseYAMLPersisted
+	if err := store.SaveJournal(next); err == nil {
+		t.Fatal("partial mirror write unexpectedly succeeded")
+	}
+	if _, err := store.LoadJournal(); !errors.Is(err, ErrReceiptAmbiguous) {
+		t.Fatalf("partial mirror load err=%v, want ErrReceiptAmbiguous", err)
+	}
+}
+
+func TestJournalStoreRejectsProtectedSystemRoots(t *testing.T) {
+	for _, path := range []string{"/", "/etc", "/var", "/tmp", "/private"} {
+		t.Run(path, func(t *testing.T) {
+			if _, err := NewJournalStore(path, Hooks{}); err == nil {
+				t.Fatalf("protected root %q unexpectedly accepted", path)
+			}
+		})
+	}
+}
+
 func TestJournalStoreFaultSeamFailsClosed(t *testing.T) {
 	called := 0
 	store, err := NewJournalStore(t.TempDir(), Hooks{

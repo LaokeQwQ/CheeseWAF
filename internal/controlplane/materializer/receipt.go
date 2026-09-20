@@ -197,6 +197,13 @@ func ValidateTransition(previous *Receipt, next Receipt) error {
 			if next.Phase == PhaseApplied {
 				return nil
 			}
+		case PhaseCompensationPending:
+			// A failed runtime apply may leave the persisted candidate in place
+			// while the runtime is uncertain. A later retry must first complete
+			// compensation, then resume from yaml_persisted.
+			if next.Phase == PhaseYAMLPersisted {
+				return nil
+			}
 		}
 		return ErrPhaseRegression
 	}

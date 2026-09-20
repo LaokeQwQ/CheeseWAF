@@ -73,8 +73,24 @@
 
 - 已完成：`management.v1/protection.policy` 的固定字段文档、规范 JSON、摘要、严格解码
   和单元测试。
-- 还没有完成：将 `/protection/policy` 接入 `Coordinator`、检查 fencing token 的物化器、
-  运行时和 YAML 回滚、跨存储故障注入，以及生产模式的 `WireServe`。
+- 已完成本地 contract：`internal/controlplane/materializer` 提供纯注入式
+  `ProtectionPolicyApplier.ApplyCommitted`，只接受 exact current commit validator、节点本地
+  config snapshot、窄的 YAML/runtime/rollback callbacks 和 `JournalStore`。它按
+  `prepared → yaml_persisted → runtime_applied → applied` 推进，成功后才写 LKG；同一 exact
+  receipt 重试幂等，旧 epoch/revision 和同 revision 冲突拒绝。receipt 仍只保存 metadata 和
+  typed protection-policy payload，不保存完整 Config、DSN、TLS 或 Bot secret。
+- 本地 fencing contract 已补强：`StateMachine.WithCurrentCommit` 会在校验通过后持有
+  committed-state 读锁直到本次物化 callback 返回，避免校验和 YAML/runtime 副作用之间发生
+  revision 或 leader 变化。callback 不得在该临界区内调用会获取 StateMachine 写锁的变更方法；
+  这只是单节点边界，不是跨进程或跨节点租约。
+- journal/LKG 的两份镜像如果都可读但内容不一致，读取会返回 `ErrReceiptAmbiguous` 并保持
+  fail-closed，不会依据时间戳或文件位置自行选择“较新”版本。操作员必须先核对节点本地配置和
+  审计记录，再通过受控恢复流程修复；该状态不能作为自动重试成功的证据。runtime callback 已
+  产生副作用后即使 context 被取消，也会使用不可取消的继续上下文尝试补偿；补偿目标不可证明
+  或补偿失败时写入 `compensation_pending`；上层协调器必须据此冻结后续写入。
+- 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
+  wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
+  物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。
 - 在这些工作完成前，生产模式的 `WireServe` 必须保持失败即拒绝的状态。读取快照或通过
   readiness 探针，都不能替代真实的消费者。
 - 本文不改变 `configs/cheesewaf.yaml` 模板和运行时配置副本的边界，也不允许把密钥、

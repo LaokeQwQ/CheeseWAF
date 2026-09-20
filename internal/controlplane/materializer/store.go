@@ -79,6 +79,21 @@ func (s *JournalStore) SaveJournal(receipt Receipt) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 	}
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	if s == nil {
+		return errors.New("materializer journal store is nil")
+	}
+	previous, err := s.loadMirror("journal", JournalPrimaryName, JournalBackupName)
+	if errors.Is(err, ErrReceiptNotFound) {
+		err = ValidateTransition(nil, receipt)
+	} else if err == nil {
+		err = ValidateTransition(&previous, receipt)
+	}
+	if err != nil {
+		return err
+	}
 	return s.saveMirror("journal", JournalPrimaryName, JournalBackupName, receipt)
 }
 
@@ -90,7 +105,50 @@ func (s *JournalStore) SaveLKG(receipt Receipt) error {
 	if receipt.Phase != PhaseApplied {
 		return fmt.Errorf("materializer LKG must be applied, got %q", receipt.Phase)
 	}
+	if s == nil {
+		return errors.New("materializer journal store is nil")
+	}
+	previous, err := s.loadMirror("LKG", LKGPrimaryName, LKGBackupName)
+	if errors.Is(err, ErrReceiptNotFound) {
+		err = nil
+	} else if err == nil {
+		err = validateLKGTransition(previous, receipt)
+	}
+	if err != nil {
+		return err
+	}
 	return s.saveMirror("LKG", LKGPrimaryName, LKGBackupName, receipt)
+}
+
+// RestoreJournalFromLKG repairs a lost journal from an already validated
+// applied LKG. It is intentionally separate from SaveJournal: a normal
+// journal must always begin at prepared, while this recovery path proves that
+// the completed receipt already exists in both LKG mirrors.
+func (s *JournalStore) RestoreJournalFromLKG(receipt Receipt) error {
+	if s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	if s == nil {
+		return errors.New("materializer journal store is nil")
+	}
+	if receipt.Phase != PhaseApplied {
+		return fmt.Errorf("materializer journal recovery requires applied LKG, got %q", receipt.Phase)
+	}
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	current, err := s.loadMirror("journal", JournalPrimaryName, JournalBackupName)
+	if err == nil {
+		if sameCommit(current, receipt) && current.Phase == PhaseApplied {
+			return nil
+		}
+		return ErrReceiptAmbiguous
+	}
+	if !errors.Is(err, ErrReceiptNotFound) {
+		return err
+	}
+	return s.saveMirror("journal", JournalPrimaryName, JournalBackupName, receipt)
 }
 
 func (s *JournalStore) LoadJournal() (Receipt, error) {
@@ -106,7 +164,14 @@ func (s *JournalStore) LoadLKG() (Receipt, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 	}
-	return s.loadMirror("LKG", LKGPrimaryName, LKGBackupName)
+	receipt, err := s.loadMirror("LKG", LKGPrimaryName, LKGBackupName)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if receipt.Phase != PhaseApplied {
+		return Receipt{}, fmt.Errorf("%w: LKG phase is %q", ErrReceiptCorrupt, receipt.Phase)
+	}
+	return receipt, nil
 }
 
 // Load returns the journal and LKG independently. A missing record is
@@ -143,6 +208,33 @@ func (s *JournalStore) saveMirror(label, primaryName, backupName string, receipt
 	}
 	if err := s.writeOne(backupName, data); err != nil {
 		return fmt.Errorf("persist %s backup: %w", label, err)
+	}
+	return nil
+}
+
+func validateLKGTransition(previous, next Receipt) error {
+	if err := previous.Validate(); err != nil {
+		return err
+	}
+	if next.Phase != PhaseApplied {
+		return ErrInvalidPhase
+	}
+	if previous.Commit.ClusterID != next.Commit.ClusterID {
+		return ErrCommitConflict
+	}
+	if next.Commit.Epoch < previous.Commit.Epoch {
+		return ErrStaleEpoch
+	}
+	if next.Commit.Epoch == previous.Commit.Epoch {
+		if next.Commit.LeaderID != previous.Commit.LeaderID {
+			return ErrCommitConflict
+		}
+		if next.Commit.Revision < previous.Commit.Revision {
+			return ErrStaleRevision
+		}
+		if next.Commit.Revision == previous.Commit.Revision && !sameCommit(previous, next) {
+			return ErrCommitConflict
+		}
 	}
 	return nil
 }
@@ -271,6 +363,9 @@ func ensurePrivateDir(path string) error {
 	if err != nil {
 		return err
 	}
+	if isProtectedSystemRoot(abs) {
+		return fmt.Errorf("materializer journal directory must be a dedicated child, got %s", abs)
+	}
 	if err := ensureNoSymlinkComponents(abs); err != nil {
 		return err
 	}
@@ -307,6 +402,16 @@ func ensurePrivateDir(path string) error {
 		return err
 	}
 	return nil
+}
+
+func isProtectedSystemRoot(path string) bool {
+	clean := filepath.Clean(path)
+	for _, root := range []string{"/", "/etc", "/var", "/tmp", "/private"} {
+		if clean == root {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureNoSymlinkComponents(path string) error {

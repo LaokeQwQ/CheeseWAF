@@ -355,6 +355,28 @@ func (m *StateMachine) ValidateCurrentCommit(commit Commit) error {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.validateCurrentCommitLocked(commit)
+}
+
+// WithCurrentCommit validates commit and executes fn while the committed
+// state read lock is held. A materializer uses this as its callback boundary:
+// a commit that changed before the callback is rejected, and a leadership or
+// revision change cannot race with the callback after validation succeeds.
+// fn must not call mutating StateMachine methods, because they require the
+// write lock held by this method.
+func (m *StateMachine) WithCurrentCommit(commit Commit, fn func() error) error {
+	if m == nil || fn == nil {
+		return ErrInvalidCommit
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := m.validateCurrentCommitLocked(commit); err != nil {
+		return err
+	}
+	return fn()
+}
+
+func (m *StateMachine) validateCurrentCommitLocked(commit Commit) error {
 	if err := m.validateCommitLocked(commit); err != nil {
 		return err
 	}

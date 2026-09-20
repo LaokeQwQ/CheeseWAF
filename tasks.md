@@ -1316,3 +1316,32 @@ Cloudflare 诊断：Chrome 中 build `929c0163-bbe2-4a4e-aca8-c68c5ee4fc21` 的�
 验证证据：`go test ./internal/controlplane/materializer -count=1`、`go test -race ./internal/controlplane/materializer -count=1`、`go vet ./internal/controlplane/materializer`、`go test ./internal/controlplane/... -count=1`、`git diff --check`。
 
 未完成：Handler/YAML/runtime/compensation adapter、真实本地配置写入、跨存储协调和生产 `WireServe`/endpoint 仍未接入；`v0.3.9` 未移动或改写。
+
+### 2026-09-20 protection-policy materializer orchestrator contract
+
+范围：在既有 exact current commit validator、`management.v1/protection.policy` codec、node-local
+journal/LKG 和 `Handler.ApplyProtectionRuntime` seam 之上，新增纯注入式
+`ProtectionPolicyApplier.ApplyCommitted`。本轮只完成 contract 和故障注入测试，不接入生产 Handler、
+endpoint、PG、Redis 或默认 `WireServe`。
+
+已完成：
+
+- 构造函数只接受 exact commit validator、节点本地完整配置快照 provider、`PersistConfig`、
+  `ApplyRuntime`、`RollbackRuntime` callbacks 和 `JournalStore`；orchestrator 不直接依赖 Handler、
+  HTTP、PG、Redis，也不调用 `config.Save`。
+- 应用顺序为 `prepared → yaml_persisted → runtime_applied → applied`，先 durable journal `prepared`
+  再调用本地 persist；LKG 只在 applied journal 成功后写入。相同 exact applied receipt 重试不重复
+  persist/runtime；旧 epoch/revision、同 revision digest/nonce/payload 冲突拒绝。
+- runtime 失败尝试 rollback；rollback 失败或没有可靠旧 config 时写 `compensation_pending`、
+  返回 fail-closed 错误。receipt 只写 metadata 和 typed payload，不写完整 YAML/DSN/TLS/Bot secret。
+- process-local mutex 覆盖 journal/LKG 读取和 callbacks，防止并发 exact retry 重复 runtime side effect；
+  跨重启没有旧完整配置时不猜测 candidate 作为 rollback 目标。
+- `StateMachine.WithCurrentCommit` 为本地 callback 提供 fencing 临界区；校验通过后会持有
+  committed-state 读锁直到物化 callback 返回。主备 receipt 均可读但不一致时返回
+  `ErrReceiptAmbiguous`，不自动选边；runtime 副作用后收到取消也会用不可取消的继续上下文尝试
+  补偿，补偿失败或缺少可靠旧快照时保持 `compensation_pending`。
+
+验证证据：`go test ./internal/controlplane/materializer -count=1`、`go test -race ./internal/controlplane/materializer -count=1`、`go vet ./internal/controlplane/...`、`go test ./internal/controlplane/... -count=1`、`git diff --check`。回归测试覆盖 fencing TOCTOU、runtime 副作用后取消、YAML 成功后 journal 写失败、丢失 journal 由 applied LKG 恢复、主备半写入 fail-closed、受保护系统根目录拒绝和并发 exact retry。
+
+未完成：生产 wiring、真实 YAML/runtime/rollback adapter、Coordinator/endpoint 接入和默认 `WireServe`；
+`v0.3.9` 未移动或改写。
