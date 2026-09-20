@@ -345,6 +345,24 @@ func TestUpdateProtectionPolicyMapsControlPlaneConflict(t *testing.T) {
 	}
 }
 
+func TestUpdateProtectionPolicyMapsMutationValidationToBadRequest(t *testing.T) {
+	cfg := config.Default()
+	consumer := &protectionPolicyCoordinatorStub{err: desiredstate.ProtectionPolicyMutationValidationError{
+		Field:  "web_attack",
+		Value:  "block",
+		Reason: "must be one of off, low, smart, high, or strict",
+	}}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: consumer})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", strings.NewReader(`{"web_attack":"block"}`))
+	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, &middleware.Claims{Subject: "operator-a", ID: "session-a", Role: "admin"}))
+
+	handler.UpdateProtectionPolicy(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "PROTECTION_POLICY_INVALID") {
+		t.Fatalf("expected malformed policy to return 400, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestThreatIntelProviderTestUsesSavedSecretByProviderID(t *testing.T) {
 	var gotAPIKey string
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

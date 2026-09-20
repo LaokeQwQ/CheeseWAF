@@ -1,11 +1,42 @@
 package desiredstate
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 )
+
+// ErrProtectionPolicyMutationInvalid identifies caller-supplied mutation data
+// that cannot be accepted as a protection-policy update. HTTP adapters should
+// map this class of error to a client-side 400 response.
+var ErrProtectionPolicyMutationInvalid = errors.New("invalid protection policy mutation")
+
+// ProtectionPolicyMutationValidationError describes one invalid mutation
+// input without requiring callers to parse an error string.
+type ProtectionPolicyMutationValidationError struct {
+	Field  string
+	Value  string
+	Reason string
+}
+
+func (e ProtectionPolicyMutationValidationError) Error() string {
+	if e.Field == "" {
+		if e.Reason == "" {
+			return ErrProtectionPolicyMutationInvalid.Error()
+		}
+		return e.Reason
+	}
+	if e.Value == "" {
+		return fmt.Sprintf("invalid protection policy mutation for %s: %s", e.Field, e.Reason)
+	}
+	return fmt.Sprintf("invalid protection policy mutation for %s: %q: %s", e.Field, e.Value, e.Reason)
+}
+
+func (e ProtectionPolicyMutationValidationError) Unwrap() error {
+	return ErrProtectionPolicyMutationInvalid
+}
 
 // ProtectionPolicyPatch is the field-presence-aware input accepted by future
 // management write paths. A nil field means "keep the current value"; a
@@ -66,18 +97,18 @@ func NewProtectionPolicyMutationService() ProtectionPolicyMutationService {
 // shape accepted for protection-policy desired state.
 func (ProtectionPolicyMutationService) Prepare(current config.ProtectionPolicyConfig, request ProtectionPolicyMutationRequest) (ProtectionPolicyMutation, error) {
 	if !controlplane.ValidIdentity(request.Actor) {
-		return ProtectionPolicyMutation{}, fmt.Errorf("protection policy mutation requires a strict actor identity")
+		return ProtectionPolicyMutation{}, ProtectionPolicyMutationValidationError{Field: "actor", Reason: "strict identity is required"}
 	}
 	if !controlplane.ValidIdentity(request.LeaderID) {
-		return ProtectionPolicyMutation{}, fmt.Errorf("protection policy mutation requires a strict leader identity")
+		return ProtectionPolicyMutation{}, ProtectionPolicyMutationValidationError{Field: "leader_id", Reason: "strict identity is required"}
 	}
 	if !controlplane.ValidIdentity(request.Nonce) {
-		return ProtectionPolicyMutation{}, fmt.Errorf("protection policy mutation requires a strict nonce identity")
+		return ProtectionPolicyMutation{}, ProtectionPolicyMutationValidationError{Field: "nonce", Reason: "strict identity is required"}
 	}
 
 	before := current.WithDefaults(config.DefaultProtectionPolicy())
 	if _, err := NewProtectionPolicyDocument(before); err != nil {
-		return ProtectionPolicyMutation{}, fmt.Errorf("current protection policy is invalid: %w", err)
+		return ProtectionPolicyMutation{}, ProtectionPolicyMutationValidationError{Field: "current", Reason: "current protection policy is invalid: " + err.Error()}
 	}
 	after := before
 	if err := applyProtectionPolicyPatch(&after, request.Patch); err != nil {
@@ -98,7 +129,7 @@ func PrepareProtectionPolicyMutation(current config.ProtectionPolicyConfig, requ
 
 func applyProtectionPolicyPatch(policy *config.ProtectionPolicyConfig, patch ProtectionPolicyPatch) error {
 	if policy == nil {
-		return fmt.Errorf("protection policy is nil")
+		return ProtectionPolicyMutationValidationError{Field: "policy", Reason: "policy is nil"}
 	}
 	fields := []struct {
 		name  string
@@ -115,7 +146,7 @@ func applyProtectionPolicyPatch(policy *config.ProtectionPolicyConfig, patch Pro
 			continue
 		}
 		if !config.IsProtectionLevel(*field.value) || *field.value == "" {
-			return fmt.Errorf("invalid protection policy level for %s: %q", field.name, *field.value)
+			return ProtectionPolicyMutationValidationError{Field: field.name, Value: *field.value, Reason: "must be one of off, low, smart, high, or strict"}
 		}
 		field.apply(*field.value)
 	}

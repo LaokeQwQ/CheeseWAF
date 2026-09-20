@@ -57,7 +57,7 @@ func protectionPolicyActorFromRequest(r *http.Request) (string, bool) {
 func writeProtectionPolicyCoordinatorError(w http.ResponseWriter, err error) {
 	status := http.StatusServiceUnavailable
 	code := "PROTECTION_POLICY_UNAVAILABLE"
-	if errors.Is(err, controlplane.ErrInvalidProposal) {
+	if errors.Is(err, desiredstate.ErrProtectionPolicyMutationInvalid) || errors.Is(err, controlplane.ErrInvalidProposal) {
 		status = http.StatusBadRequest
 		code = "PROTECTION_POLICY_INVALID"
 	} else if errors.Is(err, controlplane.ErrNotLeader) ||

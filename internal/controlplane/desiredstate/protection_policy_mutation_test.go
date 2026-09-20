@@ -1,6 +1,7 @@
 package desiredstate
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -91,6 +92,13 @@ func TestProtectionPolicyMutationRejectsInvalidPatchWithoutProposal(t *testing.T
 			})
 			if err == nil {
 				t.Fatalf("mutation unexpectedly succeeded: %+v", mutation)
+			}
+			var validationErr ProtectionPolicyMutationValidationError
+			if !errors.As(err, &validationErr) || !errors.Is(err, ErrProtectionPolicyMutationInvalid) {
+				t.Fatalf("error=%T %v, want typed mutation validation error", err, err)
+			}
+			if validationErr.Field != "web_attack" || validationErr.Value != *level {
+				t.Fatalf("validation error=%+v, want web_attack=%q", validationErr, *level)
 			}
 		})
 	}
