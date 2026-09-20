@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	approvalruntime "github.com/LaokeQwQ/CheeseWAF/internal/approval/runtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/redis"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -89,6 +90,18 @@ type ProductionApprovalDependency interface {
 	PolicyEpoch() uint64
 }
 
+// ProductionServeWiring is the immutable composition-root handoff consumed by
+// the request-serving layer. It keeps the management store, control-plane
+// startup snapshot, approval transport, and its session/epoch fences bound to
+// one production dependency lifetime.
+type ProductionServeWiring struct {
+	ManagementStore  storage.Store
+	Startup          controlplane.StartupResult
+	ApprovalHTTP     *handler.ApprovalHTTPHandler
+	SessionValidator middleware.SessionValidator
+	PolicyEpoch      uint64
+}
+
 // ProductionDependencyFactory opens each production dependency. Every opener
 // is injected so tests and embedding launchers can prove ordering and cleanup
 // without pretending that a fake backend is a production deployment.
@@ -98,7 +111,7 @@ type ProductionDependencyFactory struct {
 	OpenConsensus  func(context.Context, nativeraft.Options) (ProductionConsensusDependency, error)
 	OpenRedis      func(context.Context, redis.Config) (ProductionHealthDependency, error)
 	OpenApproval   func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error)
-	WireServe      func(context.Context, *ProductionDependencies) error
+	WireServe      func(context.Context, ProductionServeWiring) error
 }
 
 // ProductionDependencies owns every resource opened by one production
@@ -112,6 +125,7 @@ type ProductionDependencies struct {
 	Approval     ProductionApprovalDependency
 	ApprovalHTTP *handler.ApprovalHTTPHandler
 	Startup      controlplane.StartupResult
+	Serve        ProductionServeWiring
 	Ready        bool
 
 	closeOnce sync.Once
@@ -176,6 +190,34 @@ func (d *ProductionDependencies) Close() error {
 		})
 	})
 	return d.closeErr
+}
+
+// ServeWiring returns the validated, lifecycle-bound handoff for the serving
+// layer. It never manufactures a fallback dependency or a detached validator.
+func (d *ProductionDependencies) ServeWiring() (ProductionServeWiring, error) {
+	if d == nil || isNilProductionDependency(d.Management) || isNilProductionDependency(d.Approval) {
+		return ProductionServeWiring{}, ErrProductionServeWiringUnavailable
+	}
+	if !d.Startup.Ready || d.Startup.Stage != controlplane.StartupStageReady || d.Startup.State.Epoch == 0 {
+		return ProductionServeWiring{}, fmt.Errorf("%w: control-plane startup is not ready", ErrProductionServeWiringUnavailable)
+	}
+	if d.ApprovalHTTP == nil {
+		return ProductionServeWiring{}, fmt.Errorf("%w: approval HTTP handler is unavailable", ErrProductionServeWiringUnavailable)
+	}
+	validator := d.ApprovalHTTP.SessionValidator()
+	if validator == nil || !sameProductionDependency(validator, d.Management) {
+		return ProductionServeWiring{}, fmt.Errorf("%w: approval session validator is not bound to management store", ErrProductionServeWiringUnavailable)
+	}
+	if d.Approval.PolicyEpoch() != uint64(d.Startup.State.Epoch) {
+		return ProductionServeWiring{}, fmt.Errorf("%w: approval epoch is not bound to control-plane epoch", ErrProductionServeWiringUnavailable)
+	}
+	return ProductionServeWiring{
+		ManagementStore:  d.Management,
+		Startup:          d.Startup,
+		ApprovalHTTP:     d.ApprovalHTTP,
+		SessionValidator: validator,
+		PolicyEpoch:      uint64(d.Startup.State.Epoch),
+	}, nil
 }
 
 // OpenProductionDependencies executes the complete production startup unit.
@@ -308,15 +350,38 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 		return fail("approval dependency contract is incomplete", err)
 	}
 	deps.ApprovalHTTP = provider.ApprovalHTTP()
+	wiring, err := deps.ServeWiring()
+	if err != nil {
+		return fail("production serve wiring contract is incomplete", err)
+	}
+	deps.Serve = wiring
 
 	if factory.WireServe == nil {
 		return fail("management, control, Redis and approval consumers are not wired into serve", ErrProductionServeWiringUnavailable)
 	}
-	if err := factory.WireServe(ctx, deps); err != nil {
+	if err := factory.WireServe(ctx, wiring); err != nil {
 		return fail("serve consumers rejected production dependencies", err)
 	}
 	deps.Ready = true
 	return deps, nil
+}
+
+func sameProductionDependency(left, right any) bool {
+	if isNilProductionDependency(left) || isNilProductionDependency(right) {
+		return false
+	}
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	if leftValue.Type() != rightValue.Type() {
+		return false
+	}
+	if leftValue.Type().Comparable() {
+		return leftValue.Interface() == rightValue.Interface()
+	}
+	if leftValue.Kind() == reflect.Pointer {
+		return leftValue.Pointer() == rightValue.Pointer()
+	}
+	return false
 }
 
 func productionLeadershipCheckpoint(consensus ProductionConsensusDependency) controlplane.LeadershipCheckpointStore {

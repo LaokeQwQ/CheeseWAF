@@ -218,21 +218,33 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 	consensus.state = control.state
 	opts := testProductionStartupOptions(t)
 	var wired bool
+	var order []string
 	factory := ProductionDependencyFactory{
-		OpenManagement: func(context.Context, config.ManagementPostgreSQLConfig) (storage.Store, error) { return manager, nil },
+		OpenManagement: func(context.Context, config.ManagementPostgreSQLConfig) (storage.Store, error) {
+			order = append(order, "management")
+			return manager, nil
+		},
 		OpenControl: func(context.Context, config.ManagementPostgreSQLConfig) (ProductionControlDependency, error) {
+			order = append(order, "control")
 			return control, nil
 		},
 		OpenConsensus: func(context.Context, nativeraft.Options) (ProductionConsensusDependency, error) {
+			order = append(order, "consensus")
 			return consensus, nil
 		},
 		OpenRedis: func(context.Context, redis.Config) (ProductionHealthDependency, error) {
+			order = append(order, "redis")
 			return &productionHealthFake{}, nil
 		},
 		OpenApproval: func(_ context.Context, opts ProductionStartupOptions) (ProductionApprovalDependency, error) {
-			return newProductionApprovalFake(opts.ApprovalEpoch), nil
+			order = append(order, "approval")
+			return newProductionApprovalFake(opts.ApprovalEpoch, manager), nil
 		},
-		WireServe: func(context.Context, *ProductionDependencies) error {
+		WireServe: func(_ context.Context, wiring ProductionServeWiring) error {
+			order = append(order, "wire")
+			if wiring.ManagementStore != manager || wiring.SessionValidator != manager || wiring.PolicyEpoch != uint64(wiring.Startup.State.Epoch) || wiring.ApprovalHTTP == nil {
+				t.Fatalf("serve wiring lost lifecycle-bound dependencies: %+v", wiring)
+			}
 			wired = true
 			return nil
 		},
@@ -249,6 +261,12 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 	}
 	if deps.Control == nil || deps.Consensus == nil {
 		t.Fatal("control dependencies were not retained")
+	}
+	if strings.Join(order, ",") != "management,control,consensus,redis,approval,wire" {
+		t.Fatalf("production startup order=%v, want management/control/consensus/redis/approval/wire", order)
+	}
+	if deps.Serve.Startup.Fence.ClusterID != opts.ClusterID || uint64(deps.Serve.Startup.Fence.Epoch) != deps.Serve.PolicyEpoch {
+		t.Fatalf("serve wiring lost startup fence: fence=%+v epoch=%d", deps.Serve.Startup.Fence, deps.Serve.PolicyEpoch)
 	}
 	if err := deps.Close(); err != nil {
 		t.Fatal(err)
@@ -292,7 +310,7 @@ func TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy(t 
 			return &productionHealthFake{}, nil
 		},
 		OpenApproval: func(_ context.Context, opts ProductionStartupOptions) (ProductionApprovalDependency, error) {
-			return newProductionApprovalFake(opts.ApprovalEpoch), nil
+			return newProductionApprovalFake(opts.ApprovalEpoch, manager), nil
 		},
 	}
 	deps, err := OpenProductionDependencies(context.Background(), opts, factory)
@@ -365,7 +383,7 @@ func TestOpenProductionDependenciesRejectsInvalidApprovalCapabilityBeforeWire(t 
 				OpenApproval: func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error) {
 					return approval, nil
 				},
-				WireServe: func(context.Context, *ProductionDependencies) error {
+				WireServe: func(context.Context, ProductionServeWiring) error {
 					wired = true
 					return nil
 				},
@@ -406,6 +424,31 @@ func TestProductionDependenciesCloseInReverseOrder(t *testing.T) {
 	want := []string{"approval", "redis", "consensus", "control", "management"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Fatalf("close order=%v, want %v", events, want)
+	}
+}
+
+func TestProductionDependenciesServeWiringRejectsDetachedSessionValidator(t *testing.T) {
+	manager, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "manager.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	other, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "other.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	state := testProductionState(t)
+	deps := &ProductionDependencies{
+		Management: manager,
+		Approval:   &productionApprovalFake{epoch: uint64(state.Epoch)},
+		Startup:    controlplane.StartupResult{Stage: controlplane.StartupStageReady, Ready: true, State: state},
+		ApprovalHTTP: handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{
+			SessionValidator: other,
+		}),
+	}
+	if _, err := deps.ServeWiring(); !errors.Is(err, ErrProductionServeWiringUnavailable) || !strings.Contains(err.Error(), "session validator") {
+		t.Fatalf("detached validator error=%v, want lifecycle binding rejection", err)
 	}
 }
 
@@ -518,9 +561,17 @@ type productionApprovalFake struct {
 	closeEvents  *[]string
 }
 
-func newProductionApprovalFake(epoch uint64) *productionApprovalFake {
+func newProductionApprovalFake(epoch uint64, validator ...interface {
+	IsSessionActive(context.Context, string, string, time.Time) (bool, error)
+}) *productionApprovalFake {
+	var sessionValidator interface {
+		IsSessionActive(context.Context, string, string, time.Time) (bool, error)
+	}
+	if len(validator) > 0 {
+		sessionValidator = validator[0]
+	}
 	return &productionApprovalFake{
-		approvalHTTP: handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{}),
+		approvalHTTP: handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{SessionValidator: sessionValidator}),
 		epoch:        epoch,
 	}
 }

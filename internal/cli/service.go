@@ -108,6 +108,7 @@ func runServe(ctx context.Context) error {
 	}
 	var store storage.Store
 	var productionDeps *ProductionDependencies
+	var productionWiring ProductionServeWiring
 	if strings.EqualFold(strings.TrimSpace(cfg.Storage.Profile), config.StorageProfileProduction) {
 		// Open and fully validate every production dependency before creating the
 		// runtime directory or PID lease. A failed control-plane, Redis, approval,
@@ -116,8 +117,13 @@ func runServe(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		productionWiring, err = productionDeps.ServeWiring()
+		if err != nil {
+			_ = productionDeps.Close()
+			return err
+		}
 		defer productionDeps.Close()
-		store = productionDeps.Management
+		store = productionWiring.ManagementStore
 	}
 	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
 		return err
@@ -314,13 +320,14 @@ func runServe(ctx context.Context) error {
 		IsolateConfig:                 true,
 		ConfigPath:                    loadedConfigPath,
 		Store:                         store,
+		SessionValidator:              productionWiring.SessionValidator,
 		Sink:                          sink,
 		Hub:                           hub,
 		Secret:                        authSecret,
 		SetupToken:                    setupToken,
 		Clock:                         clock,
 		ManagementTokenCleanupContext: runtimeCtx,
-		ApprovalHTTP:                  productionApprovalHTTP(productionDeps),
+		ApprovalHTTP:                  productionWiring.ApprovalHTTP,
 		OTAClient:                     configuredOTAClient(cfg),
 		OTAState:                      configuredOTAState(cfg),
 		TimeSync:                      timeSync,
@@ -458,13 +465,6 @@ func ensureNoPendingMigration(dataDir string) error {
 		return fmt.Errorf("migration recovery is required before serving: %w", err)
 	}
 	return nil
-}
-
-func productionApprovalHTTP(deps *ProductionDependencies) *handler.ApprovalHTTPHandler {
-	if deps == nil {
-		return nil
-	}
-	return deps.ApprovalHTTP
 }
 
 const (

@@ -111,6 +111,16 @@ type ApprovalHTTPHandler struct {
 	challenges map[string]approvalChallengeState
 }
 
+// SessionValidator returns the validator bound to this approval transport.
+// The production composition root uses this to prove that the interactive
+// approval endpoints and the management API share the same session lifetime.
+func (h *ApprovalHTTPHandler) SessionValidator() middleware.SessionValidator {
+	if h == nil {
+		return nil
+	}
+	return h.sessionValidator
+}
+
 type approvalChallengeState struct {
 	challenge ApprovalChallenge
 	session   ApprovalSession

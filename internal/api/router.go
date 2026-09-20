@@ -20,9 +20,12 @@ import (
 )
 
 type Options struct {
-	Config                              *config.Config
-	ConfigPath                          string
-	Store                               storage.Store
+	Config     *config.Config
+	ConfigPath string
+	Store      storage.Store
+	// SessionValidator is the session lifetime bound to this router. When nil,
+	// Store remains the compatibility default for temporary and embedded paths.
+	SessionValidator                    middleware.SessionValidator
 	Sink                                storage.LogSink
 	Hub                                 *realtime.Hub
 	Secret                              string
@@ -139,7 +142,11 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 	requireAny := func(permissions ...string) func(http.Handler) http.Handler {
 		return middleware.RBACAnyProvider(h.CurrentPermissions, permissions...)
 	}
-	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, opts.Store, h.AuthenticateManagementAPIToken, clock)
+	sessionValidator := opts.SessionValidator
+	if sessionValidator == nil {
+		sessionValidator = opts.Store
+	}
+	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, sessionValidator, h.AuthenticateManagementAPIToken, clock)
 
 	r.With(h.ConfigReadMiddleware).Get("/health", h.Health)
 	r.With(h.ConfigReadMiddleware).Get("/health/live", h.Health)
@@ -163,7 +170,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
-			r.Use(middleware.SessionMiddlewareWithClock(opts.Store, clock))
+			r.Use(middleware.SessionMiddlewareWithClock(sessionValidator, clock))
 			r.Use(middleware.CSRFMiddleware)
 			r.Use(h.ConfigReadMiddleware)
 			r.Get("/auth/session", h.SessionInfo)
