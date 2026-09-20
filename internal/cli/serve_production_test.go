@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
+	"github.com/LaokeQwQ/CheeseWAF/internal/approval"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/redis"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
@@ -28,6 +29,33 @@ func TestOpenProductionDependenciesRejectsMissingFactoryBeforeIO(t *testing.T) {
 	_, err := OpenProductionDependencies(context.Background(), opts, ProductionDependencyFactory{})
 	if !errors.Is(err, config.ErrProductionStorageUnavailable) {
 		t.Fatalf("missing factory error = %v, want ErrProductionStorageUnavailable", err)
+	}
+}
+
+func TestOpenProductionDependenciesRejectsConflictingServeWiringCallbacksBeforeIO(t *testing.T) {
+	opts := testProductionStartupOptions(t)
+	factory := ProductionDependencyFactory{
+		OpenManagement: func(context.Context, config.ManagementPostgreSQLConfig) (storage.Store, error) {
+			return nil, nil
+		},
+		OpenControl: func(context.Context, config.ManagementPostgreSQLConfig) (ProductionControlDependency, error) {
+			return nil, nil
+		},
+		OpenConsensus: func(context.Context, nativeraft.Options) (ProductionConsensusDependency, error) {
+			return nil, nil
+		},
+		OpenRedis: func(context.Context, redis.Config) (ProductionHealthDependency, error) {
+			return nil, nil
+		},
+		OpenApproval: func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error) {
+			return nil, nil
+		},
+		WireServe:           func(context.Context, *ProductionDependencies) error { return nil },
+		WireServeWithWiring: func(context.Context, ProductionServeWiring) error { return nil },
+	}
+	_, err := OpenProductionDependencies(context.Background(), opts, factory)
+	if !errors.Is(err, ErrProductionServeWiringConflict) {
+		t.Fatalf("conflicting serve wiring error = %v, want ErrProductionServeWiringConflict", err)
 	}
 }
 
@@ -240,7 +268,7 @@ func TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire(t *tes
 			order = append(order, "approval")
 			return newProductionApprovalFake(opts.ApprovalEpoch, manager), nil
 		},
-		WireServe: func(_ context.Context, wiring ProductionServeWiring) error {
+		WireServeWithWiring: func(_ context.Context, wiring ProductionServeWiring) error {
 			order = append(order, "wire")
 			if wiring.ManagementStore != manager || wiring.SessionValidator != manager || wiring.PolicyEpoch != uint64(wiring.Startup.State.Epoch) || wiring.ApprovalHTTP == nil {
 				t.Fatalf("serve wiring lost lifecycle-bound dependencies: %+v", wiring)
@@ -341,6 +369,9 @@ func TestOpenProductionDependenciesRejectsInvalidApprovalCapabilityBeforeWire(t 
 		{name: "nil handler", apply: func(f *productionApprovalFake) { f.approvalHTTP = nil }, want: ErrProductionApprovalHTTPUnavailable},
 		{name: "zero epoch", apply: func(f *productionApprovalFake) { f.epoch = 0 }, want: ErrProductionApprovalEpochUnavailable},
 		{name: "mismatched epoch", apply: func(f *productionApprovalFake) { f.epoch = 2 }, want: ErrProductionApprovalEpochMismatch},
+		{name: "handler gate epoch mismatch", apply: func(f *productionApprovalFake) {
+			f.approvalHTTP = handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{Gate: approval.NewGate(2)})
+		}, want: ErrProductionServeWiringUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "manager.db"))
@@ -383,13 +414,13 @@ func TestOpenProductionDependenciesRejectsInvalidApprovalCapabilityBeforeWire(t 
 				OpenApproval: func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error) {
 					return approval, nil
 				},
-				WireServe: func(context.Context, ProductionServeWiring) error {
+				WireServeWithWiring: func(context.Context, ProductionServeWiring) error {
 					wired = true
 					return nil
 				},
 			}
 			deps, err := OpenProductionDependencies(context.Background(), opts, factory)
-			if deps != nil || !errors.Is(err, ErrProductionApprovalUnavailable) || !errors.Is(err, tc.want) {
+			if deps != nil || !errors.Is(err, tc.want) || (tc.want != ErrProductionServeWiringUnavailable && !errors.Is(err, ErrProductionApprovalUnavailable)) {
 				t.Fatalf("invalid approval result = deps:%v err:%v, want approval and %v", deps, err, tc.want)
 			}
 			if wired {
@@ -571,7 +602,7 @@ func newProductionApprovalFake(epoch uint64, validator ...interface {
 		sessionValidator = validator[0]
 	}
 	return &productionApprovalFake{
-		approvalHTTP: handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{SessionValidator: sessionValidator}),
+		approvalHTTP: handler.NewApprovalHTTPHandler(handler.ApprovalHTTPOptions{Gate: approval.NewGate(epoch), SessionValidator: sessionValidator}),
 		epoch:        epoch,
 	}
 }

@@ -121,6 +121,15 @@ func (h *ApprovalHTTPHandler) SessionValidator() middleware.SessionValidator {
 	return h.sessionValidator
 }
 
+// PolicyEpoch returns the epoch enforced by the underlying approval Gate.
+// It deliberately reads the Gate rather than a duplicated provider field.
+func (h *ApprovalHTTPHandler) PolicyEpoch() uint64 {
+	if h == nil || h.gate == nil {
+		return 0
+	}
+	return h.gate.PolicyEpoch()
+}
+
 type approvalChallengeState struct {
 	challenge ApprovalChallenge
 	session   ApprovalSession

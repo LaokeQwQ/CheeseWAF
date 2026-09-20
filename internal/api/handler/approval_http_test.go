@@ -44,6 +44,20 @@ func newApprovalHTTPFixture(t *testing.T, withVerifier bool) approvalHTTPFixture
 	return approvalHTTPFixture{handler: h, gate: gate, now: now, clock: clock}
 }
 
+func TestApprovalHTTPHandlerPolicyEpochComesFromGate(t *testing.T) {
+	gate := approval.NewGate(17)
+	h := NewApprovalHTTPHandler(ApprovalHTTPOptions{Gate: gate})
+	if got := h.PolicyEpoch(); got != 17 {
+		t.Fatalf("handler policy epoch = %d, want 17", got)
+	}
+	if err := gate.AdvanceEpoch(18); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.PolicyEpoch(); got != 18 {
+		t.Fatalf("handler policy epoch after gate advance = %d, want 18", got)
+	}
+}
+
 func (f *approvalHTTPFixture) advance(d time.Duration) {
 	f.now = f.now.Add(d)
 	*f.clock = f.now
