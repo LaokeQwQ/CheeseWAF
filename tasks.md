@@ -1580,5 +1580,11 @@ CRP sidecar 或空网演练的完成证明。当前分支仍未 push、未创建
 
 本地聚焦验证：`go test ./internal/setup/migration ./internal/cli -run
 'TestValidateProductionHandoffProof|TestProductionHandoffVerifierContractIsContextAware|TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire|TestValidateProductionTemporaryNetworkOptions' -count=1` 通过。
+提交后的全量复核：`go test ./... -count=1 -timeout=600s`、
+`go test -race ./internal/setup/migration ./internal/cli ./internal/cwedp/transport -count=1 -timeout=600s`、
+`go vet ./...`、CodeQL Go extraction 和 `bash scripts/ci/verify-ci-static.sh` 均通过；
+`bash scripts/acceptance/acceptance-matrix_test.sh` 通过，静态矩阵仍为 19 passed / 4 failed /
+0 skipped，失败仍为 migration/session、CRP activation、CRP rollback 和 temporary-network
+production lifecycle。
 该切片未修改 acceptance implemented 计数，未 push、未创建 PR、未晋升 master、未发行新版；既有
 正式 `v0.3.9` 保持不变。
