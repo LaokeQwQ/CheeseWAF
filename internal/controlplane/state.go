@@ -343,6 +343,34 @@ func (m *StateMachine) ValidateCommit(commit Commit) error {
 	return m.validateCommitLocked(commit)
 }
 
+// ValidateCurrentCommit verifies that commit is the exact committed commit
+// currently available for materialization. Unlike ValidateCommit, it rejects
+// historical commits from the current epoch and proposals that have not yet
+// been installed as committed state. Unlike ValidateFence, it validates the
+// complete commit while retaining the fence's cluster, epoch, revision,
+// digest, and nonce bindings. It is intentionally side-effect free.
+func (m *StateMachine) ValidateCurrentCommit(commit Commit) error {
+	if m == nil {
+		return ErrInvalidCommit
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := m.validateCommitLocked(commit); err != nil {
+		return err
+	}
+	if commit.State.Revision != m.committed.Revision {
+		return fmt.Errorf("%w: commit revision %d is not current materialization revision %d", ErrStaleRevision, commit.State.Revision, m.committed.Revision)
+	}
+	if !statesEquivalentForCommit(m.committed, commit.State) {
+		return fmt.Errorf("%w: commit does not match current materialized state", ErrInvalidCommit)
+	}
+	digest, ok := m.committedFences[commit.Fence.Revision]
+	if !ok || digest != commit.Fence.Digest {
+		return fmt.Errorf("%w: commit fence is not the current materialization fence", ErrStaleFence)
+	}
+	return nil
+}
+
 func (m *StateMachine) validateCommitLocked(commit Commit) error {
 	if !ValidIdentity(commit.Fence.ClusterID) || !ValidIdentity(commit.Fence.LeaderID) || !ValidIdentity(commit.Fence.Nonce) || commit.Fence.Revision == 0 {
 		return fmt.Errorf("%w: fencing fields are required", ErrInvalidCommit)
