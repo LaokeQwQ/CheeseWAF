@@ -21,6 +21,7 @@ import (
 	controlpostgres "github.com/LaokeQwQ/CheeseWAF/internal/controlplane/postgres"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/transport"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
+	setupmigration "github.com/LaokeQwQ/CheeseWAF/internal/setup/migration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	storagepostgres "github.com/LaokeQwQ/CheeseWAF/internal/storage/postgres"
 )
@@ -41,6 +42,7 @@ var (
 	ErrProductionTemporaryNetworkSession     = errors.New("production temporary network management session is invalid")
 	ErrProductionTemporaryNetworkAudit       = errors.New("production temporary network audit sink is unavailable")
 	ErrProductionTemporaryNetworkAdapter     = errors.New("production temporary network adapter is not lease-bound")
+	ErrProductionMigrationHandoffUnavailable = errors.New("production migration handoff is unavailable")
 )
 
 // ProductionStartupOptions is deliberately separate from the serializable
@@ -66,6 +68,10 @@ type ProductionStartupOptions struct {
 	// authenticated launcher rather than local CLI state.
 	ManagementSessionID string
 	AuditSink           netlease.DurableAuditSink
+	// MigrationHandoff and its verifier are runtime-only. They must be supplied
+	// by an authenticated migration launcher; they are never read from YAML.
+	MigrationHandoff         setupmigration.ProductionHandoffProof
+	MigrationHandoffVerifier setupmigration.ProductionHandoffVerifier
 }
 
 // ProductionControlDependency is the control-plane PostgreSQL adapter. It is
@@ -120,10 +126,12 @@ type ProductionServeWiring struct {
 // production temporary-network provider. The provider must bind every value
 // into its returned lifecycle before exposing external egress.
 type ProductionTemporaryNetworkOptions struct {
-	ManagementStore     storage.Store
-	PolicyEpoch         uint64
-	ManagementSessionID string
-	AuditSink           netlease.DurableAuditSink
+	ManagementStore          storage.Store
+	PolicyEpoch              uint64
+	ManagementSessionID      string
+	AuditSink                netlease.DurableAuditSink
+	MigrationHandoff         setupmigration.ProductionHandoffProof
+	MigrationHandoffVerifier setupmigration.ProductionHandoffVerifier
 }
 
 // ProductionTemporaryNetworkWiring owns the only network capabilities that
@@ -446,14 +454,16 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	if err := validateProductionApprovalHTTPBinding(provider, deps.ApprovalHTTP, uint64(startup.State.Epoch)); err != nil {
 		return fail("approval HTTP binding is incomplete", err)
 	}
-	if err := validateProductionTemporaryNetworkOptions(opts, management, uint64(startup.State.Epoch), factory.OpenTemporaryNetwork); err != nil {
+	if err := validateProductionTemporaryNetworkOptionsContext(ctx, opts, management, uint64(startup.State.Epoch), factory.OpenTemporaryNetwork); err != nil {
 		return fail("production temporary network contract is incomplete", err)
 	}
 	temporaryNetwork, err := factory.OpenTemporaryNetwork(ctx, ProductionTemporaryNetworkOptions{
-		ManagementStore:     management,
-		PolicyEpoch:         uint64(startup.State.Epoch),
-		ManagementSessionID: opts.ManagementSessionID,
-		AuditSink:           opts.AuditSink,
+		ManagementStore:          management,
+		PolicyEpoch:              uint64(startup.State.Epoch),
+		ManagementSessionID:      opts.ManagementSessionID,
+		AuditSink:                opts.AuditSink,
+		MigrationHandoff:         opts.MigrationHandoff,
+		MigrationHandoffVerifier: opts.MigrationHandoffVerifier,
 	})
 	if temporaryNetwork != nil {
 		deps.TemporaryNetwork = temporaryNetwork
@@ -548,6 +558,10 @@ func validateProductionApprovalHTTPBinding(provider ProductionApprovalDependency
 }
 
 func validateProductionTemporaryNetworkOptions(opts ProductionStartupOptions, management storage.Store, epoch uint64, opener func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error)) error {
+	return validateProductionTemporaryNetworkOptionsContext(context.Background(), opts, management, epoch, opener)
+}
+
+func validateProductionTemporaryNetworkOptionsContext(ctx context.Context, opts ProductionStartupOptions, management storage.Store, epoch uint64, opener func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error)) error {
 	if opener == nil {
 		return ErrProductionTemporaryNetworkUnavailable
 	}
@@ -565,6 +579,25 @@ func validateProductionTemporaryNetworkOptions(opts ProductionStartupOptions, ma
 	}
 	if isNilProductionDependency(opts.AuditSink) || !opts.AuditSink.Durable() {
 		return ErrProductionTemporaryNetworkAudit
+	}
+	if err := validateProductionMigrationHandoff(ctx, opts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProductionMigrationHandoff(ctx context.Context, opts ProductionStartupOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if isNilProductionDependency(opts.MigrationHandoffVerifier) {
+		return ErrProductionMigrationHandoffUnavailable
+	}
+	if err := setupmigration.ValidateProductionHandoffProof(opts.MigrationHandoff, opts.ClusterID); err != nil {
+		return fmt.Errorf("%w: %v", ErrProductionMigrationHandoffUnavailable, err)
+	}
+	if err := opts.MigrationHandoffVerifier.VerifyProductionHandoff(ctx, opts.MigrationHandoff); err != nil {
+		return fmt.Errorf("%w: verifier rejected proof", ErrProductionMigrationHandoffUnavailable)
 	}
 	return nil
 }

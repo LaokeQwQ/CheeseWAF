@@ -1565,3 +1565,20 @@ Dependabot 只读审计显示没有开放依赖 PR；Plugin/Docs 的独立审查
 边界：该提交（`8aa97237`）只是 production composition seam，不是外部控制面、持久租约 provider、
 CRP sidecar 或空网演练的完成证明。当前分支仍未 push、未创建 PR、未晋升 master、未发行新版；既有
 正式 `v0.3.9` 标签和发布资产保持不变。
+
+### 2026-09-20 migration → production hand-off contract
+
+已补充一个 metadata-only 的迁移交接 seam，未读取或伪造真实 PostgreSQL/ledger：
+
+- `internal/setup/migration` 新增 `ProductionHandoffProof`、`ProductionHandoffVerifier` 和
+  `ValidateProductionHandoffProof`，绑定 config/candidate/token digest、cluster ID、snapshot/
+  ledger proof、token metadata verified 与五项 temporary invalidation 回执。
+- production temporary-network provider 现在必须显式接收并验证该 hand-off；缺少 verifier、
+  不匹配 cluster、无效摘要、未验证 token metadata 或不完整 invalidation 均 fail-closed。
+- verifier 使用 production startup context，证明只作为生命周期入口元数据传递，不暴露密码、
+  数据库快照、broker 或可复用网络客户端；默认 factory 仍不提供 temporary-network provider。
+
+本地聚焦验证：`go test ./internal/setup/migration ./internal/cli -run
+'TestValidateProductionHandoffProof|TestProductionHandoffVerifierContractIsContextAware|TestOpenProductionDependenciesBootstrapsAndRequiresExplicitServeWire|TestValidateProductionTemporaryNetworkOptions' -count=1` 通过。
+该切片未修改 acceptance implemented 计数，未 push、未创建 PR、未晋升 master、未发行新版；既有
+正式 `v0.3.9` 保持不变。

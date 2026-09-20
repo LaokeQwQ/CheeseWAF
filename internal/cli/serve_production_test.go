@@ -18,6 +18,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/transport"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
+	setupmigration "github.com/LaokeQwQ/CheeseWAF/internal/setup/migration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -551,6 +552,28 @@ func TestValidateProductionTemporaryNetworkOptionsRejectsMissingProviderSessionA
 	}
 }
 
+func TestValidateProductionTemporaryNetworkOptionsRequiresVerifiedMigrationHandoff(t *testing.T) {
+	manager, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "manager.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	opts := testProductionStartupOptions(t)
+	opts.ManagementSessionID = "management-session"
+	opts.AuditSink = durableTestAuditSink(t)
+	opts.MigrationHandoffVerifier = nil
+	open := func(context.Context, ProductionTemporaryNetworkOptions) (*ProductionTemporaryNetworkWiring, error) {
+		return testTemporaryNetworkWiring(t), nil
+	}
+	if err := validateProductionTemporaryNetworkOptions(opts, manager, 7, open); !errors.Is(err, ErrProductionMigrationHandoffUnavailable) {
+		t.Fatalf("missing handoff verifier error=%v, want ErrProductionMigrationHandoffUnavailable", err)
+	}
+	opts.MigrationHandoffVerifier = productionHandoffVerifierFunc{}
+	if err := validateProductionTemporaryNetworkOptions(opts, manager, 7, open); err != nil {
+		t.Fatalf("valid migration handoff rejected: %v", err)
+	}
+}
+
 func TestProductionTemporaryNetworkWiringRejectsUnboundAdapterAndClosesOnce(t *testing.T) {
 	_, err := NewProductionTemporaryNetworkWiring(testTemporaryHTTPExecutor{}, transport.AdapterFunc(func(context.Context, transport.Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (io.ReadCloser, error) {
 		return nil, nil
@@ -585,7 +608,20 @@ func testProductionStartupOptions(t *testing.T) ProductionStartupOptions {
 		NativeRaft:           nativeraft.Options{Profile: config.StorageProfileProduction, ClusterID: "cluster-a", NodeID: "node-a", DataDir: t.TempDir(), BindAddress: "127.0.0.1:0", Mode: nativeraft.ModeBootstrap},
 		Redis:                redis.Config{InstanceID: "instance-a", Addr: "127.0.0.1:6379"},
 		RedisEnabled:         true,
+		MigrationHandoff: setupmigration.ProductionHandoffProof{
+			ConfigDigest: strings.Repeat("a", 64), CandidateDigest: strings.Repeat("b", 64),
+			ClusterID: "cluster-a", SnapshotID: "snapshot-a", SnapshotProof: "snapshot-proof-a", LedgerProof: "ledger-proof-a",
+			TokenMetadataDigest: strings.Repeat("c", 64), TokenMetadataVerified: true,
+			Invalidated: setupmigration.InvalidationReceipt{Sessions: true, Setup: true, Join: true, CAPTCHA: true, Locks: true},
+		},
+		MigrationHandoffVerifier: productionHandoffVerifierFunc{},
 	}
+}
+
+type productionHandoffVerifierFunc struct{}
+
+func (productionHandoffVerifierFunc) VerifyProductionHandoff(context.Context, setupmigration.ProductionHandoffProof) error {
+	return nil
 }
 
 func testProductionState(t *testing.T) controlplane.State {
