@@ -1519,3 +1519,14 @@ consumer、策略 coordinator/materializer、迁移切换与隔离 PG/Redis/nati
 `v0.3.9` 发行谱系保持不变。CheeseSec_Plugin、CheeseSec_Plugin_Docs 和 CheeseSec_Docs 的
 Dependabot 只读审计显示没有开放依赖 PR；Plugin/Docs 的独立审查与 Cloudflare Pages/Workers
 生产资源仍是外部交付事项，不能用本地提交替代。
+
+### 2026-09-20 Pages/Workers 与文档依赖门禁复核
+
+已完成的本地交接与验证：
+
+- `CheeseSec_pages` 的 `codex/cloudflare-edge-router` 工作树保持干净；`npm test` 通过（8 files / 51 tests），`npm run typecheck`、`npm run build`、`npm run check:artifacts` 均通过。
+- `wrangler deploy --dry-run` 成功生成 `cheesesec-pages` Worker 资产包，确认 Worker 使用 `PUBLICATION_INDEX`、`PUBLIC_RESOURCES`、`ASSETS`、`EDGE_POLICY_VERSION` 和 HTTPS `ORIGIN_BASE_URL` 绑定；dry-run 不代表 Cloudflare 账户资源已创建或生产域名已上线。
+- 生产 dry-run 仍只能证明配置和打包边界：R2 bucket、custom domain、Access、Tunnel、Wrangler 账号授权以及真实部署回执尚未形成可复现证据，不能写成 Pages/Workers 已发布。
+- `CheeseSec_Docs` 本地 `main` 新增 `ecc63d5 ci: add weekly dependabot updates`，针对实际存在的根 `go.mod` 和 GitHub Actions 配置，每周更新、目标分支 `main`；YAML 字段断言、`go mod verify` 和 `git diff --check` 通过，未 push。
+
+边界：本条只记录本地证据，不自动创建 Cloudflare 资源、不使用未提供的凭据、不推送外部仓库；Plugin/Plugin Docs 的独立 code-owner 审查与 Pages 生产资源仍是外部交付阻塞。
