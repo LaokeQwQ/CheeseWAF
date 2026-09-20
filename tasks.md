@@ -1461,3 +1461,30 @@ consumer；默认 `WireServe` 继续缺失即 fail-closed。验收矩阵的 prod
 consumer，生产 `WireServe` 继续缺依赖即拒绝；四项 acceptance blocker、验收矩阵的
 `implemented` 标志和 `v0.3.9` 均保持不变。下一步应实现生命周期拥有者的 snapshot/fence/nonce、
 exact commit retry 和 Coordinator→materializer 回调，再以故障注入证明成功后才允许启用该注入。
+
+### 2026-09-20 migration/session production composition-root seam
+
+范围：把已打开的 production management store、control-plane startup/fence、ApprovalHTTP、Session
+validator 和 policy epoch 收敛到一个不可拆分的 `ProductionServeWiring`；本轮仍不启用默认
+`WireServe`，不把主服务或迁移验收标记为完成。
+
+实际改动：
+
+- `ProductionDependencies.ServeWiring()` 只接受 `StartupStageReady` 的控制面状态，拒绝缺失审批
+  handler、epoch 不一致，或没有绑定同一 management store 的 Session validator。
+- `ProductionDependencyFactory.WireServe` 接收只读的 `ProductionServeWiring`，而不是整个可变依赖
+  容器；`runServe` 将同一份 management store 和 Session validator 传给 API router，审批 HTTP
+  与主管理 API 因而共享同一个 Session 生命周期。
+- 测试覆盖 management → control → consensus → Redis → approval → wire 的启动顺序、fence/epoch
+  透传、detached validator 拒绝、未接线清理，以及默认 factory 继续 `WireServe == nil`
+  fail-closed。该 seam 不创建 no-op consumer，也不绕过 migration fence。
+
+验证证据：
+
+- `go test ./internal/cli ./internal/api ./internal/api/handler -count=1`：通过。
+- `git diff --check`：通过。
+
+边界：`ProductionServeWiring` 是生命周期合同，不是 production switch。主服务仍缺真实管理
+consumer、策略 coordinator/materializer、迁移切换与隔离 PG/Redis/native-raft/Approval 端到端
+证据；acceptance 仍保留 migration/session、CRP activation/rollback 和 temporary-network 四项
+阻塞，`v0.3.9`、远端分支和稳定版发行均未改动。

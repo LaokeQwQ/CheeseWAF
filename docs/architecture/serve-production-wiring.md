@@ -22,6 +22,12 @@
 
 factory 通过 `ProductionDependencyFactory` 暴露每一个打开点，`ProductionDependencies.Close` 按审批、Redis、native-raft、控制面 PostgreSQL、管理面 PostgreSQL 的逆序关闭，启动失败、Bootstrap 失败和最终 serve 接线失败都执行相同清理。主 `serve` 在 production profile 下先完成这组打开、迁移、健康检查、Bootstrap、fencing 和 `WireServe`，之后才创建运行目录和 PID lease；因此依赖缺失不会留下 serving 进程的 PID 或 listener 副作用。只有控制面 `Bootstrap` 返回 `StartupStageReady`，Redis/审批健康检查通过，并且显式 `WireServe` 完成后才会返回 `Ready=true`。
 
+当前组合根把通过校验的依赖收敛为不可拆分的 `ProductionServeWiring`：管理 PostgreSQL
+`storage.Store`、`StartupResult` 及其 fence、审批 `ApprovalHTTP`、同一管理库上的
+`SessionValidator` 和匹配的 `PolicyEpoch` 必须来自同一次启动尝试。`ServeWiring()` 会拒绝
+脱离管理库的 Session validator、未 ready 的控制面、缺失审批 handler 或 epoch 漂移；`runServe`
+只把这份已验证的 wiring 传给 API router，避免审批端点和主管理 API 各自持有不同的会话生命期。
+
 默认 factory 在启动上下文不完整时仍返回 `ErrProductionApprovalUnavailable`，因此缺少
 management store、当前 epoch、控制面 DSN 或完整 `WireServe` 时主 `serve` 仍会在绑定
 HTTP listener 前 fail-closed。部署 launcher 也可以通过 factory 提供其他实现
@@ -30,4 +36,9 @@ HTTP listener 前 fail-closed。部署 launcher 也可以通过 factory 提供�
 注入完整 factory 来验证顺序、双 PG 边界、Bootstrap、ApprovalHTTP 传递和失败清理；测试
 fake 不代表真实生产后端已上线。
 
-这条本地 fence/Session 纵切片不等于 production switch 已完成。生产路径仍要求 `ProductionDependencyFactory.WireServe` 把管理 PostgreSQL、control-plane、Redis、审批和所有管理消费者绑定到同一服务生命周期；默认 factory 虽可打开真实审批运行时，但尚未提供最终 `WireServe`，因此审批和管理消费者仍未接入主服务。`TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy` 必须继续通过并保持主服务 fail-closed。不得通过跳过 fence、恢复记录或 epoch 检查来解除该门禁。
+这条本地 fence/Session 纵切片仍不等于 production switch 已完成。`ProductionServeWiring` 只
+证明 composition-root 的依赖不能被拆开；默认 factory 仍不提供最终 `WireServe`，所以主服务的
+审批、策略 consumer、迁移切换和其他管理消费者仍未接入。`TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy`
+必须继续通过并保持主服务 fail-closed。不得通过跳过 fence、恢复记录、Session validator 或
+epoch 检查来解除该门禁；只有真实消费者、故障恢复和隔离生产环境端到端证据齐备后，才可启用
+默认 `WireServe`。
