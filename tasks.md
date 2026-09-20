@@ -1531,7 +1531,7 @@ Dependabot 只读审计显示没有开放依赖 PR；Plugin/Docs 的独立审查
 
 边界：本条只记录本地证据，不自动创建 Cloudflare 资源、不使用未提供的凭据、不推送外部仓库；Plugin/Plugin Docs 的独立 code-owner 审查与 Pages 生产资源仍是外部交付阻塞。
 
-### 2026-09-21 temporary-network production composition seam
+### 2026-09-20 temporary-network production composition seam
 
 范围：把 temporary-online 的现有一次性生命周期收敛到生产组合根的显式 provider 边界；不把
 本地 broker、`AllowLocalWithoutManagementSession` 或裸 CWEDP HTTP adapter 当作生产能力，也不修改
