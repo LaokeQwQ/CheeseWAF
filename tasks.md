@@ -1588,3 +1588,29 @@ CRP sidecar 或空网演练的完成证明。当前分支仍未 push、未创建
 production lifecycle。
 该切片未修改 acceptance implemented 计数，未 push、未创建 PR、未晋升 master、未发行新版；既有
 正式 `v0.3.9` 保持不变。
+
+### 2026-09-20 CRP production handler mount 与授权耐久 contract
+
+范围：补齐 control-plane runtime 对 CRP authorization handler 的显式挂载边界，并把生产
+授权依赖的 durable contract 写入架构文档；本轮不创建默认 handler、不改变 activation/rollback
+验收计数，也不解除外部部署阻塞。
+
+事实记录：
+
+- `internal/controlplane/runtime` 仅接收生命周期拥有者显式注入的
+  `CRPActivationHandler`，在 handler 存在时挂载 `/v1/crp/activation/`；未注入时保持 404，
+  不自动创建 memory state、空 provider 或 no-op 授权路径。
+- `internal/crp/activation` 增加生产准入所需的
+  `DurableAuthorizationState`、`DurableAuthorizationProvider` 和
+  `ValidateProductionControlPlaneHandler` contract。`MemoryAuthorizationState` 明确为
+  非 durable；普通 callback/测试 double 不能直接作为生产 handler 依赖。
+- 新增 [CRP production handler mount 文档](docs/architecture/crp-production-handler-mount.md)，
+  说明显式注入、durable state/provider、启动顺序、TLS 继承边界和剩余生产责任。
+
+边界：这只是主 runtime 的 handler mount 与授权耐久性 contract。真实 PostgreSQL-backed
+authorization state/provider、approval/fence/audit durable backend、sidecar launcher、
+部署交接和真实 activation/rollback end-to-end 仍未完成；acceptance matrix 继续保持
+`19 passed / 4 failed / 0 skipped`，其中 `crp_activation` 与 `crp_rollback` 仍为 failed。
+本地提交未 push、未创建 PR、未晋升 `master`、未发行新版，既有正式 `v0.3.9` 保持不变。
+
+验证：`git diff --check` 通过（本轮仅修改架构文档和本交接记录）。
