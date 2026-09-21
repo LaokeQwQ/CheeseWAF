@@ -14,6 +14,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/nativeraft"
 	controlpostgres "github.com/LaokeQwQ/CheeseWAF/internal/controlplane/postgres"
+	crpactivation "github.com/LaokeQwQ/CheeseWAF/internal/crp/activation"
 )
 
 type Phase string
@@ -55,20 +56,26 @@ type Dependencies struct {
 	Consensus controlplane.ConsensusBootstrap
 	Fencer    controlplane.FenceBootstrap
 	Machine   *controlplane.StateMachine
-	Close     func() error
+	// CRPActivationHandler is an explicit production hand-off for the
+	// authenticated CRP authorization transport. The runtime never creates a
+	// memory-backed handler implicitly; a launcher must inject a handler backed
+	// by durable authorization and approval state.
+	CRPActivationHandler *crpactivation.ControlPlaneHandler
+	Close                func() error
 }
 
 type Runtime struct {
-	mu          sync.RWMutex
-	opts        Options
-	status      Status
-	machine     *controlplane.StateMachine
-	consensus   controlplane.ConsensusBootstrap
-	coordinator *controlplane.Coordinator
-	closeDeps   func() error
-	httpServer  *http.Server
-	listener    net.Listener
-	closed      bool
+	mu                   sync.RWMutex
+	opts                 Options
+	status               Status
+	machine              *controlplane.StateMachine
+	consensus            controlplane.ConsensusBootstrap
+	coordinator          *controlplane.Coordinator
+	crpActivationHandler *crpactivation.ControlPlaneHandler
+	closeDeps            func() error
+	httpServer           *http.Server
+	listener             net.Listener
+	closed               bool
 }
 
 // Open opens adapters and attempts the complete fail-closed bootstrap. It
@@ -157,7 +164,12 @@ func OpenWithDependencies(ctx context.Context, opts Options, deps Dependencies) 
 			return nil, err
 		}
 	}
-	r := &Runtime{opts: opts, machine: deps.Machine, consensus: deps.Consensus, closeDeps: deps.Close, status: Status{Profile: opts.Profile, ClusterID: opts.ClusterID, NodeID: opts.NodeID, Phase: PhaseStarting, UpdatedAt: time.Now().UTC()}}
+	if deps.CRPActivationHandler != nil {
+		if err := crpactivation.ValidateProductionControlPlaneHandler(deps.CRPActivationHandler); err != nil {
+			return nil, err
+		}
+	}
+	r := &Runtime{opts: opts, machine: deps.Machine, consensus: deps.Consensus, crpActivationHandler: deps.CRPActivationHandler, closeDeps: deps.Close, status: Status{Profile: opts.Profile, ClusterID: opts.ClusterID, NodeID: opts.NodeID, Phase: PhaseStarting, UpdatedAt: time.Now().UTC()}}
 	checkpoint, _ := deps.Consensus.(controlplane.LeadershipCheckpointStore)
 	result, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: opts.Profile, ClusterID: opts.ClusterID, Machine: deps.Machine, Durable: deps.Durable, Consensus: deps.Consensus, Fencer: deps.Fencer, LeadershipCheckpoint: checkpoint})
 	if err != nil {
@@ -218,7 +230,27 @@ func (r *Runtime) Handler() http.Handler {
 	mux.HandleFunc("/readyz", r.handleReady)
 	mux.HandleFunc("/status", r.handleStatus)
 	mux.HandleFunc("/proposals", r.handleProposal)
+	// Mount only an explicitly injected CRP handler. The import is used for a
+	// compile-time assertion so this seam cannot accidentally be wired to a
+	// generic HTTP handler without preserving the activation transport type.
+	if r != nil && r.crpActivationHandler != nil {
+		var _ http.Handler = (*crpactivation.ControlPlaneHandler)(nil)
+		mux.Handle("/v1/crp/activation/", r.crpActivationHandler)
+	}
 	return mux
+}
+
+// CRPActivationHandler reports the explicit activation transport mounted on
+// this runtime. A nil result means the control-plane process is intentionally
+// not serving CRP authorization endpoints; callers must keep activation
+// fail-closed rather than constructing a local memory-backed substitute.
+func (r *Runtime) CRPActivationHandler() *crpactivation.ControlPlaneHandler {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.crpActivationHandler
 }
 
 func (r *Runtime) handleHealth(w http.ResponseWriter, req *http.Request) {
