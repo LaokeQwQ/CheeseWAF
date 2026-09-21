@@ -1614,3 +1614,28 @@ authorization state/provider、approval/fence/audit durable backend、sidecar la
 本地提交未 push、未创建 PR、未晋升 `master`、未发行新版，既有正式 `v0.3.9` 保持不变。
 
 验证：`git diff --check` 通过（本轮仅修改架构文档和本交接记录）。
+
+### 2026-09-21 CRP 生产准入防御与 runtime 启动门禁
+
+本轮继续处理 CRP 生产接线的边界问题，未把测试 double 当成生产实现。
+
+实际改动：
+
+- `internal/crp/activation/production_contract.go` 增加 typed-nil 依赖检查。State、Provider、Audit、ControlPlane 和 Sidecars 通过接口传入空指针时，会在调用 `Durable()` 或 `TransportIdentity()` 前拒绝。
+- `internal/crp/activation/production_contract_test.go` 增加五类 typed-nil 回归，验证构造过程不会 panic，并保持 fail-closed。
+- `internal/controlplane/runtime/runtime_test.go` 增加 callback-only CRP handler 启动门禁测试。runtime 在 `OpenWithDependencies` 阶段拒绝未绑定 durable state/provider 的 handler。
+
+验证证据：
+
+- `go test ./internal/crp/activation ./internal/controlplane/runtime -count=1`：通过。
+- `go test -race ./internal/crp/activation ./internal/controlplane/runtime -count=1`：通过。
+- `go vet ./internal/crp/activation ./internal/controlplane/runtime`：通过。
+- `bash scripts/acceptance/acceptance-matrix_test.sh`：通过；static matrix 仍为 19 passed / 4 failed / 0 skipped。
+- `bash scripts/ci/verify-ci-static.sh`：通过；负向用例输出的 `::error::` 为预期结果。
+- CodeQL Go extraction：通过。
+- `go test ./... -run '^$' -count=1 -timeout=600s` 和 `go vet ./...`：通过。
+- `git diff --check`：通过。
+
+剩余边界：仓库仍没有真实 PostgreSQL-backed authorization state/provider、append-only CRP audit、sidecar launcher 或主 `serve` 的 CRP 生产消费者；`crp_activation`、`crp_rollback`、migration/session 和 temporary-network production lifecycle 仍是验收失败项。临时服务器当前没有可复核的公网 preview；SSH 登录凭据未被接受，本轮没有执行远程修改。
+
+交付状态：本轮仅在隔离集成分支保留本地改动，未 push、未创建 PR、未晋升 `master`、未发行新版；稳定 `v0.3.9` 保持不变。
