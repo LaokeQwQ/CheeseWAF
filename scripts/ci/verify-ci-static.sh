@@ -46,7 +46,7 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not enforce go vet"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh coverage' "$workflow" ||
     fail "${workflow} does not enforce Go coverage"
-  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.0' "$workflow" ||
+  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.1' "$workflow" ||
     fail "${workflow} does not pin the Vitest coverage provider"
   grep -Fq 'npm test -- --coverage' "$workflow" ||
     fail "${workflow} does not execute project tests with coverage"
