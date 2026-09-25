@@ -126,6 +126,29 @@ bash -n scripts/ci/lock-evaluation-artifact.sh scripts/ci/lock-evaluation-artifa
 grep -Fq 'bash scripts/ci/test-go-windows.sh' .github/workflows/ci.yml ||
   fail "GitHub Windows Go test job must use the dedicated Windows test runner"
 
+grep -Fq 'production-acceptance-integration:' .github/workflows/ci.yml ||
+  fail "GitHub Actions must run real production acceptance integrations"
+grep -Fq 'bash scripts/ci/run-production-acceptance-integration.sh' .github/workflows/ci.yml ||
+  fail "production acceptance integration job must use the guarded integration runner"
+grep -Fq 'CRP_REGISTRY_DIR: ${{ runner.temp }}/cheesewaf-crp-sidecar-registry' .github/workflows/ci.yml ||
+  fail "production acceptance integration must allocate its registry under runner.temp"
+grep -Fq 'CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR=%s\n' .github/workflows/ci.yml ||
+  fail "production acceptance integration must export its runner-temp registry through GITHUB_ENV"
+if grep -nE '^[[:space:]]+CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR:[[:space:]]*/tmp/' .github/workflows/ci.yml; then
+  fail "production acceptance integration must not use a fixed /tmp registry path"
+fi
+release_needs_block="$(awk '
+  /^  release-artifacts:/ { in_release=1; next }
+  in_release && /^  [A-Za-z0-9_-]+:/ { exit }
+  in_release { print }
+' .github/workflows/ci.yml)"
+grep -Fq 'production-acceptance-integration' <<<"$release_needs_block" ||
+  fail "release-artifacts must depend on production-acceptance-integration"
+[[ -r scripts/ci/run-production-acceptance-integration.sh ]] ||
+  fail "production acceptance integration runner is missing"
+bash -n scripts/ci/run-production-acceptance-integration.sh ||
+  fail "production acceptance integration runner must pass bash syntax validation"
+
 grep -Fq "node-version: ${NODE_VERSION}" .github/workflows/ci.yml ||
   fail "GitHub Actions must pin Node ${NODE_VERSION}"
 
@@ -501,9 +524,27 @@ grep -Fq 'bin/$(BINARY_NAME)-$$goarch-$$goos-$(subst +,-,$(VERSION))$$ext' Makef
 
 # Forgejo alignment: shared npm audit gate. actionlint only lints GitHub YAML;
 # Forgejo uses https://data.forgejo.org/... action URLs that actionlint cannot
-# parse, so Forgejo workflow correctness stays covered by the static checks above.
+# parse, so Forgejo gets a YAML and action-reference gate of its own.
+grep -Fq 'bash scripts/ci/verify-forgejo-workflow.sh' .forgejo/workflows/ci.yml ||
+  fail "Forgejo ci-static must run the Forgejo workflow YAML gate"
+[[ -x scripts/ci/verify-forgejo-workflow.sh ]] ||
+  fail "Forgejo workflow YAML gate must be executable"
+bash scripts/ci/verify-forgejo-workflow.sh
 grep -Fq 'node scripts/npm-audit-gate.mjs' .forgejo/workflows/ci.yml ||
   fail "Forgejo web-audit must use the shared npm-audit-gate"
+
+# GitHub and Forgejo must protect the same paths with the same owners.
+for codeowners in .github/CODEOWNERS .forgejo/CODEOWNERS; do
+  [[ -r "$codeowners" ]] || fail "missing ${codeowners}"
+  grep -Fqx '* @LaokeQwQ' "$codeowners" ||
+    fail "${codeowners} must declare @LaokeQwQ as the default owner"
+  for protected_path in /.forgejo/ /.github/ /deploy/ /scripts/ci/; do
+    grep -Fqx "${protected_path} @LaokeQwQ" "$codeowners" ||
+      fail "${codeowners} must protect ${protected_path}"
+  done
+done
+cmp -s .github/CODEOWNERS .forgejo/CODEOWNERS ||
+  fail "GitHub and Forgejo CODEOWNERS declarations must stay identical"
 
 # Coverage gates must stay aligned with actual observed coverage so CI is not
 # guaranteed to fail.
@@ -693,5 +734,6 @@ bash scripts/ci/package-release_profile_test.sh
 bash scripts/ci/verify-stable-tag_test.sh
 bash scripts/ci/publish-prerelease_test.sh
 bash scripts/ci/verify-release_test.sh
+bash scripts/ci/package-macos-dmg_lifecycle_test.sh
 
 echo "CI static regression checks passed."

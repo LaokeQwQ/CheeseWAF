@@ -735,6 +735,24 @@ func (g *Gate) Get(requestID string) (Record, bool) {
 	return cloneRecord(record), true
 }
 
+// ApprovedRecords returns a detached snapshot of every currently approved
+// record. Callers may inspect the snapshot without holding the gate lock and
+// cannot mutate the gate's authorization state through the returned values.
+func (g *Gate) ApprovedRecords() []Record {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]Record, 0, len(g.requests))
+	for _, record := range g.requests {
+		if record.Status == StatusApproved {
+			out = append(out, cloneRecord(record))
+		}
+	}
+	return out
+}
+
 func (g *Gate) appendAudit(now time.Time, typ AuditType, requestID, actor, scope string, epoch uint64, confirmationID, reason string) {
 	g.sequence++
 	event := AuditEvent{Sequence: g.sequence, Type: typ, At: now, RequestID: requestID, Actor: actor, Scope: scope, PolicyEpoch: epoch, ConfirmationID: confirmationID, Reason: reason}

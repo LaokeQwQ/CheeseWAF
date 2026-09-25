@@ -36,6 +36,7 @@ var (
 	ErrCutoverLedger                  = errors.New("migration cutover ledger is unavailable")
 	ErrCutoverAmbiguous               = errors.New("migration cutover state is ambiguous")
 	ErrCutoverTokenMetadataUnverified = errors.New("migration cutover token metadata is unverified from a v1 ledger")
+	ErrRecoveryInProgress             = errors.New("migration recovery is already in progress")
 	ErrRecoveryConsumed               = errors.New("migration recovery confirmation was already consumed")
 )
 

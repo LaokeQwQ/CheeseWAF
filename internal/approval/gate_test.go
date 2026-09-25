@@ -174,6 +174,25 @@ func TestPreapprovedConfirmationIDIsReservedAgainstReplay(t *testing.T) {
 	}
 }
 
+func TestApprovedRecordsReturnsDeepCopies(t *testing.T) {
+	now := time.Date(2026, 9, 24, 8, 0, 0, 0, time.UTC)
+	gate := NewGate(1)
+	record, err := gate.Submit(now, Request{ID: "approved-snapshot", Risk: RiskLow, Scope: "site:a", PolicyEpoch: 1, TTL: time.Minute, PreApproved: true, Actor: "scheduler", SessionID: "session-snapshot", ConfirmationLanguage: "zh-CN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := gate.ApprovedRecords()
+	if len(records) != 1 || records[0].Commit == nil {
+		t.Fatalf("ApprovedRecords()=%+v, want one approved record", records)
+	}
+	records[0].Request.Scope = "site:tampered"
+	records[0].Commit.Scope = "site:tampered"
+	stored, ok := gate.Get(record.ID)
+	if !ok || stored.Request.Scope != "site:a" || stored.Commit == nil || stored.Commit.Scope != "site:a" {
+		t.Fatalf("ApprovedRecords snapshot mutated gate state: %+v", stored)
+	}
+}
+
 func TestEveryRestrictedClassIgnoresPreapproval(t *testing.T) {
 	now := time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)
 	tests := []struct {

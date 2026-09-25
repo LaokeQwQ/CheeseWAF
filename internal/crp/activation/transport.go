@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	TransportSchemaVersion   = "crp-activation-transport.v1"
+	TransportSchemaVersion   = "crp-activation-transport.v2"
 	controlAuthorizePath     = "/v1/crp/activation/authorize"
 	controlValidatePath      = "/v1/crp/activation/validate"
 	controlConsumePath       = "/v1/crp/activation/consume"
@@ -187,6 +187,26 @@ type RuntimeTarget struct {
 	Revision         uint64 `json:"revision"`
 }
 
+// ApprovalClaim is metadata issued by the management approval workflow. It
+// is intentionally opaque to the activation transport: no password, TOTP,
+// credential or other proof material may cross this boundary. The claim is
+// bound to the exact operation by IntentDigest and Scope and is echoed by
+// both the request and authorization response.
+type ApprovalClaim struct {
+	ApprovalID     string        `json:"approval_id"`
+	ConfirmationID string        `json:"confirmation_id"`
+	Actor          string        `json:"actor"`
+	Scope          string        `json:"scope"`
+	PolicyEpoch    uint64        `json:"policy_epoch"`
+	TTL            time.Duration `json:"ttl"`
+	IssuedAt       time.Time     `json:"issued_at"`
+	ExpiresAt      time.Time     `json:"expires_at"`
+	WorkflowDigest string        `json:"workflow_digest,omitempty"`
+	IntentDigest   string        `json:"intent_digest"`
+	Nonce          string        `json:"nonce"`
+	SessionID      string        `json:"session_id"`
+}
+
 type AuthorizationRequest struct {
 	SchemaVersion      string            `json:"schema_version"`
 	RequestID          string            `json:"request_id"`
@@ -199,6 +219,7 @@ type AuthorizationRequest struct {
 	DescriptorIdentity string            `json:"descriptor_identity"`
 	Canary             CanaryPolicy      `json:"canary"`
 	RequestedAt        time.Time         `json:"requested_at"`
+	ApprovalClaim      ApprovalClaim     `json:"approval_claim"`
 }
 
 type WireConfirmation struct {
@@ -232,10 +253,20 @@ type Authorization struct {
 	SchemaVersion string               `json:"schema_version"`
 	ID            string               `json:"id"`
 	Request       AuthorizationRequest `json:"request"`
+	ApprovalClaim ApprovalClaim        `json:"approval_claim"`
 	Fence         Fence                `json:"fence"`
 	Confirmation  *WireConfirmation    `json:"confirmation,omitempty"`
 	IssuedAt      time.Time            `json:"issued_at"`
 	ExpiresAt     time.Time            `json:"expires_at"`
+}
+
+func cloneAuthorization(authorization Authorization) Authorization {
+	authorization.Request.Descriptor = cloneDescriptor(authorization.Request.Descriptor)
+	if authorization.Confirmation != nil {
+		confirmation := *authorization.Confirmation
+		authorization.Confirmation = &confirmation
+	}
+	return authorization
 }
 
 // ControlPlaneClient obtains, continuously revalidates, and finally consumes
@@ -305,7 +336,7 @@ func (c *HTTPControlPlaneClient) Authorize(ctx context.Context, request Authoriz
 			c.mu.Unlock()
 			return Authorization{}, fmt.Errorf("%w: duplicate confirmation id", ErrTransportProtocol)
 		}
-		c.pending[authorization.Confirmation.ID] = authorization
+		c.pending[authorization.Confirmation.ID] = cloneAuthorization(authorization)
 		c.mu.Unlock()
 	}
 	return authorization, nil
@@ -421,6 +452,59 @@ func validateAcknowledgement(response transportAcknowledgement, authorization Au
 	return nil
 }
 
+// ApprovalIntentDigest returns the stable digest of the operation protected
+// by an approval claim. Request IDs and wall-clock timestamps are deliberately
+// excluded so the digest describes the requested operation rather than one
+// transport attempt. The claim itself is never included in its own digest.
+func ApprovalIntentDigest(request AuthorizationRequest) string {
+	type intent struct {
+		Identity           TransportIdentity `json:"identity"`
+		Action             crp.RuntimeAction `json:"action"`
+		Permission         Permission        `json:"permission"`
+		Target             RuntimeTarget     `json:"target"`
+		ExpectedRevision   uint64            `json:"expected_revision"`
+		Descriptor         SidecarDescriptor `json:"descriptor"`
+		DescriptorIdentity string            `json:"descriptor_identity"`
+		Canary             CanaryPolicy      `json:"canary"`
+	}
+	raw, err := json.Marshal(intent{
+		Identity: request.Identity, Action: request.Action, Permission: request.Permission,
+		Target: request.Target, ExpectedRevision: request.ExpectedRevision,
+		Descriptor: request.Descriptor, DescriptorIdentity: request.DescriptorIdentity,
+		Canary: request.Canary,
+	})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+// ApprovalScope is the canonical scope string used by the management
+// approval workflow for one CRP operation.
+func ApprovalScope(request AuthorizationRequest) string {
+	return "crp:" + string(request.Action) + ":" + request.Target.Key
+}
+
+func validateApprovalClaim(claim ApprovalClaim, request AuthorizationRequest) error {
+	if !validTransportField(claim.ApprovalID, 128) || !validTransportField(claim.ConfirmationID, 128) || !validTransportField(claim.Actor, 128) || !validTransportField(claim.Scope, 512) || !validTransportField(claim.Nonce, 256) || !validTransportField(claim.SessionID, 256) {
+		return ErrAuthorizationBinding
+	}
+	if claim.PolicyEpoch == 0 || claim.TTL <= 0 || claim.TTL > maxAuthorizationTTL || claim.IssuedAt.IsZero() || claim.ExpiresAt.IsZero() || !claim.ExpiresAt.After(claim.IssuedAt) || claim.ExpiresAt.Sub(claim.IssuedAt) != claim.TTL {
+		return ErrAuthorizationBinding
+	}
+	if !validHexDigest(claim.IntentDigest) || claim.IntentDigest != ApprovalIntentDigest(request) || claim.Scope != ApprovalScope(request) {
+		return ErrAuthorizationBinding
+	}
+	if claim.WorkflowDigest != "" && !validHexDigest(claim.WorkflowDigest) {
+		return ErrAuthorizationBinding
+	}
+	if request.RequestedAt.Before(claim.IssuedAt.Add(-transportClockSkew)) || request.RequestedAt.After(claim.ExpiresAt) {
+		return ErrAuthorizationBinding
+	}
+	return nil
+}
+
 func validateAuthorizationRequest(request AuthorizationRequest, identity TransportIdentity) error {
 	if request.SchemaVersion != TransportSchemaVersion || !sameTransportIdentity(request.Identity, identity) || !validTransportField(request.RequestID, 128) || request.RequestedAt.IsZero() {
 		return ErrAuthorizationBinding
@@ -446,15 +530,24 @@ func validateAuthorizationRequest(request AuthorizationRequest, identity Transpo
 	if request.Descriptor.PluginID != request.Target.PluginID || request.Descriptor.Version != request.Target.Version || request.Descriptor.Namespace != request.Target.Namespace || request.Descriptor.ManifestIdentity != request.Target.ManifestIdentity || request.Descriptor.ArtifactIdentity != request.Target.ArtifactIdentity || !validTransportField(request.Descriptor.Source, 128) || !validTransportField(request.Descriptor.SourceRoot, 128) {
 		return ErrAuthorizationBinding
 	}
+	if err := validateApprovalClaim(request.ApprovalClaim, request); err != nil {
+		return err
+	}
 	return nil
 }
 
 func validateAuthorization(authorization Authorization, request AuthorizationRequest, now time.Time) error {
-	if authorization.SchemaVersion != TransportSchemaVersion || !validTransportField(authorization.ID, 128) || canonicalIdentity(authorization.Request) != canonicalIdentity(request) {
+	if err := validateAuthorizationRequest(request, request.Identity); err != nil {
+		return err
+	}
+	if authorization.SchemaVersion != TransportSchemaVersion || !validTransportField(authorization.ID, 128) || canonicalIdentity(authorization.Request) != canonicalIdentity(request) || canonicalIdentity(authorization.ApprovalClaim) != canonicalIdentity(request.ApprovalClaim) {
 		return ErrAuthorizationBinding
 	}
 	if request.RequestedAt.After(now.Add(transportClockSkew)) || request.RequestedAt.Before(now.Add(-maxAuthorizationTTL-transportClockSkew)) || authorization.IssuedAt.IsZero() || authorization.IssuedAt.Before(request.RequestedAt.Add(-transportClockSkew)) || authorization.IssuedAt.After(now.Add(transportClockSkew)) || !authorization.ExpiresAt.After(now) || !authorization.ExpiresAt.After(authorization.IssuedAt) || authorization.ExpiresAt.Sub(authorization.IssuedAt) > maxAuthorizationTTL {
 		return ErrAuthorizationDenied
+	}
+	if authorization.IssuedAt.Before(request.ApprovalClaim.IssuedAt.Add(-transportClockSkew)) || authorization.ExpiresAt.After(request.ApprovalClaim.ExpiresAt) {
+		return ErrAuthorizationBinding
 	}
 	fence := authorization.Fence
 	if fence.ClusterID != request.Identity.ClusterID || !validTransportField(fence.Token, 512) || fence.Epoch == 0 || fence.Revision == 0 || !fence.ExpiresAt.After(now) || fence.ExpiresAt.After(authorization.ExpiresAt) {
@@ -465,7 +558,7 @@ func validateAuthorization(authorization Authorization, request AuthorizationReq
 			return ErrAuthorizationDenied
 		}
 		confirmation := authorization.Confirmation
-		if !validTransportField(confirmation.ID, 128) || !validTransportField(confirmation.Actor, 128) || confirmation.Action != request.Action || confirmation.PluginKey != request.Target.Key || confirmation.ManifestIdentity != request.Target.ManifestIdentity || confirmation.ExpectedRevision != request.ExpectedRevision || confirmation.AuthorizedAt.Before(authorization.IssuedAt.Add(-transportClockSkew)) || confirmation.AuthorizedAt.After(now.Add(transportClockSkew)) || !confirmation.ExpiresAt.After(now) || confirmation.ExpiresAt.After(authorization.ExpiresAt) || !confirmation.ExpiresAt.After(confirmation.AuthorizedAt) {
+		if !validTransportField(confirmation.ID, 128) || !validTransportField(confirmation.Actor, 128) || confirmation.ID != request.ApprovalClaim.ConfirmationID || confirmation.Actor != request.ApprovalClaim.Actor || confirmation.Action != request.Action || confirmation.PluginKey != request.Target.Key || confirmation.ManifestIdentity != request.Target.ManifestIdentity || confirmation.ExpectedRevision != request.ExpectedRevision || confirmation.AuthorizedAt.Before(authorization.IssuedAt.Add(-transportClockSkew)) || confirmation.AuthorizedAt.Before(request.ApprovalClaim.IssuedAt.Add(-transportClockSkew)) || confirmation.AuthorizedAt.After(now.Add(transportClockSkew)) || !confirmation.ExpiresAt.After(now) || confirmation.ExpiresAt.After(authorization.ExpiresAt) || confirmation.ExpiresAt.After(request.ApprovalClaim.ExpiresAt) || !confirmation.ExpiresAt.After(confirmation.AuthorizedAt) {
 			return ErrAuthorizationBinding
 		}
 	} else if authorization.Confirmation != nil {

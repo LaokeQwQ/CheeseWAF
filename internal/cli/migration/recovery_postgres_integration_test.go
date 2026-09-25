@@ -122,6 +122,71 @@ func TestPostgresV2LedgerAndManagementSnapshotClassifyComplete(t *testing.T) {
 	}
 }
 
+// TestPostgresRecoveryRehearsalClassifiesInterruptedCutoverSafely exercises
+// the recovery decision against a real PostgreSQL schema.  The migration
+// journal is the authority: an empty target is safe to roll back, an exact
+// ledger plus exact imported rows is safe to complete, and a partial target
+// remains ambiguous and must stay fenced.
+func TestPostgresRecoveryRehearsalClassifiesInterruptedCutoverSafely(t *testing.T) {
+	t.Run("empty target rolls back temporary", func(t *testing.T) {
+		db, ctx := migrationPostgresTestDB(t, false)
+		record, _ := newRecoveryRecordFixture(t, t.TempDir(), time.Now().UTC(), "snapshot-pg-rehearsal-empty", "admin-pg-rehearsal-empty", "confirm-pg-rehearsal-empty", "cluster-pg-rehearsal-empty")
+		record.Snapshot.ManagementState = emptyRecoveryManagementSnapshot(t)
+		direction, err := classifyCutoverState(ctx, db, record)
+		if err != nil || direction != RecoveryRollbackTemporary {
+			t.Fatalf("empty target direction=%q err=%v, want rollback-temporary", direction, err)
+		}
+	})
+
+	t.Run("exact target completes production", func(t *testing.T) {
+		db, ctx := migrationPostgresTestDB(t, false)
+		record, _ := newRecoveryRecordFixture(t, t.TempDir(), time.Now().UTC(), "snapshot-pg-rehearsal-complete", "admin-pg-rehearsal-complete", "confirm-pg-rehearsal-complete", "cluster-pg-rehearsal-complete")
+		record.Snapshot.TokenMetadata = []byte("[]")
+		record.Snapshot.ManagementState = postgresManagementSnapshotWithUser(t)
+		created := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
+		if _, err := db.ExecContext(ctx, `INSERT INTO users(id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, "user-pg-v2", "admin", "$2a$04$fixture", "admin", false, "", created, created, int64(1)); err != nil {
+			t.Fatal(err)
+		}
+		entry := ledgerEntryForRecoveryRecord(record, created)
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := insertCutoverLedger(ctx, tx, entry); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		direction, err := classifyCutoverState(ctx, db, record)
+		if err != nil || direction != RecoveryCompleteProduction {
+			t.Fatalf("exact target direction=%q err=%v, want complete-production", direction, err)
+		}
+	})
+
+	t.Run("partial target remains fenced", func(t *testing.T) {
+		db, ctx := migrationPostgresTestDB(t, false)
+		record, _ := newRecoveryRecordFixture(t, t.TempDir(), time.Now().UTC(), "snapshot-pg-rehearsal-partial", "admin-pg-rehearsal-partial", "confirm-pg-rehearsal-partial", "cluster-pg-rehearsal-partial")
+		record.Snapshot.ManagementState = postgresManagementSnapshotWithUser(t)
+		entry := ledgerEntryForRecoveryRecord(record, time.Now().UTC())
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := insertCutoverLedger(ctx, tx, entry); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if direction, err := classifyCutoverState(ctx, db, record); !errors.Is(err, ErrCutoverAmbiguous) || direction != "" {
+			t.Fatalf("partial target direction=%q err=%v, want ambiguous", direction, err)
+		}
+	})
+}
+
 func TestPostgresMigrationTransactionRollbackLeavesNoManagementEvidence(t *testing.T) {
 	db, ctx := migrationPostgresTestDB(t, false)
 	record, _ := newRecoveryRecordFixture(t, t.TempDir(), time.Now().UTC(), "snapshot-pg-rollback", "admin-pg-rollback", "confirm-pg-rollback", "cluster-pg-rollback")

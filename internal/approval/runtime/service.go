@@ -29,6 +29,7 @@ var (
 	ErrInvalidOptions        = errors.New("invalid production approval runtime options")
 	ErrManagementRequired    = errors.New("production approval management storage is required")
 	ErrManagementHealth      = errors.New("production approval management storage health is unavailable")
+	ErrApprovalHealth        = errors.New("production approval PostgreSQL store health is unavailable")
 	ErrApprovalDSNRequired   = errors.New("production approval PostgreSQL DSN is required")
 	ErrApprovalEpochRequired = errors.New("production approval policy epoch is required")
 	ErrApprovalEpochMissing  = errors.New("production approval policy epoch checkpoint is missing")
@@ -266,6 +267,9 @@ func (s *Service) Health(ctx context.Context) error {
 	if err := managementHealth.Health(ctx); err != nil {
 		return fmt.Errorf("%w: %v", ErrManagementHealth, err)
 	}
+	if err := s.store.Health(ctx); err != nil {
+		return fmt.Errorf("%w: %w", ErrApprovalHealth, err)
+	}
 	epoch, err := s.store.PolicyEpoch(ctx)
 	if err != nil {
 		return err
@@ -365,7 +369,7 @@ func credentialUnavailable(operation string, err error) error {
 func (s *Service) proof(password, totp bool) (handler.ApprovalCredentialProof, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return handler.ApprovalCredentialProof{}, fmt.Errorf("%w: proof entropy: %v", ErrCredentialUnavailable, err)
+		return handler.ApprovalCredentialProof{}, errors.Join(ErrCredentialUnavailable, handler.ErrApprovalVerifierUnavailable, fmt.Errorf("proof entropy: %w", err))
 	}
 	return handler.NewApprovalCredentialProof("proof-"+hex.EncodeToString(buf), password, totp), nil
 }

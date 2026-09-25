@@ -49,6 +49,20 @@ type AuthorizationState interface {
 	Consume(context.Context, Authorization) error
 }
 
+// AuthorizationStateCoalescingProvider is the explicit composition protocol
+// for a provider that uses the exact AuthorizationState supplied to the
+// handler. The state remains the sole owner of the atomic one-shot transition;
+// after it succeeds, ConsumeAfterState performs only provider-specific
+// post-consume work and must not consume that state again.
+//
+// Providers backed by a different state must return false so the handler keeps
+// the normal State.Consume followed by Provider.Consume sequence.
+type AuthorizationStateCoalescingProvider interface {
+	AuthorizationProvider
+	UsesAuthorizationState(AuthorizationState) bool
+	ConsumeAfterState(context.Context, TransportIdentity, Authorization) error
+}
+
 // MemoryAuthorizationState is bounded state for local embedding and tests.
 // Production control-plane processes should inject a durable implementation;
 // this type does not claim crash recovery or cross-process durability.
@@ -59,6 +73,11 @@ type MemoryAuthorizationState struct {
 	pending map[string]Authorization
 	used    map[string]time.Time
 }
+
+// Durable reports whether this process-local test state can survive restart.
+// It is deliberately false; production composition must use a persistent
+// implementation instead of treating memory as a durable substitute.
+func (s *MemoryAuthorizationState) Durable() bool { return false }
 
 func NewMemoryAuthorizationState(limit int, clock func() time.Time) (*MemoryAuthorizationState, error) {
 	if limit == 0 {
@@ -102,7 +121,7 @@ func (s *MemoryAuthorizationState) Put(ctx context.Context, authorization Author
 	if len(s.pending) >= s.limit {
 		return ErrAuthorizationState
 	}
-	s.pending[authorization.ID] = authorization
+	s.pending[authorization.ID] = cloneAuthorization(authorization)
 	return nil
 }
 
@@ -126,7 +145,7 @@ func (s *MemoryAuthorizationState) Get(ctx context.Context, id string) (Authoriz
 		}
 		return Authorization{}, ErrAuthorizationNotFound
 	}
-	return authorization, nil
+	return cloneAuthorization(authorization), nil
 }
 
 func (s *MemoryAuthorizationState) Consume(ctx context.Context, authorization Authorization) error {
@@ -354,11 +373,18 @@ func (h *ControlPlaneHandler) handleConsume(w http.ResponseWriter, r *http.Reque
 		h.writeAuthError(w, err)
 		return
 	}
-	if err := h.consume(r.Context(), identity, authorization); err != nil {
+	if err := h.consumeAfterState(r.Context(), identity, authorization); err != nil {
 		h.writeAuthError(w, err)
 		return
 	}
 	writeTransportJSON(w, transportAcknowledgement{SchemaVersion: TransportSchemaVersion, AuthorizationID: authorization.ID, RequestID: authorization.Request.RequestID, NodeID: identity.NodeID, Status: "consumed"})
+}
+
+func (h *ControlPlaneHandler) consumeAfterState(ctx context.Context, identity TransportIdentity, authorization Authorization) error {
+	if provider, ok := h.provider.(AuthorizationStateCoalescingProvider); ok && provider.UsesAuthorizationState(h.state) {
+		return provider.ConsumeAfterState(ctx, identity, authorization)
+	}
+	return h.consume(ctx, identity, authorization)
 }
 
 func (h *ControlPlaneHandler) validateIncomingAuthorization(authorization Authorization, identity TransportIdentity, allowExpired bool) error {
@@ -436,6 +462,8 @@ func (h *ControlPlaneHandler) writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrAuthorizationDenied), errors.Is(err, ErrFenceExpired):
 		status = http.StatusGone
 	case errors.Is(err, ErrAuthorizationState), errors.Is(err, ErrControlPlaneUnavailable):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, ErrProductionAuditUnavailable), errors.Is(err, ErrProductionDurability), errors.Is(err, ErrProductionContract):
 		status = http.StatusServiceUnavailable
 	}
 	writeTransportStatus(w, status)

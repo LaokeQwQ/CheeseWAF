@@ -66,7 +66,7 @@ var (
 // file adapters and arbitrary Adapter implementations are intentionally not
 // accepted at a production temporary-network composition boundary.
 func ValidateLeaseBoundAdapter(adapter Adapter) error {
-	if !isBoundHTTPAdapter(adapter) {
+	if !isLeaseBoundHTTPAdapter(adapter) {
 		return ErrNetleaseRequired
 	}
 	return nil
@@ -113,11 +113,12 @@ func (f AdapterFunc) Open(ctx context.Context, endpoint Endpoint, intent cwedp.D
 
 func NewFileAdapter() Adapter { return FileAdapter{} }
 
-// AdapterProvider supplies a fresh adapter for one external pull attempt. Its
-// result must come from NewHTTPAdapter and be bound to a one-shot NetLease;
-// Puller rejects every other Adapter before invoking Open. The provider is
-// never used for file sources.
-type AdapterProvider func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (Adapter, error)
+// AdapterProvider supplies a fresh, releasable adapter for one external pull
+// attempt. Production rejects static endpoint adapters and ordinary
+// NewHTTPAdapter values: every online attempt must own a LeaseBoundAdapter so
+// rejected provider output and abandoned pulls revoke their capability.
+// The provider is never used for file sources.
+type AdapterProvider func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (LeaseBoundAdapter, error)
 
 type onlineAdapterCapability struct{}
 
@@ -128,6 +129,34 @@ var httpAdapterCapability = &onlineAdapterCapability{}
 // confirmation; this transport never receives a password or TOTP value.
 func NewHTTPAdapter(broker *netlease.Broker, leaseID string, scope netlease.RequestScope) Adapter {
 	return HTTPAdapter{Broker: broker, LeaseID: leaseID, Scope: scope, capability: httpAdapterCapability}
+}
+
+// LeaseBoundAdapter is an online adapter that owns a temporary NetLease
+// cleanup action. Call Close if a caller abandons the adapter before Open;
+// Open also closes it before returning so one transfer attempt cannot retain
+// a lease or its temporary management session.
+type LeaseBoundAdapter interface {
+	Adapter
+	Close() error
+}
+
+type adapterRelease struct {
+	once sync.Once
+	fn   func() error
+	err  error
+}
+
+// NewHTTPAdapterWithRelease creates the production adapter form used by a
+// request-scoped lease provider. The release callback is supplied by the
+// capability owner and is not exposed to ordinary CWEDP callers.
+func NewHTTPAdapterWithRelease(broker *netlease.Broker, leaseID string, scope netlease.RequestScope, release func() error) LeaseBoundAdapter {
+	return HTTPAdapter{
+		Broker:     broker,
+		LeaseID:    leaseID,
+		Scope:      scope,
+		capability: httpAdapterCapability,
+		release:    &adapterRelease{fn: release},
+	}
 }
 
 // CertificateVerifier permits deployments to plug in an mTLS policy in
@@ -204,6 +233,17 @@ func (r Registry) Endpoint(source cwedp.Source) (Endpoint, bool) {
 		return Endpoint{}, false
 	}
 	return cloneEndpoint(endpoint), true
+}
+
+// Endpoints returns a defensive snapshot of the trusted registry. It exists
+// for production composition checks; callers still have to use Endpoint when
+// selecting a source for a transfer.
+func (r Registry) Endpoints() []Endpoint {
+	endpoints := make([]Endpoint, 0, len(r.endpoints))
+	for _, endpoint := range r.endpoints {
+		endpoints = append(endpoints, cloneEndpoint(endpoint))
+	}
+	return endpoints
 }
 
 // AuthorizeIntent verifies every candidate source before any adapter is
@@ -351,6 +391,7 @@ type HTTPAdapter struct {
 	Scope   netlease.RequestScope
 
 	capability *onlineAdapterCapability
+	release    *adapterRelease
 }
 
 func isBoundHTTPAdapter(adapter Adapter) bool {
@@ -364,7 +405,31 @@ func isBoundHTTPAdapter(adapter Adapter) bool {
 	}
 }
 
-func (a HTTPAdapter) Open(ctx context.Context, endpoint Endpoint, intent cwedp.DistributionIntent, hello cwedp.Hello, caps cwedp.Capabilities, offset int64) (io.ReadCloser, error) {
+func isLeaseBoundHTTPAdapter(adapter Adapter) bool {
+	switch bound := adapter.(type) {
+	case HTTPAdapter:
+		return isBoundHTTPAdapter(bound) && bound.release != nil && bound.release.fn != nil
+	case *HTTPAdapter:
+		return bound != nil && isBoundHTTPAdapter(bound) && bound.release != nil && bound.release.fn != nil
+	default:
+		return false
+	}
+}
+
+func (a HTTPAdapter) Close() error {
+	if a.release == nil || a.release.fn == nil {
+		return nil
+	}
+	a.release.once.Do(func() { a.release.err = a.release.fn() })
+	return a.release.err
+}
+
+func (a HTTPAdapter) Open(ctx context.Context, endpoint Endpoint, intent cwedp.DistributionIntent, hello cwedp.Hello, caps cwedp.Capabilities, offset int64) (body io.ReadCloser, retErr error) {
+	defer func() {
+		if closeErr := a.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("release CWEDP lease: %w", closeErr))
+		}
+	}()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -793,6 +858,12 @@ func NewPuller(cfg PullerConfig) (*Puller, error) {
 			if err := validateOnlineTLSIdentity(endpoint); err != nil {
 				return nil, ErrPullConfig
 			}
+			if endpoint.Source.Kind != cwedp.SourceOffline && endpoint.Adapter != nil {
+				return nil, ErrPullConfig
+			}
+		}
+		if hasOnlineEndpoint(cfg.Registry) && cfg.AdapterProvider == nil {
+			return nil, ErrPullConfig
 		}
 	}
 	if cfg.PollInterval <= 0 {
@@ -895,7 +966,26 @@ func (p *Puller) pullJob(ctx context.Context, req cwedp.TransferRequest, id stri
 			return PullResult{}, ErrUnauthorizedSource
 		}
 		adapter := endpoint.Adapter
-		if adapter == nil {
+		providerAdapter := false
+		if p.production && endpoint.Source.Kind != cwedp.SourceOffline {
+			if adapter != nil || p.adapterProvider == nil {
+				return PullResult{}, ErrPullConfig
+			}
+			leaseAdapter, providerErr := p.adapterProvider(ctx, endpoint, req.Intent, req.Hello, req.Capabilities, state.NextOffset)
+			if providerErr != nil {
+				if leaseAdapter != nil {
+					_ = leaseAdapter.Close()
+				}
+				return PullResult{}, providerErr
+			}
+			if err := ValidateLeaseBoundAdapter(leaseAdapter); err != nil {
+				if leaseAdapter != nil {
+					_ = leaseAdapter.Close()
+				}
+				return PullResult{}, err
+			}
+			adapter = leaseAdapter
+		} else if adapter == nil {
 			parsed, parseErr := url.Parse(endpoint.URL)
 			if parseErr != nil {
 				return PullResult{}, parseErr
@@ -903,10 +993,15 @@ func (p *Puller) pullJob(ctx context.Context, req cwedp.TransferRequest, id stri
 			if parsed.Scheme == "file" {
 				adapter = FileAdapter{}
 			} else if p.adapterProvider != nil {
-				adapter, err = p.adapterProvider(ctx, endpoint, req.Intent, req.Hello, req.Capabilities, state.NextOffset)
-				if err != nil {
-					return PullResult{}, err
+				leaseAdapter, providerErr := p.adapterProvider(ctx, endpoint, req.Intent, req.Hello, req.Capabilities, state.NextOffset)
+				if providerErr != nil {
+					if leaseAdapter != nil {
+						_ = leaseAdapter.Close()
+					}
+					return PullResult{}, providerErr
 				}
+				adapter = leaseAdapter
+				providerAdapter = true
 			} else {
 				// An online source must be explicitly bound to a one-shot lease.
 				// Do not manufacture a zero-value adapter: its eventual transport
@@ -919,6 +1014,11 @@ func (p *Puller) pullJob(ctx context.Context, req cwedp.TransferRequest, id stri
 			return PullResult{}, ErrNetleaseRequired
 		}
 		if endpoint.Source.Kind != cwedp.SourceOffline && !isBoundHTTPAdapter(adapter) {
+			if providerAdapter {
+				if leaseAdapter, ok := adapter.(LeaseBoundAdapter); ok {
+					_ = leaseAdapter.Close()
+				}
+			}
 			return PullResult{}, ErrNetleaseRequired
 		}
 		openCtx, cancel := context.WithTimeout(ctx, p.timeout)
@@ -990,6 +1090,15 @@ func (p *Puller) pullJob(ctx context.Context, req cwedp.TransferRequest, id stri
 		}
 		return PullResult{}, readErr
 	}
+}
+
+func hasOnlineEndpoint(registry Registry) bool {
+	for _, endpoint := range registry.endpoints {
+		if endpoint.Source.Kind != cwedp.SourceOffline {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Puller) streamBody(ctx context.Context, req cwedp.TransferRequest, id string, body io.Reader, offset, size, chunkSize int64, source cwedp.Source) error {

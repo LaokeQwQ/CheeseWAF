@@ -1070,26 +1070,22 @@ func TestAIAssistantAllowsNonStreamingResponsePastServerWriteTimeout(t *testing.
 }
 
 func TestProviderStreamEmitterEmitsRepeatedWaitingProgress(t *testing.T) {
-	oldSlowAfter := providerFirstEventSlowAfter
-	oldProgressInterval := providerWaitingProgressInterval
-	providerFirstEventSlowAfter = 5 * time.Millisecond
-	providerWaitingProgressInterval = 5 * time.Millisecond
-	t.Cleanup(func() {
-		providerFirstEventSlowAfter = oldSlowAfter
-		providerWaitingProgressInterval = oldProgressInterval
-	})
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := make(chan ai.AssistantTraceEvent, 4)
-	_, stop := providerStreamEmitter(ctx, "zh-CN", "planning", func(event ai.AssistantTraceEvent) {
+	timerSignal := make(chan time.Time, 1)
+	tickerSignal := make(chan time.Time, 1)
+	timerSignal <- time.Unix(1, 0)
+	tickerSignal <- time.Unix(2, 0)
+	timers := &testProviderWaitTimerFactory{timer: timerSignal, ticker: tickerSignal}
+	_, stop := providerStreamEmitterWithTimers(ctx, "zh-CN", "planning", func(event ai.AssistantTraceEvent) {
 		events <- event
-	})
+	}, 5*time.Millisecond, 7*time.Millisecond, timers)
 	defer stop()
 
 	want := []string{"provider_first_event_slow", "provider_waiting_progress"}
 	got := make([]string, 0, len(want))
-	deadline := time.After(100 * time.Millisecond)
+	deadline := time.After(time.Second)
 	for len(got) < len(want) {
 		select {
 		case event := <-events:
@@ -1105,6 +1101,31 @@ func TestProviderStreamEmitterEmitsRepeatedWaitingProgress(t *testing.T) {
 			t.Fatalf("event %d = %q, want %q; all=%v", index, got[index], wantType, got)
 		}
 	}
+	if timers.timerInterval != 5*time.Millisecond || timers.tickerInterval != 7*time.Millisecond {
+		t.Fatalf("timer intervals=%s/%s, want 5ms/7ms", timers.timerInterval, timers.tickerInterval)
+	}
+}
+
+type testProviderWaitSignal struct{ signal <-chan time.Time }
+
+func (signal testProviderWaitSignal) C() <-chan time.Time { return signal.signal }
+func (testProviderWaitSignal) Stop()                      {}
+
+type testProviderWaitTimerFactory struct {
+	timer          <-chan time.Time
+	ticker         <-chan time.Time
+	timerInterval  time.Duration
+	tickerInterval time.Duration
+}
+
+func (factory *testProviderWaitTimerFactory) NewTimer(interval time.Duration) providerWaitSignal {
+	factory.timerInterval = interval
+	return testProviderWaitSignal{signal: factory.timer}
+}
+
+func (factory *testProviderWaitTimerFactory) NewTicker(interval time.Duration) providerWaitSignal {
+	factory.tickerInterval = interval
+	return testProviderWaitSignal{signal: factory.ticker}
 }
 
 func TestAIAssistantStreamEmitsToolTraceAndDone(t *testing.T) {

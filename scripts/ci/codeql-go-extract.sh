@@ -67,17 +67,27 @@ compile_tests() {
 
   echo "::warning::bulk go test compile failed (tags=${tags:-default}); falling back to parallel go test -c"
 
-  printf '%s\n' "${pkgs[@]}" | xargs -P "${jobs}" -n 1 -I{} bash -c '
+  local failures_file
+  failures_file="$(mktemp)"
+  trap 'rm -f "$failures_file"' RETURN
+  printf '%s\n' "${pkgs[@]}" | xargs -P "${jobs}" -I{} bash -c '
     set +e
-    pkg="$1"
-    shift
+    failures_file="$1"
+    pkg="$2"
+    shift 2
     bash scripts/ci/go-env.sh go test "$@" "$pkg"
     status=$?
     if [[ $status -ne 0 ]]; then
-      echo "::warning::go test -c failed for ${pkg}; continuing"
+      echo "${pkg}" >> "$failures_file"
+      echo "::error::go test -c failed for ${pkg}"
     fi
-    exit 0
-  ' _ {} "${test_base[@]}"
+    exit "$status"
+  ' _ "$failures_file" {} "${test_base[@]}" || true
+  if [[ -s "$failures_file" ]]; then
+    echo "::error::one or more Go test extraction compiles failed (tags=${tags:-default})"
+    sort -u "$failures_file" >&2
+    return 1
+  fi
 }
 
 echo "::group::go test (default tags, extract _test.go)"
@@ -87,9 +97,7 @@ echo "::endgroup::"
 # Optional lab / e2e plan only present under //go:build captchae2e.
 if go_cmd list -e -tags captchae2e ./internal/captcha ./scripts/e2e/captcha-integration/fixture >/dev/null 2>&1; then
   echo "::group::go build/test -tags captchae2e"
-  if ! go_cmd build -tags captchae2e ./internal/captcha/... ./scripts/e2e/captcha-integration/fixture/...; then
-    echo "::warning::captchae2e build failed; continuing"
-  fi
+  go_cmd build -tags captchae2e ./internal/captcha/... ./scripts/e2e/captcha-integration/fixture/...
   compile_tests "captchae2e"
   echo "::endgroup::"
 fi

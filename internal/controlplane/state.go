@@ -343,6 +343,62 @@ func (m *StateMachine) ValidateCommit(commit Commit) error {
 	return m.validateCommitLocked(commit)
 }
 
+// ValidateCurrentCommit verifies that commit is the exact committed commit
+// currently available for materialization. Unlike ValidateCommit, it rejects
+// historical commits from the current epoch and proposals that have not yet
+// been installed as committed state. Unlike ValidateFence, it validates the
+// complete commit while retaining the fence's cluster, epoch, revision,
+// digest, and nonce bindings. It is intentionally side-effect free.
+func (m *StateMachine) ValidateCurrentCommit(commit Commit) error {
+	return m.ClaimCurrentCommit(commit)
+}
+
+// ClaimCurrentCommit performs the exact-current validation needed before a
+// node-local materializer starts I/O. The claim is deliberately short-lived:
+// callers must provide their own node-local sequencer, and no consensus lock
+// is retained across filesystem or runtime callbacks. This lets a newer
+// leadership/commit enter consensus while the current node finishes applying
+// the already-claimed predecessor in local order.
+func (m *StateMachine) ClaimCurrentCommit(commit Commit) error {
+	if m == nil {
+		return ErrInvalidCommit
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.validateCurrentCommitLocked(commit)
+}
+
+// WithCurrentCommit is retained for internal compatibility. It now performs a
+// short exact-current claim and releases the consensus lock before invoking
+// fn. Callers that need side-effect ordering must use a node-local sequencer;
+// an external callback must never stall InstallLeadership or InstallCommit.
+func (m *StateMachine) WithCurrentCommit(commit Commit, fn func() error) error {
+	if m == nil || fn == nil {
+		return ErrInvalidCommit
+	}
+	if err := m.ClaimCurrentCommit(commit); err != nil {
+		return err
+	}
+	return fn()
+}
+
+func (m *StateMachine) validateCurrentCommitLocked(commit Commit) error {
+	if err := m.validateCommitLocked(commit); err != nil {
+		return err
+	}
+	if commit.State.Revision != m.committed.Revision {
+		return fmt.Errorf("%w: commit revision %d is not current materialization revision %d", ErrStaleRevision, commit.State.Revision, m.committed.Revision)
+	}
+	if !stateCarriesExactCommit(m.committed, commit) {
+		return fmt.Errorf("%w: commit does not match current materialized state", ErrInvalidCommit)
+	}
+	digest, ok := m.committedFences[commit.Fence.Revision]
+	if !ok || digest != commit.Fence.Digest {
+		return fmt.Errorf("%w: commit fence is not the current materialization fence", ErrStaleFence)
+	}
+	return nil
+}
+
 func (m *StateMachine) validateCommitLocked(commit Commit) error {
 	if !ValidIdentity(commit.Fence.ClusterID) || !ValidIdentity(commit.Fence.LeaderID) || !ValidIdentity(commit.Fence.Nonce) || commit.Fence.Revision == 0 {
 		return fmt.Errorf("%w: fencing fields are required", ErrInvalidCommit)
@@ -387,10 +443,30 @@ func (m *StateMachine) validateCommitLocked(commit Commit) error {
 		if !commitsEquivalent(source, commit) {
 			return fmt.Errorf("%w: commit source is not bound to this state machine", ErrInvalidCommit)
 		}
-	} else if commit.State.Revision != m.committed.Revision || !statesEquivalentForCommit(m.committed, commit.State) {
+	} else if commit.State.Revision != m.committed.Revision || !stateCarriesExactCommit(m.committed, commit) {
 		return fmt.Errorf("%w: commit source is not bound to this state machine", ErrInvalidCommit)
 	}
 	return nil
+}
+
+// stateCarriesExactCommit compares the durable identity of a committed state
+// while deliberately ignoring the process-local write-freeze overlay. A
+// freeze blocks new proposals, but it must not make the current last-known-good
+// commit unverifiable for exact retry or materialization.
+func stateCarriesExactCommit(state State, commit Commit) bool {
+	if state.ClusterID != commit.State.ClusterID || state.LeaderID != commit.State.LeaderID || state.Term != commit.State.Term || state.Epoch != commit.State.Epoch || state.Revision != commit.State.Revision ||
+		state.Desired.Version != commit.State.Desired.Version || state.Desired.Digest != commit.State.Desired.Digest || string(state.Desired.Payload) != string(commit.State.Desired.Payload) ||
+		commit.Fence.ClusterID != state.ClusterID || commit.Fence.LeaderID != state.LeaderID || commit.Fence.Epoch != state.Epoch || commit.Fence.Revision != state.Revision ||
+		commit.Fence.Digest != state.Desired.Digest || !ValidIdentity(commit.Fence.Nonce) || state.NonceLedger[commit.Fence.Nonce] != state.Revision ||
+		len(state.NonceLedger) != len(commit.State.NonceLedger) {
+		return false
+	}
+	for nonce, revision := range state.NonceLedger {
+		if commit.State.NonceLedger[nonce] != revision {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadSnapshot installs a validated durable snapshot and resets transient

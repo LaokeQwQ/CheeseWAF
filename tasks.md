@@ -17,13 +17,13 @@
 | 阶段 | 范围 | 状态 | 证据 |
 |---|---|---|---|
 | 0 | 计划、约束、架构和交接基线 | 已完成 | 2026-09-05 文档构建、diff 检查和编号检查通过 |
-| 1 | 控制面状态、epoch/fencing、PG/Redis 边界 | 控制面/PG contract、启动顺序和 fail-closed 编排已验证 / 真实生产接线待做 | `internal/controlplane`、`internal/controlplane/postgres`、`internal/controlplane/startup` 及 `storage.profile` 启动保护测试通过；临时 PostgreSQL 17.11 已验证重复提交、并发首写、事务回滚和恢复；standalone control/runtime 与 native-raft adapter 已验证；主 serve production wiring、多节点成员/证书交接仍待做 |
-| 2 | CRP manifest、签名根、阈值、轮换和吊销 | CLI activate/rollback 与 activation/mTLS contract 已验证；生产 control-plane provider、durable authorization/audit、sidecar launcher 及部署交接仍待做 | `internal/crp` manifest + Ed25519、官方 2-of-3/高风险 3-of-5、轮换/吊销、`ParseArchive` 严格 ZIP 布局、`Import` 大小/来源/摘要/防降级，以及 observe→canary→active/精确回滚 service tests 通过；透明日志、持久快照、生产 control-plane provider、durable authorization/audit、sidecar launcher 及部署交接仍待做 |
-| 3 | CWEDP 分发、离线模式、网络租约 | 协议、NetLease、HTTP/file transport、PG ResumeStore 已有独立实现和定向证据 / 主服务与节点编排待做 | `internal/cwedp` 及 `internal/cwedp/postgres` 覆盖协商、不可变 SourceRegistry、来源独立性、隔离源、分块续传、三摘要、切换上限、总包/单块字节预算、幂等和 offset fencing；`internal/cwedp/transport` 与 `internal/netlease` 强制 broker-bound adapter、HTTPS、CA/client cert/NodeID/leaf pin、Range 和 pre-dial fail-closed；尚未接入主 serve、节点注册、插件安装或生产编排 |
+| 1 | 控制面状态、epoch/fencing、PG/Redis 边界 | 主 serve production 组合、PG cutover/recovery 和 Session 失效的本地真实集成探针通过；多节点部署交接仍待做 | `internal/controlplane`、PG/Redis/native-raft contract 通过；`--full` 运行 PG recovery/cutover 分类及真实 production `runServe` login/session invalidation。GitHub Actions 集成 job 已配置，远端 CI 尚待提交后验证；多节点成员/证书交接仍待做 |
+| 2 | CRP manifest、签名根、阈值、轮换和吊销 | production `runServe` 的 CRP activation 与精确 rollback 本地真实集成探针通过；云端部署验收仍待做 | `internal/crp` manifest + Ed25519、阈值/轮换/吊销、严格导入及 observe→canary→active/精确回滚测试通过；真实 route 使用 PostgreSQL approval/audit 和 mTLS control-plane/sidecar。远端 CI 与云端多节点部署仍待验证 |
+| 3 | CWEDP 分发、离线模式、网络租约 | 主 serve 的 session-bound provider、CWEDP/CRP runtime、PG ResumeStore、mTLS sidecar 和公网 route 已有真实验收；插件安装、节点注册和多节点长期部署仍待做 | `internal/cwedp` 及 `internal/cwedp/postgres` 覆盖协商、不可变 SourceRegistry、来源独立性、隔离源、分块续传、三摘要、切换上限、总包/单块字节预算、幂等和 offset fencing；`internal/cwedp/transport`、`internal/netlease` 与真实 `runServe` route 通过 HTTPS、CA/client cert/NodeID/leaf pin、Range、pre-dial fail-closed、Session/lease 清理和公网 mTLS peer 验收 |
 | 4 | broker、诊断队列、信封加密、对象复制 | broker、canonical envelope、持久队列、组合 runtime 和 diagnostics PG metadata 已验证 / 对象复制与外部回执待做 | `internal/diagnostics` 覆盖固定 Schema、raw 三重确认、AES-GCM/AAD、不可复用 KEK 代次、持久队列、replay reserve/commit/release、worker 完成错误可观察、metadata-only 审计，以及真实 PG Cancel/claim/outbox 往返；对象存储复制、目标回执和完整启动接线仍待做 |
 | 5 | 审批、Token、恢复和审计状态机 | ApprovalGate、Token、迁移恢复与 PG 持久适配器已有证据 / 生产服务生命周期待做 | `internal/approval` 已覆盖批次原子持久化、事件 hash/binding、durable epoch CAS 和 epoch+record+events 一致恢复快照；`internal/tokens`、`internal/tokens/postgres`、`internal/cli/migration` 覆盖 180 天清理、Token 重放、通知、v1/v2 recovery 和真实 PG 往返；真实 credential verifier、生产审计 outbox 和主服务挂载仍待做 |
-| 6 | 插件商店、OTA、开发规范和双语手册 | 文档/仓库基线已验证 / 服务待做 | `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 已建立并推送；商店 API、OTA、签名服务和运行时仍未实现 |
-| 7 | 全量验收、生产构建和空网演练 | 已执行多轮分项验收，完整 gate 仍未通过 | static matrix、全仓 Go 编译/vet/完整回归、Web 构建和真实 PG/Redis 证据已保存；受控 loopback 的 native-raft/CWEDP 证据已保存；受限 sandbox 仍可能产生环境失败，主服务接线和空网演练仍未完成 |
+| 6 | 插件商店、OTA、开发规范和双语手册 | 边缘路由、契约和 OTA 只读检查已实现 / 线上资源待配置 | Pages Worker、R2 键映射、Origin HMAC、Tunnel 配置、OTA 客户端和只读状态接口已有本地证据；Cloudflare 账号、R2 桶、域名、Access ACL、Tunnel 和 CRP/CWEDP 激活仍未完成 |
+| 7 | 全量验收、生产构建和空网演练 | 公网测试节点完整验收矩阵通过；稳定发布、远端 CI/CodeQL、Cloudflare 生产资源和空网演练仍待做 | 公网节点 `matrix.py --full` 为 23 passed、0 failed、0 skipped；Pages/Web/OTA/Ansible 和产物门禁已有分项证据；稳定发布与线上空网演练仍需在最终提交后执行 |
 
 ## 2026-09-05 当前交接
 
@@ -149,6 +149,30 @@ Lease、离线设置、CRP 安装或 OTA。
 contract；再接入导入服务前先补持久化与审计事件模型。
 
 ## 后续交接模板
+
+### 2026-09-13 Cloudflare Pages/Workers 分流接线
+
+范围：把适合边缘读取的商店、OTA、策略、schema 和内容寻址资源留在 Cloudflare，把控制台、管理 API、认证、审批、CRP/CWEDP、诊断、SSE 和 WebSocket 固定回源到 CheeseWAF loopback 管理端口。
+
+实际改动：
+
+- `CheeseSec_pages` 增加 Host/路径白名单、R2 发布物读取、Range 响应、ETag、缓存策略、固定 Origin 回源和 HMAC 信封；构建使用 `npm ci --ignore-scripts`，并增加产物边界检查。提交 `e238bf0`，已推送到 Pages PR #2。
+- `CheeseSec_Plugin` 和 `CheeseSec_Plugin_Docs` 增加固定路径、缓存类别、R2 来源角色和中英文边缘路由契约。Plugin PR #8、Plugin_Docs PR #9 已推送。
+- CheeseWAF 增加 `VerifyEdgeOrigin`、写请求 ID 重放保护、可选 Cloudflare Access 身份校验、OTA 严格只读客户端、last-known-good 文件存储、`GET /api/system/ota` 和只读候选版本展示。提交 `af6816fd`，已推送到 PR #444 的 `dev` 目标。
+- `CheeseSec_Plugin` 增加确定性 `build_publication_bundle.py` 和默认只读的 `publish_r2.sh`。只有显式 `--apply` 才会写 R2，序号回退直接拒绝。
+- Ansible 增加 origin-admin Tunnel 模板、systemd 单元、外部凭据文件检查和回滚说明。管理端口仍为 `127.0.0.1:9443`，`admin_public` 保持 `false`。
+
+验证命令与结果：
+
+- `CheeseSec_pages`: `npm ci --ignore-scripts`、`npm run typecheck`、`npm test`（51 项）、`npm run build`、`npm run check:artifacts`、`npx wrangler deploy --dry-run` 均通过。
+- `CheeseSec_Plugin`: `validate_repo.py`、`validate_commercial_contracts.py`、18 项测试和脚本语法检查通过。
+- `CheeseSec_Plugin_Docs`: `validate_docs.py`、`validate_commercial_contracts.py` 和 2 项测试通过。
+- CheeseWAF: `go test ./internal/ota -race`、API/CLI/中间件回归、`go vet` 和 `deploy/ansible/verify-offline.sh` 通过；`go test ./...` 的一次 native-raft 选主超时在同一环境连续 3 次单测重跑通过，需在 CI 再观察。
+- Cloudflare `wrangler whoami` 返回未登录，因此没有执行生产部署；dry-run 只证明配置可解析，不证明 R2、域名、Access 或 Tunnel 已存在。
+
+遗留风险：Cloudflare 生产账号和资源尚未提供；Worker Secret、Tunnel 凭据、Origin HMAC 和 Access ACL 不能写入 Git；OTA 目前只读，CRP 验签后的 CWEDP staging、审批、激活和回滚还没有接入主服务。临时测试服务器也没有经过该域名和 Tunnel 的端到端验收，因此不能给出线上预览地址。
+
+下一步：先在 Cloudflare 创建 staging R2 桶和自定义域名，注入最小权限 Secret，使用空索引做 `GET`、`HEAD`、`Range`、`404`、`405`、`421` 和回源 HMAC 验收；再在测试服务器启用 Tunnel，验证 `/health/ready`、登录、CSRF、SSE 和 WebSocket，最后才评估生产切换。
 
 ### 2026-09-05 阶段 3 网络策略与 Socket Lease contract
 
@@ -1138,3 +1162,151 @@ CheeseSec_Docs 的 Pages 参数固定为生产分支 `main`、构建命令 `hugo
 - 使用 `CHEESEWAF_RELEASE_PROFILE=server CHEESEWAF_REF_NAME=v0.3.9` 实际打包，得到 3 个 Linux 归档，没有生成 Windows、macOS 或 DMG 文件；`CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server` 的静态发行物检查通过。
 
 2026-09-12 提交前交接状态：改动位于 `codex/beta-v0.3.9-ui-docs` 工作树，尚未晋升到 `master`，也没有重新创建稳定版 Release。执行时必须先提交并通过主仓库 CI、CodeQL 和发布检查，再按现有分支流程晋升并重新触发 `v0.3.9` 稳定发布。CRP、主服务生产接线、插件文档 code-owner 审批和 Cloudflare Pages 凭据等其他遗留项不因本次发布策略修正而自动完成。
+
+### 2026-09-15 产品范围收敛与未来功能清单
+
+共享建议用于调整实施顺序，不替代已经确认的 1–133 项架构决策。当前优先验证单节点的安装、站点接入和留观模式，再验证可解释日志、本地备份恢复、升级回滚和长期运行。生产模式继续要求 PostgreSQL 和 native-raft，不会改成 SQLite 或静默回退；没有部署验证的集群、CRP、CWEDP 和外部控制面继续记录为未完成。
+
+以下能力列入未来功能，不作为当前版本的交付条件：
+
+- 执行沙箱和独立留观区的工作流扩展。
+- 整体快照、站点快照和按快照恢复。
+- 自动任务的统一编排和定时巡检扩展。
+- S3 兼容对象存储备份。
+- AI 余额的持续检测与告警。
+- 情报大屏优化。
+- 通用回调和 Webhook。
+- 飞书、微信、QQ、Telegram 机器人插件。
+
+这份清单不移除已经实现的调度器、AI 余额查询或请求复核能力。未来功能必须复用现有的权限快照、审批、审计、加密和恢复约束。实现前先补需求、数据保留、失败恢复和验收证据，不能用占位接口替代可运行能力。`v0.3.9` 的非 Pre-release 属性和现有稳定标签保持不变。
+
+### 2026-09-15 授权快照修复与部署检查
+
+CRP 修复已应用到当前工作区，没有覆盖既有 AI 和 OTA 改动。`cloneDescriptor` 保留并复制 metadata；客户端 pending 授权和 `MemoryAuthorizationState` 的 Put/Get 复制 confirmation、capabilities 和 metadata。修改输入或返回值不能改变已保存的授权。被修改的授权在远程验证前拒绝，原始 confirmation 仍能一次性消费。
+
+修复先在远端 `dev=12a24aa037bf8f5eb3d0df81a20a98bc8ecf68d6` 的独立副本完成。新增回归测试有 RED/GREEN 证据，独立 Sol 审阅没有 Critical/Important 问题。本地分支 `codex/crp-authorization-snapshots` 保存提交 `ac62f390712ee978617ee815d9e2a61e4faef102`。当前工作区的对应修改仍未提交，本轮没有推送或晋升。
+
+当前工作区验证：
+
+- `go test ./... -count=1 -timeout=600s` 通过，语义检测包耗时约 303 秒。
+- CRP 和 CLI 普通回归、CRP race、`go vet` 与 `git diff --check` 通过。
+- Get Started `--smoke` 通过。运行数据使用临时目录，生产模式拒绝不完整依赖，清理完成。
+- `bash scripts/ci/verify-ci-static.sh` 通过。输出中的预期错误来自负向用例，没有实际发布资产。
+- 当前 static matrix 为 19 通过、4 失败、0 跳过。失败仍为 `switch_migration_session_invalidation`、`crp_activation`、`crp_rollback` 和 `temporary_network_confirmation`；`implemented` 标志未修改。
+
+Pages 验证：`npm ci --ignore-scripts`、51 项测试、typecheck、7 页静态构建和产物边界检查通过，npm audit 为 0。Cloudflare provider 已保存构建命令 `npm ci --ignore-scripts && npm run build && npm run check:artifacts`，并设置构建变量 `SKIP_DEPENDENCY_INSTALL=1`，未修改生产分支、API Token 或运行时 Secret。
+
+Cloudflare build `f9bc2d3d-730c-4839-a094-4e838760cd68` 已验证新设置。静态构建和产物扫描成功，版本上传仍因 `cheesesec-publication-index-prod` 不存在返回 `10085`。R2 控制台要求开通按量计费订阅并接受条款，已交给账号持有人手动处理。执行代理没有点击订阅、创建凭据、开放公开访问或启用新的 Worker 版本，不能宣称线上接线已完成。
+
+PR/发行状态复核：主仓库没有开放 PR；Plugin #8 和 Plugin_Docs #9 的 validate 通过，但仍要求独立 code-owner 审阅，未绕过保护规则。`v0.3.9` 仍是非 draft、非 Pre-release 的正式 Beta Release，本轮没有改写版本、标签或发行记录。
+
+macOS DMG 生命周期修复也已应用到当前工作区，并接入 `verify-ci-static.sh`。完整 fake 打包回归、shell 语法和静态检查通过；在本机 `Darwin` 上用两个临时 Mach-O 包生成 UDZO 镜像，再用真实 `hdiutil imageinfo`、attach 和 detach 验证通过。测试使用 ad-hoc 签名和 stub Finder，不代表 Developer ID、Finder 布局或 notarization 已验证。
+
+剩余工作：耐久 CRP 授权/provider/审计和 sidecar 部署、主 `serve` 的生产消费者绑定、临时联网生命周期及离线端到端演练。当前快照和 DMG 修复不提供这些能力，本轮也没有新的真实 PostgreSQL 集成证据。
+
+### 2026-09-21 恢复额度后的生产接线审计与测试服务器验证
+
+本轮先按 `verification-before-completion` 重新核对工作树、生产组合根和隔离预览，没有把测试 seam 误报为生产能力。当前分支 `codex/cloudflare-pages-workers-plan` 相对远端为 ahead 10、behind 8；工作树仍包含未提交的 CRP 授权快照、生产 contract、OTA/AI、CI 门禁和文档改动。本轮没有推送、晋升、改写远端 Release 或创建新凭据。
+
+真实验证结果：
+
+- `go test ./... -count=1 -timeout=900s` 完成，全仓包均通过；语义检测包约 310 秒。另有 controlplane、CRP/activation、CWEDP、NetLease、OTA、API/CLI 的 race/定向测试证据。
+- `bash scripts/ci/verify-ci-static.sh` 通过。输出中的 `::error::` 来自脚本刻意构造的负向发布、签名、校验和、DMG 生命周期用例，最终状态为 `CI static regression checks passed.`
+- `git diff --check`、目标 Go 文件 `gofmt` 检查通过。
+- 主服务生产组合根仍按设计 fail-closed：默认 factory 没有 session-bound temporary-network provider，`runServe` 也尚未消费 `TemporaryHTTPExecutor`/CWEDP adapter；因此 CRP/CWEDP activation、rollback 和生产临时联网四个 static-matrix blocker 仍是真实缺口，不是测试噪声。不能复用 `temporary-online` CLI，因为它是 SQLite、固定 epoch 1、允许本地无 management session 的一次性路径。
+- 隔离测试服务器 `124.221.149.182` 上新增的 `codex-current-20260921` 预览与既有 `cheesewaf-preview.service` 分离运行：管理端口仅监听 `127.0.0.1:19453`，代理端口仅监听 `127.0.0.1:18090`；`/health`、`/health/ready`、`/setup` 均返回 200，`/api/setup/status` 返回 `needs_setup: true`。通过 SSH 隧道可在本机打开 `http://127.0.0.1:19453/setup`，公网 `124.221.149.182:19453` 未开放。预览没有执行初始化向导或修改既有服务。
+
+当前发布判断：`v0.3.9` 正式 Release 已存在但指向旧的 `dbdfc6fd`，当前工作树不满足“受保护 master 当前提交 + 稳定标签 + 三份 Linux server 归档 + CodeQL/发布门禁”的晋升条件；Pages/Workers 的本地构建和 dry-run 不能替代 Cloudflare R2、域名、Access ACL、Tunnel 和生产资源证据。待主服务真实接线、四项 static blocker、Cloudflare 资源和远端 CI/CodeQL 收口后，再执行远端晋升与 Beta 发布。
+
+### 2026-09-21 主 serve session 生命周期接线
+
+本轮完成一项可在仓库内真实验证的生产接线收敛：`ProductionServeWiring` 现在携带组合根验证过的 `SessionValidator`，`runServe` 保存并消费同一份 wiring；`api.NewRouterWithAPI` 的浏览器 session 与 management API 认证都使用注入的 validator，只有非 production/嵌入式调用才回退到 `Store` 兼容路径。生产组合根要求 ApprovalHTTP 的 validator 与管理 Store 是同一生命周期实例，并在不满足时 fail-closed。
+
+新增路由回归测试证明：即使底层 Store 内存在有效 session，注入的拒绝 validator 也不能被静默绕过。`go test ./... -count=1 -timeout=900s`、`go test ./internal/api ./internal/cli ./internal/api/handler -count=1`、`bash scripts/ci/verify-ci-static.sh` 均通过。
+
+这项接线不等于四项验收 blocker 已清零：CRP activation/rollback 仍缺真实 durable control-plane、授权审计和 sidecar；temporary-network 仍缺由生产 launcher 提供的 session-bound provider 和动态 lease 生命周期；迁移仍缺部署级 handoff/恢复证据。未推送、未晋升、未发行。
+
+### 2026-09-25 Cloudflare 免费档位与验收矩阵复核
+
+- Cloudflare Workers 计划保持 Free（US$0）；Workers Paid 的 `$5/月 + 用量` 结算尝试因银行拒付失败，没有创建 `prod_workers` 订阅。后续验证和部署不得把付费升级当成前置条件。
+- R2 继续使用已有的 PAYGO 资源订阅；当前账单仪表板为 US$0.00，R2 资源有免费用量额度，不能把该订阅误写成固定月费。现有 staging/production R2 桶保留，不删除、不改变公开访问策略。
+- 通过持久化 Chrome 读取账号订阅状态：`prod_workers` 结果为空；R2 订阅为 PAYGO。staging Worker `https://cheesesec-pages-staging.coqimax.workers.dev` 的 `/api/health` 返回 `UNKNOWN_EDGE_HOST`，原因是 staging Wrangler 环境没有自定义域名 routes，而 Worker 路由策略只接受 `www/docs/store/ota/res/api/console.cheesesec.com` 或本地资产 Host；这不是健康检查通过证据，也没有冒充线上接线完成。
+- 重新运行 `python3 scripts/acceptance/matrix.py --static`：19 passed、4 failed、0 skipped。失败仍为 `switch_migration_session_invalidation`、`crp_activation`、`crp_rollback`、`temporary_network_confirmation`，保持真实外部/部署 blocker，不修改 `implemented` 标志。
+
+本轮没有提交、推送、分支晋升或发行；Cloudflare Workers Paid 维持未开通状态。
+
+### 2026-09-25 免费额度 staging Worker 实际部署
+
+- 继续使用 Cloudflare Workers Free（US$0），没有创建或启用 Workers Paid；部署目标限定为 `staging` Wrangler 环境和 workers.dev 预览，不把生产自定义域名、Tunnel 或 Access 当作已配置。
+- 在 `/Users/laoke/Dev/CheeseSec_pages` 执行 `npm ci --ignore-scripts`、`npm run build` 和 `npm run check:artifacts`，构建生成 7 个静态页面，产物边界检查通过。`npm audit` 报告 1 个 moderate 依赖告警，未使用 `npm audit fix` 改写锁文件。
+- 使用已认证的 Wrangler OAuth 会话执行 `npx wrangler deploy --env staging`。部署成功：Worker `cheesesec-pages-staging`，100% 流量指向版本 `f0538a2f-0afb-43bf-9e15-3535f50675e2`，部署记录 ID 为 `1fbbdd17-dd0c-4284-b67a-cce557b742fe`。
+- Worker 绑定复核通过：`cheesesec-publication-index-staging`、`cheesesec-public-resources-staging` 以及对应生产桶均存在；没有删除或改写任何 R2 桶。当前部署使用 `EDGE_POLICY_VERSION=store-ota-v1-staging` 和 staging origin 变量。
+- 本机对 workers.dev 的 `GET /api/health` 与 `/en/` HTTPS 探测超时，不能据此宣称公网健康或路由验收通过；部署 API 和版本列表只证明上传、绑定解析和 100% 流量切换成功。staging 环境仍无自定义域名 routes，路由策略对 workers.dev Host 的 `UNKNOWN_EDGE_HOST`/网络不可达风险保持显式记录。
+- 本轮没有启用付费方案、没有创建生产 Secret、没有绑定生产域名、没有开启 Tunnel/Access，也没有提交、推送、晋升或发行。四项验收 blocker 和远端 code-owner/CI 门禁状态不因 staging 部署而改变。
+
+随后为可用的 staging 预览修正了 Pages 仓库（工作区 `/Users/laoke/Dev/CheeseSec_pages`）：`env.staging.workers_dev=true`，并仅把精确的 `cheesesec-pages-staging.coqimax.workers.dev` 加入静态页面/健康检查 Host 判定，不放宽生产 Host、API、发布物或资源路由。新增精确 Host 白名单与 Worker handler 回归测试。`npm ci --ignore-scripts`、`npm audit`（0 漏洞）、`npm test`（53 项）、`npm run typecheck`、7 页 `npm run build`、`npm run check:artifacts` 均通过。
+
+Pages 锁文件原有 `devalue@5.9.0` moderate DoS 告警已通过只更新传递依赖锁定版本修到 `5.9.4`；没有运行宽泛的 `npm audit fix`，无直接依赖声明变化。修正后再次按 `npm ci --ignore-scripts` 重跑全部 Pages 门禁并部署。Cloudflare 返回 Worker URL `https://cheesesec-pages-staging.coqimax.workers.dev`；最终版本 `1b80f5b1-6bbe-482f-882e-2f1d7a35f534`、部署记录 `036bf118-c7f3-4d90-9de2-594966682848`，100% staging 流量指向该版本，仍绑定 staging R2 桶。
+
+部署配置和单测已确认精确预览 Host 应走静态页面/健康检查，但当前执行环境对 workers.dev 的公网 HTTPS 请求仍超时，尚无真实 HTTP 200 响应证据；所以该地址是已部署预览入口，不宣称外部连通性已验收。Pages 仓库这 6 个源文件改动尚未提交或推送，尚未触发远端 PR/CI；主仓库仅更新本交接记录。未启用 Workers Paid、未新增 R2 上传、未改变生产 DNS/域名/Secret/Access/Tunnel，也未提交、晋升或发行主仓库。
+
+### 2026-09-25 前三项真实生产验收与 CI 接线
+
+范围：把迁移/session invalidation、CRP activation、精确 rollback 三项从仅有契约测试收敛为真实 PostgreSQL/Redis + production launcher/mTLS sidecar 集成验收，并固化到 GitHub Actions。这里只证明本地组合和 CI 门禁代码；不声称云实例、Cloudflare 生产环境或公网 egress 已部署。
+
+实际改动：
+
+- `scripts/acceptance/matrix.py` 的 `--full` 在三个依赖齐全时才执行真实 migration/recovery 与 production `runServe` session/CRP route 探针；static 或缺依赖仍保留 blocker，不会跳过或误标通过。
+- 新增 `scripts/ci/run-production-acceptance-integration.sh`：要求 PostgreSQL DSN、Redis 地址和 CRP registry 环境变量齐全，并校验 registry 是权限 `0700` 的非符号链接目录，再运行两组 race 集成测试。
+- `.github/workflows/ci.yml` 新增隔离 PostgreSQL/Redis 的 `production-acceptance-integration` job；`verify-ci-static.sh` 锁定该 job 和 runner 必须存在。
+- 更新 `docs/acceptance-matrix.md` 与本阶段看板，区分静态 blocker、本机真实组合证据、远端 CI 状态和云端部署证据。
+
+验证命令与结果：
+
+- 本地真实依赖运行 `bash scripts/ci/run-production-acceptance-integration.sh`：`internal/cli/migration` race 集成通过；`internal/cli` 中 production `runServe` session invalidation、CRP activation/rollback race 集成通过（67.278 秒）。
+- `python3 -m unittest scripts/acceptance/matrix_v2_test.py`：14 项通过；`bash scripts/acceptance/acceptance-matrix_test.sh`：contract tests 通过。
+- `bash scripts/ci/verify-ci-static.sh`：退出码 0，含 workflow/actionlint 检查；其中预期 `::error::` 行来自负向发布验证用例。
+- 2026-09-25 本机 full matrix：22 passed、1 failed、0 skipped；迁移/session、activation、rollback 均 pass。剩余失败为独立 `temporary_network_confirmation` 部署级公网 egress 证据，不纳入前三项结论。
+- runner 缺失环境负向检查退出码 2，首个缺失项明确报告为 `CHEESEWAF_POSTGRES_TEST_DSN`；`git diff --check` 与 runner `bash -n` 通过。
+
+遗留风险：GitHub Actions job 尚未在远端执行，需最终提交后检查 job 结果；full matrix 的临时公网出网 gate 仍未通过；本地 integration 不替代测试服务器/生产部署验收。本轮未提交、推送、晋升或发行。
+
+### 2026-09-25 真实临时联网 egress 复核
+
+范围：核对第四项 `temporary_network_confirmation` 是否只是未接线，还是仅缺部署级公网证据；实际运行主 `serve` 的 PostgreSQL/Redis 组合、浏览器登录/session 失效、一次性 HTTPS lease、证书 pin、审计与清理链路。
+
+实际结果：
+
+- `TestProductionLauncherPostgresCutoverAndSessionInvalidation` 在真实 PostgreSQL/Redis 上通过，并使用显式 `CHEESEWAF_PUBLIC_NETLEASE_TEST_PIN` 对 `example.com:443` 发起真实 HTTPS HEAD；撤销 PostgreSQL Session 后，下一次请求在发放 lease 前被拒绝，耐久审计未增加。
+- `TestRunServeProductionTemporaryHTTPRoute` 在真实 `runServe` listener 上通过，覆盖登录、CSRF、session-bound provider、证书 pin、`issued → result → revoked` 审计顺序和注销后的拒绝。
+- 这两条证据证明主服务临时联网 provider 已真实接入；此前 gate blocker 中“缺 runtime-owned registry、intent verifier、resume store、control-plane provider”的表述已修正为准确的部署证据缺口。
+- `temporary_network_confirmation` 仍不能标记通过：`TestRunServeProductionCWEDPDownloadRoute` 要求一台可从测试端回连的公网 IPv4/IPv6、高端口 `49152..65535`、真实 mTLS peer、签名 CRP 包和 PostgreSQL resume store。当前没有可用的测试服务器登录/端口开放证据，因此没有伪造或放宽 `PublicAddressPolicy`。
+
+验证命令与结果：
+
+- `CHEESEWAF_POSTGRES_TEST_DSN=... CHEESEWAF_REDIS_RUNTIME_TEST_ADDR=... CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR=... CHEESEWAF_PUBLIC_NETLEASE_TEST_PIN=sha256:... go test -race -count=1 -timeout=240s ./internal/cli -run '^(TestProductionLauncherPostgresCutoverAndSessionInvalidation|TestRunServeProductionTemporaryHTTPRoute)$'`：退出码 0。
+- 本机 `python3 scripts/acceptance/matrix.py --full`：22 passed、1 failed、0 skipped；迁移/session、CRP activation/rollback 和本地 HTTPS egress 证据通过，唯一失败保持为缺少公网 CWEDP peer 的 deployment-level 证据。
+- `python3 -m unittest scripts/acceptance/matrix_v2_test.py`、`bash scripts/ci/verify-ci-static.sh`、GitHub actionlint、`git diff --check`：通过。
+
+下一步：若要把第四项闭环，需要重新开放测试服务器登录或提供一台免费额度的公网测试节点，并允许一个 `49152..65535` TCP 端口入站；随后运行 `TestRunServeProductionCWEDPDownloadRoute`，核对 signed intent、mTLS、Range/resume、CRP staging、审计和清理。未取得该外部条件前，不提交“全量验收完成”、不晋升、不发行。
+
+### 2026-09-25 公网测试节点完整验收矩阵
+
+范围：使用用户提供的 Debian 13 amd64 测试节点（2 vCPU、4 GB 内存、40 GB SSD、12 Mbps）补齐第四项公网证据，并复核完整 acceptance matrix；不写入密码、DSN 或证书 pin。
+
+实际操作：
+
+- 服务器仅安装 Go 1.26.6、PostgreSQL 17.11、Redis 8.0.2、Git 和编译工具；PostgreSQL 与 Redis 保持 loopback 监听，CRP registry 使用独立的 0700 非符号链接目录。
+- 使用私有 Go 临时目录运行测试，避免 Debian `/tmp` 的 0777 父目录触发 process-sidecar 安全门禁；服务器测试目录只建立一次性本地 Git 基线，不连接或推送任何远端。
+- 高位 TCP 端口 `49152` 仅供测试进程临时监听；测试在公网 IP 回连路径上启动 TLS 1.3、双向证书验证的 CWEDP peer，并使用签名 CRP 包和 PostgreSQL resume state。
+- 修复 `internal/cli/serve_cwedp_real_route_integration_test.go` 的 JSON 字段标签，使 `job_id`、`stage_status` 和 `plugin_key` 按接口实际响应解码；没有放宽生产校验或改变公网地址策略。
+- 修正 `scripts/acceptance/matrix.py`：在 `--full` 的真实依赖已经满足且 integration probe 通过时清除静态模式遗留 blocker；若正向、负向或真实 integration probe 失败，则写入明确 blocker。
+
+验证命令与结果：
+
+- 公网节点定向 race 验收：`go test -race -count=1 -timeout=240s ./internal/cli -run '^(TestRunServeProductionTemporaryHTTPRoute|TestRunServeProductionCWEDPDownloadRoute)$'`，退出码 0。
+- 公网节点完整矩阵：`python3 scripts/acceptance/matrix.py --full --report /tmp/cheesewaf-acceptance-full-20260925.json --markdown /tmp/cheesewaf-acceptance-full-20260925.md`，结果 **23 passed、0 failed、0 skipped**；`temporary_network_confirmation` 已通过真实 HTTPS pin、Session/lease 撤销、审计和公网 CWEDP mTLS 下载。
+- 报告已复制到本机 `/tmp/cheesewaf-acceptance-full-20260925.{json,md}` 供复核，未加入 Git；矩阵 cleanup 报告 `tracked_worktree_unchanged=true`、`source_template_unchanged=true`、`processes_stopped=true`、`runtime_removed=true`。
+- 本地回归：`python3 -m unittest scripts/acceptance/matrix_v2_test.py` 和 `bash scripts/acceptance/acceptance-matrix_test.sh` 通过；`git diff --check` 待本轮文档更新后再执行。
+
+遗留风险：该证据证明单台公网测试节点上的生产组合和公网 egress，不等于多节点长期部署、Cloudflare 生产资源、稳定发布或远端 CI/CodeQL 已完成。下一步先运行仓内全套静态/构建/产物门禁，再提交并检查 GitHub Actions/CodeQL；只有远端门禁与依赖 PR 收口后才晋升 `master` 和重建稳定版 `v0.3.9`。

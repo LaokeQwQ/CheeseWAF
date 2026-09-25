@@ -34,8 +34,11 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/orchestrate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/traffic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
@@ -47,51 +50,59 @@ import (
 )
 
 type Handler struct {
-	Config                         *config.Config
-	configCurrent                  atomic.Pointer[config.Config]
-	ConfigPath                     string
-	Store                          storage.Store
-	Sink                           storage.LogSink
-	Tokens                         *middleware.TokenManager
-	Secret                         string
-	Auditor                        *middleware.Auditor
-	AssistantApprovals             *ai.ApprovalStore
-	Realtime                       *realtime.Hub
-	approvalStoreError             error
-	TwoFAState                     *twoFAState
-	ClusterIdentity                *identity.MemoryIdentityService
-	ClusterDeployTasks             *deploy.TaskManager
-	ClusterDeployAuth              *deploy.AuthorizationStore
-	ClusterDeployRunner            deploy.TaskRunner
-	ClusterHeartbeats              *cluster.HeartbeatRegistry
-	clusterRolling                 *orchestrate.RollingManager
-	clusterTraffic                 *traffic.Scheduler
-	clusterTrafficMu               sync.Mutex
-	clusterJoinLimiter             *simpleRateLimiter
-	clusterJoinLimiterMu           sync.Mutex
-	clusterConsensus               *consensus.Coordinator
-	clusterConsensusMu             sync.Mutex
-	ACMEIssuer                     acme.Issuer
-	TimeSync                       TimeSyncService
-	OTAClient                      OTAClient
-	OTAState                       OTAStateReader
-	LoginCAPTCHAState              *loginCAPTCHAState
-	CAPTCHAAssets                  captchaassets.Store
-	CAPTCHAAssetReferences         *captchaassets.ReferenceManager
-	CAPTCHAAssetInitError          error
-	captchaAssetRuntime            atomic.Pointer[captchaAssetRuntime]
-	behaviorCAPTCHAOnce            sync.Once
-	behaviorCAPTCHAState           *botChallengeStore
-	loginCAPTCHASecretMu           sync.Mutex
-	loginCAPTCHASecret             string
-	clusterIdentityMu              sync.Mutex
-	clusterDeployTasksMu           sync.Mutex
-	clusterDeployAuthMu            sync.Mutex
-	clusterDeployPending           map[string]deploy.AuthorizationTarget
-	clusterHeartbeatsMu            sync.Mutex
-	configCompatMu                 sync.RWMutex
-	configMutationMu               sync.RWMutex
-	configPersistMu                sync.Mutex
+	Config                 *config.Config
+	configCurrent          atomic.Pointer[config.Config]
+	ConfigPath             string
+	Store                  storage.Store
+	Sink                   storage.LogSink
+	Tokens                 *middleware.TokenManager
+	Secret                 string
+	Auditor                *middleware.Auditor
+	AssistantApprovals     *ai.ApprovalStore
+	Realtime               *realtime.Hub
+	approvalStoreError     error
+	TwoFAState             *twoFAState
+	ClusterIdentity        *identity.MemoryIdentityService
+	ClusterDeployTasks     *deploy.TaskManager
+	ClusterDeployAuth      *deploy.AuthorizationStore
+	ClusterDeployRunner    deploy.TaskRunner
+	ClusterHeartbeats      *cluster.HeartbeatRegistry
+	clusterRolling         *orchestrate.RollingManager
+	clusterTraffic         *traffic.Scheduler
+	clusterTrafficMu       sync.Mutex
+	clusterJoinLimiter     *simpleRateLimiter
+	clusterJoinLimiterMu   sync.Mutex
+	clusterConsensus       *consensus.Coordinator
+	clusterConsensusMu     sync.Mutex
+	ACMEIssuer             acme.Issuer
+	TimeSync               TimeSyncService
+	OTAClient              OTAClient
+	OTAState               OTAStateReader
+	TemporaryHTTPExecutor  netlease.TemporaryHTTPExecutor
+	CWEDPDownload          consumer.Executor
+	CRPActivation          CRPActivationExecutor
+	LoginCAPTCHAState      *loginCAPTCHAState
+	CAPTCHAAssets          captchaassets.Store
+	CAPTCHAAssetReferences *captchaassets.ReferenceManager
+	CAPTCHAAssetInitError  error
+	captchaAssetRuntime    atomic.Pointer[captchaAssetRuntime]
+	behaviorCAPTCHAOnce    sync.Once
+	behaviorCAPTCHAState   *botChallengeStore
+	loginCAPTCHASecretMu   sync.Mutex
+	loginCAPTCHASecret     string
+	clusterIdentityMu      sync.Mutex
+	clusterDeployTasksMu   sync.Mutex
+	clusterDeployAuthMu    sync.Mutex
+	clusterDeployPending   map[string]deploy.AuthorizationTarget
+	clusterHeartbeatsMu    sync.Mutex
+	configCompatMu         sync.RWMutex
+	configMutationMu       sync.RWMutex
+	configPersistMu        sync.Mutex
+	// protectionMaterializationMu serializes the multi-step desired-state
+	// transaction with every ordinary local config mutation. A policy commit
+	// must not persist/apply/publish a stale full snapshot over an unrelated
+	// configuration change that happens halfway through materialization.
+	protectionMaterializationMu    sync.RWMutex
 	siteMutationMu                 sync.Mutex
 	managementTokenFlushInterval   time.Duration
 	managementTokenScheduleMu      sync.Mutex
@@ -129,9 +140,16 @@ type Handler struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
-	OnAPISecChanged                     func(config.APISecConfig) error
-	OnBlockPageChanged                  func(config.BlockPageConfig) error
-	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	// Both policy seams are intentionally supplied only by the process that
+	// owns control-plane coordination and node-local materialization. A nil
+	// consumer is fail-closed; HTTP and AI policy writes never fall back to a
+	// local YAML-only mutation.
+	protectionPolicyMutator            desiredstate.ProtectionPolicyMutator
+	protectionPolicyCoordinator        ProtectionPolicyCoordinatorConsumer
+	requireProtectionPolicyCoordinator bool
+	OnAPISecChanged                    func(config.APISecConfig) error
+	OnBlockPageChanged                 func(config.BlockPageConfig) error
+	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
 }
 
 type captchaAssetRuntime struct {
@@ -331,31 +349,40 @@ const (
 )
 
 type Options struct {
-	Config                              *config.Config
-	ConfigSnapshot                      *config.Config
-	ConfigPath                          string
-	Store                               storage.Store
-	Sink                                storage.LogSink
-	Tokens                              *middleware.TokenManager
-	Secret                              string
-	Auditor                             *middleware.Auditor
-	AssistantApprovals                  *ai.ApprovalStore
-	Realtime                            *realtime.Hub
-	ClusterIdentity                     *identity.MemoryIdentityService
-	ClusterDeployTasks                  *deploy.TaskManager
-	ClusterDeployAuth                   *deploy.AuthorizationStore
-	ClusterDeployRunner                 deploy.TaskRunner
-	ClusterHeartbeats                   *cluster.HeartbeatRegistry
-	ACMEIssuer                          acme.Issuer
-	TimeSync                            TimeSyncService
-	OTAClient                           OTAClient
-	OTAState                            OTAStateReader
-	SetupToken                          string
-	SetupDrafts                         *setup.DraftStore
-	RunSetupProbe                       func(context.Context, string) setup.ProbeResult
-	OnSitesChanged                      func([]config.SiteConfig) error
-	OnEdgeChanged                       func(config.EdgeConfig) error
-	OnProtectionChanged                 func(config.ProtectionConfig) error
+	Config                      *config.Config
+	ConfigSnapshot              *config.Config
+	ConfigPath                  string
+	Store                       storage.Store
+	Sink                        storage.LogSink
+	Tokens                      *middleware.TokenManager
+	Secret                      string
+	Auditor                     *middleware.Auditor
+	AssistantApprovals          *ai.ApprovalStore
+	Realtime                    *realtime.Hub
+	ClusterIdentity             *identity.MemoryIdentityService
+	ClusterDeployTasks          *deploy.TaskManager
+	ClusterDeployAuth           *deploy.AuthorizationStore
+	ClusterDeployRunner         deploy.TaskRunner
+	ClusterHeartbeats           *cluster.HeartbeatRegistry
+	ACMEIssuer                  acme.Issuer
+	TimeSync                    TimeSyncService
+	OTAClient                   OTAClient
+	OTAState                    OTAStateReader
+	TemporaryHTTPExecutor       netlease.TemporaryHTTPExecutor
+	CWEDPDownload               consumer.Executor
+	CRPActivation               CRPActivationExecutor
+	SetupToken                  string
+	SetupDrafts                 *setup.DraftStore
+	RunSetupProbe               func(context.Context, string) setup.ProbeResult
+	OnSitesChanged              func([]config.SiteConfig) error
+	OnEdgeChanged               func(config.EdgeConfig) error
+	OnProtectionChanged         func(config.ProtectionConfig) error
+	ProtectionPolicyMutator     desiredstate.ProtectionPolicyMutator
+	ProtectionPolicyCoordinator ProtectionPolicyCoordinatorConsumer
+	// RequireProtectionPolicyCoordinator is set only by the production
+	// composition root. It makes an omitted consumer fail closed; embedded and
+	// unit-test routers retain the historical local-only behavior explicitly.
+	RequireProtectionPolicyCoordinator  bool
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
@@ -440,6 +467,9 @@ func New(opts Options) *Handler {
 		TimeSync:                            opts.TimeSync,
 		OTAClient:                           opts.OTAClient,
 		OTAState:                            opts.OTAState,
+		TemporaryHTTPExecutor:               opts.TemporaryHTTPExecutor,
+		CWEDPDownload:                       opts.CWEDPDownload,
+		CRPActivation:                       opts.CRPActivation,
 		LoginCAPTCHAState:                   newLoginCAPTCHAState(),
 		CAPTCHAAssets:                       assetStore,
 		CAPTCHAAssetReferences:              assetRefs,
@@ -457,6 +487,9 @@ func New(opts Options) *Handler {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		protectionPolicyMutator:             opts.ProtectionPolicyMutator,
+		protectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
+		requireProtectionPolicyCoordinator:  opts.RequireProtectionPolicyCoordinator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
@@ -516,6 +549,55 @@ func (h *Handler) publishConfig(candidate *config.Config) error {
 	} else {
 		*h.Config = *compatibility
 	}
+	return nil
+}
+
+// WithProtectionPolicyMaterialization reserves the local configuration
+// mutation lane for one desired-state materialization transaction. It is
+// intentionally narrow: callers still own control-plane fencing and journal
+// semantics, while ordinary config mutations take the shared read side.
+func (h *Handler) WithProtectionPolicyMaterialization(fn func() error) error {
+	if h == nil || fn == nil {
+		return fmt.Errorf("protection policy materialization is unavailable")
+	}
+	h.protectionMaterializationMu.Lock()
+	defer h.protectionMaterializationMu.Unlock()
+	return fn()
+}
+
+// PublishMaterializedConfig publishes a candidate only after its caller has
+// persisted YAML and applied the runtime. It deliberately has no persistence
+// or runtime side effect of its own; the materializer journal is the ordering
+// authority. Callers must hold WithProtectionPolicyMaterialization.
+func (h *Handler) PublishMaterializedConfig(ctx context.Context, candidate *config.Config) error {
+	if h == nil || candidate == nil {
+		return fmt.Errorf("configuration is unavailable")
+	}
+	if ctx == nil {
+		return fmt.Errorf("context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := config.Validate(candidate); err != nil {
+		return err
+	}
+	return h.publishConfig(candidate)
+}
+
+// BindProtectionPolicyCoordinator is the production composition seam. It is
+// called exactly once before any listener starts; nil and replacement binds
+// are rejected so a healthy server cannot downgrade to a local write path.
+func (h *Handler) BindProtectionPolicyCoordinator(consumer ProtectionPolicyCoordinatorConsumer) error {
+	if h == nil || consumer == nil {
+		return ErrProtectionPolicyCoordinatorUnavailable
+	}
+	h.configMutationMu.Lock()
+	defer h.configMutationMu.Unlock()
+	if h.protectionPolicyCoordinator != nil {
+		return fmt.Errorf("protection policy coordinator is already bound")
+	}
+	h.protectionPolicyCoordinator = consumer
 	return nil
 }
 

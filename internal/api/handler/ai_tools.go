@@ -13,6 +13,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -581,20 +583,84 @@ func (t setProtectionLevelTool) Preview(_ context.Context, args map[string]any) 
 	return diffJSON(before, after)
 }
 
-func (t setProtectionLevelTool) Execute(_ context.Context, args map[string]any) (*ai.ToolResult, error) {
-	before, after, err := t.nextPolicy(args)
+// ResolvePreview binds an approval preview to the current consensus snapshot.
+// Once the lifecycle owner is wired, an unbound/local preview is never used to
+// mutate policy after approval.
+func (t setProtectionLevelTool) ResolvePreview(ctx context.Context, args map[string]any) (string, string, error) {
+	patch, _, _, err := t.protectionPolicyPatch(args)
+	if err != nil {
+		return "", "", err
+	}
+	if t.Handler == nil || t.Handler.protectionPolicyCoordinator == nil {
+		diff, previewErr := t.Preview(ctx, args)
+		return diff, diff, previewErr
+	}
+	consumer, ok := t.Handler.protectionPolicyCoordinator.(ProtectionPolicyCoordinatorPreviewConsumer)
+	if !ok {
+		return "", "", ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	actor := ai.ApprovalActorFromContext(ctx)
+	if !controlplane.ValidIdentity(actor.Subject) {
+		return "", "", fmt.Errorf("protection policy preview requires an authenticated actor")
+	}
+	preview, err := consumer.Preview(ctx, actor.Subject, patch)
+	if err != nil {
+		return "", "", err
+	}
+	diff, err := diffJSON(preview.Mutation.Before, preview.Mutation.After)
+	if err != nil {
+		return "", "", err
+	}
+	if preview.Mutation.Actor != actor.Subject || preview.Binding == "" {
+		return "", "", ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	return diff, preview.Binding, nil
+}
+
+func (t setProtectionLevelTool) Execute(ctx context.Context, args map[string]any) (*ai.ToolResult, error) {
+	patch, _, _, err := t.protectionPolicyPatch(args)
 	if err != nil {
 		return nil, err
 	}
 	if err := ensureAssistantConfigWritable(t.Handler); err != nil {
 		return nil, err
 	}
-	next := t.Handler.currentConfig().Protection
-	next.Policy = after
-	if err := t.Handler.commitProtectionConfig(next); err != nil {
+	actor := ai.ApprovalActorFromContext(ctx)
+	if !controlplane.ValidIdentity(actor.Subject) {
+		return nil, fmt.Errorf("protection policy mutation requires an authenticated actor")
+	}
+	if t.Handler == nil || t.Handler.protectionPolicyCoordinator == nil {
+		if t.Handler == nil || t.Handler.requireProtectionPolicyCoordinator {
+			return nil, ErrProtectionPolicyCoordinatorUnavailable
+		}
+		before, after, legacyErr := t.nextPolicy(args)
+		if legacyErr != nil {
+			return nil, legacyErr
+		}
+		next := t.Handler.currentConfig().Protection
+		next.Policy = after
+		if legacyErr = t.Handler.commitProtectionConfig(next); legacyErr != nil {
+			return nil, legacyErr
+		}
+		diff, _ := diffJSON(before, after)
+		return &ai.ToolResult{Success: true, Output: "global protection level updated", Diff: diff}, nil
+	}
+	consumer, ok := t.Handler.protectionPolicyCoordinator.(ProtectionPolicyCoordinatorPreviewConsumer)
+	if !ok {
+		return nil, ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	binding := ai.ToolPreviewBindingFromContext(ctx)
+	if binding == "" {
+		return nil, ErrProtectionPolicyCoordinatorPreviewUnavailable
+	}
+	result, err := consumer.ProposeAndApplyWithPreview(ctx, actor.Subject, patch, binding)
+	if err != nil {
 		return nil, err
 	}
-	diff, _ := diffJSON(before, after)
+	if result.Mutation.Actor != actor.Subject {
+		return nil, fmt.Errorf("protection policy coordinator returned an invalid actor binding")
+	}
+	diff, _ := diffJSON(result.Mutation.Before, result.Mutation.After)
 	return &ai.ToolResult{Success: true, Output: "global protection level updated", Diff: diff}, nil
 }
 
@@ -655,6 +721,36 @@ func (t setProtectionLevelTool) nextPolicy(args map[string]any) (config.Protecti
 		return before, after, fmt.Errorf("invalid protection area %q", area)
 	}
 	return before, after, nil
+}
+
+func (t setProtectionLevelTool) protectionPolicyPatch(args map[string]any) (desiredstate.ProtectionPolicyPatch, string, string, error) {
+	area, ok := stringArg(args, "area")
+	if !ok {
+		return desiredstate.ProtectionPolicyPatch{}, "", "", fmt.Errorf("area is required")
+	}
+	level, ok := stringArg(args, "level")
+	if !ok {
+		return desiredstate.ProtectionPolicyPatch{}, "", "", fmt.Errorf("level is required")
+	}
+	area = normalizeProtectionArea(area)
+	level = normalizeProtectionLevel(level)
+	if !config.IsProtectionLevel(level) || level == "" {
+		return desiredstate.ProtectionPolicyPatch{}, area, level, fmt.Errorf("invalid protection level %q", level)
+	}
+	patch := desiredstate.ProtectionPolicyPatch{}
+	switch area {
+	case "web_attack":
+		patch.WebAttack = &level
+	case "api_security":
+		patch.APISecurity = &level
+	case "bot_cc":
+		patch.BotCC = &level
+	case "threat_intel":
+		patch.ThreatIntel = &level
+	default:
+		return desiredstate.ProtectionPolicyPatch{}, area, level, fmt.Errorf("invalid protection area %q", area)
+	}
+	return patch, area, level, nil
 }
 
 func ensureAssistantConfigWritable(h *Handler) error {
