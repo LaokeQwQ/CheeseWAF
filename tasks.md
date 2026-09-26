@@ -1327,3 +1327,7 @@ Pages 锁文件原有 `devalue@5.9.0` moderate DoS 告警已通过只更新传�
 - React 19 回归修复：验证码拒绝结果测试改为在异步 `act` 中推进定时器；运维报表忽略 Select 初始化产生的空值，并按字段跟踪用户编辑，保存时以最新任务数据补齐未编辑字段。新 React 类型要求的可空 `useRef` 均已显式初始化。修复后 2 个定向测试文件（32 项）通过，完整 Web 门禁 470 项通过，typecheck、构建预算、96 个产物边界检查和 npm audit gate 均通过。
 - Dependabot 配置移除仓库不存在的 `security` label，保留可用的 `dependencies`/`ci` 标签，避免后续更新 PR 反复出现标签错误。
 - GitHub #460/#461 的半套 React 更新由上述统一变更覆盖；在统一变更进入 `dev` 并确认远端门禁前，不宣称这两个 PR 已关闭或已合并。
+
+### 2026-09-26 GitHub PR 门禁复核
+
+PR #466 的首轮 GitHub `ci-static` 检查发现 `scripts/ci/verify-forgejo-workflow.sh` 在本机文件系统为 `0755`，但 Git index 仍记录为 `100644`；本机 `core.filemode` 行为掩盖了该差异，CI checkout 因而拒绝执行 Forgejo workflow gate。已将 Git 跟踪模式修正为 `100755`；提交后需等待远端 CI 和 CodeQL 对新 head 重跑，再据结果决定合并与晋升。
