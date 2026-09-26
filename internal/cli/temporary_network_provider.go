@@ -109,6 +109,13 @@ func (p *productionTemporaryNetworkProvider) ExecuteTemporaryHTTP(ctx context.Co
 	if err != nil {
 		return netlease.HTTPResponse{}, err
 	}
+	// The provider context is the synchronous shutdown fence. The operation
+	// child may observe its AfterFunc cancellation a scheduling turn later;
+	// never mint a temporary session after Close has already completed that
+	// fence.
+	if providerErr := p.ctx.Err(); providerErr != nil {
+		return netlease.HTTPResponse{}, providerErr
+	}
 	req.TTL = ttl
 	req.ManagementSessionExpiresAt = managementExpiry
 	response, err := p.broker.ExecuteTemporaryHTTP(opCtx, req)

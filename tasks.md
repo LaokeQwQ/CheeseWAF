@@ -1341,3 +1341,5 @@ Windows runner 复核发现 POSIX 权限/目录 fsync 相关测试不能由 `chm
 MacOS runner 继续暴露临时网络 provider 关闭竞态：存储 lookup 在 provider context 已取消后可能先返回旧的 session-denied 错误。`boundTTL` 现在优先返回 `ctx.Err()`，保证关闭/取消语义不被后端错误覆盖；网络权限、租约和会话校验逻辑未放宽。
 
 随后 Ubuntu runner 捕获到同一关闭窗口在 broker 清理阶段返回 `invalid socket lease`；`ExecuteTemporaryHTTP` 现在也优先传播已取消的 operation context，避免把二次清理错误暴露给调用方。
+
+Windows runner 进一步复现了关闭完成与 operation `AfterFunc` 回调之间的调度窗口：session lookup 返回后可能在子 context 观察到取消前继续进入 broker，空请求因此暴露 `invalid socket lease`。`ExecuteTemporaryHTTP` 现在在 session lookup 后同步检查 provider context；`Close` 已建立关闭栅栏时不再创建临时 session。Linux `-race -count=100` 回归通过，Windows 远端门禁待新提交复核。
