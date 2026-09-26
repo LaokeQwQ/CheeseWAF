@@ -862,7 +862,7 @@ func TestApplyCommittedTimeoutReleasesSequencerButRetainsOSLease(t *testing.T) {
 	go func() { errCh <- applier.ApplyCommitted(context.Background(), f.commit) }()
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("runtime callback did not start")
 	}
 	select {

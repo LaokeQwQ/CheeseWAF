@@ -1335,3 +1335,5 @@ PR #466 的首轮 GitHub `ci-static` 检查发现 `scripts/ci/verify-forgejo-wor
 同一轮 CI 暴露生产验收和 Go coverage 在 GitHub runner 上继承共享 `/tmp`（`0777`）的问题；process-sidecar 按设计拒绝该路径。本地已用私有 `TMPDIR` 复现并通过，现将 `scripts/ci/go-env.sh` 统一为每次 Go 命令创建并清理私有、可清理的 `0700` 临时根，确保 production acceptance、coverage 和其他 Go 门禁使用同一安全边界。
 
 Windows runner 复核发现 POSIX 权限/目录 fsync 相关测试不能由 `chmod` 模拟：原补丁把 Windows 原生 TEMP 覆盖成无效的 POSIX 权限语义，导致 CRP runtime、materializer journal 和 CWEDP consumer 测试误报。已恢复 Windows 原生 TEMP，保留 Unix 私有临时根；Windows job 继续编译全部包，并显式排除依赖 Unix 权限/flush 语义的测试集合，不放宽生产校验。
+
+随后 Ubuntu runner 的 `TestApplyCommittedTimeoutReleasesSequencerButRetainsOSLease` 在 1 秒启动观察窗内受并行/race 负载影响未见 callback；本地 `-race -count=20` 稳定通过。测试仅放宽启动观察窗至 5 秒，仍保留 10ms runtime timeout 与所有租约/补偿断言，不改变生产超时语义。
