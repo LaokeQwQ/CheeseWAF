@@ -253,7 +253,7 @@ func TestProcessSidecarBackendRejectsMalformedOversizeStaleAndNonStrictAcknowled
 func TestProcessSidecarBackendTimesOutAndReapsUnresponsiveChild(t *testing.T) {
 	backend, err := NewProcessSidecarBackend(ProcessSidecarBackendOptions{
 		Registry:  []ProcessSidecarRegistryEntry{processSidecarTestEntry(t, "timeout")},
-		Admission: allowProcessSidecarTestAdmission, OperationTimeout: 50 * time.Millisecond,
+		Admission: allowProcessSidecarTestAdmission, OperationTimeout: 500 * time.Millisecond,
 		StopTimeout: 50 * time.Millisecond, MaxMessageBytes: defaultProcessMessageBytes,
 	})
 	if err != nil {
@@ -263,6 +263,10 @@ func TestProcessSidecarBackendTimesOutAndReapsUnresponsiveChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The start handshake launches a fresh race-instrumented test process and
+	// is substantially slower on macOS runners. Keep that setup allowance
+	// separate from the short operation timeout this test is exercising.
+	backend.operationTimeout = 50 * time.Millisecond
 	if err := process.Probe(t.Context()); !errors.Is(err, ErrProcessSidecarProtocol) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Probe() error = %v, want protocol deadline", err)
 	}
