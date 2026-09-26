@@ -217,6 +217,17 @@ func NewGate(policyEpoch uint64) *Gate {
 	return &Gate{policyEpoch: policyEpoch, requests: make(map[string]Record), usedIDs: make(map[string]struct{}), confirmationOwners: make(map[string]string), durableSequences: make(map[string]uint64)}
 }
 
+// PolicyEpoch returns the fencing generation currently enforced by the gate.
+// A nil gate has no valid epoch and therefore reports zero.
+func (g *Gate) PolicyEpoch() uint64 {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.policyEpoch
+}
+
 // NewGateWithPersistence binds a durable approval ledger. The persistence is
 // optional by design; callers that need durability must opt in explicitly.
 func NewGateWithPersistence(policyEpoch uint64, persistence Persistence) (*Gate, error) {
@@ -722,6 +733,24 @@ func (g *Gate) Get(requestID string) (Record, bool) {
 		return Record{}, false
 	}
 	return cloneRecord(record), true
+}
+
+// ApprovedRecords returns a detached snapshot of every currently approved
+// record. Callers may inspect the snapshot without holding the gate lock and
+// cannot mutate the gate's authorization state through the returned values.
+func (g *Gate) ApprovedRecords() []Record {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]Record, 0, len(g.requests))
+	for _, record := range g.requests {
+		if record.Status == StatusApproved {
+			out = append(out, cloneRecord(record))
+		}
+	}
+	return out
 }
 
 func (g *Gate) appendAudit(now time.Time, typ AuditType, requestID, actor, scope string, epoch uint64, confirmationID, reason string) {

@@ -792,7 +792,7 @@ func TestRecoveryDirectionRequiresMatchingFencePhase(t *testing.T) {
 	}
 }
 
-func TestRecoveryConfirmationExpiresAndCannotBeReused(t *testing.T) {
+func TestRecoveryConfirmationExpiresAndPreflightFailureCanBeRetried(t *testing.T) {
 	now := time.Date(2026, 9, 10, 6, 0, 0, 0, time.UTC)
 	record := recoveryRecord{Actor: "admin-once"}
 	confirmation := RecoveryConfirmation{Actor: record.Actor, Language: "en-US", Phrase: "CONFIRM", ConfirmationID: "confirm-once", WarningReadAt: now.Add(-setupmigration.WarningDelay), SecondConfirmation: true}
@@ -803,13 +803,27 @@ func TestRecoveryConfirmationExpiresAndCannotBeReused(t *testing.T) {
 		t.Fatalf("expired confirmation error=%v", err)
 	}
 	plan := &runtimeRecoveryPlan{direction: RecoveryRollbackTemporary, record: record, now: func() time.Time { return now }}
-	// The first attempt fails after consuming the in-memory plan because its
-	// durable dependencies are intentionally absent.
+	// The first attempt fails during durable-state classification. This is a
+	// recoverable preflight failure, so the in-memory plan must remain usable.
 	if err := plan.Recover(context.Background(), confirmation); err == nil {
 		t.Fatal("incomplete recovery plan unexpectedly succeeded")
 	}
-	if err := plan.Recover(context.Background(), confirmation); !errors.Is(err, ErrRecoveryConsumed) {
-		t.Fatalf("second recovery attempt error=%v", err)
+	if err := plan.Recover(context.Background(), confirmation); !errors.Is(err, ErrCutoverAmbiguous) {
+		t.Fatalf("second recovery attempt should retry preflight, error=%v", err)
+	}
+}
+
+func TestRecoveryExecutionStateConsumesOnlyAfterExecutionBegins(t *testing.T) {
+	plan := &runtimeRecoveryPlan{}
+	if err := plan.beginExecution(); err != nil {
+		t.Fatalf("begin execution: %v", err)
+	}
+	if err := plan.beginExecution(); !errors.Is(err, ErrRecoveryInProgress) {
+		t.Fatalf("concurrent begin error=%v", err)
+	}
+	plan.finishExecution()
+	if err := plan.beginExecution(); !errors.Is(err, ErrRecoveryConsumed) {
+		t.Fatalf("post-execution begin error=%v", err)
 	}
 }
 
@@ -1240,8 +1254,20 @@ func TestRuntimeRecoveryPlanCompletesProductionAndRemovesArtifacts(t *testing.T)
 	if persisted.Storage.Profile != config.StorageProfileProduction {
 		t.Fatalf("persisted profile=%q", persisted.Storage.Profile)
 	}
+	handoff, err := ReadProductionHandoff(dataDir)
+	if err != nil {
+		t.Fatalf("recovered production handoff: %v", err)
+	}
+	if handoff.SnapshotID != record.Snapshot.ID || handoff.ProductionConfigDigest != record.CandidateDigest ||
+		handoff.CandidateDigest != record.CandidateDigest || handoff.InitialStateHash != record.InitialStateHash ||
+		handoff.TokenMetadataDigest != digestBytes(record.Snapshot.TokenMetadata) || !handoff.Complete() {
+		t.Fatalf("recovered production handoff=%+v, want complete evidence for snapshot %q", handoff, record.Snapshot.ID)
+	}
 	if err := CheckPendingCutover(dataDir); err != nil {
 		t.Fatalf("successful recovery left artifacts: %v", err)
+	}
+	if err := plan.Recover(context.Background(), confirmation); !errors.Is(err, ErrRecoveryConsumed) {
+		t.Fatalf("successful recovery was not consumed: %v", err)
 	}
 }
 

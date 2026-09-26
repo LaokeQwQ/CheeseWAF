@@ -79,6 +79,27 @@ type ToolPreviewer interface {
 	Preview(ctx context.Context, args map[string]any) (string, error)
 }
 
+// ToolPreviewResolver additionally returns an opaque binding for tools whose
+// approval preview must be revalidated against a durable state snapshot.
+// Bindings are server-created and never accepted from operator input.
+type ToolPreviewResolver interface {
+	ResolvePreview(ctx context.Context, args map[string]any) (diff string, binding string, err error)
+}
+
+type toolPreviewBindingContextKey struct{}
+
+func ContextWithToolPreviewBinding(ctx context.Context, binding string) context.Context {
+	return context.WithValue(ctx, toolPreviewBindingContextKey{}, binding)
+}
+
+func ToolPreviewBindingFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	binding, _ := ctx.Value(toolPreviewBindingContextKey{}).(string)
+	return binding
+}
+
 // ToolPermissioner declares an additional RBAC permission required by a tool.
 // The assistant keeps the declaration optional so existing tools remain
 // compatible while sensitive data readers can enforce their own scope.

@@ -10,7 +10,6 @@ updates:
       timezone: Asia/Shanghai
     labels:
       - dependencies
-      - security
     open-pull-requests-limit: 5
 
   - package-ecosystem: npm
@@ -23,7 +22,6 @@ updates:
       timezone: Asia/Shanghai
     labels:
       - dependencies
-      - security
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions

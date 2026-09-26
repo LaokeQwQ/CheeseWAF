@@ -1,0 +1,6 @@
+# Protect CI policy, release tooling, and security-sensitive runtime code.
+* @LaokeQwQ
+/.forgejo/ @LaokeQwQ
+/.github/ @LaokeQwQ
+/deploy/ @LaokeQwQ
+/scripts/ci/ @LaokeQwQ

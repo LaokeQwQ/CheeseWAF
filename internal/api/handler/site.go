@@ -441,6 +441,8 @@ func (h *Handler) freezeConfigWritesLocked(reason string) {
 }
 
 func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyRuntime func(*config.Config) error) (*config.Config, error) {
+	h.protectionMaterializationMu.RLock()
+	defer h.protectionMaterializationMu.RUnlock()
 	h.configPersistMu.Lock()
 	defer h.configPersistMu.Unlock()
 	h.configMutationMu.Lock()

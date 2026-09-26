@@ -7,6 +7,7 @@ import (
 	"crypto/sha1" // #nosec G505 -- compatibility integrity digest, not security.
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -131,6 +132,32 @@ type IntentSignatureVerifierFunc func(DistributionIntent) error
 
 func (f IntentSignatureVerifierFunc) Verify(intent DistributionIntent) error {
 	return f(intent)
+}
+
+// SigningBytes returns the canonical, domain-separated payload used by a
+// production intent signer. The opaque Signature field is deliberately
+// excluded so a verifier can authenticate the complete distribution intent
+// without signing a value that contains its own signature.
+func SigningBytes(intent DistributionIntent) ([]byte, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	type unsignedIntent struct {
+		ID      string   `json:"id"`
+		Package string   `json:"package_id"`
+		Version string   `json:"version"`
+		Size    int64    `json:"size"`
+		Digests Digests  `json:"digests"`
+		Sources []Source `json:"sources"`
+	}
+	payload, err := json.Marshal(unsignedIntent{
+		ID: intent.ID, Package: intent.PackageID, Version: intent.Version,
+		Size: intent.Size, Digests: intent.Digests, Sources: intent.Sources,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal distribution intent: %w", err)
+	}
+	return append([]byte("cheesewaf-cwedp-intent-v1\n"), payload...), nil
 }
 
 type Hello struct {

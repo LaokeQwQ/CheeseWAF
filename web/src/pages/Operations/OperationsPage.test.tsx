@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScheduledTask, ScheduledTaskHistoryEntry } from '../../types/api';
 
@@ -152,7 +152,10 @@ describe('OperationsPage query states', () => {
     const pending = deferred<ScheduledTask[]>();
     apiMocks.fetchTasks.mockReturnValue(pending.promise);
     renderOperations();
-    pending.resolve([structuredClone(cleanupTask), structuredClone(reportTask)]);
+    await act(async () => {
+      pending.resolve([structuredClone(cleanupTask), structuredClone(reportTask)]);
+      await pending.promise;
+    });
 
     expect(await screen.findByDisplayValue('21:45')).toBeTruthy();
     expect(screen.getByDisplayValue('https://reports.example.test/hook')).toBeTruthy();

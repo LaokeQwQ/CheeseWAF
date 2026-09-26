@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
+	"github.com/hashicorp/raft"
 )
 
 func testContext(t *testing.T, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -29,6 +30,33 @@ func waitForLeader(t *testing.T, node *Runtime) Status {
 		}
 		if err := ctx.Err(); err != nil {
 			t.Fatalf("leader election did not complete: status=%+v err=%v", status, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForTwoNodeLeader(t *testing.T, first, second *Runtime) (*Runtime, *Runtime, Status) {
+	t.Helper()
+	ctx, cancel := testContext(t, 8*time.Second)
+	defer cancel()
+	var firstStatus, secondStatus Status
+	for {
+		firstStatus, secondStatus = first.Status(), second.Status()
+		if firstStatus.Ready && secondStatus.Ready && firstStatus.LeaderID == secondStatus.LeaderID &&
+			firstStatus.Term == secondStatus.Term && firstStatus.Epoch == secondStatus.Epoch &&
+			firstStatus.IsLeader != secondStatus.IsLeader {
+			leader, follower, leaderStatus, followerStatus := first, second, firstStatus, secondStatus
+			if secondStatus.IsLeader {
+				leader, follower, leaderStatus, followerStatus = second, first, secondStatus, firstStatus
+			}
+			if leaderStatus.LeaderID == leaderStatus.NodeID && leaderStatus.Term > 0 && leaderStatus.Epoch > 0 &&
+				leaderStatus.WriteReady && !leaderStatus.ReadOnly && followerStatus.ReadOnly &&
+				!followerStatus.IsLeader && !followerStatus.WriteReady {
+				return leader, follower, leaderStatus
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("two-node leader election did not converge: first=%+v second=%+v err=%v", firstStatus, secondStatus, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -74,6 +102,57 @@ func openTestNode(t *testing.T, dir, nodeID string, mode StartMode) *Runtime {
 		t.Fatalf("Prepare(%s): %v", mode, err)
 	}
 	return node
+}
+
+type coordinatorDurableStore struct {
+	state   controlplane.State
+	commits []controlplane.Commit
+	err     error
+}
+
+func (s *coordinatorDurableStore) Backend() string               { return controlplane.DurableBackendPostgreSQL }
+func (s *coordinatorDurableStore) Prepare(context.Context) error { return nil }
+func (s *coordinatorDurableStore) Health(context.Context) error  { return nil }
+
+func (s *coordinatorDurableStore) LoadState(context.Context, string) (controlplane.State, error) {
+	if s.state.ClusterID == "" {
+		return controlplane.State{}, controlplane.ErrStateNotFound
+	}
+	return s.state, nil
+}
+
+func (s *coordinatorDurableStore) AppendCommit(_ context.Context, commit controlplane.Commit) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.state = commit.State
+	s.commits = append(s.commits, commit)
+	return nil
+}
+
+func (s *coordinatorDurableStore) CheckpointLeadership(_ context.Context, state controlplane.State) error {
+	s.state = state
+	return nil
+}
+
+type responseLostConsensus struct {
+	runtime *Runtime
+	lost    bool
+}
+
+func (c *responseLostConsensus) Current(ctx context.Context, clusterID string) (controlplane.State, error) {
+	return c.runtime.Current(ctx, clusterID)
+}
+
+func (c *responseLostConsensus) Propose(ctx context.Context, commit controlplane.Commit) error {
+	if err := c.runtime.Propose(ctx, commit); err != nil {
+		return err
+	}
+	if !c.lost {
+		c.lost = true
+		return errors.New("raft response lost after apply")
+	}
+	return nil
 }
 
 func TestNewRejectsPlaintextTransportUnlessExplicitLoopbackTestMode(t *testing.T) {
@@ -283,10 +362,197 @@ func TestSingleNodeBootstrapPersistsStateAndInvalidatesOldFenceAfterRestart(t *t
 	cancel()
 }
 
+func TestCoordinatorProposeAndApplyReplicatesExactNonInitialCommitWithRuntimeOwnedMachine(t *testing.T) {
+	node := openTestNode(t, t.TempDir(), "node-coordinator", ModeBootstrap)
+	defer node.Close()
+	status := waitForLeader(t, node)
+	durable := &coordinatorDurableStore{}
+	coordinator, err := controlplane.NewCoordinator(node.Machine(), node, durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := testContext(t, 8*time.Second)
+	defer cancel()
+	initial, err := coordinator.Initialize(ctx, controlplane.InitialStateRequest{
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-1",
+		Confirmation: controlplane.InitialStateConfirmation{ID: "confirmation-1", Actor: "test-operator"},
+	})
+	if err != nil {
+		t.Fatalf("initialize coordinator: %v", err)
+	}
+	if err := coordinator.ResumeWrites(ctx, initial.Fence); err != nil {
+		t.Fatalf("resume coordinator: %v", err)
+	}
+	second, err := coordinator.ProposeAndApply(ctx, controlplane.Proposal{
+		LeaderID: status.LeaderID, ExpectedEpoch: initial.State.Epoch, ExpectedRevision: initial.State.Revision,
+		Version: "v2", Payload: []byte(`{"mode":"enforce"}`), Nonce: "commit-2",
+	})
+	if err != nil {
+		t.Fatalf("propose and apply exact second commit through native raft: %v", err)
+	}
+	if got := node.Machine().Snapshot(); got.Revision != 2 || got.Desired.Version != "v2" {
+		t.Fatalf("runtime state=%+v, want committed revision 2", got)
+	}
+	if durable.state.Revision != 2 || len(durable.commits) != 2 {
+		t.Fatalf("durable state revision=%d commits=%d, want 2/2", durable.state.Revision, len(durable.commits))
+	}
+	if err := node.Propose(ctx, second); err != nil {
+		t.Fatalf("idempotent exact-commit retry failed: %v", err)
+	}
+}
+
+func TestCoordinatorRetriesDurableFailureAfterNativeRaftAppliedExactCommit(t *testing.T) {
+	node := openTestNode(t, t.TempDir(), "node-retry", ModeBootstrap)
+	defer node.Close()
+	status := waitForLeader(t, node)
+	durable := &coordinatorDurableStore{}
+	coordinator, err := controlplane.NewCoordinator(node.Machine(), node, durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := testContext(t, 8*time.Second)
+	defer cancel()
+	initial, err := coordinator.Initialize(ctx, controlplane.InitialStateRequest{
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-retry",
+		Confirmation: controlplane.InitialStateConfirmation{ID: "confirmation-retry", Actor: "test-operator"},
+	})
+	if err != nil {
+		t.Fatalf("initialize coordinator: %v", err)
+	}
+	if err := coordinator.ResumeWrites(ctx, initial.Fence); err != nil {
+		t.Fatalf("resume coordinator: %v", err)
+	}
+	durable.err = errors.New("postgres temporarily unavailable")
+	second, err := coordinator.ProposeAndApply(ctx, controlplane.Proposal{
+		LeaderID: status.LeaderID, ExpectedEpoch: initial.State.Epoch, ExpectedRevision: initial.State.Revision,
+		Version: "v2", Payload: []byte(`{"mode":"enforce"}`), Nonce: "commit-retry-2",
+	})
+	if err == nil || second.State.Revision != 2 {
+		t.Fatalf("durable failure result commit=%+v err=%v", second, err)
+	}
+	if got := node.Machine().Snapshot(); got.Revision != 2 || !got.WriteFrozen {
+		t.Fatalf("consensus commit was not retained fail-closed: %+v", got)
+	}
+	if durable.state.Revision != 1 || len(durable.commits) != 1 {
+		t.Fatalf("durable store advanced despite failure: revision=%d commits=%d", durable.state.Revision, len(durable.commits))
+	}
+	durable.err = nil
+	if err := coordinator.Apply(ctx, second); err != nil {
+		t.Fatalf("exact durable retry failed: %v", err)
+	}
+	if err := coordinator.ResumeWrites(ctx, second.Fence); err != nil {
+		t.Fatalf("resume after converged retry failed: %v", err)
+	}
+	if got := node.Machine().Snapshot(); got.Revision != 2 || got.WriteFrozen {
+		t.Fatalf("runtime did not resume at revision 2: %+v", got)
+	}
+	if durable.state.Revision != 2 || len(durable.commits) != 2 {
+		t.Fatalf("durable retry result revision=%d commits=%d, want 2/2", durable.state.Revision, len(durable.commits))
+	}
+}
+
+func TestCoordinatorRetriesExactCommitAfterRaftResponseIsLost(t *testing.T) {
+	node := openTestNode(t, t.TempDir(), "node-response-lost", ModeBootstrap)
+	defer node.Close()
+	status := waitForLeader(t, node)
+	durable := &coordinatorDurableStore{}
+	bootstrapCoordinator, err := controlplane.NewCoordinator(node.Machine(), node, durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := testContext(t, 8*time.Second)
+	defer cancel()
+	initial, err := bootstrapCoordinator.Initialize(ctx, controlplane.InitialStateRequest{
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-response-lost",
+		Confirmation: controlplane.InitialStateConfirmation{ID: "confirmation-response-lost", Actor: "test-operator"},
+	})
+	if err != nil {
+		t.Fatalf("initialize coordinator: %v", err)
+	}
+	if err := bootstrapCoordinator.ResumeWrites(ctx, initial.Fence); err != nil {
+		t.Fatalf("resume coordinator: %v", err)
+	}
+	lossy := &responseLostConsensus{runtime: node}
+	coordinator, err := controlplane.NewCoordinator(node.Machine(), lossy, durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := coordinator.ProposeAndApply(ctx, controlplane.Proposal{
+		LeaderID: status.LeaderID, ExpectedEpoch: initial.State.Epoch, ExpectedRevision: initial.State.Revision,
+		Version: "v2", Payload: []byte(`{"mode":"enforce"}`), Nonce: "response-lost-2",
+	})
+	if err == nil || commit.State.Revision != 2 {
+		t.Fatalf("lost response result commit=%+v err=%v", commit, err)
+	}
+	if got := node.Machine().Snapshot(); got.Revision != 2 || !got.WriteFrozen {
+		t.Fatalf("lost response did not retain committed raft state fail-closed: %+v", got)
+	}
+	lastIndex, err := node.logs.LastIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Apply(ctx, commit); err != nil {
+		t.Fatalf("exact retry after lost raft response failed: %v", err)
+	}
+	afterRetry, err := node.logs.LastIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRetry != lastIndex {
+		t.Fatalf("exact retry appended raft log index %d after %d", afterRetry, lastIndex)
+	}
+	if durable.state.Revision != 2 || len(durable.commits) != 2 {
+		t.Fatalf("durable retry revision=%d commits=%d, want 2/2", durable.state.Revision, len(durable.commits))
+	}
+}
+
+func TestCoordinatorRetriesExactInitialCommitAfterRaftResponseIsLost(t *testing.T) {
+	node := openTestNode(t, t.TempDir(), "node-initial-response-lost", ModeBootstrap)
+	defer node.Close()
+	waitForLeader(t, node)
+	durable := &coordinatorDurableStore{}
+	lossy := &responseLostConsensus{runtime: node}
+	coordinator, err := controlplane.NewCoordinator(node.Machine(), lossy, durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := testContext(t, 8*time.Second)
+	defer cancel()
+	request := controlplane.InitialStateRequest{
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "initial-lost-response",
+		Confirmation: controlplane.InitialStateConfirmation{ID: "confirmation-initial-lost", Actor: "test-operator"},
+	}
+	commit, err := coordinator.Initialize(ctx, request)
+	if err == nil || commit.State.Revision != 1 {
+		t.Fatalf("lost initial response result commit=%+v err=%v", commit, err)
+	}
+	lastIndex, err := node.logs.LastIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := coordinator.Initialize(ctx, request)
+	if err != nil {
+		t.Fatalf("exact initial retry after lost response failed: %v", err)
+	}
+	if retried.Fence != commit.Fence || !retried.State.UpdatedAt.Equal(commit.State.UpdatedAt) {
+		t.Fatalf("initial retry changed exact commit: first=%+v retry=%+v", commit, retried)
+	}
+	afterRetry, err := node.logs.LastIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRetry != lastIndex {
+		t.Fatalf("initial exact retry appended raft log index %d after %d", afterRetry, lastIndex)
+	}
+	if durable.state.Revision != 1 || len(durable.commits) != 1 {
+		t.Fatalf("initial durable retry revision=%d commits=%d, want 1/1", durable.state.Revision, len(durable.commits))
+	}
+}
+
 func TestJoinRequiresExplicitLeaderOperationAndReplicatesCommit(t *testing.T) {
 	leader := openTestNode(t, t.TempDir(), "leader-a", ModeBootstrap)
 	defer leader.Close()
-	status := waitForLeader(t, leader)
+	waitForLeader(t, leader)
 
 	follower := openTestNode(t, t.TempDir(), "follower-b", ModeJoin)
 	defer follower.Close()
@@ -309,23 +575,44 @@ func TestJoinRequiresExplicitLeaderOperationAndReplicatesCommit(t *testing.T) {
 		cancel()
 		t.Fatalf("joined follower Health: %v", err)
 	}
-	if status := follower.Status(); !status.Ready || !status.ReadOnly || status.IsLeader {
-		t.Fatalf("joined follower status=%+v, want ready/read-only", status)
-	}
-	if _, err := follower.Establish(ctx, controlplane.State{}); !errors.Is(err, controlplane.ErrNotLeader) {
-		t.Fatalf("follower forged fence error=%v, want ErrNotLeader", err)
-	}
-	status = waitForLeader(t, leader)
-	commit := proposedCommit(t, status, 0, "cluster-nonce-1")
-	if err := leader.Propose(ctx, commit); err != nil {
-		cancel()
-		t.Fatalf("leader Propose: %v", err)
-	}
 	cancel()
 
-	got := waitForCurrent(t, follower, 1)
-	if got.Desired.Digest != commit.State.Desired.Digest || got.Revision != 1 {
-		t.Fatalf("follower current=%+v, want replicated commit", got)
+	currentLeader, currentFollower, status := waitForTwoNodeLeader(t, leader, follower)
+	configuration := currentLeader.raft.GetConfiguration()
+	if err := configuration.Error(); err != nil {
+		t.Fatalf("joined raft configuration: %v", err)
+	}
+	servers := configuration.Configuration().Servers
+	if len(servers) != 2 {
+		t.Fatalf("joined raft configuration has %d members, want exactly two voters", len(servers))
+	}
+	for _, member := range servers {
+		if member.Suffrage != raft.Voter ||
+			(member.ID != raft.ServerID(leader.NodeID()) || string(member.Address) != leader.Address()) &&
+				(member.ID != raft.ServerID(follower.NodeID()) || string(member.Address) != follower.Address()) {
+			t.Fatalf("unexpected joined raft member: %+v", member)
+		}
+	}
+	ctx, cancel = testContext(t, 8*time.Second)
+	defer cancel()
+	if _, err := currentFollower.Establish(ctx, controlplane.State{}); !errors.Is(err, controlplane.ErrNotLeader) {
+		t.Fatalf("follower forged fence error=%v, want ErrNotLeader", err)
+	}
+	commit := proposedCommit(t, status, 0, "cluster-nonce-1")
+	if err := currentFollower.Propose(ctx, commit); !errors.Is(err, controlplane.ErrNotLeader) {
+		t.Fatalf("follower forged proposal error=%v, want ErrNotLeader", err)
+	}
+	if err := currentLeader.Propose(ctx, commit); err != nil {
+		t.Fatalf("leader Propose: %v", err)
+	}
+	for _, node := range []*Runtime{currentLeader, currentFollower} {
+		got := waitForCurrent(t, node, 1)
+		if !sameNativePayload(got, commit.State) || got.LeaderID != commit.State.LeaderID ||
+			got.Term != commit.State.Term || got.Epoch != commit.State.Epoch ||
+			got.WriteFrozen != commit.State.WriteFrozen || got.FreezeReason != commit.State.FreezeReason ||
+			!got.UpdatedAt.Equal(commit.State.UpdatedAt) {
+			t.Fatalf("node %s current=%+v, want exact replicated commit=%+v", node.NodeID(), got, commit.State)
+		}
 	}
 }
 
@@ -378,8 +665,11 @@ func TestProtectedInitialCommitCanReplicateWhileStartupFreezeIsHeld(t *testing.T
 		t.Fatalf("protected initial commit was rejected while startup frozen: %v", err)
 	}
 	got := waitForCurrent(t, node, 1)
-	if got.Revision != 1 || got.Desired.Digest != commit.State.Desired.Digest || !got.WriteFrozen {
-		t.Fatalf("initial commit state=%+v, want committed but startup-frozen", got)
+	if got.Revision != 1 || got.Desired.Digest != commit.State.Desired.Digest || got.WriteFrozen {
+		t.Fatalf("replicated initial commit state=%+v, want canonical non-frozen commit", got)
+	}
+	if local := node.Machine().Snapshot(); local.Revision != 1 || !local.WriteFrozen {
+		t.Fatalf("local startup overlay=%+v, want committed but startup-frozen", local)
 	}
 }
 

@@ -50,6 +50,31 @@ func TestPostgreSQLManagementStoreIntegration(t *testing.T) {
 	if err := s.Health(ctx); err != nil {
 		t.Fatal(err)
 	}
+	committedAt := time.Date(2026, 9, 22, 12, 0, 0, 123456789, time.UTC)
+	handoff := storage.MigrationHandoffEvidence{
+		SnapshotID:             "snapshot-pg-precision",
+		TemporaryConfigDigest:  "temporary-config-digest",
+		ProductionConfigDigest: "production-config-digest",
+		CandidateDigest:        "candidate-digest",
+		InitialStateHash:       "initial-state-hash",
+		TokenMetadataDigest:    "token-metadata-digest",
+		ClusterID:              "cluster-a",
+		Actor:                  "admin-a",
+		CommittedAt:            committedAt,
+		SessionsInvalidated:    true,
+		SetupInvalidated:       true,
+		JoinInvalidated:        true,
+		CAPTCHAInvalidated:     true,
+		LocksInvalidated:       true,
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO cheesewaf_migration_cutovers(snapshot_id,config_digest,candidate_digest,initial_state_hash,token_metadata_digest,actor_id,confirmation_id,cluster_id,committed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		handoff.SnapshotID, handoff.TemporaryConfigDigest, handoff.CandidateDigest, handoff.InitialStateHash,
+		handoff.TokenMetadataDigest, handoff.Actor, "confirmation-a", handoff.ClusterID, handoff.CommittedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyMigrationHandoff(ctx, handoff); err != nil {
+		t.Fatalf("migration handoff rejected PostgreSQL timestamp precision: %v", err)
+	}
 	user := &storage.User{Username: "admin", PasswordHash: "hash-a", Role: "admin"}
 	if err := s.CreateUser(ctx, user); err != nil {
 		t.Fatal(err)

@@ -26,6 +26,63 @@ run_with_timeout() {
   return "$status"
 }
 
+detach_image() {
+  local tracked_device="$1" tracked_mount="$2" output status attempts=0
+  while (( attempts < 3 )); do
+    attempts=$((attempts + 1))
+    if output="$(run_with_timeout 30 hdiutil detach "$tracked_device" -quiet 2>&1)"; then
+      status=0
+    else
+      status=$?
+      if ! printf '%s' "$output" | grep -Fq 'Resource busy' || (( attempts >= 3 )); then
+        printf '%s\n' "$output" >&2
+        return "$status"
+      fi
+    fi
+    for _ in 1 2 3 4 5; do
+      local info
+      if ! info="$(run_with_timeout 30 hdiutil info 2>&1)"; then
+        printf '%s\n' "$info" >&2
+        return 1
+      fi
+      if ! printf '%s\n' "$info" | grep -Fq -- "$tracked_device" &&
+         ! printf '%s\n' "$info" | grep -Fq -- "$tracked_mount"; then
+        return 0
+      fi
+      sleep 1
+    done
+    status=0
+    if output="$(run_with_timeout 30 hdiutil detach "$tracked_device" -force 2>&1)"; then
+      status=0
+    else
+      status=$?
+    fi
+    if (( status != 0 )) && ! printf '%s' "$output" | grep -Fq 'Resource busy'; then
+      printf '%s\n' "$output" >&2
+      return "$status"
+    fi
+    if (( status == 0 )); then
+      for _ in 1 2 3 4 5; do
+        local info
+        if info="$(run_with_timeout 30 hdiutil info 2>&1)"; then
+          :
+        else
+          status=$?
+          printf '%s\n' "$info" >&2
+          return "$status"
+        fi
+        if ! printf '%s\n' "$info" | grep -Fq -- "$tracked_device" &&
+           ! printf '%s\n' "$info" | grep -Fq -- "$tracked_mount"; then
+          return 0
+        fi
+        sleep 1
+      done
+    fi
+  done
+  printf '::error::detach did not complete for %s (%s)\n' "$tracked_device" "$tracked_mount" >&2
+  return 1
+}
+
 bundle_version_from_label() {
   local raw="$1"
   local numeric
@@ -74,11 +131,12 @@ fi
 
 stage_root="$(mktemp -d)"
 device=""
+mount_point=""
 signing_keychain=""
 original_user_keychains=()
 cleanup() {
   if [[ -n "$device" ]]; then
-    run_with_timeout 30 hdiutil detach "$device" -force >/dev/null 2>&1 || true
+    detach_image "$device" "${mount_point:-}" >/dev/null 2>&1 || true
   fi
   if [[ -n "$signing_keychain" ]]; then
     if [[ "${#original_user_keychains[@]}" -gt 0 ]]; then
@@ -357,9 +415,7 @@ for tarball in "${tarballs[@]}"; do
   device="$attached_device"
   layout_dmg_window "$mount_point" || true
   sync
-  run_with_timeout 30 hdiutil detach "$device" -quiet ||
-    run_with_timeout 30 hdiutil detach "$device" -force ||
-    run_with_timeout 30 hdiutil detach "$mount_point" -force
+  detach_image "$device" "$mount_point"
   device=""
 
   dmg_path="${abs_release}/${name}.dmg"

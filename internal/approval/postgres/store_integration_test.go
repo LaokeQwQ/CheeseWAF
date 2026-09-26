@@ -241,3 +241,111 @@ func TestPostgresApprovalEpochCASAndGateConsistency(t *testing.T) {
 		t.Fatalf("post-reconciliation rollback error=%v, want epoch regression", err)
 	}
 }
+
+func TestPostgresApprovalStoreHealthProbesAllTablesWithoutPersistingRows(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("CHEESEWAF_POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("CHEESEWAF_POSTGRES_TEST_DSN is not configured")
+	}
+	ctx := context.Background()
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("approval_health_it_%d", time.Now().UnixNano())
+	quoted := pgx.Identifier{schema}.Sanitize()
+	admin := stdlib.OpenDB(*cfg)
+	if _, err := admin.ExecContext(ctx, "CREATE SCHEMA "+quoted); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.ExecContext(ctx, "DROP SCHEMA "+quoted+" CASCADE")
+		_ = admin.Close()
+	})
+	testCfg := *cfg
+	testCfg.RuntimeParams = map[string]string{}
+	for k, v := range cfg.RuntimeParams {
+		testCfg.RuntimeParams[k] = v
+	}
+	testCfg.RuntimeParams["search_path"] = schema
+	db := stdlib.OpenDB(testCfg)
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompareAndSetEpoch(ctx, 0, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Health(ctx); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	for _, table := range []string{"cheesewaf_approvals", "cheesewaf_approval_events", "cheesewaf_approval_idempotency"} {
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("Health() persisted %d probe rows in %s", count, table)
+		}
+	}
+	var epoch uint64
+	if err := db.QueryRowContext(ctx, "SELECT policy_epoch FROM cheesewaf_approval_epoch WHERE id=1").Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	if epoch != 7 {
+		t.Fatalf("Health() changed epoch to %d, want 7", epoch)
+	}
+	t.Run("write-only permissions fail closed", func(t *testing.T) {
+		role := fmt.Sprintf("approval_health_writer_%d", time.Now().UnixNano())
+		quotedRole := pgx.Identifier{role}.Sanitize()
+		if _, err := admin.ExecContext(ctx, "CREATE ROLE "+quotedRole+" NOLOGIN"); err != nil {
+			t.Skipf("write-only permission probe requires CREATEROLE: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = admin.ExecContext(ctx, "REVOKE "+quotedRole+" FROM CURRENT_USER")
+			_, _ = admin.ExecContext(ctx, "DROP ROLE "+quotedRole)
+		})
+		if _, err := admin.ExecContext(ctx, "GRANT "+quotedRole+" TO CURRENT_USER"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := admin.ExecContext(ctx, "GRANT USAGE ON SCHEMA "+quoted+" TO "+quotedRole); err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{
+			"GRANT INSERT, UPDATE ON cheesewaf_approvals TO " + quotedRole,
+			"GRANT INSERT ON cheesewaf_approval_events TO " + quotedRole,
+			"GRANT INSERT ON cheesewaf_approval_idempotency TO " + quotedRole,
+			"GRANT UPDATE ON cheesewaf_approval_epoch TO " + quotedRole,
+		} {
+			if _, err := admin.ExecContext(ctx, statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		writeOnlyCfg := testCfg
+		writeOnlyCfg.RuntimeParams = map[string]string{}
+		for k, v := range testCfg.RuntimeParams {
+			writeOnlyCfg.RuntimeParams[k] = v
+		}
+		writeOnlyCfg.RuntimeParams["role"] = role
+		writeOnlyDB := stdlib.OpenDB(writeOnlyCfg)
+		t.Cleanup(func() { _ = writeOnlyDB.Close() })
+		writeOnlyStore, err := New(writeOnlyDB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeOnlyStore.Health(ctx); err == nil {
+			t.Fatal("Health() accepted write-only approval table permissions")
+		}
+	})
+	if _, err := db.ExecContext(ctx, "DROP TABLE cheesewaf_approval_idempotency"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Health(ctx); err == nil {
+		t.Fatal("Health() accepted a missing idempotency table")
+	}
+}

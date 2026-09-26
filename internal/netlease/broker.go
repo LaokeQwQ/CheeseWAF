@@ -160,6 +160,10 @@ type BrokerConfig struct {
 	MaxHTTPBodyBytes     int64
 	MaxHTTPResponseBytes int64
 	OperationTimeout     time.Duration
+	// PreDialGate is a capability-owned authorization check that runs after a
+	// lease is consumed but before audit, DNS, or dialing. It is used to bind a
+	// temporary lease to revocable management-session state at use time.
+	PreDialGate func(context.Context, Lease) error
 }
 
 // Broker is the only runtime component in this package allowed to resolve or
@@ -175,6 +179,7 @@ type Broker struct {
 	maxBodyBytes      int64
 	maxResponseBytes  int64
 	timeout           time.Duration
+	preDialGate       func(context.Context, Lease) error
 	revokeMu          sync.Mutex
 	revocationAudited map[string]struct{}
 }
@@ -227,6 +232,7 @@ func NewBroker(cfg BrokerConfig) (*Broker, error) {
 		maxBodyBytes:      cfg.MaxHTTPBodyBytes,
 		maxResponseBytes:  cfg.MaxHTTPResponseBytes,
 		timeout:           cfg.OperationTimeout,
+		preDialGate:       cfg.PreDialGate,
 		revocationAudited: make(map[string]struct{}),
 	}, nil
 }
@@ -538,6 +544,12 @@ func (b *Broker) openTLS(ctx context.Context, id string, scope RequestScope, max
 	}
 	connection := &brokerConnection{broker: b, lease: lease, scope: scope, release: release}
 	ctx, connection.cancel = b.leaseBoundContext(ctx, lease)
+	if b.preDialGate != nil {
+		if err := b.preDialGate(ctx, lease); err != nil {
+			_ = connection.finish("predial_denied")
+			return nil, beforeDialError(err)
+		}
+	}
 	if err := b.appendAudit(b.leaseAuditEvent(lease, "connection_started", "started", 0, 0, 0)); err != nil {
 		_ = connection.finish("audit_unavailable")
 		return nil, beforeDialError(fmt.Errorf("%w: %v", ErrAuditUnavailable, err))
@@ -746,7 +758,15 @@ func validateTLSPolicy(scope RequestScope, policy *TLSPolicy) error {
 		return nil
 	}
 	config := policy.Config
-	if config.InsecureSkipVerify || (config.ServerName != "" && config.ServerName != scope.Target.Host) {
+	if config.InsecureSkipVerify {
+		return ErrTLSPolicy
+	}
+	// A registered peer can be reached at an IP address while its certificate
+	// identifies the peer by a stable node name. Permit that distinct TLS name
+	// only when the caller also supplies an explicit leaf verifier; normal
+	// certificate-chain verification and the lease's exact leaf pin remain
+	// mandatory in tlsConfigForLease.
+	if config.ServerName != "" && config.ServerName != scope.Target.Host && policy.VerifyLeaf == nil {
 		return ErrTLSPolicy
 	}
 	if config.MinVersion != 0 && config.MinVersion < tls.VersionTLS12 {
@@ -787,7 +807,9 @@ func tlsConfigForLease(lease Lease, policy *TLSPolicy) (*tls.Config, error) {
 			config.MinVersion = tls.VersionTLS12
 		}
 	}
-	config.ServerName = lease.Target.Host
+	if config.ServerName == "" {
+		config.ServerName = lease.Target.Host
+	}
 	originalVerifyConnection := config.VerifyConnection
 	config.VerifyConnection = func(state tls.ConnectionState) error {
 		if len(state.PeerCertificates) == 0 {

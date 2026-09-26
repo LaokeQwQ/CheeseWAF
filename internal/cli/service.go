@@ -30,6 +30,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	climigration "github.com/LaokeQwQ/CheeseWAF/internal/cli/migration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
@@ -96,6 +98,21 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	production := strings.EqualFold(strings.TrimSpace(cfg.Storage.Profile), config.StorageProfileProduction)
+	var handoff climigration.ProductionHandoff
+	if production {
+		// Migration signs the persisted candidate, before CLI path rebasing or
+		// runtime-only secret repair. Validate that exact configuration first;
+		// neither of those serving mutations may invalidate its digest.
+		handoffRoot := strings.TrimSpace(dataDir)
+		if handoffRoot == "" {
+			handoffRoot = strings.TrimSpace(cfg.Setup.DataDir)
+		}
+		handoff, err = climigration.ValidateProductionHandoff(handoffRoot, cfg)
+		if err != nil {
+			return fmt.Errorf("production migration handoff is not verified: %w", err)
+		}
+	}
 	// Registered with an empty handler: the signal is still captured (so SIGHUP
 	// does not terminate the process, matching the previous signal.Ignore
 	// behaviour) but no reload action is wired up yet.
@@ -108,7 +125,9 @@ func runServe(ctx context.Context) error {
 	}
 	var store storage.Store
 	var productionDeps *ProductionDependencies
-	if strings.EqualFold(strings.TrimSpace(cfg.Storage.Profile), config.StorageProfileProduction) {
+	var productionWiring ProductionServeWiring
+	var materializeProductionPolicy bool
+	if production {
 		// Open and fully validate every production dependency before creating the
 		// runtime directory or PID lease. A failed control-plane, Redis, approval,
 		// or wiring check must leave no serving-process side effect behind.
@@ -116,8 +135,29 @@ func runServe(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		productionWiring, err = productionDeps.ServeWiring()
+		if err != nil {
+			_ = productionDeps.Close()
+			return err
+		}
 		defer productionDeps.Close()
-		store = productionDeps.Management
+		store = productionWiring.ManagementStore
+		verifier, ok := store.(storage.MigrationHandoffVerifier)
+		if !ok {
+			_ = productionDeps.Close()
+			return fmt.Errorf("production migration handoff verifier is unavailable")
+		}
+		if err := verifier.VerifyMigrationHandoff(ctx, handoff.Evidence()); err != nil {
+			_ = productionDeps.Close()
+			return fmt.Errorf("production migration handoff ledger verification failed: %w", err)
+		}
+		materializeProductionPolicy, err = productionStartupPolicyMaterialization(productionWiring.Startup.State, handoff)
+		if err != nil {
+			return err
+		}
+	}
+	if err := repairRuntimeConfig(loadedConfigPath, cfg); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(cfg.Setup.DataDir, 0o750); err != nil {
 		return err
@@ -170,7 +210,10 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	setupToken := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN"))
-	setupPending := setup.NeedsSetup(cfg.Setup.DataDir)
+	setupPending, err := firstInstallPending(ctx, cfg.Setup.DataDir, store)
+	if err != nil {
+		return err
+	}
 	// Every first-install mutation, including loopback requests, requires this token.
 	if setupPending {
 		if setupToken == "" {
@@ -309,32 +352,57 @@ func runServe(ctx context.Context) error {
 		}
 		fmt.Printf("The one-time setup URL is stored in the protected runtime file: %s (receipt %s)\n", filepath.Join(cfg.Setup.DataDir, setup.URLFileName), receipt)
 	}
-	adminRouter := api.NewRouter(api.Options{
-		Config:                        cfg,
-		IsolateConfig:                 true,
-		ConfigPath:                    loadedConfigPath,
-		Store:                         store,
-		Sink:                          sink,
-		Hub:                           hub,
-		Secret:                        authSecret,
-		SetupToken:                    setupToken,
-		Clock:                         clock,
-		ManagementTokenCleanupContext: runtimeCtx,
-		ApprovalHTTP:                  productionApprovalHTTP(productionDeps),
-		OTAClient:                     configuredOTAClient(cfg),
-		OTAState:                      configuredOTAState(cfg),
-		TimeSync:                      timeSync,
-		ClusterIdentity:               clusterIdentityService,
-		ClusterHeartbeats:             clusterHeartbeats,
-		OnSitesChanged:                reloadSites,
-		OnEdgeChanged:                 proxyServer.UpdateEdge,
-		OnProtectionChanged:           proxyServer.UpdateProtection,
-		OnAPISecChanged:               proxyServer.UpdateAPISec,
-		OnBlockPageChanged:            proxyServer.UpdateBlockPage,
+	adminRouter, apiHandler := api.NewRouterWithAPI(api.Options{
+		Config:                             cfg,
+		IsolateConfig:                      true,
+		ConfigPath:                         loadedConfigPath,
+		Store:                              store,
+		SessionValidator:                   productionWiring.SessionValidator,
+		Sink:                               sink,
+		Hub:                                hub,
+		Secret:                             authSecret,
+		SetupToken:                         setupToken,
+		Clock:                              clock,
+		ManagementTokenCleanupContext:      runtimeCtx,
+		ApprovalHTTP:                       productionWiring.ApprovalHTTP,
+		OTAClient:                          configuredOTAClient(cfg),
+		OTAState:                           configuredOTAState(cfg),
+		TemporaryHTTPExecutor:              productionWiring.TemporaryHTTPExecutor,
+		CWEDPDownload:                      productionWiring.CWEDPDownload,
+		CRPActivation:                      productionWiring.CRPActivation,
+		TimeSync:                           timeSync,
+		ClusterIdentity:                    clusterIdentityService,
+		ClusterHeartbeats:                  clusterHeartbeats,
+		OnSitesChanged:                     reloadSites,
+		OnEdgeChanged:                      proxyServer.UpdateEdge,
+		OnProtectionChanged:                proxyServer.UpdateProtection,
+		RequireProtectionPolicyCoordinator: productionDeps != nil,
+		OnAPISecChanged:                    proxyServer.UpdateAPISec,
+		OnBlockPageChanged:                 proxyServer.UpdateBlockPage,
 		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
 		},
 	})
+	if productionDeps != nil {
+		machine := productionDeps.Consensus.Machine()
+		applier, materializerErr := NewProtectionPolicyMaterializer(apiHandler, machine, cfg.Setup.RuntimeDir)
+		if materializerErr != nil {
+			return fmt.Errorf("configure production protection materializer: %w", materializerErr)
+		}
+		consumer, consumerErr := newProtectionPolicyCoordinatorConsumer(apiHandler, machine, productionWiring.Startup.Coordinator, applier)
+		if consumerErr != nil {
+			return fmt.Errorf("configure production protection policy coordinator: %w", consumerErr)
+		}
+		if bindErr := apiHandler.BindProtectionPolicyCoordinator(consumer); bindErr != nil {
+			return fmt.Errorf("bind production protection policy coordinator: %w", bindErr)
+		}
+		if materializeProductionPolicy {
+			commit := controlplane.Commit{State: productionWiring.Startup.State, Fence: productionWiring.Startup.Fence}
+			if materializerErr := consumer.applyStartup(runtimeCtx, commit); materializerErr != nil {
+				return fmt.Errorf("materialize current production protection policy before listeners: %w", materializerErr)
+			}
+		}
+	}
 	adminHandler, err := edgeOriginProtectedAdminHandler(cfg, adminRouter, authSecret, clock)
 	if err != nil {
 		return err
@@ -365,6 +433,11 @@ func runServe(ctx context.Context) error {
 	if err := timeSync.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start application clock: %w", err)
 	}
+	if productionDeps != nil && !isNilProductionDependency(productionDeps.CRP) {
+		if err := productionDeps.CRP.Start(); err != nil {
+			return fmt.Errorf("start production CRP listener: %w", err)
+		}
+	}
 
 	fmt.Printf("CheeseWAF proxy listening on %s\n", cfg.Server.Listen)
 	if tlsServer != nil {
@@ -382,7 +455,7 @@ func runServe(ctx context.Context) error {
 	serveCtx, stopServing := context.WithCancel(runtimeCtx)
 	defer stopServing()
 	var wg sync.WaitGroup
-	errCh := make(chan error, 5)
+	errCh := make(chan error, 6)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -423,6 +496,9 @@ func runServe(ctx context.Context) error {
 			}
 		}()
 	}
+	if productionDeps != nil && !isNilProductionDependency(productionDeps.CRP) {
+		superviseProductionCRP(runtimeCtx, productionDeps.CRP, errCh, &wg)
+	}
 
 	var serveErr error
 	select {
@@ -433,9 +509,12 @@ func runServe(ctx context.Context) error {
 	stopServing()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	_ = admin.Shutdown(shutdownCtx)
+	if productionDeps != nil && !isNilProductionDependency(productionDeps.CRP) {
+		_ = productionDeps.CRP.Shutdown(shutdownCtx)
+	}
 	_ = hub.Shutdown(shutdownCtx)
 	_ = proxyHTTP.Shutdown(shutdownCtx)
-	_ = admin.Shutdown(shutdownCtx)
 	if tlsServer != nil {
 		_ = tlsServer.Shutdown(shutdownCtx)
 	}
@@ -449,6 +528,60 @@ func runServe(ctx context.Context) error {
 	return serveErr
 }
 
+// The first migration commit anchors the exact production config and is not
+// a protection-policy mutation. It must match the independently checked
+// handoff and ledger before the router can be served. Subsequent typed policy
+// commits are decoded and materialized; unknown or ambiguous state fails
+// before any listener or background worker starts.
+func productionStartupPolicyMaterialization(state controlplane.State, handoff climigration.ProductionHandoff) (bool, error) {
+	if state.Revision == 0 || state.ClusterID != handoff.ClusterID || state.Desired.Digest != controlplane.Digest(state.Desired.Payload) {
+		return false, fmt.Errorf("production desired state is not bound to migration handoff")
+	}
+	switch state.Desired.Version {
+	case "cheesewaf-config-v1":
+		if state.Revision != 1 || state.Desired.Digest != handoff.InitialStateHash {
+			return false, fmt.Errorf("production initial state does not match migration handoff")
+		}
+		return false, nil
+	case desiredstate.Version:
+		if state.Revision < 2 {
+			return false, fmt.Errorf("production policy state has no migration baseline")
+		}
+		if _, err := desiredstate.DecodeProtectionPolicy(state.Desired.Payload); err != nil {
+			return false, fmt.Errorf("production protection policy is invalid: %w", err)
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("unsupported production desired-state version %q", state.Desired.Version)
+	}
+}
+
+// superviseProductionCRP turns every CRP listener exit into a process-level
+// serve failure unless the owning runtime is already shutting down. Wait uses
+// a background context deliberately: the listener must be stopped through its
+// Shutdown contract so service workers and the authorization store retain
+// their dependency order.
+func superviseProductionCRP(runtimeCtx context.Context, dependency ProductionCRPDependency, errCh chan<- error, wg *sync.WaitGroup) {
+	if runtimeCtx == nil || isNilProductionDependency(dependency) || errCh == nil || wg == nil {
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := dependency.Wait(context.Background())
+		if runtimeCtx.Err() != nil {
+			return
+		}
+		if err == nil {
+			err = fmt.Errorf("%w: CRP listener exited before process shutdown", ErrProductionCRPLifecycle)
+		}
+		select {
+		case errCh <- err:
+		case <-runtimeCtx.Done():
+		}
+	}()
+}
+
 // ensureNoPendingMigration is checked before any service listener, PID lease,
 // or backend is opened. A leftover cutover fence represents an ambiguous
 // management state; serving either profile would risk accepting stale
@@ -458,13 +591,6 @@ func ensureNoPendingMigration(dataDir string) error {
 		return fmt.Errorf("migration recovery is required before serving: %w", err)
 	}
 	return nil
-}
-
-func productionApprovalHTTP(deps *ProductionDependencies) *handler.ApprovalHTTPHandler {
-	if deps == nil {
-		return nil
-	}
-	return deps.ApprovalHTTP
 }
 
 const (
@@ -615,6 +741,23 @@ func validateStartupUsers(ctx context.Context, dataDir string, store storage.Use
 		return fmt.Errorf("startup user integrity check failed: no usable administrator exists; user ID %q has a non-canonical username; run waf-cli user repair-username %q NEW_USERNAME --reason 'repair historical username'", user.ID, user.ID)
 	}
 	return fmt.Errorf(`startup user integrity check failed: setup is complete but no administrator exists; run waf-cli user ensure-admin USERNAME --password-stdin before starting the service`)
+}
+
+// A missing marker alone does not make first-install possible: both the
+// status endpoint and setup mutations reject it when management users exist.
+// Keep the launcher from issuing a new setup URL for that inconsistent state.
+func firstInstallPending(ctx context.Context, dataDir string, store storage.UserStore) (bool, error) {
+	if !setup.NeedsSetup(dataDir) {
+		return false, nil
+	}
+	if store == nil {
+		return false, fmt.Errorf("first-install user store is unavailable")
+	}
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		return false, fmt.Errorf("first-install user lookup: %w", err)
+	}
+	return len(users) == 0, nil
 }
 
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
@@ -1229,9 +1372,6 @@ func loadConfig() (*config.Config, string, error) {
 		if err != nil {
 			return nil, configPath, err
 		}
-		if err := repairRuntimeConfig(configPath, cfg); err != nil {
-			return nil, configPath, err
-		}
 		return cfg, configPath, nil
 	}
 	if configPath != "" {
@@ -1246,9 +1386,6 @@ func loadConfig() (*config.Config, string, error) {
 	}
 	cfg, err := config.Load(bundle.Paths.ConfigFile)
 	if err != nil {
-		return nil, bundle.Paths.ConfigFile, err
-	}
-	if err := repairRuntimeConfig(bundle.Paths.ConfigFile, cfg); err != nil {
 		return nil, bundle.Paths.ConfigFile, err
 	}
 	return cfg, bundle.Paths.ConfigFile, nil
