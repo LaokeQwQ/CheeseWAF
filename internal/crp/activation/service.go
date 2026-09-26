@@ -27,6 +27,10 @@ var (
 	ErrCanaryHealth           = errors.New("CRP canary health check failed")
 	ErrSidecar                = errors.New("CRP sidecar operation failed")
 	ErrAuthorizationInjection = errors.New("raw CRP fence or confirmation injection is forbidden")
+	// ErrApprovalClaimUnavailable is returned when the management approval
+	// workflow has not supplied an opaque claim for this operation. The
+	// activation service never creates a pre-approved claim locally.
+	ErrApprovalClaimUnavailable = errors.New("CRP management approval claim is unavailable")
 	// ErrControlPlaneUnavailable is returned when the protected management
 	// entry point cannot obtain a live control-plane fence. Callers must keep
 	// the staged/current runtime untouched; this is intentionally a stable
@@ -140,22 +144,32 @@ type Policy struct {
 }
 
 type Options struct {
-	Sidecars         SidecarManager
-	ControlPlane     ControlPlaneClient
-	Policy           Policy
-	Clock            func() time.Time
-	AsyncQueueSize   int
-	AsyncWorkers     int
-	OperationTimeout time.Duration
+	Sidecars     SidecarManager
+	ControlPlane ControlPlaneClient
+	// ApprovalClaimResolver resolves a claim already issued by the management
+	// approval workflow. It must not mint approvals, confirmations or other
+	// authority locally; a nil resolver is fail-closed.
+	ApprovalClaimResolver ApprovalClaimResolver
+	Policy                Policy
+	Clock                 func() time.Time
+	AsyncQueueSize        int
+	AsyncWorkers          int
+	OperationTimeout      time.Duration
 }
 
+// ApprovalClaimResolver supplies metadata from an already-approved
+// management workflow. The resolver must not generate a pre-approved claim
+// or confirmation in the activation service.
+type ApprovalClaimResolver func(context.Context, AuthorizationRequest) (ApprovalClaim, error)
+
 type Service struct {
-	store        *crp.RuntimeStore
-	sidecars     SidecarManager
-	controlPlane ControlPlaneClient
-	identity     TransportIdentity
-	policy       Policy
-	clock        func() time.Time
+	store                 *crp.RuntimeStore
+	sidecars              SidecarManager
+	controlPlane          ControlPlaneClient
+	approvalClaimResolver ApprovalClaimResolver
+	identity              TransportIdentity
+	policy                Policy
+	clock                 func() time.Time
 
 	mu        sync.Mutex
 	clusterID string
@@ -168,6 +182,8 @@ type Service struct {
 	asyncContext     context.Context
 	asyncCancel      context.CancelFunc
 	asyncClosed      bool
+	closeDone        chan struct{}
+	closeErr         error
 	operationTimeout time.Duration
 }
 
@@ -307,10 +323,11 @@ func NewService(store *crp.RuntimeStore, opts Options) (*Service, error) {
 	workerContext, cancel := context.WithCancel(context.Background())
 	service := &Service{
 		store: store, sidecars: opts.Sidecars, controlPlane: opts.ControlPlane,
-		identity: identity, policy: opts.Policy, clock: opts.Clock,
+		approvalClaimResolver: opts.ApprovalClaimResolver,
+		identity:              identity, policy: opts.Policy, clock: opts.Clock,
 		fences: make(map[string]fenceState), active: make(map[string]Sidecar),
 		asyncQueue: make(chan asyncJob, opts.AsyncQueueSize), asyncContext: workerContext,
-		asyncCancel: cancel, operationTimeout: opts.OperationTimeout,
+		asyncCancel: cancel, closeDone: make(chan struct{}), operationTimeout: opts.OperationTimeout,
 	}
 	for i := 0; i < opts.AsyncWorkers; i++ {
 		service.asyncWG.Add(1)
@@ -382,23 +399,52 @@ func (s *Service) asyncWorker() {
 	}
 }
 
-// CloseAsync stops accepting new worker requests and waits for in-flight
-// operations. It does not mutate staged/current runtime state itself.
+// CloseAsync stops accepting new worker requests, waits for in-flight
+// operations, and then stops every active sidecar. Active sidecars are
+// snapshotted and removed before their Stop calls so a repeated close cannot
+// stop them twice. The first close error is retained and returned by all later
+// calls.
 func (s *Service) CloseAsync() error {
 	if s == nil {
 		return nil
 	}
 	s.asyncMu.Lock()
 	if s.asyncClosed {
+		done := s.closeDone
 		s.asyncMu.Unlock()
-		return nil
+		<-done
+		s.asyncMu.Lock()
+		err := s.closeErr
+		s.asyncMu.Unlock()
+		return err
 	}
 	s.asyncClosed = true
 	s.asyncCancel()
 	close(s.asyncQueue)
+	done := s.closeDone
 	s.asyncMu.Unlock()
 	s.asyncWG.Wait()
-	return nil
+
+	s.mu.Lock()
+	active := make([]Sidecar, 0, len(s.active))
+	for key, sidecar := range s.active {
+		active = append(active, sidecar)
+		delete(s.active, key)
+	}
+	s.mu.Unlock()
+
+	var closeErr error
+	for _, sidecar := range active {
+		if err := stopSidecar(sidecar); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+
+	s.asyncMu.Lock()
+	s.closeErr = closeErr
+	close(done)
+	s.asyncMu.Unlock()
+	return closeErr
 }
 
 // Install rejects the former caller-supplied fence path. Offline admission and
@@ -437,6 +483,13 @@ func (s *Service) ActivateAuthorized(ctx context.Context, key string, expectedRe
 		return ActivationResult{}, crp.ErrRuntimeConflict
 	}
 	if err := descriptorMatchesRecord(descriptor, record); err != nil {
+		return ActivationResult{}, err
+	}
+	manifest, err := s.store.Manifest(record)
+	if err != nil {
+		return ActivationResult{}, err
+	}
+	if err := ValidateDescriptorManifestBinding(descriptor, manifest); err != nil {
 		return ActivationResult{}, err
 	}
 	if err := s.verifyRecord(ctx, record); err != nil {
@@ -542,6 +595,13 @@ func (s *Service) RollbackAuthorized(ctx context.Context, key string, expectedRe
 	if err := descriptorMatchesRecord(descriptor, target); err != nil {
 		return ActivationResult{}, err
 	}
+	manifest, err := s.store.Manifest(target)
+	if err != nil {
+		return ActivationResult{}, err
+	}
+	if err := ValidateDescriptorManifestBinding(descriptor, manifest); err != nil {
+		return ActivationResult{}, err
+	}
 	if err := rollbackAllowed(current, target); err != nil {
 		return ActivationResult{}, err
 	}
@@ -640,6 +700,14 @@ func (s *Service) authorizeOperation(ctx context.Context, action crp.RuntimeActi
 		Canary:             policy,
 		RequestedAt:        s.clock().UTC(),
 	}
+	if s.approvalClaimResolver == nil {
+		return Authorization{}, ErrApprovalClaimUnavailable
+	}
+	claim, err := s.approvalClaimResolver(ctx, request)
+	if err != nil {
+		return Authorization{}, fmt.Errorf("%w: %w", ErrApprovalClaimUnavailable, err)
+	}
+	request.ApprovalClaim = claim
 	if err := validateAuthorizationRequest(request, s.identity); err != nil {
 		return Authorization{}, err
 	}
@@ -930,10 +998,11 @@ func (s *Service) replaceActive(key string, sidecar Sidecar) {
 func cloneDescriptor(descriptor SidecarDescriptor) SidecarDescriptor {
 	descriptor.Capabilities = append([]string(nil), descriptor.Capabilities...)
 	if descriptor.Metadata != nil {
-		descriptor.Metadata = map[string]string{}
+		metadata := make(map[string]string, len(descriptor.Metadata))
 		for key, value := range descriptor.Metadata {
-			descriptor.Metadata[key] = value
+			metadata[key] = value
 		}
+		descriptor.Metadata = metadata
 	}
 	return descriptor
 }

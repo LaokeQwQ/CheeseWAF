@@ -2,7 +2,7 @@
 
 状态：客户端 transport boundary、控制面授权 handler 和服务端 TLS 配置边界已实现并有真实 TLS 集成测试；生产 provider、持久授权/审计状态和 sidecar launcher 的部署接线不在本文交付范围内
 
-协议版本：`crp-activation-transport.v1`
+协议版本：`crp-activation-transport.v2`
 
 ## 边界
 
@@ -51,7 +51,7 @@ confirmation ID 或 confirmation actor 等原始授权输入。
 ## Control-plane 协议
 
 所有请求使用 `POST`、`Content-Type: application/json` 和
-`X-CheeseWAF-Transport-Schema: crp-activation-transport.v1`。响应必须是严格 JSON：未知字段、
+`X-CheeseWAF-Transport-Schema: crp-activation-transport.v2`。响应必须是严格 JSON：未知字段、
 尾随值、错误 content type、redirect、非 200 状态和超限 body 都失败关闭。
 
 | Endpoint | 请求 | 成功响应 |
@@ -67,7 +67,10 @@ confirmation ID 或 confirmation actor 等原始授权输入。
 TLS 配置。该配置固定要求 TLS 1.3、服务端证书链验证和
 `RequireAndVerifyClientCert`；handler 还会逐请求验证 client certificate 的 cluster、role、
 NodeID SAN 和证书指纹。服务端必须把 `ControlPlaneHandlerOptions.State` 注入跨进程可恢复的
-持久实现，并把 `Provider` 注入真实的 permission、fence、confirmation 和审计适配器。
+持久实现，并把 `Provider` 注入真实的 permission、fence、confirmation 和审计适配器。生产
+审计适配器除了 `Durable()` 外，还必须显式证明 EventID 幂等能力（`Idempotent() == true`）：
+相同 EventID 和相同元数据的重试必须是 no-op，冲突元数据必须拒绝。仅声明耐久存储不能证明
+该重试契约，因此 production contract 会在 handler 挂载前 fail-closed。
 
 示意挂载（不包含 provider 或密钥来源）：
 
@@ -86,7 +89,12 @@ authorization state、sidecar launcher 或生产审计部署。缺少任一真�
 CRP staged/current/previous 不变并报告 activation/rollback 未接线。
 
 `AuthorizationRequest` 绑定随机 request ID、完整 `TransportIdentity`、action、对应的精确
-permission、目标 record、CAS revision、完整 descriptor 及其 SHA-256、canary policy 和请求时间。
+permission、目标 record、CAS revision、完整 descriptor 及其 SHA-256、canary policy、请求时间和
+管理面已经签发的 opaque `ApprovalClaim`。claim 只携带 approval commit metadata：
+`ApprovalID`、`ConfirmationID`、`Actor`、`Scope`、`PolicyEpoch`、`TTL`、签发/过期时间、可选
+workflow digest、operation intent digest、nonce 和 session ID；它不携带密码、TOTP、私钥或其他
+credential。`IntentDigest` 由 transport operation 字段计算，`Scope` 必须是
+`crp:<action>:<target.key>`，因此 claim 不能被搬到另一操作。
 permission 映射固定为：
 
 | Runtime action | Permission |
@@ -98,14 +106,27 @@ activation 的 target revision 必须等于 expected revision。rollback 的 tar
 `RuntimeStore.Previous`，其 revision 必须早于 expected revision；expected revision 始终是
 当前 active record 的 revision，供 RuntimeStore 做 CAS，不能错误地使用 previous revision。
 
-control plane 返回的 authorization 必须逐字段回显原请求，并携带最多 5 分钟的 fence 和
-confirmation。fence 必须属于同一 cluster；confirmation 必须绑定 action、plugin key、manifest
-identity 和 expected revision。acknowledgement 必须回显 authorization ID、request ID、node ID
-及精确状态。
+control plane 返回的 authorization 必须逐字段回显原请求，并逐字段回显相同的 approval claim，
+携带最多 5 分钟的 fence 和 confirmation。authorization 的过期时间不得晚于 claim；fence 必须
+属于同一 cluster；confirmation 的 ID、actor 和过期时间必须受 claim 约束，并绑定 action、plugin
+key、manifest identity 和 expected revision。acknowledgement 必须回显 authorization ID、request
+ID、node ID 及精确状态。旧 v1、缺失 claim、claim 字段漂移、intent/scope 不匹配、响应未回显 claim
+或 confirmation 不匹配都必须 fail-closed。
+
+Service 通过 `Options.ApprovalClaimResolver` 接入管理面 approval workflow。resolver 只能解析
+已经批准的 opaque claim，不能在 activation service 内生成 approval、confirmation 或“预授权”
+替代物；resolver 缺失时，authorize 不会发出，activation/rollback 保持原运行时状态不变。当前
+仓库仍未提供真实 production resolver、PG provider、listener 或自动授权接线，因此该边界落地
+后 CLI activation 仍会 fail-closed，不能据此宣称 CRP 已部署。
 
 客户端在 sidecar start 前验证一次 authorization，随后在 start、observe probes、canary mode、
 canary probes、active mode 和最终 RuntimeStore 提交之间反复调用 `validate`。任何一次验证拒绝、
 超时或 transport 故障都会停止新 sidecar，并保持 staged/current/previous 不变。
+
+客户端和 `MemoryAuthorizationState` 保存独立的授权快照。快照复制 confirmation、descriptor
+的 capabilities 和 metadata；descriptor 克隆保留全部 metadata。修改 authorize/Get 的返回值，
+或者修改 Put 之后的输入，都不能改变待确认授权。修改后的授权不能通过绑定检查。
+`MemoryAuthorizationState` 仍是有界的进程内状态，不提供重启恢复或跨进程耐久性。
 
 confirmation 在客户端进程内是一次性的。`RuntimeStore` 的最终 authorizer 通过同一个 mTLS
 control-plane client 调用 `consume`；本地 pending entry 在发出请求前即删除，因此网络结果不明

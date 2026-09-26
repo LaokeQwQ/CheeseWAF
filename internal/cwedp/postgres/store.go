@@ -32,6 +32,10 @@ type ResumeStore struct{ db *sql.DB }
 
 var _ cwedp.ResumeStore = (*ResumeStore)(nil)
 
+// DurableCWEDPResumeStore marks this adapter as restart-safe state for the
+// production CWEDP request consumer.
+func (*ResumeStore) DurableCWEDPResumeStore() {}
+
 func New(db *sql.DB) (*ResumeStore, error) {
 	if db == nil {
 		return nil, ErrInvalidStore

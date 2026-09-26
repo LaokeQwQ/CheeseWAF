@@ -147,6 +147,40 @@ func (s *Store) Health(ctx context.Context) error {
 	return nil
 }
 
+// VerifyMigrationHandoff checks the durable cutover ledger against the
+// metadata-only handoff published by the migration transaction. The query is
+// deliberately exact: a live production store must not serve with a stale,
+// cross-cluster, or partially matching handoff file.
+func (s *Store) VerifyMigrationHandoff(ctx context.Context, evidence storage.MigrationHandoffEvidence) error {
+	if s == nil || s.db == nil || ctx == nil || evidence.SnapshotID == "" {
+		return ErrInvalidStore
+	}
+	var configDigest, candidateDigest, initialStateHash, tokenDigest, clusterID, actor string
+	var committedAt time.Time
+	err := s.db.QueryRowContext(ctx, `SELECT config_digest,candidate_digest,initial_state_hash,token_metadata_digest,cluster_id,actor_id,committed_at FROM cheesewaf_migration_cutovers WHERE snapshot_id=$1`, evidence.SnapshotID).
+		Scan(&configDigest, &candidateDigest, &initialStateHash, &tokenDigest, &clusterID, &actor, &committedAt)
+	if err != nil {
+		return fmt.Errorf("migration handoff ledger lookup: %w", err)
+	}
+	if configDigest != evidence.TemporaryConfigDigest || candidateDigest != evidence.CandidateDigest ||
+		initialStateHash != evidence.InitialStateHash || tokenDigest != evidence.TokenMetadataDigest ||
+		clusterID != evidence.ClusterID || actor != evidence.Actor || !postgresTimestampsEquivalent(committedAt, evidence.CommittedAt) {
+		return errors.New("migration handoff ledger does not match durable evidence")
+	}
+	if !evidence.SessionsInvalidated || !evidence.SetupInvalidated || !evidence.JoinInvalidated ||
+		!evidence.CAPTCHAInvalidated || !evidence.LocksInvalidated {
+		return errors.New("migration handoff temporary invalidation is incomplete")
+	}
+	return nil
+}
+
+// postgresTimestampsEquivalent compares metadata at PostgreSQL TIMESTAMPTZ
+// precision. pgx/PostgreSQL round trips discard sub-microsecond precision, so
+// evidence produced before the durable write must use the same canonical form.
+func postgresTimestampsEquivalent(left, right time.Time) bool {
+	return left.UTC().Truncate(time.Microsecond).Equal(right.UTC().Truncate(time.Microsecond))
+}
+
 func (s *Store) Migrate(ctx context.Context) error {
 	if s == nil || s.db == nil || ctx == nil {
 		return ErrInvalidStore
@@ -1101,6 +1135,36 @@ func (s *Store) IsSessionActive(ctx context.Context, id, userID string, now time
 	var active bool
 	e := s.row(ctx, `SELECT EXISTS(SELECT 1 FROM admin_sessions AS s JOIN users AS u ON u.id=s.user_id AND u.username=s.username AND u.role=s.role AND u.credential_epoch=s.credential_epoch WHERE s.id=? AND s.user_id=? AND s.revoked_at IS NULL AND s.expires_at>?)`, id, userID, now).Scan(&active)
 	return active, e
+}
+
+func (s *Store) GetSession(ctx context.Context, id, userID string) (*storage.Session, error) {
+	if s == nil || s.db == nil || ctx == nil {
+		return nil, ErrInvalidStore
+	}
+	if id == "" || userID == "" {
+		return nil, nil
+	}
+	if e := validateRepairIdentity("session ID", id); e != nil {
+		return nil, e
+	}
+	if e := validateRepairIdentity("user ID", userID); e != nil {
+		return nil, e
+	}
+	var session storage.Session
+	var revokedAt sql.NullTime
+	err := s.row(ctx, `SELECT id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at,credential_epoch FROM admin_sessions WHERE id=? AND user_id=?`, id, userID).Scan(
+		&session.ID, &session.UserID, &session.Username, &session.Role, &session.IssuedAt, &session.ExpiresAt, &revokedAt, &session.CreatedAt, &session.UpdatedAt, &session.CredentialEpoch,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if revokedAt.Valid {
+		session.RevokedAt = revokedAt.Time
+	}
+	return &session, nil
 }
 func (s *Store) PruneSessions(ctx context.Context, before time.Time) (int64, error) {
 	if s == nil || s.db == nil || ctx == nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	ipprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -110,19 +111,45 @@ func (h *Handler) UpdateProtectionPolicy(w http.ResponseWriter, r *http.Request)
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
-	var req config.ProtectionPolicyConfig
-	if !decode(w, r, &req) {
+	consumer := h.protectionPolicyCoordinator
+	if consumer == nil && h.requireProtectionPolicyCoordinator {
+		h.protectionPolicyCoordinatorOrError(w)
 		return
 	}
-	committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
-		current := next.Policy.WithDefaults(config.DefaultProtectionPolicy())
-		next.Policy = req.WithDefaults(current)
-		return nil
-	})
+	if consumer == nil {
+		var req config.ProtectionPolicyConfig
+		if !decode(w, r, &req) {
+			return
+		}
+		committed, ok := h.commitProtectionMutation(w, func(next *config.ProtectionConfig) error {
+			current := next.Policy.WithDefaults(config.DefaultProtectionPolicy())
+			next.Policy = req.WithDefaults(current)
+			return nil
+		})
+		if ok {
+			writeData(w, committed.Protection.Policy)
+		}
+		return
+	}
+	var patch desiredstate.ProtectionPolicyPatch
+	if !decode(w, r, &patch) {
+		return
+	}
+	actor, ok := protectionPolicyActorFromRequest(r)
 	if !ok {
+		writeError(w, http.StatusUnauthorized, "PROTECTION_POLICY_ACTOR_REQUIRED", "authenticated actor is required")
 		return
 	}
-	writeData(w, committed.Protection.Policy)
+	result, err := consumer.ProposeAndApply(r.Context(), actor, patch)
+	if err != nil {
+		writeProtectionPolicyCoordinatorError(w, err)
+		return
+	}
+	if result.Mutation.Actor != actor {
+		writeError(w, http.StatusServiceUnavailable, "PROTECTION_POLICY_UNAVAILABLE", "coordinator returned an invalid actor binding")
+		return
+	}
+	writeData(w, result.Mutation.After)
 }
 
 func (h *Handler) UpdateIPRules(w http.ResponseWriter, r *http.Request) {

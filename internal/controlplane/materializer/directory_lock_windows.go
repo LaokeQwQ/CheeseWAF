@@ -1,0 +1,30 @@
+//go:build windows
+
+package materializer
+
+import (
+	"errors"
+	"os"
+
+	"golang.org/x/sys/windows"
+)
+
+func tryLockMaterializerFile(file *os.File) (bool, error) {
+	var overlapped windows.Overlapped
+	err := windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return false, nil
+	}
+	return false, err
+}
+
+func unlockMaterializerFile(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	var overlapped windows.Overlapped
+	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
+}

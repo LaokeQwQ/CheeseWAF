@@ -13,6 +13,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
@@ -20,9 +22,14 @@ import (
 )
 
 type Options struct {
-	Config                              *config.Config
-	ConfigPath                          string
-	Store                               storage.Store
+	Config     *config.Config
+	ConfigPath string
+	Store      storage.Store
+	// SessionValidator is the session lifetime bound to this router. Production
+	// composition supplies the same durable management store used by approval
+	// and migration; embedded/test callers retain Store as the compatibility
+	// default.
+	SessionValidator                    middleware.SessionValidator
 	Sink                                storage.LogSink
 	Hub                                 *realtime.Hub
 	Secret                              string
@@ -30,6 +37,8 @@ type Options struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
+	ProtectionPolicyCoordinator         handler.ProtectionPolicyCoordinatorConsumer
+	RequireProtectionPolicyCoordinator  bool
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
@@ -43,6 +52,9 @@ type Options struct {
 	TimeSync                            handler.TimeSyncService
 	OTAClient                           handler.OTAClient
 	OTAState                            handler.OTAStateReader
+	TemporaryHTTPExecutor               netlease.TemporaryHTTPExecutor
+	CWEDPDownload                       consumer.Executor
+	CRPActivation                       handler.CRPActivationExecutor
 	ManagementTokenConfirmationVerifier handler.ManagementTokenConfirmationVerifier
 	// ApprovalHTTP is an optional, fully configured high-risk ApprovalGate
 	// transport. It is mounted only inside the authenticated management API
@@ -117,6 +129,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		ProtectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
+		RequireProtectionPolicyCoordinator:  opts.RequireProtectionPolicyCoordinator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
@@ -125,6 +139,9 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		TimeSync:                            opts.TimeSync,
 		OTAClient:                           opts.OTAClient,
 		OTAState:                            opts.OTAState,
+		TemporaryHTTPExecutor:               opts.TemporaryHTTPExecutor,
+		CWEDPDownload:                       opts.CWEDPDownload,
+		CRPActivation:                       opts.CRPActivation,
 		ManagementTokenConfirmationVerifier: opts.ManagementTokenConfirmationVerifier,
 	})
 	h.StartManagementAPITokenCleanup(opts.ManagementTokenCleanupContext)
@@ -137,7 +154,11 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 	requireAny := func(permissions ...string) func(http.Handler) http.Handler {
 		return middleware.RBACAnyProvider(h.CurrentPermissions, permissions...)
 	}
-	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, opts.Store, h.AuthenticateManagementAPIToken, clock)
+	sessionValidator := opts.SessionValidator
+	if sessionValidator == nil {
+		sessionValidator = opts.Store
+	}
+	managementAuth := middleware.ManagementAPIOrSessionMiddlewareWithClock(tokens, sessionValidator, h.AuthenticateManagementAPIToken, clock)
 
 	r.With(h.ConfigReadMiddleware).Get("/health", h.Health)
 	r.With(h.ConfigReadMiddleware).Get("/health/live", h.Health)
@@ -161,7 +182,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 
 		r.Group(func(r chi.Router) {
 			r.Use(tokens.Middleware)
-			r.Use(middleware.SessionMiddlewareWithClock(opts.Store, clock))
+			r.Use(middleware.SessionMiddlewareWithClock(sessionValidator, clock))
 			r.Use(middleware.CSRFMiddleware)
 			r.Use(h.ConfigReadMiddleware)
 			r.Get("/auth/session", h.SessionInfo)
@@ -193,6 +214,20 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/version", h.Version)
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/system", h.System)
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/system/ota", h.OTAStatus)
+			r.With(require("write:system")).Post("/system/temporary-http", h.TemporaryHTTP)
+			// A production CWEDP consumer is mounted only when its durable
+			// registry, signed-intent verifier, PostgreSQL resume store, CRP
+			// admission context, and staging runtime have all been injected.
+			if opts.CWEDPDownload != nil {
+				r.With(require("write:system")).Post("/system/cwedp/download", h.DownloadCWEDP)
+			}
+			// Activation is mounted only when the production composition root owns
+			// the durable CRP control plane, live fence, approval resolver and
+			// sidecar launcher. There is no local or in-memory fallback route.
+			if opts.CRPActivation != nil {
+				r.With(require("write:system")).Post("/system/crp/activate", h.ActivateCRP)
+				r.With(require("write:system")).Post("/system/crp/rollback", h.RollbackCRP)
+			}
 			r.With(require("read:system"), h.ConfigReadMiddleware).Get("/system/time-sync", h.TimeSyncStatus)
 			r.With(require("write:system")).Post("/system/time-sync/reselect", h.ReselectTimeSync)
 			r.With(require("write:system")).Post("/system/time-sync/sync", h.SyncTimeNow)

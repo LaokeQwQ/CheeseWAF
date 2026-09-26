@@ -76,8 +76,19 @@ type runtimeRecoveryPlan struct {
 	raft         recoveryConsensus
 	redis        recoveryHealth
 	recoverMu    sync.Mutex
-	consumed     bool
+	state        recoveryExecutionState
 }
+
+// recoveryExecutionState is deliberately process-local. The durable recovery
+// record and cutover ledger remain the source of truth across process restarts;
+// this state only prevents one in-memory plan from being executed twice.
+type recoveryExecutionState uint8
+
+const (
+	recoveryAvailable recoveryExecutionState = iota
+	recoveryExecuting
+	recoveryConsumed
+)
 
 type recoveryConsensus interface {
 	controlplane.ConsensusBootstrap
@@ -101,13 +112,6 @@ func (p *runtimeRecoveryPlan) Recover(ctx context.Context, confirmation Recovery
 	if p == nil || validateRecoveryConfirmation(confirmation, p.record, runtimeNow(p.now)) != nil {
 		return setupmigration.ErrConfirmationRejected
 	}
-	p.recoverMu.Lock()
-	if p.consumed {
-		p.recoverMu.Unlock()
-		return ErrRecoveryConsumed
-	}
-	p.consumed = true
-	p.recoverMu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -120,21 +124,75 @@ func (p *runtimeRecoveryPlan) Recover(ctx context.Context, confirmation Recovery
 		if p.source == nil {
 			return ErrCutoverAmbiguous
 		}
-		return p.source.RestoreTemporaryState(ctx, p.record.Snapshot, setupmigration.InvalidationReceipt{Sessions: true, Setup: true, Join: true, CAPTCHA: true, Locks: true})
+		if err := p.beginExecution(); err != nil {
+			return err
+		}
+		err := p.source.RestoreTemporaryState(ctx, p.record.Snapshot, setupmigration.InvalidationReceipt{Sessions: true, Setup: true, Join: true, CAPTCHA: true, Locks: true})
+		p.finishExecution()
+		return err
 	case RecoveryCompleteProduction:
-		return p.completeProduction(ctx, confirmation)
+		// Redis and the durable cutover ledger are recoverable prerequisites. Do
+		// not consume the confirmation while either is unavailable: the operator
+		// must be able to retry after restoring the dependency.
+		ledger, err := p.validateCompleteProduction(ctx)
+		if err != nil {
+			return err
+		}
+		if err := p.beginExecution(); err != nil {
+			return err
+		}
+		err = p.completeProductionAfterValidation(ctx, confirmation, ledger)
+		// Bootstrap, configuration publication, and artifact removal are
+		// irreversible or outcome-unknown once started. Even a returned error
+		// therefore consumes this in-memory recovery plan.
+		p.finishExecution()
+		return err
 	default:
 		return ErrCutoverAmbiguous
 	}
 }
 
-func (p *runtimeRecoveryPlan) completeProduction(ctx context.Context, confirmation RecoveryConfirmation) error {
+func (p *runtimeRecoveryPlan) beginExecution() error {
+	p.recoverMu.Lock()
+	defer p.recoverMu.Unlock()
+	switch p.state {
+	case recoveryExecuting:
+		return ErrRecoveryInProgress
+	case recoveryConsumed:
+		return ErrRecoveryConsumed
+	default:
+		p.state = recoveryExecuting
+		return nil
+	}
+}
+
+func (p *runtimeRecoveryPlan) finishExecution() {
+	p.recoverMu.Lock()
+	p.state = recoveryConsumed
+	p.recoverMu.Unlock()
+}
+
+func (p *runtimeRecoveryPlan) validateCompleteProduction(ctx context.Context) (cutoverLedgerEntry, error) {
 	if p.candidate == nil || p.control == nil || p.raft == nil || p.redis == nil {
-		return ErrCutoverAmbiguous
+		return cutoverLedgerEntry{}, ErrCutoverAmbiguous
 	}
 	if err := p.redis.Ping(ctx); err != nil {
-		return setupmigration.ErrPrerequisiteUnavailable
+		return cutoverLedgerEntry{}, setupmigration.ErrPrerequisiteUnavailable
 	}
+	// classifyCutoverState already proved the durable ledger and imported
+	// management rows match the recovery record. Read that exact ledger entry
+	// again so recovery can publish the same handoff evidence as the ordinary
+	// migration commit path. Without this, a recovered production cutover
+	// would leave serve unable to verify that temporary credentials were
+	// invalidated before startup.
+	ledger, err := readCutoverLedger(ctx, p.managementDB, p.record.Snapshot.ID)
+	if err != nil || ledger.TokenMetadataState != tokenMetadataVerified || !ledgerMatchesRecoveryRecord(ledger, p.record) {
+		return cutoverLedgerEntry{}, ErrCutoverAmbiguous
+	}
+	return ledger, nil
+}
+
+func (p *runtimeRecoveryPlan) completeProductionAfterValidation(ctx context.Context, confirmation RecoveryConfirmation, ledger cutoverLedgerEntry) error {
 	request := &controlplane.InitialStateRequest{
 		Version: "cheesewaf-config-v1", Payload: append([]byte(nil), p.record.InitialState...),
 		Digest: p.record.InitialStateHash, Nonce: p.record.ConfirmationID,
@@ -158,6 +216,16 @@ func (p *runtimeRecoveryPlan) completeProduction(ctx context.Context, confirmati
 	persisted, err := decodeRecoveryRuntimeConfig(persistedRaw)
 	if err != nil || persisted.Storage.Profile != config.StorageProfileProduction {
 		return errors.Join(setupmigration.ErrCommitOutcomeUnknown, ErrRuntimeConfiguration)
+	}
+	if err := writeProductionHandoff(p.dataDir, ProductionHandoff{
+		Version: productionHandoffVersion, SnapshotID: p.record.Snapshot.ID,
+		TemporaryConfigDigest:  p.record.Snapshot.ConfigDigest,
+		ProductionConfigDigest: p.record.CandidateDigest, CandidateDigest: p.record.CandidateDigest,
+		InitialStateHash: p.record.InitialStateHash, TokenMetadataDigest: ledger.TokenDigest,
+		ClusterID: p.record.ClusterID, Actor: p.record.Actor, CommittedAt: ledger.CommittedAt,
+		SessionsInvalidated: true, SetupInvalidated: true, JoinInvalidated: true, CAPTCHAInvalidated: true, LocksInvalidated: true,
+	}); err != nil {
+		return errors.Join(setupmigration.ErrCommitOutcomeUnknown, err)
 	}
 	if err := removeCutoverArtifacts(p.dataDir, p.record.Snapshot.ID, true); err != nil {
 		return errors.Join(setupmigration.ErrCommitOutcomeUnknown, err)

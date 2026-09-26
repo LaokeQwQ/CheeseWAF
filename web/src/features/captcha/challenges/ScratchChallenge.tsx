@@ -9,7 +9,7 @@ export interface ScratchChallengeProps { imageSrc: string; maskSrc: string; widt
 export interface ScratchChallengeProps { imageSrc: string; maskSrc: string; width?: number; height?: number; label: string; disabled?: boolean; startedAt: React.MutableRefObject<number>; minDurationMs?: number; onInteractionStart: () => void; onSubmit: (answer: Omit<CaptchaResponse, "token">) => void; }
 export function ScratchChallenge({ imageSrc, maskSrc, width = 400, height = 220, label, disabled, startedAt, minDurationMs, onInteractionStart, onSubmit }: ScratchChallengeProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const activePointer = useRef<number>();
+  const activePointer = useRef<number | undefined>(undefined);
   const trackRef = useRef<CaptchaTrackPoint[]>([]);
   const keyboardActive = useRef(false);
   const keyboardPoint = useRef({ x: 5000, y: 5000 });

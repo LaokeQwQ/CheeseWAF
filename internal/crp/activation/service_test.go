@@ -22,6 +22,22 @@ var testTransportIdentity = TransportIdentity{
 	CertificateSHA256: strings.Repeat("a", 64),
 }
 
+func testApprovalClaim(request AuthorizationRequest) ApprovalClaim {
+	return ApprovalClaim{
+		ApprovalID:     "approval-" + request.RequestID,
+		ConfirmationID: "confirmation-" + request.RequestID,
+		Actor:          "operator-a",
+		Scope:          ApprovalScope(request),
+		PolicyEpoch:    1,
+		TTL:            2 * time.Minute,
+		IssuedAt:       request.RequestedAt,
+		ExpiresAt:      request.RequestedAt.Add(2 * time.Minute),
+		IntentDigest:   ApprovalIntentDigest(request),
+		Nonce:          "nonce-" + request.RequestID,
+		SessionID:      "session-a",
+	}
+}
+
 type fakeControlPlane struct {
 	mu             sync.Mutex
 	identity       TransportIdentity
@@ -44,14 +60,17 @@ func (c *fakeControlPlane) Authorize(ctx context.Context, request AuthorizationR
 	if err := ctx.Err(); err != nil {
 		return Authorization{}, err
 	}
+	if err := validateAuthorizationRequest(request, c.identity); err != nil {
+		return Authorization{}, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.authorizations = append(c.authorizations, request)
 	number := len(c.authorizations)
 	expires := c.now.Add(2 * time.Minute)
 	confirmation := WireConfirmation{
-		ID:               fmt.Sprintf("confirmation-%d", number),
-		Actor:            "operator-a",
+		ID:               request.ApprovalClaim.ConfirmationID,
+		Actor:            request.ApprovalClaim.Actor,
 		Action:           request.Action,
 		PluginKey:        request.Target.Key,
 		ManifestIdentity: request.Target.ManifestIdentity,
@@ -63,6 +82,7 @@ func (c *fakeControlPlane) Authorize(ctx context.Context, request AuthorizationR
 		SchemaVersion: TransportSchemaVersion,
 		ID:            fmt.Sprintf("authorization-%d", number),
 		Request:       request,
+		ApprovalClaim: request.ApprovalClaim,
 		Fence: Fence{
 			ClusterID: c.identity.ClusterID,
 			Token:     fmt.Sprintf("fence-%d", number),
@@ -173,6 +193,27 @@ func (s *fakeSidecar) Stop(_ context.Context) error {
 	return nil
 }
 
+type closeTrackingSidecar struct {
+	mu      sync.Mutex
+	stops   int
+	stopErr error
+}
+
+func (s *closeTrackingSidecar) SetMode(context.Context, SidecarMode) error { return nil }
+func (s *closeTrackingSidecar) Probe(context.Context) error                { return nil }
+func (s *closeTrackingSidecar) Stop(context.Context) error {
+	s.mu.Lock()
+	s.stops++
+	s.mu.Unlock()
+	return s.stopErr
+}
+
+func (s *closeTrackingSidecar) stopCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stops
+}
+
 func activationPackage(t *testing.T, now time.Time, version string, sequence uint64, artifact []byte) (crp.Package, crp.ImportResult) {
 	t.Helper()
 	manifest := testActivationManifest(artifact)
@@ -281,6 +322,9 @@ func newActivationService(t *testing.T, store *crp.RuntimeStore, controlPlane Co
 		policy.VerifyRecord = func(context.Context, crp.RuntimeRecord) error { return nil }
 	}
 	opts := Options{Sidecars: sidecars, ControlPlane: controlPlane, Policy: policy, Clock: func() time.Time { return now }}
+	opts.ApprovalClaimResolver = func(_ context.Context, request AuthorizationRequest) (ApprovalClaim, error) {
+		return testApprovalClaim(request), nil
+	}
 	for _, optionFn := range optionFns {
 		optionFn(&opts)
 	}
@@ -321,6 +365,37 @@ func TestNewServiceRequiresAuthenticatedDependencies(t *testing.T) {
 	mismatched.identity.NodeID = "node-b"
 	if _, err := NewService(store, Options{ControlPlane: controlPlane, Sidecars: mismatched, Policy: Policy{VerifyRecord: func(context.Context, crp.RuntimeRecord) error { return nil }}}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("mismatched transport identities error = %v, want ErrConfig", err)
+	}
+}
+
+func TestServiceFailsClosedWithoutApprovalClaimResolver(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	controlPlane := newFakeControlPlane(now)
+	store := newActivationStore(t, now, controlPlane)
+	sidecars := newFakeSidecarManager()
+	service, err := NewService(store, Options{
+		Sidecars:     sidecars,
+		ControlPlane: controlPlane,
+		Clock:        func() time.Time { return now },
+		Policy:       Policy{AllowedCapabilities: map[string]struct{}{"observe": {}}, VerifyRecord: func(context.Context, crp.RuntimeRecord) error { return nil }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := service.CloseAsync(); err != nil {
+			t.Errorf("close activation service: %v", err)
+		}
+	}()
+
+	_, err = service.authorizeOperation(context.Background(), crp.RuntimeActionPromote, crp.RuntimeRecord{Key: "rate-limit", PluginID: "rate-limit", Version: "1.0.0", Namespace: "official/security", ManifestIdentity: strings.Repeat("a", 64), ArtifactIdentity: strings.Repeat("b", 64), ReleaseSequence: 1, Revision: 1}, 1, SidecarDescriptor{}, CanaryPolicy{})
+	if !errors.Is(err, ErrApprovalClaimUnavailable) {
+		t.Fatalf("authorizeOperation() = %v, want ErrApprovalClaimUnavailable", err)
+	}
+	controlPlane.mu.Lock()
+	defer controlPlane.mu.Unlock()
+	if len(controlPlane.authorizations) != 0 {
+		t.Fatalf("control plane received %d authorization requests without claim", len(controlPlane.authorizations))
 	}
 }
 
@@ -655,6 +730,126 @@ func TestSubmitAsyncInheritsCallerCancellation(t *testing.T) {
 		t.Fatalf("receipt error=%v, want context.Canceled", err)
 	}
 	assertStagedOnly(t, store, staged.Key)
+}
+
+func TestCloseAsyncStopsActiveSidecarsExactlyOnce(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	controlPlane := newFakeControlPlane(now)
+	store := newActivationStore(t, now, controlPlane)
+	sidecars := newFakeSidecarManager()
+	service := newActivationService(t, store, controlPlane, sidecars, now, Policy{})
+	pkg, imported := activationPackage(t, now, "1.0.0", 1, []byte("artifact-v1"))
+	staged := stageActivationRecord(t, store, pkg, imported)
+
+	if _, err := service.ActivateAuthorized(context.Background(), staged.Key, staged.Revision, activationDescriptor(staged), CanaryPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CloseAsync(); err != nil {
+		t.Fatalf("first CloseAsync() error = %v", err)
+	}
+	if err := service.CloseAsync(); err != nil {
+		t.Fatalf("second CloseAsync() error = %v", err)
+	}
+
+	sidecars.mu.Lock()
+	stopped := sidecars.stopped
+	sidecars.mu.Unlock()
+	if stopped != 1 {
+		t.Fatalf("active sidecars stopped = %d, want 1", stopped)
+	}
+	service.mu.Lock()
+	active := len(service.active)
+	service.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active sidecars after CloseAsync() = %d, want 0", active)
+	}
+}
+
+func TestCloseAsyncAggregatesStopErrorsAndRetainsResult(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	controlPlane := newFakeControlPlane(now)
+	store := newActivationStore(t, now, controlPlane)
+	service, err := NewService(store, Options{
+		Sidecars:     newFakeSidecarManager(),
+		ControlPlane: controlPlane,
+		Policy:       Policy{AllowedCapabilities: map[string]struct{}{"observe": {}}, VerifyRecord: func(context.Context, crp.RuntimeRecord) error { return nil }},
+		Clock:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstErr := errors.New("first sidecar stop failed")
+	secondErr := errors.New("second sidecar stop failed")
+	first := &closeTrackingSidecar{stopErr: firstErr}
+	second := &closeTrackingSidecar{stopErr: secondErr}
+	service.mu.Lock()
+	service.active["first"] = first
+	service.active["second"] = second
+	service.mu.Unlock()
+
+	closeErr := service.CloseAsync()
+	if !errors.Is(closeErr, firstErr) || !errors.Is(closeErr, secondErr) {
+		t.Fatalf("CloseAsync() error = %v, want both sidecar stop errors", closeErr)
+	}
+	service.mu.Lock()
+	active := len(service.active)
+	service.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("active sidecars after CloseAsync() = %d, want 0", active)
+	}
+	if first.stopCount() != 1 || second.stopCount() != 1 {
+		t.Fatalf("sidecar stop counts = %d, %d, want 1, 1", first.stopCount(), second.stopCount())
+	}
+
+	if repeatErr := service.CloseAsync(); !errors.Is(repeatErr, firstErr) || !errors.Is(repeatErr, secondErr) {
+		t.Fatalf("repeated CloseAsync() error = %v, want retained stop errors", repeatErr)
+	}
+	if first.stopCount() != 1 || second.stopCount() != 1 {
+		t.Fatalf("repeated close stop counts = %d, %d, want 1, 1", first.stopCount(), second.stopCount())
+	}
+}
+
+func TestCloseAsyncConcurrentCallersShareResult(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	controlPlane := newFakeControlPlane(now)
+	store := newActivationStore(t, now, controlPlane)
+	service, err := NewService(store, Options{
+		Sidecars:     newFakeSidecarManager(),
+		ControlPlane: controlPlane,
+		Policy:       Policy{AllowedCapabilities: map[string]struct{}{"observe": {}}, VerifyRecord: func(context.Context, crp.RuntimeRecord) error { return nil }},
+		Clock:        func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stopErr := errors.New("concurrent close stop failed")
+	sidecar := &closeTrackingSidecar{stopErr: stopErr}
+	service.mu.Lock()
+	service.active["concurrent"] = sidecar
+	service.mu.Unlock()
+
+	const callers = 16
+	results := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- service.CloseAsync()
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for closeErr := range results {
+		if !errors.Is(closeErr, stopErr) {
+			t.Fatalf("concurrent CloseAsync() error = %v, want %v", closeErr, stopErr)
+		}
+	}
+	if got := sidecar.stopCount(); got != 1 {
+		t.Fatalf("concurrent sidecar stop count = %d, want 1", got)
+	}
 }
 
 func TestRollbackAllowedRejectsArbitraryTarget(t *testing.T) {

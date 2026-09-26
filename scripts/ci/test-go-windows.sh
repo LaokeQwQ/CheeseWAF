@@ -20,9 +20,11 @@ fail() {
 windows_excluded_suffixes=(
   /internal/cli/migration
   /internal/controlplane/nativeraft
+  /internal/controlplane/materializer
   /internal/controlplane/runtime
   /internal/crp
   /internal/crp/activation
+  /internal/cwedp/consumer
   /internal/cwedp/transport
   /internal/diagnostics/integration
   /internal/diagnostics/queue
@@ -61,8 +63,11 @@ done
 echo "Windows POSIX-only exclusions:"
 printf '  - %s\n' "${windows_excluded_suffixes[@]}"
 echo "::group::go test portable packages (Windows)"
-# The CLI package is portable except for CRP tests that materialize the
-# POSIX-mode RuntimeStore. Keep the package in the job and skip only those
-# explicitly named tests; all other CLI tests still run on Windows.
-go_cmd test -race -short -count=1 -skip '^TestCRP' "${portable_packages[@]}"
+# The CLI package is portable except for CRP/process-sidecar and production
+# dependency tests that materialize POSIX-mode runtime stores. Keep the
+# package in the job and skip only those explicitly named tests; all other
+# CLI tests still run on Windows.
+go_cmd test -race -short -count=1 \
+  -skip '^(TestCRP|TestProductionCRP|TestOpenProductionCRP|TestOpenProductionDependencies|TestOpenProductionProcessSidecarBackend)' \
+  "${portable_packages[@]}"
 echo "::endgroup::"

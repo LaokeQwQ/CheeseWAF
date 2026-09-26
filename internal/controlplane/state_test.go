@@ -215,6 +215,157 @@ func TestValidateCommitRequiresExactStateAndFenceRevision(t *testing.T) {
 	}
 }
 
+func TestValidateCurrentCommitRequiresCurrentMaterialization(t *testing.T) {
+	m, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(1, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"revision":1}`), Nonce: "nonce-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.InstallCommit(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 1, Version: "v2", Payload: []byte(`{"revision":2}`), Nonce: "nonce-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.InstallCommit(second); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.ValidateCurrentCommit(second); err != nil {
+		t.Fatalf("current commit rejected: %v", err)
+	}
+	if err := m.ValidateCurrentCommit(first); !errors.Is(err, ErrStaleRevision) {
+		t.Fatalf("historical current-epoch commit error=%v, want ErrStaleRevision", err)
+	}
+	if err := m.ValidateCommit(first); err != nil {
+		t.Fatalf("ValidateCommit rejected historical current-epoch commit: %v", err)
+	}
+	if err := m.ValidateFence(first.Fence); err != nil {
+		t.Fatalf("ValidateFence rejected historical current-epoch fence: %v", err)
+	}
+}
+
+func TestValidateCurrentCommitRejectsOldEpochCommit(t *testing.T) {
+	m, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(1, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	old, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"revision":1}`), Nonce: "nonce-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.InstallCommit(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(2, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := m.Propose(Proposal{LeaderID: "node-b", ExpectedEpoch: 2, ExpectedRevision: 1, Version: "v2", Payload: []byte(`{"revision":2}`), Nonce: "nonce-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.InstallCommit(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ValidateCurrentCommit(current); err != nil {
+		t.Fatalf("new-leader current commit rejected: %v", err)
+	}
+	if err := m.ValidateCurrentCommit(old); !errors.Is(err, ErrInvalidCommit) {
+		t.Fatalf("old-epoch commit error=%v, want ErrInvalidCommit", err)
+	}
+}
+
+func TestValidateCurrentCommitRejectsFenceIdentityMismatches(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Commit)
+	}{
+		{name: "different digest", mutate: func(commit *Commit) { commit.Fence.Digest = Digest([]byte(`{"different":true}`)) }},
+		{name: "different nonce", mutate: func(commit *Commit) { commit.Fence.Nonce = "nonce-other" }},
+		{name: "different cluster", mutate: func(commit *Commit) { commit.Fence.ClusterID = "cluster-other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := NewStateMachine("cluster-a", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := m.InstallLeadership(1, "node-a"); err != nil {
+				t.Fatal(err)
+			}
+			commit, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"revision":1}`), Nonce: "nonce-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.InstallCommit(commit); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&commit)
+			if err := m.ValidateCurrentCommit(commit); !errors.Is(err, ErrInvalidCommit) {
+				t.Fatalf("tampered current commit error=%v, want ErrInvalidCommit", err)
+			}
+		})
+	}
+}
+
+func TestValidateCurrentCommitAllowsCurrentCommitUnderLocalFreeze(t *testing.T) {
+	m, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(1, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"revision":1}`), Nonce: "nonce-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.InstallCommit(commit); err != nil {
+		t.Fatal(err)
+	}
+	m.FreezeWrites("durable store unavailable")
+	if err := m.ValidateCurrentCommit(commit); err != nil {
+		t.Fatalf("current commit rejected under process-local freeze overlay: %v", err)
+	}
+}
+
+func TestWithCurrentCommitAllowsCurrentCommitUnderLocalFreeze(t *testing.T) {
+	m, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(1, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"revision":1}`), Nonce: "nonce-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.InstallCommit(commit); err != nil {
+		t.Fatal(err)
+	}
+	m.FreezeWrites("durable store unavailable")
+	called := false
+	if err := m.WithCurrentCommit(commit, func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatalf("WithCurrentCommit rejected exact commit under local freeze: %v", err)
+	}
+	if !called {
+		t.Fatal("WithCurrentCommit did not enter callback under local freeze")
+	}
+}
+
 func TestLoadSnapshotRejectsRegressionAndInvalidNonceLedger(t *testing.T) {
 	m, err := NewStateMachine("cluster-a", nil)
 	if err != nil {

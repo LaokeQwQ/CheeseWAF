@@ -86,22 +86,25 @@ func (r *runtimeResources) Close() error {
 }
 
 type runtimeProductionTarget struct {
-	db             *sql.DB
-	configPath     string
-	candidate      *config.Config
-	candidateHash  string
-	initialHash    string
-	actor          string
-	clusterID      string
-	now            func() time.Time
-	dataDir        string
-	snapshotID     string
-	control        *controlpostgres.Store
-	raft           *nativeraft.Runtime
-	initialState   *controlplane.InitialStateRequest
-	authorizer     *credentialConfirmationProvider
-	confirmationID string
-	commitMu       sync.Mutex
+	db                    *sql.DB
+	configPath            string
+	candidate             *config.Config
+	temporaryConfigDigest string
+	tokenMetadataDigest   string
+	committedAt           time.Time
+	candidateHash         string
+	initialHash           string
+	actor                 string
+	clusterID             string
+	now                   func() time.Time
+	dataDir               string
+	snapshotID            string
+	control               *controlpostgres.Store
+	raft                  *nativeraft.Runtime
+	initialState          *controlplane.InitialStateRequest
+	authorizer            *credentialConfirmationProvider
+	confirmationID        string
+	commitMu              sync.Mutex
 }
 
 type runtimeProductionTransaction struct {
@@ -239,7 +242,8 @@ func buildRuntimeRunner(ctx context.Context, request runtimeBuildRequest) (Runne
 	}
 	target := &runtimeProductionTarget{
 		db: managementDB, configPath: request.ConfigPath, candidate: request.Candidate,
-		candidateHash: digestBytes(privateCandidate), initialHash: digestBytes(payload),
+		temporaryConfigDigest: configDigest,
+		candidateHash:         digestBytes(privateCandidate), initialHash: digestBytes(payload),
 		actor: request.Authorization.actor, clusterID: request.Candidate.Cluster.ClusterID, now: request.Now,
 		dataDir: request.RuntimeConfig.Setup.DataDir,
 		control: control, raft: raft, initialState: initialState, authorizer: authorizer, confirmationID: request.ConfirmationID,
@@ -317,6 +321,11 @@ func (t *runtimeProductionTransaction) MigrateManagementState(ctx context.Contex
 	if t == nil || t.tx == nil || t.target == nil {
 		return setupmigration.ErrManagementStateMigration
 	}
+	t.target.tokenMetadataDigest = digestBytes(snapshot.TokenMetadata)
+	// PostgreSQL TIMESTAMPTZ preserves microseconds. Canonicalize the shared
+	// ledger/handoff timestamp before either durable representation is written
+	// so production startup can compare exact evidence across both stores.
+	t.target.committedAt = runtimeNow(t.target.now).UTC().Truncate(time.Microsecond)
 	state, err := decodeManagementSnapshot(snapshot.ManagementState)
 	if err != nil {
 		return err
@@ -353,11 +362,11 @@ func (t *runtimeProductionTransaction) MigrateManagementState(ctx context.Contex
 		ConfigDigest:     snapshot.ConfigDigest,
 		CandidateDigest:  t.target.candidateHash,
 		InitialStateHash: t.target.initialHash,
-		TokenDigest:      digestBytes(snapshot.TokenMetadata),
+		TokenDigest:      t.target.tokenMetadataDigest,
 		Actor:            t.target.actor,
 		ConfirmationID:   t.target.confirmationID,
 		ClusterID:        t.target.clusterID,
-		CommittedAt:      runtimeNow(t.target.now),
+		CommittedAt:      t.target.committedAt,
 	})
 }
 
@@ -426,6 +435,16 @@ func (t *runtimeProductionTransaction) Commit(ctx context.Context) error {
 		}
 	}
 	if err := config.Save(t.target.configPath, t.target.candidate); err != nil {
+		return errors.Join(setupmigration.ErrCommitOutcomeUnknown, err)
+	}
+	if err := writeProductionHandoff(t.target.dataDir, ProductionHandoff{
+		Version: productionHandoffVersion, SnapshotID: t.target.snapshotID,
+		TemporaryConfigDigest:  t.target.temporaryConfigDigest,
+		ProductionConfigDigest: t.target.candidateHash, CandidateDigest: t.target.candidateHash,
+		InitialStateHash: t.target.initialHash, TokenMetadataDigest: t.target.tokenMetadataDigest,
+		ClusterID: t.target.clusterID, Actor: t.target.actor, CommittedAt: t.target.committedAt,
+		SessionsInvalidated: true, SetupInvalidated: true, JoinInvalidated: true, CAPTCHAInvalidated: true, LocksInvalidated: true,
+	}); err != nil {
 		return errors.Join(setupmigration.ErrCommitOutcomeUnknown, err)
 	}
 	if err := removeCutoverArtifacts(t.target.dataDir, t.target.snapshotID, true); err != nil {

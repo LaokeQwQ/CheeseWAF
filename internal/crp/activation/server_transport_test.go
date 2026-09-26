@@ -8,12 +8,14 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,9 +100,10 @@ func TestControlPlaneHandlerRequiresStrictMTLSJSONAndConsumesOnce(t *testing.T) 
 		t.Fatal(err)
 	}
 	request := AuthorizationRequest{SchemaVersion: TransportSchemaVersion, RequestID: "request-1", Identity: identity, Action: crp.RuntimeActionPromote, Permission: PermissionActivate, Target: RuntimeTarget{Key: "rate-limit", PluginID: "rate-limit", Namespace: descriptor.Namespace, Version: descriptor.Version, ReleaseSequence: 1, ManifestIdentity: descriptor.ManifestIdentity, ArtifactIdentity: descriptor.ArtifactIdentity, Revision: 1}, ExpectedRevision: 1, Descriptor: descriptor, DescriptorIdentity: digest, Canary: CanaryPolicy{ObserveProbes: 1, CanaryProbes: 1}, RequestedAt: now}
+	request.ApprovalClaim = testApprovalClaim(request)
 	expires := now.Add(time.Minute)
 	authorizer := func(_ context.Context, got AuthorizationRequest, _ TransportIdentity) (Authorization, error) {
-		return Authorization{SchemaVersion: TransportSchemaVersion, ID: "auth-1", Request: got, Fence: Fence{ClusterID: "cluster-a", Token: "fence-1", Epoch: 1, Revision: 1, ExpiresAt: expires}, Confirmation: &WireConfirmation{ID: "confirm-1", Actor: "operator-1", Action: got.Action, PluginKey: got.Target.Key, ManifestIdentity: got.Target.ManifestIdentity, ExpectedRevision: got.ExpectedRevision, AuthorizedAt: now, ExpiresAt: expires}, IssuedAt: now, ExpiresAt: expires}, nil
+		return Authorization{SchemaVersion: TransportSchemaVersion, ID: "auth-1", Request: got, ApprovalClaim: got.ApprovalClaim, Fence: Fence{ClusterID: "cluster-a", Token: "fence-1", Epoch: 1, Revision: 1, ExpiresAt: expires}, Confirmation: &WireConfirmation{ID: got.ApprovalClaim.ConfirmationID, Actor: got.ApprovalClaim.Actor, Action: got.Action, PluginKey: got.Target.Key, ManifestIdentity: got.Target.ManifestIdentity, ExpectedRevision: got.ExpectedRevision, AuthorizedAt: now, ExpiresAt: expires}, IssuedAt: now, ExpiresAt: expires}, nil
 	}
 	consumed := 0
 	h, err := NewControlPlaneHandler(ControlPlaneHandlerOptions{ClusterID: "cluster-a", Role: "waf", ClientCA: roots, Clock: func() time.Time { return now }, Authorize: authorizer, Validate: func(context.Context, TransportIdentity, Authorization) error { return nil }, Consume: func(context.Context, TransportIdentity, Authorization) error { consumed++; return nil }})
@@ -159,4 +162,248 @@ func TestControlPlaneHandlerRequiresStrictMTLSJSONAndConsumesOnce(t *testing.T) 
 func certificateTransportIdentity(cert *x509.Certificate, cluster, node, role string) TransportIdentity {
 	digest := sha256.Sum256(cert.Raw)
 	return TransportIdentity{ClusterID: cluster, NodeID: node, Role: role, CertificateSHA256: hex.EncodeToString(digest[:])}
+}
+
+func TestControlPlaneHandlerCoalescesSharedAuthorizationStateConsumption(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	pki := newMTLSPKIFixture(t)
+	leaf := pki.clientBundle.Certificate
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pki.clientBundle.CAPEM) {
+		t.Fatal("failed to parse CA")
+	}
+	identity := certificateTransportIdentity(leaf, "cluster-a", "node-a", "waf")
+	descriptor := SidecarDescriptor{PluginID: "shared-state", Runtime: "sidecar", Version: "1.0.0", Namespace: "official/security", Source: "ota", SourceRoot: "root", ManifestIdentity: strings.Repeat("c", 64), ArtifactIdentity: strings.Repeat("d", 64)}
+	descriptorDigest, err := descriptorIdentity(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := AuthorizationRequest{
+		SchemaVersion: TransportSchemaVersion,
+		RequestID:     "request-shared-state",
+		Identity:      identity,
+		Action:        crp.RuntimeActionPromote,
+		Permission:    PermissionActivate,
+		Target: RuntimeTarget{
+			Key: "shared-state", PluginID: "shared-state", Namespace: "official/security", Version: "1.0.0",
+			ReleaseSequence: 1, ManifestIdentity: strings.Repeat("c", 64), ArtifactIdentity: strings.Repeat("d", 64), Revision: 1,
+		},
+		ExpectedRevision:   1,
+		Descriptor:         descriptor,
+		DescriptorIdentity: descriptorDigest,
+		Canary:             CanaryPolicy{ObserveProbes: 1, CanaryProbes: 1},
+		RequestedAt:        now,
+	}
+	request.ApprovalClaim = testApprovalClaim(request)
+	authorization := Authorization{
+		SchemaVersion: TransportSchemaVersion,
+		ID:            "auth-shared-state",
+		Request:       request,
+		ApprovalClaim: request.ApprovalClaim,
+		Fence:         Fence{ClusterID: "cluster-a", Token: "fence-shared-state", Epoch: 1, Revision: 1, ExpiresAt: now.Add(time.Minute)},
+		Confirmation: &WireConfirmation{
+			ID: request.ApprovalClaim.ConfirmationID, Actor: request.ApprovalClaim.Actor, Action: request.Action,
+			PluginKey: request.Target.Key, ManifestIdentity: request.Target.ManifestIdentity,
+			ExpectedRevision: request.ExpectedRevision, AuthorizedAt: now, ExpiresAt: now.Add(time.Minute),
+		},
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	}
+	memory, err := NewMemoryAuthorizationState(1, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &countingAuthorizationState{delegate: memory}
+	if err := state.Put(context.Background(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	provider := &sharedAuthorizationStateProvider{state: state, authorization: authorization}
+	h, err := NewControlPlaneHandler(ControlPlaneHandlerOptions{
+		ClusterID: "cluster-a", Role: "waf", ClientCA: roots, Clock: func() time.Time { return now },
+		State: state, Provider: provider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(authorizationEnvelope{SchemaVersion: TransportSchemaVersion, Authorization: authorization})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consume := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, controlConsumePath, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CheeseWAF-Transport-Schema", TransportSchemaVersion)
+		req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := consume()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shared-state consume status=%d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	consumeCalls := state.consumeCallCount()
+	providerCalls, afterCalls := provider.callCounts()
+	if consumeCalls != 1 || providerCalls != 0 || afterCalls != 1 {
+		t.Fatalf("shared-state calls: state=%d provider=%d after=%d, want 1/0/1", consumeCalls, providerCalls, afterCalls)
+	}
+	replayed := consume()
+	if replayed.Code != http.StatusConflict {
+		t.Fatalf("shared-state replay status=%d body=%s, want 409", replayed.Code, replayed.Body.String())
+	}
+	consumeCalls = state.consumeCallCount()
+	providerCalls, afterCalls = provider.callCounts()
+	if consumeCalls != 1 || providerCalls != 0 || afterCalls != 1 {
+		t.Fatalf("shared-state replay changed calls: state=%d provider=%d after=%d, want 1/0/1", consumeCalls, providerCalls, afterCalls)
+	}
+}
+
+func TestControlPlaneHandlerKeepsSeparateProviderConsumption(t *testing.T) {
+	now := time.Now().UTC()
+	authorization := Authorization{ID: "auth-separate-state", ExpiresAt: now.Add(time.Minute)}
+	newState := func() *countingAuthorizationState {
+		memory, err := NewMemoryAuthorizationState(1, func() time.Time { return now })
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := &countingAuthorizationState{delegate: memory}
+		if err := state.Put(context.Background(), authorization); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	handlerState := newState()
+	providerState := newState()
+	provider := &sharedAuthorizationStateProvider{state: providerState, authorization: authorization}
+	h := &ControlPlaneHandler{state: handlerState, provider: provider, consume: provider.Consume}
+
+	if err := handlerState.Consume(context.Background(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.consumeAfterState(context.Background(), TransportIdentity{}, authorization); err != nil {
+		t.Fatal(err)
+	}
+
+	providerCalls, afterCalls := provider.callCounts()
+	if handlerState.consumeCallCount() != 1 || providerState.consumeCallCount() != 1 || providerCalls != 1 || afterCalls != 0 {
+		t.Fatalf("separate-state calls: handler=%d provider-state=%d provider=%d after=%d, want 1/1/1/0", handlerState.consumeCallCount(), providerState.consumeCallCount(), providerCalls, afterCalls)
+	}
+}
+
+func TestControlPlaneHandlerCoalescedConsumptionIsConcurrentOneShot(t *testing.T) {
+	now := time.Now().UTC()
+	authorization := Authorization{ID: "auth-concurrent-shared-state", ExpiresAt: now.Add(time.Minute)}
+	memory, err := NewMemoryAuthorizationState(1, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &countingAuthorizationState{delegate: memory}
+	if err := state.Put(context.Background(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	provider := &sharedAuthorizationStateProvider{state: state, authorization: authorization}
+	h := &ControlPlaneHandler{state: state, provider: provider, consume: provider.Consume}
+
+	const callers = 16
+	results := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := state.Consume(context.Background(), authorization); err != nil {
+				results <- err
+				return
+			}
+			results <- h.consumeAfterState(context.Background(), TransportIdentity{}, authorization)
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	replays := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAuthorizationReplay):
+			replays++
+		default:
+			t.Fatalf("concurrent consume error=%v, want success or replay", err)
+		}
+	}
+	providerCalls, afterCalls := provider.callCounts()
+	if successes != 1 || replays != callers-1 || providerCalls != 0 || afterCalls != 1 {
+		t.Fatalf("concurrent results success=%d replay=%d provider=%d after=%d, want 1/%d/0/1", successes, replays, providerCalls, afterCalls, callers-1)
+	}
+}
+
+type countingAuthorizationState struct {
+	delegate *MemoryAuthorizationState
+	mu       sync.Mutex
+	consumes int
+}
+
+func (s *countingAuthorizationState) Put(ctx context.Context, authorization Authorization) error {
+	return s.delegate.Put(ctx, authorization)
+}
+
+func (s *countingAuthorizationState) Get(ctx context.Context, id string) (Authorization, error) {
+	return s.delegate.Get(ctx, id)
+}
+
+func (s *countingAuthorizationState) Consume(ctx context.Context, authorization Authorization) error {
+	s.mu.Lock()
+	s.consumes++
+	s.mu.Unlock()
+	return s.delegate.Consume(ctx, authorization)
+}
+
+func (s *countingAuthorizationState) consumeCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.consumes
+}
+
+type sharedAuthorizationStateProvider struct {
+	state         *countingAuthorizationState
+	authorization Authorization
+	mu            sync.Mutex
+	consumeCalls  int
+	afterCalls    int
+	afterErr      error
+}
+
+func (p *sharedAuthorizationStateProvider) Authorize(context.Context, TransportIdentity, AuthorizationRequest) (Authorization, error) {
+	return p.authorization, nil
+}
+
+func (*sharedAuthorizationStateProvider) Validate(context.Context, TransportIdentity, Authorization) error {
+	return nil
+}
+
+func (p *sharedAuthorizationStateProvider) Consume(ctx context.Context, _ TransportIdentity, authorization Authorization) error {
+	p.mu.Lock()
+	p.consumeCalls++
+	p.mu.Unlock()
+	return p.state.Consume(ctx, authorization)
+}
+
+func (p *sharedAuthorizationStateProvider) UsesAuthorizationState(state AuthorizationState) bool {
+	return state == p.state
+}
+
+func (p *sharedAuthorizationStateProvider) ConsumeAfterState(context.Context, TransportIdentity, Authorization) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.afterCalls++
+	return p.afterErr
+}
+
+func (p *sharedAuthorizationStateProvider) callCounts() (int, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.consumeCalls, p.afterCalls
 }

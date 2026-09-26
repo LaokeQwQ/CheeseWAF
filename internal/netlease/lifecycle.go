@@ -12,21 +12,25 @@ import (
 // HTTPS operation. The password is consumed during ExecuteTemporaryHTTP and is
 // never retained in a session, lease, audit event, or transport object.
 type TemporaryHTTPExecution struct {
-	Identity         AdministratorIdentity
-	Password         string
-	PluginID         string
-	PluginVersion    string
-	Target           Target
-	TLSFingerprint   string
-	PolicyEpoch      uint64
-	TTL              time.Duration
-	MaxBytes         int64
-	TLSPolicy        *TLSPolicy
-	Method           string
-	Path             string
-	Header           http.Header
-	Body             []byte
-	MaxResponseBytes int64
+	Identity       AdministratorIdentity
+	Password       string
+	PluginID       string
+	PluginVersion  string
+	Target         Target
+	TLSFingerprint string
+	PolicyEpoch    uint64
+	TTL            time.Duration
+	// ManagementSessionExpiresAt is an optional hard upper bound supplied by
+	// a trusted composition root. It cannot extend a session; it only prevents
+	// a temporary capability from surviving its management session.
+	ManagementSessionExpiresAt time.Time
+	MaxBytes                   int64
+	TLSPolicy                  *TLSPolicy
+	Method                     string
+	Path                       string
+	Header                     http.Header
+	Body                       []byte
+	MaxResponseBytes           int64
 }
 
 // TemporaryHTTPExecutor is the narrow integration seam for a future control
@@ -48,7 +52,7 @@ func (b *Broker) ExecuteTemporaryHTTP(ctx context.Context, req TemporaryHTTPExec
 	if b == nil {
 		return HTTPResponse{}, ErrBrokerDisabled
 	}
-	session, err := b.BeginTemporarySession(ctx, BeginTemporarySessionRequest{Identity: req.Identity, TTL: req.TTL})
+	session, err := b.BeginTemporarySession(ctx, BeginTemporarySessionRequest{Identity: req.Identity, TTL: req.TTL, ExpiresAt: req.ManagementSessionExpiresAt})
 	if err != nil {
 		return HTTPResponse{}, fmt.Errorf("temporary network session: %w", err)
 	}
