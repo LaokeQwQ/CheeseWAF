@@ -568,6 +568,27 @@ func TestRuntimeRequiresRevalidationAndHealthCallbacks(t *testing.T) {
 	}
 }
 
+func TestRuntimeAuthorizerCanBeBoundExactlyOnce(t *testing.T) {
+	store, err := NewRuntimeStore(t.TempDir(), RuntimeStoreOptions{
+		Clock:       time.Now,
+		HealthCheck: HealthCheckFunc(func(RuntimeRecord) error { return nil }),
+		Revalidate:  RuntimeRevalidateFunc(func(RuntimeRecord) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindAuthorizer(nil); !errors.Is(err, ErrRuntimeConfig) {
+		t.Fatalf("BindAuthorizer(nil) error=%v, want ErrRuntimeConfig", err)
+	}
+	first := RuntimeAuthorizerFunc(func(Confirmation) error { return nil })
+	if err := store.BindAuthorizer(first); err != nil {
+		t.Fatalf("BindAuthorizer(first) error=%v", err)
+	}
+	if err := store.BindAuthorizer(RuntimeAuthorizerFunc(func(Confirmation) error { return nil })); !errors.Is(err, ErrRuntimeConfig) {
+		t.Fatalf("BindAuthorizer(second) error=%v, want ErrRuntimeConfig", err)
+	}
+}
+
 func TestRuntimeStageRevalidationCanReadStateWithoutDeadlock(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)

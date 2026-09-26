@@ -17,7 +17,7 @@ export function RotatePuzzleChallenge({ challenge, disabled, label, onChange, on
   const resolvedLabel = label || 'Align the center image with the background';
   const [value, setValue] = useState(0);
   const startedAt = useRef(performance.now());
-  const activePointer = useRef<number>();
+  const activePointer = useRef<number | undefined>(undefined);
   const operation = useRef<CaptchaTrackPoint[]>([]);
   const completedDuration = () => Math.max(elapsed(startedAt.current), challenge.minDurationMs ?? 0);
   const initial = challenge.initialAngle ?? 180;

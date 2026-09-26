@@ -65,8 +65,8 @@ func (h *transportHarness) controlHandler(w http.ResponseWriter, r *http.Request
 		}
 		expires := now.Add(2 * time.Minute)
 		confirmation := WireConfirmation{
-			ID:               fmt.Sprintf("wire-confirmation-%d", n),
-			Actor:            "operator-wire",
+			ID:               request.ApprovalClaim.ConfirmationID,
+			Actor:            request.ApprovalClaim.Actor,
 			Action:           request.Action,
 			PluginKey:        request.Target.Key,
 			ManifestIdentity: request.Target.ManifestIdentity,
@@ -78,6 +78,7 @@ func (h *transportHarness) controlHandler(w http.ResponseWriter, r *http.Request
 			SchemaVersion: TransportSchemaVersion,
 			ID:            fmt.Sprintf("wire-authorization-%d", n),
 			Request:       request,
+			ApprovalClaim: request.ApprovalClaim,
 			Fence: Fence{
 				ClusterID: request.Identity.ClusterID,
 				Token:     fmt.Sprintf("wire-fence-%d", n),

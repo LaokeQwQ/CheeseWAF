@@ -15,6 +15,23 @@ type fakeConsensus struct {
 	err       error
 }
 
+type blockingConsensus struct {
+	current State
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingConsensus) Current(context.Context, string) (State, error) {
+	return b.current, nil
+}
+
+func (b *blockingConsensus) Propose(_ context.Context, commit Commit) error {
+	close(b.started)
+	<-b.release
+	b.current = commit.State
+	return nil
+}
+
 func (f *fakeConsensus) Current(context.Context, string) (State, error) {
 	if f.err != nil {
 		return State{}, f.err
@@ -90,6 +107,176 @@ func TestCoordinatorPersistsConsensusBeforeDurable(t *testing.T) {
 	}
 	if len(consensus.proposals) != 1 || len(durable.commits) != 1 {
 		t.Fatalf("stores received consensus=%d durable=%d", len(consensus.proposals), len(durable.commits))
+	}
+}
+
+func TestCoordinatorProposeAndApplyOwnsCASAndPersistence(t *testing.T) {
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
+	commit, err := coordinator.ProposeAndApply(context.Background(), Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 0,
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commit.State.Revision != 1 || m.Snapshot().Revision != 1 {
+		t.Fatalf("commit revision=%d machine revision=%d, want 1/1", commit.State.Revision, m.Snapshot().Revision)
+	}
+	if len(consensus.proposals) != 1 || len(durable.commits) != 1 {
+		t.Fatalf("store calls consensus=%d durable=%d, want 1/1", len(consensus.proposals), len(durable.commits))
+	}
+	if _, err := coordinator.ProposeAndApply(context.Background(), Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 0,
+		Version: "stale", Payload: []byte(`{"mode":"stale"}`), Nonce: "nonce-stale",
+	}); !errors.Is(err, ErrStaleRevision) {
+		t.Fatalf("stale CAS error=%v, want ErrStaleRevision", err)
+	}
+	if len(consensus.proposals) != 1 || len(durable.commits) != 1 {
+		t.Fatal("stale proposal reached persistence")
+	}
+}
+
+func TestCoordinatorProposeAndApplyReturnsExactRetryCommitAfterDurableFailure(t *testing.T) {
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
+	durable.err = errors.New("postgres unavailable")
+	commit, err := coordinator.ProposeAndApply(context.Background(), Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 0,
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1",
+	})
+	if err == nil || commit.State.Revision != 1 {
+		t.Fatalf("failed proposal result commit=%+v err=%v", commit, err)
+	}
+	if got := m.Snapshot(); got.Revision != 0 || !got.WriteFrozen {
+		t.Fatalf("failed persistence exposed tentative state: %+v", got)
+	}
+	durable.err = nil
+	if err := coordinator.Apply(context.Background(), commit); err != nil {
+		t.Fatalf("exact retry failed: %v", err)
+	}
+	if len(consensus.proposals) != 1 || len(durable.commits) != 1 {
+		t.Fatalf("retry duplicated persistence: consensus=%d durable=%d", len(consensus.proposals), len(durable.commits))
+	}
+}
+
+func TestCoordinatorRetriesOnlyExactCommitAfterConsensusError(t *testing.T) {
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
+	consensus.err = errors.New("raft result unknown")
+	commit, err := coordinator.ProposeAndApply(context.Background(), Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, ExpectedRevision: 0,
+		Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1",
+	})
+	if err == nil || commit.State.Revision != 1 {
+		t.Fatalf("consensus failure result commit=%+v err=%v", commit, err)
+	}
+	conflict := cloneCommit(commit)
+	conflict.State.Desired.Version = "conflicting-v1"
+	if err := coordinator.Apply(context.Background(), conflict); !errors.Is(err, ErrInvalidCommit) {
+		t.Fatalf("conflicting retry error=%v, want ErrInvalidCommit", err)
+	}
+	if len(consensus.proposals) != 0 || len(durable.commits) != 0 {
+		t.Fatal("conflicting retry reached persistence")
+	}
+	consensus.err = nil
+	if err := coordinator.Apply(context.Background(), commit); err != nil {
+		t.Fatalf("exact retry after unknown consensus result failed: %v", err)
+	}
+	if len(consensus.proposals) != 1 || len(durable.commits) != 1 {
+		t.Fatalf("exact retry persistence consensus=%d durable=%d, want 1/1", len(consensus.proposals), len(durable.commits))
+	}
+	if got := m.Snapshot(); got.Revision != 1 || !got.WriteFrozen {
+		t.Fatalf("exact retry did not install the commit fail-closed: %+v", got)
+	}
+}
+
+func TestCoordinatorPreCanceledCallsDoNotFreezeHealthyGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, *Coordinator) error
+	}{
+		{name: "apply", call: func(ctx context.Context, coordinator *Coordinator) error { return coordinator.Apply(ctx, Commit{}) }},
+		{name: "propose and apply", call: func(ctx context.Context, coordinator *Coordinator) error {
+			_, err := coordinator.ProposeAndApply(ctx, Proposal{})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, coordinator, _, _ := newCoordinatorFixture(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := tc.call(ctx, coordinator); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled call error=%v, want context.Canceled", err)
+			}
+			if got := m.Snapshot(); got.WriteFrozen {
+				t.Fatalf("pre-canceled call froze healthy generation: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCanceledWaiterDoesNotFreezeInFlightCommit(t *testing.T) {
+	m, err := NewStateMachine("cluster-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(1, "node-a"); err != nil {
+		t.Fatal(err)
+	}
+	consensus := &blockingConsensus{current: m.Snapshot(), started: make(chan struct{}), release: make(chan struct{})}
+	log := make([]string, 0, 1)
+	durable := &fakeDurable{log: &log, state: m.Snapshot()}
+	coordinator, err := NewCoordinator(m, consensus, durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, proposeErr := coordinator.ProposeAndApply(context.Background(), Proposal{
+			LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1",
+		})
+		result <- proposeErr
+	}()
+	select {
+	case <-consensus.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight commit did not reach consensus")
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := coordinator.Apply(canceled, Commit{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter error=%v, want context.Canceled", err)
+	}
+	if got := m.Snapshot(); got.WriteFrozen {
+		t.Fatalf("canceled waiter froze in-flight commit: %+v", got)
+	}
+	close(consensus.release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("in-flight commit failed after canceled waiter: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight commit did not finish")
+	}
+}
+
+func TestCompletedCommitRetryFromOldGenerationDoesNotFreezeNewLeader(t *testing.T) {
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
+	commit, err := coordinator.ProposeAndApply(context.Background(), Proposal{
+		LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.InstallLeadership(2, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	consensus.current = m.Snapshot()
+	durable.state = m.Snapshot()
+	if err := coordinator.Apply(context.Background(), commit); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("old-generation retry error=%v, want ErrStaleEpoch", err)
+	}
+	if got := m.Snapshot(); got.WriteFrozen || got.LeaderID != "node-b" {
+		t.Fatalf("old-generation retry froze new leader: %+v", got)
 	}
 }
 
@@ -283,6 +470,50 @@ func TestCoordinatorLoadsSnapshotAndContinuesCAS(t *testing.T) {
 	}
 }
 
+func TestCoordinatorLoadSnapshotUsesPostgresTimestampPrecision(t *testing.T) {
+	payload := []byte(`{"enabled":true}`)
+	consensusState := State{
+		ClusterID: "cluster-a", LeaderID: "node-a", Term: 4, Epoch: 2, Revision: 1,
+		UpdatedAt: time.Date(2026, 9, 22, 12, 0, 0, 123456789, time.UTC),
+		Desired:   DesiredState{Version: "v1", Payload: payload, Digest: Digest(payload)},
+		NonceLedger: map[string]Revision{
+			"nonce-1": 1,
+		},
+	}
+
+	for _, test := range []struct {
+		name    string
+		durable time.Time
+		wantErr bool
+	}{
+		{name: "postgres microsecond round trip", durable: consensusState.UpdatedAt.Truncate(time.Microsecond)},
+		{name: "different durable microsecond", durable: consensusState.UpdatedAt.Truncate(time.Microsecond).Add(time.Microsecond), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			machine, err := NewStateMachine(consensusState.ClusterID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			durableState := consensusState
+			durableState.UpdatedAt = test.durable
+			coordinator, err := NewCoordinator(machine, &fakeConsensus{current: consensusState}, &fakeDurable{state: durableState})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = coordinator.LoadSnapshot(context.Background())
+			if test.wantErr {
+				if !errors.Is(err, ErrInvalidCommit) {
+					t.Fatalf("LoadSnapshot error=%v, want ErrInvalidCommit", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadSnapshot rejected PostgreSQL timestamp precision: %v", err)
+			}
+		})
+	}
+}
+
 func TestCoordinatorRejectsOldEpochTokenButAllowsCurrentEpochRetry(t *testing.T) {
 	m, coordinator, consensus, durable := newCoordinatorFixture(t)
 	first, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"n":1}`), Nonce: "nonce-1"})
@@ -307,8 +538,8 @@ func TestCoordinatorRejectsOldEpochTokenButAllowsCurrentEpochRetry(t *testing.T)
 		t.Fatal(err)
 	}
 	beforeConsensus, beforeDurable := len(consensus.proposals), len(durable.commits)
-	if err := coordinator.Apply(context.Background(), first); !errors.Is(err, ErrInvalidCommit) {
-		t.Fatalf("old epoch apply error=%v, want ErrInvalidCommit", err)
+	if err := coordinator.Apply(context.Background(), first); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("old epoch apply error=%v, want ErrStaleEpoch", err)
 	}
 	if len(consensus.proposals) != beforeConsensus || len(durable.commits) != beforeDurable {
 		t.Fatal("old epoch token reached a store")
@@ -316,7 +547,7 @@ func TestCoordinatorRejectsOldEpochTokenButAllowsCurrentEpochRetry(t *testing.T)
 }
 
 func TestHistoricalCommitInstallDoesNotRollbackTentativeState(t *testing.T) {
-	m, coordinator, _, durable := newCoordinatorFixture(t)
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
 	first, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"n":1}`), Nonce: "nonce-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -332,6 +563,7 @@ func TestHistoricalCommitInstallDoesNotRollbackTentativeState(t *testing.T) {
 		t.Fatalf("historical install exposed revision %d, want 1", got.Revision)
 	}
 	durable.state = second.State
+	consensus.current = second.State
 	if err := coordinator.Apply(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +587,7 @@ func TestCoordinatorFreezesWhenDurableBaselineLoadFails(t *testing.T) {
 	}
 }
 
-func TestCoordinatorContextCancellationFreezesWrites(t *testing.T) {
+func TestCoordinatorPreflightCancellationDoesNotFreezeWrites(t *testing.T) {
 	m, coordinator, _, _ := newCoordinatorFixture(t)
 	commit, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1"})
 	if err != nil {
@@ -366,8 +598,26 @@ func TestCoordinatorContextCancellationFreezesWrites(t *testing.T) {
 	if err := coordinator.Apply(ctx, commit); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled Apply error=%v, want context.Canceled", err)
 	}
-	if got := m.Snapshot(); !got.WriteFrozen {
-		t.Fatalf("canceled Apply did not freeze state: %+v", got)
+	if got := m.Snapshot(); got.WriteFrozen {
+		t.Fatalf("preflight-canceled Apply froze state: %+v", got)
+	}
+}
+
+func TestCoordinatorRejectsDurableCommitMissingFromConsensus(t *testing.T) {
+	m, coordinator, consensus, durable := newCoordinatorFixture(t)
+	commit, err := m.Propose(Proposal{LeaderID: "node-a", ExpectedEpoch: 1, Version: "v1", Payload: []byte(`{"mode":"observe"}`), Nonce: "nonce-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable.state = commit.State
+	if err := coordinator.Apply(context.Background(), commit); !errors.Is(err, ErrInvalidCommit) {
+		t.Fatalf("durable-only commit error=%v, want ErrInvalidCommit", err)
+	}
+	if len(consensus.proposals) != 0 || len(durable.commits) != 0 {
+		t.Fatal("divergent durable-only commit reached a persistence stage")
+	}
+	if got := m.Snapshot(); !got.WriteFrozen || got.Revision != 0 {
+		t.Fatalf("durable-only divergence did not remain fail-closed: %+v", got)
 	}
 }
 

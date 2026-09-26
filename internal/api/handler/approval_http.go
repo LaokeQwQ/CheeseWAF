@@ -111,6 +111,25 @@ type ApprovalHTTPHandler struct {
 	challenges map[string]approvalChallengeState
 }
 
+// SessionValidator returns the validator bound to this approval transport.
+// Production composition uses this to keep approval sessions on the same
+// management-store lifetime as the rest of the authenticated API.
+func (h *ApprovalHTTPHandler) SessionValidator() middleware.SessionValidator {
+	if h == nil {
+		return nil
+	}
+	return h.sessionValidator
+}
+
+// PolicyEpoch returns the epoch enforced by the underlying approval Gate.
+// It deliberately reads the Gate rather than a duplicated provider field.
+func (h *ApprovalHTTPHandler) PolicyEpoch() uint64 {
+	if h == nil || h.gate == nil {
+		return 0
+	}
+	return h.gate.PolicyEpoch()
+}
+
 type approvalChallengeState struct {
 	challenge ApprovalChallenge
 	session   ApprovalSession
@@ -418,9 +437,9 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	proof, err := h.verifyApprovalCredentials(r, session, payload)
 	if err != nil {
 		if errors.Is(err, ErrApprovalVerifierUnavailable) {
-			writeError(w, http.StatusServiceUnavailable, "APPROVAL_CREDENTIAL_VERIFIER_UNAVAILABLE", err.Error())
+			writeError(w, http.StatusServiceUnavailable, "APPROVAL_CREDENTIAL_VERIFIER_UNAVAILABLE", "approval credential verifier is unavailable")
 		} else {
-			writeError(w, http.StatusForbidden, "APPROVAL_CREDENTIAL_REJECTED", err.Error())
+			writeError(w, http.StatusForbidden, "APPROVAL_CREDENTIAL_REJECTED", ErrApprovalCredentialRejected.Error())
 		}
 		return
 	}
@@ -511,6 +530,9 @@ func (h *ApprovalHTTPHandler) verifyApprovalCredentials(r *http.Request, session
 		}
 		passwordProof, err := verifier(r.Context(), session, payload.Password)
 		if err != nil {
+			if errors.Is(err, ErrApprovalVerifierUnavailable) {
+				return ApprovalCredentialProof{}, err
+			}
 			return ApprovalCredentialProof{}, ErrApprovalCredentialRejected
 		}
 		if !passwordProof.valid() || !passwordProof.passwordConfirmed {
@@ -529,6 +551,9 @@ func (h *ApprovalHTTPHandler) verifyApprovalCredentials(r *http.Request, session
 		}
 		totpProof, err := verifier(r.Context(), session, payload.TOTPCode)
 		if err != nil {
+			if errors.Is(err, ErrApprovalVerifierUnavailable) {
+				return ApprovalCredentialProof{}, err
+			}
 			return ApprovalCredentialProof{}, ErrApprovalCredentialRejected
 		}
 		if !totpProof.valid() || !totpProof.totpConfirmed {
@@ -751,7 +776,7 @@ func newApprovalConfirmationID() (string, error) {
 }
 
 func writeApprovalError(w http.ResponseWriter, err error) {
-	status, code := http.StatusBadRequest, "APPROVAL_INVALID"
+	status, code, message := http.StatusServiceUnavailable, "APPROVAL_BACKEND_UNAVAILABLE", "approval backend is unavailable"
 	switch {
 	case errors.Is(err, approval.ErrNotFound):
 		status, code = http.StatusNotFound, "APPROVAL_NOT_FOUND"
@@ -771,10 +796,29 @@ func writeApprovalError(w http.ResponseWriter, err error) {
 		status, code = http.StatusConflict, "APPROVAL_DUPLICATE"
 	case errors.Is(err, approval.ErrTTLExceeded):
 		status, code = http.StatusBadRequest, "APPROVAL_TTL_INVALID"
+	case isApprovalInvalidInput(err):
+		status, code = http.StatusBadRequest, "APPROVAL_INVALID"
 	}
-	message := err.Error()
+	if status != http.StatusServiceUnavailable {
+		message = err.Error()
+	}
 	if errors.Is(err, approval.ErrWarningDelay) {
 		message = "warning must be read for at least 10 seconds"
 	}
 	writeError(w, status, code, message)
+}
+
+func isApprovalInvalidInput(err error) bool {
+	return errors.Is(err, approval.ErrInvalidRequest) ||
+		errors.Is(err, approval.ErrSecondConfirmation) ||
+		errors.Is(err, approval.ErrConfirmationRequired) ||
+		errors.Is(err, approval.ErrInvalidConfirmationID) ||
+		errors.Is(err, approval.ErrConfirmationLanguage) ||
+		errors.Is(err, approval.ErrConfirmationPhrase) ||
+		errors.Is(err, approval.ErrReasonRequired) ||
+		errors.Is(err, approval.ErrInvalidReason) ||
+		errors.Is(err, approval.ErrBreakGlassRequired) ||
+		errors.Is(err, approval.ErrBreakGlassReason) ||
+		errors.Is(err, approval.ErrBreakGlassActor) ||
+		errors.Is(err, approval.ErrEpochRegression)
 }

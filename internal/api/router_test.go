@@ -87,6 +87,37 @@ func TestRouterRequiresBearerForManagementAPI(t *testing.T) {
 	})
 }
 
+func TestRouterUsesInjectedSessionValidatorForBrowserSession(t *testing.T) {
+	router, cfg, store, _, _ := newAuthzTestRouterState(t, nil)
+	if store == nil {
+		t.Fatal("test store is nil")
+	}
+	// Rebuild the router with a validator that rejects every session. The
+	// backing store still contains the valid login session, so a successful
+	// response would prove that the router silently fell back to Store.
+	rejecting := sessionValidatorFunc(func(context.Context, string, string, time.Time) (bool, error) {
+		return false, nil
+	})
+	router = NewRouter(Options{
+		Config:             cfg,
+		Store:              store,
+		Secret:             "router-session-validator-test-secret",
+		SessionValidator:   rejecting,
+		AssistantApprovals: ai.NewApprovalStore(),
+	})
+	session := loginAuthzUser(t, router, "admin", "admin-password")
+	recorder := perform(router, http.MethodGet, "/api/auth/session", session, nil)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("injected session validator was not enforced: got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type sessionValidatorFunc func(context.Context, string, string, time.Time) (bool, error)
+
+func (f sessionValidatorFunc) IsSessionActive(ctx context.Context, sessionID, userID string, now time.Time) (bool, error) {
+	return f(ctx, sessionID, userID, now)
+}
+
 func TestRouterDoesNotExposeApprovalGateWithoutExplicitWiring(t *testing.T) {
 	router, _, _ := newAuthzTestRouter(t)
 	for _, path := range []string{"/api/approvals", "/api/approvals/request-1/confirmation/start", "/api/approvals/request-1/confirmation"} {

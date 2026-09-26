@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -185,6 +186,39 @@ func NewRuntimeStore(root string, opts RuntimeStoreOptions) (*RuntimeStore, erro
 		return nil, err
 	}
 	return s, nil
+}
+
+// BindAuthorizer installs the process-owned authorization consumer exactly
+// once. Production CWEDP opens the shared staging runtime before the CRP mTLS
+// control-plane client exists; the serve composition root then binds that
+// exact client before exposing activation routes or starting listeners.
+//
+// Rebinding is rejected so a running process cannot silently swap the
+// authority used for the final one-shot confirmation consume.
+func (s *RuntimeStore) BindAuthorizer(authorizer RuntimeAuthorizer) error {
+	if s == nil || isNilRuntimeAuthorizer(authorizer) {
+		return fmt.Errorf("%w: runtime authorizer is required", ErrRuntimeConfig)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !isNilRuntimeAuthorizer(s.authorizer) {
+		return fmt.Errorf("%w: runtime authorizer is already bound", ErrRuntimeConfig)
+	}
+	s.authorizer = authorizer
+	return nil
+}
+
+func isNilRuntimeAuthorizer(authorizer RuntimeAuthorizer) bool {
+	if authorizer == nil {
+		return true
+	}
+	value := reflect.ValueOf(authorizer)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (s *RuntimeStore) Stage(pkg Package, imported ImportResult) (RuntimeRecord, error) {
@@ -494,6 +528,56 @@ func (s *RuntimeStore) Previous(key string) (RuntimeRecord, error) {
 
 func (s *RuntimeStore) Get(key string, slot RuntimeSlot) (RuntimeRecord, error) {
 	return s.slot(key, slot)
+}
+
+// Manifest returns the immutable manifest bound to a live runtime record.
+// The record must still occupy its declared slot, and all content-addressed
+// runtime files are revalidated before manifest bytes are exposed. Callers
+// can therefore bind security-sensitive claims to package metadata without
+// trusting fields omitted from RuntimeRecord (for example Source/SourceRoot).
+func (s *RuntimeStore) Manifest(record RuntimeRecord) (Manifest, error) {
+	if s == nil {
+		return Manifest{}, ErrRuntimeConfig
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateRuntimeKey(record.Key); err != nil {
+		return Manifest{}, err
+	}
+	state, ok := s.state.Plugins[record.Key]
+	if !ok {
+		return Manifest{}, ErrRuntimeNotFound
+	}
+	var live *RuntimeRecord
+	switch record.Slot {
+	case RuntimeSlotCurrent:
+		live = state.Current
+	case RuntimeSlotStaged:
+		live = state.Staged
+	case RuntimeSlotPrevious:
+		live = state.Previous
+	default:
+		return Manifest{}, ErrRuntimeNotFound
+	}
+	if live == nil || live.Revision != record.Revision || live.ManifestIdentity != record.ManifestIdentity || live.ArtifactIdentity != record.ArtifactIdentity {
+		return Manifest{}, ErrRuntimeConflict
+	}
+	if err := s.validateLoadedRecord(record.Key, *live); err != nil {
+		return Manifest{}, err
+	}
+	raw, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(live.ManifestPath)))
+	if err != nil {
+		return Manifest{}, ErrRuntimeCorrupt
+	}
+	manifest, err := ParseManifest(raw)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("%w: manifest metadata: %v", ErrRuntimeCorrupt, err)
+	}
+	identity, err := ContentIdentity(manifest)
+	if err != nil || identity != live.ManifestIdentity {
+		return Manifest{}, ErrRuntimeCorrupt
+	}
+	return manifest, nil
 }
 
 func (s *RuntimeStore) slot(key string, slot RuntimeSlot) (RuntimeRecord, error) {

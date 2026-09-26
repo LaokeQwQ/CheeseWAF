@@ -653,6 +653,29 @@ func (s *SQLiteStore) IsSessionActive(ctx context.Context, id, userID string, no
 	return count > 0, nil
 }
 
+func (s *SQLiteStore) GetSession(ctx context.Context, id, userID string) (*Session, error) {
+	if s == nil || s.db == nil || ctx == nil || id == "" || userID == "" {
+		return nil, nil
+	}
+	var session Session
+	var issuedAt, expiresAt, revokedAt, createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,username,role,issued_at,expires_at,revoked_at,created_at,updated_at,credential_epoch FROM admin_sessions WHERE id=? AND user_id=?`, id, userID).Scan(
+		&session.ID, &session.UserID, &session.Username, &session.Role, &issuedAt, &expiresAt, &revokedAt, &createdAt, &updatedAt, &session.CredentialEpoch,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	session.IssuedAt = parseTime(issuedAt)
+	session.ExpiresAt = parseTime(expiresAt)
+	session.RevokedAt = parseTime(revokedAt)
+	session.CreatedAt = parseTime(createdAt)
+	session.UpdatedAt = parseTime(updatedAt)
+	return &session, nil
+}
+
 func (s *SQLiteStore) PruneSessions(ctx context.Context, before time.Time) (int64, error) {
 	if before.IsZero() {
 		before = time.Now().UTC()

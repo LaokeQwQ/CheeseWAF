@@ -116,6 +116,19 @@ func (f *startupConsensusFake) Propose(_ context.Context, commit Commit) error {
 	return nil
 }
 
+// CurrentCommit models the native-raft recovery capability introduced for the
+// consensus-before-durable crash window. Test fixtures reconstruct only the
+// single current commit represented by their state; production adapters retain
+// the exact Raft log entry instead.
+func (f *startupConsensusFake) CurrentCommit(_ context.Context, _ string) (Commit, error) {
+	for nonce, revision := range f.state.NonceLedger {
+		if revision == f.state.Revision {
+			return startupCommitFromState(f.state, nonce)
+		}
+	}
+	return Commit{}, ErrStateNotFound
+}
+
 type startupFenceFake struct {
 	log         *[]string
 	token       FenceToken

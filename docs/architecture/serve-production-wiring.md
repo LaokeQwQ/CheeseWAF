@@ -20,7 +20,9 @@
 
    该运行时的凭证验证会检查管理用户、活动 Session、bcrypt 密码或原子 `ConsumeTOTP`，并且当前只接受 `admin` 用户的普通审批。PostgreSQL Gate 写入通过同一事务中的 epoch 行锁保护；旧 Gate 在 durable epoch 漂移后写入失败并回滚。`security_admin` 和 `tenant_owner` 的 Break-glass authority resolver 仍是后续 P1，不能把 Gate 合约中的角色规则写成生产流程已经完成。
 
-factory 通过 `ProductionDependencyFactory` 暴露每一个打开点，`ProductionDependencies.Close` 按审批、Redis、native-raft、控制面 PostgreSQL、管理面 PostgreSQL 的逆序关闭，启动失败、Bootstrap 失败和最终 serve 接线失败都执行相同清理。主 `serve` 在 production profile 下先完成这组打开、迁移、健康检查、Bootstrap、fencing 和 `WireServe`，之后才创建运行目录和 PID lease；因此依赖缺失不会留下 serving 进程的 PID 或 listener 副作用。只有控制面 `Bootstrap` 返回 `StartupStageReady`，Redis/审批健康检查通过，并且显式 `WireServe` 完成后才会返回 `Ready=true`。
+factory 通过 `ProductionDependencyFactory` 暴露每一个打开点，`ProductionDependencies.Close` 按审批、Redis、native-raft、控制面 PostgreSQL、管理面 PostgreSQL 的逆序关闭，启动失败、Bootstrap 失败和最终 serve 接线失败都执行相同清理。主 `serve` 在 production profile 下先完成这组打开、迁移、健康检查、Bootstrap、fencing 和 serve wiring，之后才创建运行目录和 PID lease；因此依赖缺失不会留下 serving 进程的 PID 或 listener 副作用。只有控制面 `Bootstrap` 返回 `StartupStageReady`，Redis/审批健康检查通过，并且显式 wiring 完成后才会返回 `Ready=true`。
+
+`ProductionDependencyFactory.WireServe(context.Context, *ProductionDependencies)` 是保留的导出兼容 API；新接线应使用 `WireServeWithWiring(context.Context, ProductionServeWiring)`，其参数是经过校验的生命周期绑定组合根。两个 callback 同时设置会在打开任何依赖前拒绝，两个 callback 都为空也继续 fail-closed。`ProductionDependencies.ServeWiring` 会同时比较审批 provider 的 `PolicyEpoch`、`ApprovalHTTP` 内部 Gate 的真实 epoch 和 control-plane `Startup.State.Epoch`；任一为零或不一致都不会进入 serve wiring。
 
 默认 factory 在启动上下文不完整时仍返回 `ErrProductionApprovalUnavailable`，因此缺少
 management store、当前 epoch、控制面 DSN 或完整 `WireServe` 时主 `serve` 仍会在绑定

@@ -3,6 +3,30 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
+# Go's test helpers use os.TempDir for process-sidecar fixtures. A shared
+# runner /tmp is commonly mode 0777, which must be rejected by production
+# sidecar admission. Keep Unix commands on a private, disposable temp root
+# whose path components remain outside shared, world-writable space. Windows
+# does not expose POSIX mode bits, so preserve its native TEMP semantics; the
+# Windows job excludes tests that require Unix permission and fsync behavior.
+is_windows=false
+case "${RUNNER_OS:-}" in
+  Windows) is_windows=true ;;
+esac
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*) is_windows=true ;;
+esac
+
+private_tmp=""
+if [[ "${is_windows}" == false ]]; then
+  private_tmp_parent="${RUNNER_TEMP:-${HOME:-/tmp}}"
+  if [[ ! -d "${private_tmp_parent}" || -L "${private_tmp_parent}" ]]; then
+    private_tmp_parent="${repo_root}"
+  fi
+  private_tmp="$(mktemp -d "${private_tmp_parent%/}/cheesewaf-ci-tmp.XXXXXX")"
+  chmod 700 "${private_tmp}"
+fi
+
 # Keep Go caches outside the repository. Go treats every directory under the
 # module root as a potential package during `go mod tidy` and `go test ./...`;
 # a module cache under tmp/ contains @version paths that break those commands.
@@ -62,6 +86,15 @@ restore_repo_cache() {
     mv "${restore_path}" "${repo_root}/tmp/gomodcache"
   fi
 }
-trap restore_repo_cache EXIT
+cleanup() {
+  restore_repo_cache
+  if [[ -n "${private_tmp}" ]]; then
+    rm -rf -- "${private_tmp}"
+  fi
+}
+trap cleanup EXIT
 
+if [[ -n "${private_tmp}" ]]; then
+  export TMPDIR="${private_tmp}"
+fi
 "$@"

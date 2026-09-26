@@ -110,6 +110,34 @@ type Store interface {
 	TOTPStore
 }
 
+// MigrationHandoffEvidence is the metadata-only proof that a temporary
+// management store was committed to production. It intentionally contains
+// digests and identities only; callers must never put credentials, DSNs, or
+// snapshot payloads in this structure.
+type MigrationHandoffEvidence struct {
+	SnapshotID             string
+	TemporaryConfigDigest  string
+	ProductionConfigDigest string
+	CandidateDigest        string
+	InitialStateHash       string
+	TokenMetadataDigest    string
+	ClusterID              string
+	Actor                  string
+	CommittedAt            time.Time
+	SessionsInvalidated    bool
+	SetupInvalidated       bool
+	JoinInvalidated        bool
+	CAPTCHAInvalidated     bool
+	LocksInvalidated       bool
+}
+
+// MigrationHandoffVerifier is implemented by durable management stores. The
+// production serve composition root uses it to prove that the handoff file
+// refers to the same committed migration ledger as the live PostgreSQL store.
+type MigrationHandoffVerifier interface {
+	VerifyMigrationHandoff(context.Context, MigrationHandoffEvidence) error
+}
+
 // TOTPStore persists one-time consumed TOTP counters so a burned code cannot be
 // replayed after a process restart. Authentication paths must use ConsumeTOTP;
 // the Mark/Is pair remains only for compatibility with older callers and does
@@ -284,6 +312,13 @@ type SessionStore interface {
 	RevokeUserSessions(ctx context.Context, userID string, exceptID string) error
 	IsSessionActive(ctx context.Context, id, userID string, now time.Time) (bool, error)
 	PruneSessions(ctx context.Context, before time.Time) (int64, error)
+}
+
+// SessionLookupStore exposes the exact durable session record needed to bound
+// short-lived capabilities to the management-session expiry. It is kept out
+// of Store so narrow test doubles do not accidentally gain a broader read API.
+type SessionLookupStore interface {
+	GetSession(ctx context.Context, id, userID string) (*Session, error)
 }
 
 // Site represents a protected site configuration.

@@ -6,10 +6,12 @@ import json
 import os
 import pathlib
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -35,9 +37,9 @@ GATES = [
     ("production_fail_closed", "production fail-closed smoke", True, "production profile startup rejection", [],
      "bash scripts/acceptance/get-started.sh --static-contract", "checked-in contract documents production fail-closed and runtime-copy boundaries",
      "go test ./internal/config ./internal/cli -run 'Test.*(ProductionStorage|RefusesProductionSQLiteFallback)' -count=1", "no production path creates or uses a cheesewaf.db fallback"),
-    ("switch_migration_session_invalidation", "temporary to production migration and Session invalidation", False, "migration command contracts versus main serve runtime wiring", ["main serve production switch is not connected", "temporary Session invalidation is not mounted in the serve lifecycle"],
-     "go test ./internal/storage ./internal/cli ./internal/recovery -run 'Test.*(Migration|Session|Credential|Recovery)' -count=1", "package contracts cover migration, sessions, credential epochs, and recovery state",
-     "go test ./internal/cli -run '^TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy$' -count=1", "the main serve lifecycle remains fail-closed until migration/session wiring is explicitly mounted"),
+    ("switch_migration_session_invalidation", "temporary to production migration and Session invalidation", False, "verified migration handoff and main serve production wiring versus deployment-level cutover", ["no deployment-level PostgreSQL cutover/recovery rehearsal is available in this repository", "temporary invalidation is enforced by handoff and ledger verification but is not exercised against a running production launcher"],
+     "go test ./internal/storage -run '^TestSQLite.*(Migration|Session|Credential|Recovery)' -count=1 && go test ./internal/cli -run 'Test.*(Migration|Session|Credential|Recovery|Handoff)' -count=1 && go test ./internal/cli/migration -run 'Test.*(Migration|Session|Credential|Recovery|Handoff)' -count=1 && go test ./internal/recovery -run '^TestRecovery' -count=1", "migration, recovery, credential epochs, handoff evidence, and the main launcher handoff are covered by passing contract tests",
+     "go test ./internal/cli -run 'Test(OpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy|OpenProductionServeDependenciesBindsMainLauncherHandoff)$' -count=1", "embedded callers remain fail-closed while the main serve composition root consumes only validated wiring"),
     ("crp_verify", "CRP CLI verify", True, "offline package verification", [],
      "go test ./internal/cli ./internal/crp -run 'Test(CRPVerifyPrintsSafeSummary|ManifestValidateAndVerify|ImportOfflineEnforcesAllBoundaries)' -count=1", "verify accepts valid offline packages and emits a safe summary",
      "go test ./internal/cli ./internal/crp -run 'Test(CRPVerifyRequiresExplicitInputs|ImportRequiresExplicitVerificationTime|ManifestRequiresAllDigests)' -count=1", "missing trust roots, sources, time, and digest fields are rejected"),
@@ -68,8 +70,8 @@ GATES = [
     ("offline_no_egress", "offline mode and no egress", True, "offline source selection and egress denial", [],
      "go test ./internal/netlease ./internal/cwedp ./internal/cwedp/transport -run 'Test.*(Offline|Source|PullRejectsUnauthorizedEndpoint)' -count=1", "offline policy denies external egress while registered internal/offline sources remain usable",
      "go test ./internal/netlease ./internal/cwedp ./internal/cwedp/transport -run 'Test.*(RejectsOffline|UnauthorizedEndpoint|TargetValidation|Egress)' -count=1", "unregistered targets, unauthorized endpoints, ambiguous targets, and offline network use are rejected"),
-    ("temporary_network_confirmation", "temporary network confirmation", False, "explicit local temporary-online broker versus production egress wiring", ["main serve, plugin control-plane, and durable lease lifecycle are not mounted"],
-     "go test ./internal/cli ./internal/netlease -run 'Test(TemporaryOnlineProbeIsDiscoverableAndRequiresExplicitPasswordStdin|RunTemporaryOnlineProbeRejectsMethodAndLimitsBeforeReadingPassword|ReadTemporaryOnlinePasswordStripsOnlyOneTerminalLineEnding|ExecuteTemporaryHTTPOwnsConfirmationNetworkAndCleanupLifecycle)' -count=1", "the local one-shot probe requires password stdin and the reusable broker lifecycle proves confirmation, one lease, pinned HTTPS, durable result/revoke audit, and cleanup",
+    ("temporary_network_confirmation", "temporary network confirmation", False, "production temporary-network provider and CWEDP/plugin route versus deployment-level egress wiring", ["a deployment-level CWEDP/CRP peer with a public IP, high port, mTLS identity, and signed package is not currently available", "no complete deployment-level lease, HTTPS egress, and CWEDP download rehearsal has been run"],
+     "go test ./internal/cli ./internal/netlease -run 'Test(ProductionTemporary|ProductionCWEDP|TemporaryOnlineProbeIsDiscoverableAndRequiresExplicitPasswordStdin|RunTemporaryOnlineProbeRejectsMethodAndLimitsBeforeReadingPassword|ReadTemporaryOnlinePasswordStripsOnlyOneTerminalLineEnding|ExecuteTemporaryHTTPOwnsConfirmationNetworkAndCleanupLifecycle)' -count=1", "the main production provider binds management sessions and policy epochs, mints one-shot leases, gates use-time access, and releases capabilities; local broker confirmation and cleanup remain covered",
      "go test ./internal/cli -run '^TestRunTemporaryOnlineProbeRejectsMethodAndLimitsBeforeReadingPassword$' -count=1", "invalid temporary-online requests are rejected before reading credentials or opening a backend"),
     ("digest_resume", "CWEDP digest and resumable transfer", True, "content-addressed pull and resume", [],
      "go test ./internal/cwedp ./internal/cwedp/transport -run 'Test.*(Resume|Digest|Chunk|Source|Pull)' -count=1", "HELLO/capabilities, Range resume, three digest algorithms, source switching, and quarantine pass",
@@ -82,9 +84,128 @@ GATES = [
      "if find web/dist internal/webui/dist release -type l -o -path '*/node_modules/*' 2>/dev/null | grep -q .; then exit 1; else echo 'negative artifact boundary scan found no links or dependency trees'; fi", "links, dependency trees, source-only paths, unsafe archive members, or absent output fail closed"),
 ]
 
+# These probes deliberately remain opt-in.  The normal matrix is dependency
+# free and must continue to report the deployment evidence gap when it cannot
+# reach a real PostgreSQL/Redis composition.  A full run promotes the first
+# deployment-scoped gates only after the corresponding end-to-end test
+# has actually been executed with all of its dependencies available.
+REAL_INTEGRATION_GATES = {
+    "switch_migration_session_invalidation": {
+        "env": ("CHEESEWAF_POSTGRES_TEST_DSN", "CHEESEWAF_REDIS_RUNTIME_TEST_ADDR"),
+        "command": "go test ./internal/cli/migration -run '^TestPostgres.*$' -count=1 && go test ./internal/cli -run '^TestRunServeProductionRealListenerAndSessionRoute$' -count=1",
+        "evidence": "real PostgreSQL migration/recovery contracts and the production runServe listener prove migration handoff plus old-session invalidation",
+    },
+    "crp_activation": {
+        "env": (
+            "CHEESEWAF_POSTGRES_TEST_DSN",
+            "CHEESEWAF_REDIS_RUNTIME_TEST_ADDR",
+            "CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR",
+        ),
+        "command": "go test ./internal/cli -run '^TestRunServeProductionCRPActivationAndRollback$' -count=1",
+        "evidence": "the real production runServe route exercises PostgreSQL approval, mTLS control-plane/sidecar activation, durable authorization, and audit",
+        "cache_key": "crp_route",
+    },
+    "crp_rollback": {
+        "env": (
+            "CHEESEWAF_POSTGRES_TEST_DSN",
+            "CHEESEWAF_REDIS_RUNTIME_TEST_ADDR",
+            "CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR",
+        ),
+        "command": "go test ./internal/cli -run '^TestRunServeProductionCRPActivationAndRollback$' -count=1",
+        "evidence": "the real production runServe route exercises exact previous-version rollback through PostgreSQL approval, mTLS, sidecar, durable authorization, and audit",
+        "cache_key": "crp_route",
+    },
+    "temporary_network_confirmation": {
+        "env": (
+            "CHEESEWAF_POSTGRES_TEST_DSN",
+            "CHEESEWAF_REDIS_RUNTIME_TEST_ADDR",
+            "CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR",
+            "CHEESEWAF_PUBLIC_NETLEASE_TEST_PIN",
+            "CHEESEWAF_CWEDP_REAL_ROUTE_HOST",
+            "CHEESEWAF_CWEDP_REAL_ROUTE_PORT",
+        ),
+        "command": "go test ./internal/cli -run '^(TestRunServeProductionTemporaryHTTPRoute|TestRunServeProductionCWEDPDownloadRoute)$' -count=1",
+        "evidence": "the real production launcher exercises PostgreSQL/Redis session-bound temporary HTTPS egress and the runtime-owned CWEDP/CRP download route against a public mTLS peer with signed intent and resumable PostgreSQL state",
+    },
+}
+
+
+def integration_plan(gate_id, mode, environment=None):
+    """Return the real-evidence plan for a deployment-scoped gate.
+
+    This is intentionally a pure decision helper so the contract tests can
+    prove that static mode never silently upgrades a gate, and that a full run
+    requires every declared dependency before setting ``implemented`` true.
+    """
+    spec = REAL_INTEGRATION_GATES.get(gate_id)
+    if spec is None:
+        return {"managed": False, "enabled": False, "implemented": None, "missing": [], "spec": None}
+    if environment is None:
+        environment = os.environ
+    missing = [name for name in spec["env"] if not str(environment.get(name, "")).strip()]
+    enabled = mode == "full" and not missing
+    return {
+        "managed": True,
+        "enabled": enabled,
+        "implemented": enabled,
+        "missing": missing,
+        "spec": spec,
+    }
+
 def sanitize(text):
     text = re.sub(r"(?i)(postgres(?:ql)?://[^\s/@:]+:)[^\s/@]+(@)", r"\1[REDACTED]\2", text)
     return re.sub(r"(?i)(password|secret|token)([=:])[^\s,}]+", r"\1\2[REDACTED]", text)
+
+
+def _process_group_members(pgid):
+    """Return live PIDs left in a probe's process group, or an error."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "pid=", "-g", str(pgid)],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        # BSD ps exits 1 when a valid process group has no remaining members;
+        # that is the successful empty-group result we need here.
+        if error.returncode == 1 and not error.stdout.strip():
+            return [], None
+        return None, error
+    except OSError as error:
+        return None, error
+    members = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line:
+            try:
+                members.append(int(line))
+            except ValueError:
+                return None, ValueError(f"invalid ps PID output: {line!r}")
+    return members, None
+
+
+def _terminate_process_group(pgid):
+    """Terminate leaked probe children and verify the process group is empty."""
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return [], None
+    except OSError as error:
+        return None, error
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        members, error = _process_group_members(pgid)
+        if error is not None or not members:
+            return members, error
+        time.sleep(0.02)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        return None, error
+    return _process_group_members(pgid)
 
 
 def run_probe(work, gate_id, side, command):
@@ -98,15 +219,42 @@ def run_probe(work, gate_id, side, command):
     acceptance_cache = os.environ.get("CHEESEWAF_ACCEPTANCE_GOCACHE", "/tmp/cheesewaf-acceptance-gocache")
     pathlib.Path(acceptance_cache).mkdir(parents=True, exist_ok=True)
     environment.update({"GOTOOLCHAIN": "local", "GOWORK": "off", "GOPROXY": "off", "GOCACHE": acceptance_cache})
-    result = subprocess.run(["bash", "-o", "pipefail", "-c", effective], cwd=ROOT, text=True, capture_output=True, env=environment)
-    raw = result.stdout + result.stderr
-    if result.returncode == 0 and command.startswith("go test "):
+    with tempfile.TemporaryFile(mode="w+t") as stdout_file, tempfile.TemporaryFile(mode="w+t") as stderr_file:
+        process = subprocess.Popen(
+            ["bash", "-o", "pipefail", "-c", effective],
+            cwd=ROOT,
+            text=True,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            env=environment,
+            start_new_session=True,
+        )
+        process.wait()
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout, stderr = stdout_file.read(), stderr_file.read()
+    returncode = process.returncode
+    members, group_error = _process_group_members(process.pid)
+    processes_stopped = group_error is None and not members
+    cleanup_evidence = f"process_group={process.pid}; remaining_pids={members or []}"
+    if group_error is not None:
+        processes_stopped = False
+        cleanup_evidence += f"; process_group_check_error={group_error}"
+    elif not processes_stopped:
+        members, terminate_error = _terminate_process_group(process.pid)
+        cleanup_evidence += f"; after_termination_pids={members or []}"
+        if terminate_error is not None:
+            cleanup_evidence += f"; process_group_termination_error={terminate_error}"
+        returncode = 1
+    raw = stdout + stderr
+    if returncode == 0 and command.startswith("go test "):
         if "--- PASS:" not in raw or ("[no tests to run]" in raw and "--- PASS:" not in raw) or "--- SKIP:" in raw:
-            result = subprocess.CompletedProcess(result.args, 1, result.stdout, result.stderr + "\nacceptance probe did not produce an unsuppressed passing test (skip/no-test detected)")
-    evidence = sanitize(result.stdout + result.stderr + f"\n[exit={result.returncode}]\n")
+            returncode = 1
+            stderr += "\nacceptance probe did not produce an unsuppressed passing test (skip/no-test detected)"
+    evidence = sanitize(stdout + stderr + f"\n[exit={returncode}]\n[{cleanup_evidence}]\n")
     log = work / f"{gate_id}.{side}.log"
     log.write_text(evidence, encoding="utf-8")
-    return ("pass" if result.returncode == 0 else "failed", command, evidence)
+    return ("pass" if returncode == 0 else "failed", command, evidence, processes_stopped)
 
 
 def main(argv=None):
@@ -141,14 +289,48 @@ def main(argv=None):
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     work = pathlib.Path(tempfile.mkdtemp(prefix="cheesewaf-acceptance-v2-", dir="/tmp"))
     runtime_removed = False
+    processes_stopped = True
     records = []
+    integration_results = {}
     get_started = "bash scripts/acceptance/get-started.sh --static-contract" if mode == "static" else "bash scripts/acceptance/get-started.sh --smoke"
     try:
         for gid, title, implemented, scope, blockers, pc, pa, nc, na in GATES:
+            integration = integration_plan(gid, mode)
+            blockers = list(blockers)
+            if integration["managed"]:
+                implemented = integration["implemented"]
+                if integration["missing"]:
+                    blockers.append(
+                        "real integration requires: " + ", ".join(integration["missing"])
+                    )
             pc = pc.format(get_started=get_started)
             nc = nc.format(get_started=get_started)
-            ps, _, pe = run_probe(work, gid, "positive", pc)
-            ns, _, ne = run_probe(work, gid, "negative", nc)
+            ps, _, pe, positive_processes_stopped = run_probe(work, gid, "positive", pc)
+            ns, _, ne, negative_processes_stopped = run_probe(work, gid, "negative", nc)
+            processes_stopped = processes_stopped and positive_processes_stopped and negative_processes_stopped
+            if integration["enabled"]:
+                # The catalog blockers describe the evidence gap in static
+                # mode. Once a full run has supplied every declared runtime
+                # dependency, those historical blockers must not remain on a
+                # passing record and imply that the gate is still blocked.
+                blockers = []
+                spec = integration["spec"]
+                cache_key = spec.get("cache_key", gid)
+                if cache_key not in integration_results:
+                    integration_results[cache_key] = run_probe(
+                        work, f"{gid}.real-integration", "positive", spec["command"]
+                    )
+                ips, _, ipe, integration_processes_stopped = integration_results[cache_key]
+                processes_stopped = processes_stopped and integration_processes_stopped
+                ps = "pass" if ps == "pass" and ips == "pass" else "failed"
+                pc = f"{pc} && {spec['command']}"
+                pe = pe + "\n[real integration]\n" + spec["evidence"] + "\n" + ipe
+                if ips != "pass":
+                    blockers.append("real integration probe failed")
+            if ps != "pass":
+                blockers.append("positive probe failed")
+            if ns != "pass":
+                blockers.append("negative probe failed")
             records.append({"id": gid, "title": title, "status": "pass" if implemented and ps == "pass" and ns == "pass" else "failed", "implemented": implemented, "scope": scope, "blockers": blockers, "positive": {"status": ps, "command": pc, "assertion": pa, "evidence": pe}, "negative": {"status": ns, "command": nc, "assertion": na, "evidence": ne}})
     finally:
         after = subprocess.run(["git", "status", "--porcelain=v1"], cwd=ROOT, text=True, capture_output=True, check=True).stdout
@@ -156,10 +338,11 @@ def main(argv=None):
         unchanged = hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
         shutil.rmtree(work, ignore_errors=True)
         runtime_removed = not work.exists()
-    records.append({"id": "cleanup_no_tracked_pollution", "title": "runtime/process cleanup and tracked-file pollution", "status": "pass" if tracked and unchanged else "failed", "implemented": True, "scope": "acceptance cleanup boundary", "blockers": [] if tracked and unchanged else ["tracked worktree or source template changed"], "positive": {"status": "pass" if tracked and unchanged else "failed", "command": "git status --porcelain=v1 before/after; sha256 configs/cheesewaf.yaml", "assertion": "tracked worktree and source config template are unchanged", "evidence": f"tracked_worktree_unchanged={tracked}; source_template_unchanged={unchanged}"}, "negative": {"status": "pass", "command": "subprocess children are awaited and temporary root is removed", "assertion": "all child processes are stopped and temporary runtime root is removed", "evidence": "processes_stopped=True; runtime_removed=True"}})
+    cleanup_ok = tracked and unchanged and processes_stopped and runtime_removed
+    records.append({"id": "cleanup_no_tracked_pollution", "title": "runtime/process cleanup and tracked-file pollution", "status": "pass" if cleanup_ok else "failed", "implemented": True, "scope": "acceptance cleanup boundary", "blockers": [] if cleanup_ok else ["tracked worktree, source template, process group, or runtime root changed"], "positive": {"status": "pass" if tracked and unchanged else "failed", "command": "git status --porcelain=v1 before/after; sha256 configs/cheesewaf.yaml", "assertion": "tracked worktree and source config template are unchanged", "evidence": f"tracked_worktree_unchanged={tracked}; source_template_unchanged={unchanged}"}, "negative": {"status": "pass" if cleanup_ok else "failed", "command": "probe process groups are checked after every child exits; temporary root is removed", "assertion": "all probe process groups are empty and temporary runtime root is removed", "evidence": f"processes_stopped={processes_stopped}; runtime_removed={runtime_removed}"}})
     passed = sum(x["status"] == "pass" for x in records)
     failed = sum(x["status"] == "failed" for x in records)
-    report = {"schema_version": 2, "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(), "repository": str(ROOT), "mode": mode, "summary": {"total": len(records), "passed": passed, "failed": failed, "skipped": 0}, "cleanup": {"runtime_removed": runtime_removed, "processes_stopped": True, "source_template_unchanged": unchanged, "tracked_worktree_unchanged": tracked}, "gates": records}
+    report = {"schema_version": 2, "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(), "repository": str(ROOT), "mode": mode, "summary": {"total": len(records), "passed": passed, "failed": failed, "skipped": 0}, "cleanup": {"runtime_removed": runtime_removed, "processes_stopped": processes_stopped, "source_template_unchanged": unchanged, "tracked_worktree_unchanged": tracked}, "gates": records}
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     markdown = ["# CheeseWAF acceptance matrix v2", "", f"Generated: {report['generated_at']}", f"Mode: {mode}; passed {passed} / failed {failed} / skipped 0", "", "Each gate has independently executed positive and negative evidence. Unconnected capabilities are failed with blockers; no gate is skipped.", "", "| Gate | Status | Implemented | Scope | Positive evidence | Negative evidence | Blockers |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for gate in records:

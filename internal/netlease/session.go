@@ -46,6 +46,10 @@ type TemporarySession struct {
 type BeginTemporarySessionRequest struct {
 	Identity AdministratorIdentity
 	TTL      time.Duration
+	// ExpiresAt is an optional hard upper bound inherited from the backing
+	// management session. It prevents a small scheduling gap between reading
+	// that session and Begin from extending a temporary capability past it.
+	ExpiresAt time.Time
 }
 
 // ConfirmationInput is the complete capability request approved by an
@@ -139,12 +143,19 @@ func (m *TemporarySessionManager) Begin(ctx context.Context, req BeginTemporaryS
 	if err != nil {
 		return TemporarySession{}, err
 	}
+	expiresAt := now.Add(req.TTL)
+	if !req.ExpiresAt.IsZero() && req.ExpiresAt.Before(expiresAt) {
+		expiresAt = req.ExpiresAt.UTC()
+	}
+	if !now.Before(expiresAt) {
+		return TemporarySession{}, ErrTemporarySessionExpired
+	}
 	session := TemporarySession{
 		ID:                  id,
 		AdministratorID:     req.Identity.ID,
 		ManagementSessionID: req.Identity.ManagementSessionID,
 		IssuedAt:            now,
-		ExpiresAt:           now.Add(req.TTL),
+		ExpiresAt:           expiresAt,
 	}
 	m.mu.Lock()
 	m.sessions[session.ID] = session
@@ -301,6 +312,32 @@ func (m *TemporarySessionManager) Get(id string) (TemporarySession, bool) {
 	defer m.mu.Unlock()
 	session, ok := m.sessions[id]
 	return session, ok
+}
+
+// ValidateActive verifies the temporary session and rechecks its backing
+// management session. Runtime brokers call this immediately before DNS so a
+// management revoke, expiry, or credential-epoch change fails closed.
+func (m *TemporarySessionManager) ValidateActive(ctx context.Context, id string) (TemporarySession, error) {
+	if m == nil || !validOpaque(id, 256) {
+		return TemporarySession{}, ErrTemporarySessionUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := m.now().UTC()
+	m.mu.Lock()
+	session, err := m.activeSessionLocked(id, now)
+	m.mu.Unlock()
+	if err != nil {
+		return TemporarySession{}, err
+	}
+	identity := AdministratorIdentity{ID: session.AdministratorID, ManagementSessionID: session.ManagementSessionID}
+	if err := m.authenticator.VerifySession(ctx, identity, now); err != nil {
+		return TemporarySession{}, wrapAdministratorSessionError(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeSessionLocked(id, now)
 }
 
 func (m *TemporarySessionManager) Confirmation(id string) (TemporaryConfirmation, bool) {

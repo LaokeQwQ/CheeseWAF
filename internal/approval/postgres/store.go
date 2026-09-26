@@ -53,6 +53,72 @@ func (s *Store) Close() error {
 	}
 	return s.db.Close()
 }
+
+// Health verifies that the complete approval persistence surface is usable.
+//
+// A plain Ping or epoch read can succeed while a revoked grant or a missing
+// approvals, events, or idempotency table prevents the Gate from recording a
+// decision. The probe deliberately performs the same bounded read/write
+// classes used by the approval ledger in one transaction, then rolls it back
+// unconditionally so readiness never creates durable approval data.
+func (s *Store) Health(ctx context.Context) error {
+	if s == nil || s.db == nil || ctx == nil {
+		return ErrInvalidStore
+	}
+	if err := s.db.PingContext(ctx); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var transactionID string
+	if err := tx.QueryRowContext(ctx, "SELECT txid_current()::text").Scan(&transactionID); err != nil {
+		return err
+	}
+	probeID := "approval-readiness-" + transactionID
+
+	// Read every table before attempting writes. These statements also make a
+	// missing table or revoked SELECT grant a readiness failure.
+	for _, query := range []string{
+		"SELECT 1 FROM cheesewaf_approvals LIMIT 1",
+		"SELECT 1 FROM cheesewaf_approval_events LIMIT 1",
+		"SELECT 1 FROM cheesewaf_approval_idempotency LIMIT 1",
+	} {
+		if _, err := tx.ExecContext(ctx, query); err != nil {
+			return err
+		}
+	}
+	var epoch uint64
+	if err := tx.QueryRowContext(ctx, "SELECT policy_epoch FROM cheesewaf_approval_epoch WHERE id=1 FOR UPDATE").Scan(&epoch); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return approval.ErrApprovalNotFound
+		}
+		return err
+	}
+
+	// Exercise INSERT grants for the ledger tables and UPDATE permission for
+	// the durable epoch checkpoint. Rollback below keeps all rows ephemeral.
+	if _, err := tx.ExecContext(ctx, "INSERT INTO cheesewaf_approvals(request_id,record_json,workflow_digest) VALUES($1,'{}'::jsonb,$2)", probeID, probeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE cheesewaf_approvals SET workflow_digest=$2,updated_at=now() WHERE request_id=$1", probeID, probeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO cheesewaf_approval_events(request_id,sequence,event_json,event_hash,previous_hash) VALUES($1,1,'{}'::jsonb,$2,'')", probeID, probeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO cheesewaf_approval_idempotency(idempotency_key,request_id,fingerprint) VALUES($1,$2,$3)", probeID, probeID, probeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE cheesewaf_approval_epoch SET policy_epoch=policy_epoch WHERE id=1"); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) Migrate(ctx context.Context) error {
 	if s == nil || s.db == nil || ctx == nil {
 		return ErrInvalidStore

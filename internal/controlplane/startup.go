@@ -107,6 +107,14 @@ type ConsensusBootstrap interface {
 	Health(context.Context) error
 }
 
+// ConsensusCommitRecoveryStore exposes the exact latest desired-state commit
+// retained by consensus. Bootstrap uses it only when consensus is exactly one
+// revision ahead of durable storage, which is the bounded crash window left
+// by the coordinator's consensus-before-PostgreSQL ordering.
+type ConsensusCommitRecoveryStore interface {
+	CurrentCommit(context.Context, string) (Commit, error)
+}
+
 // FenceBootstrap establishes the current leader/epoch fencing token after the
 // two durable snapshots have been compared. Implementations must prove that
 // the returned token is active for the supplied state; they must not fabricate
@@ -260,6 +268,13 @@ func Bootstrap(ctx context.Context, opts StartupOptions) (StartupResult, error) 
 	if err := opts.Consensus.Health(ctx); err != nil {
 		return fail(StartupStageConsensus, ErrStartupConsensus, "consensus health check failed", err)
 	}
+	// Native-raft may replay its log and install a new leadership term while
+	// Prepare/Health waits for readiness. Anchor the installation CAS after that
+	// recovery, while keeping writes frozen until the durable snapshot and
+	// current fence have both been verified. A later leadership change still
+	// invalidates this baseline and fails the final CAS.
+	opts.Machine.FreezeWrites("control-plane startup incomplete")
+	installBaseline = opts.Machine.Snapshot()
 	if err := ctx.Err(); err != nil {
 		return fail(StartupStageConsensus, ErrStartupConsensus, "startup context canceled before consensus snapshot", err)
 	}
@@ -297,14 +312,17 @@ func Bootstrap(ctx context.Context, opts StartupOptions) (StartupResult, error) 
 			if err := authorizeInitialState(ctx, opts.InitialAuthorizer, request); err != nil {
 				return fail(StartupStageSnapshot, ErrStartupInitialState, "administrator did not authorize initial-state recovery", err)
 			}
-			commit, createErr := startupCommitFromState(consensusState, request.Nonce)
-			if createErr != nil {
-				return fail(StartupStageSnapshot, ErrStartupDiverged, "consensus initial commit is invalid", createErr)
+			commit, recoveryErr := exactInitialConsensusCommit(ctx, opts.Consensus, clusterID, request, consensusState)
+			if recoveryErr != nil {
+				return fail(StartupStageSnapshot, ErrStartupDiverged, "consensus initial commit recovery is not exact", recoveryErr)
 			}
-			if createErr = opts.Durable.AppendCommit(ctx, commit); createErr != nil {
-				return fail(StartupStageDurable, ErrStartupDurable, "initial desired state durable recovery failed", createErr)
+			if recoveryErr = opts.Durable.AppendCommit(ctx, commit); recoveryErr != nil {
+				return fail(StartupStageDurable, ErrStartupDurable, "initial desired state durable recovery failed", recoveryErr)
 			}
-			durableState = consensusState
+			// Preserve the original Raft commit verbatim. If leadership changed
+			// after that commit, the normal divergence path below persists the
+			// newer leadership metadata as a separate checkpoint.
+			durableState = commit.State
 		case durableInitial && startupPayloadEmpty(consensusState):
 			if consensusMissing || consensusState.LeaderID == "" || consensusState.Term == 0 || consensusState.Epoch == 0 || consensusState.WriteFrozen {
 				return fail(StartupStageSnapshot, ErrStartupDiverged, "consensus recovery requires an active leader-only baseline", nil)
@@ -324,6 +342,27 @@ func Bootstrap(ctx context.Context, opts StartupOptions) (StartupResult, error) 
 			}
 			consensusState = commit.State
 		}
+	}
+	// A coordinator freezes further proposals after consensus succeeds and the
+	// durable append fails, so a valid crash-recovery gap is exactly one
+	// revision. Revision zero to one remains protected by the explicit initial
+	// state authorization path above and is never recovered implicitly.
+	if durableState.Revision > 0 && consensusState.Revision == durableState.Revision+1 {
+		recovery, ok := opts.Consensus.(ConsensusCommitRecoveryStore)
+		if !ok || isNilStartupDependency(recovery) {
+			return fail(StartupStageSnapshot, ErrStartupDiverged, "consensus is ahead but cannot provide the exact commit", nil)
+		}
+		commit, recoveryErr := recovery.CurrentCommit(ctx, clusterID)
+		if recoveryErr != nil {
+			return fail(StartupStageSnapshot, ErrStartupDiverged, "consensus-ahead exact commit lookup failed", recoveryErr)
+		}
+		if recoveryErr = validateConsensusAheadRecovery(durableState, consensusState, commit); recoveryErr != nil {
+			return fail(StartupStageSnapshot, ErrStartupDiverged, "consensus-ahead exact commit validation failed", recoveryErr)
+		}
+		if recoveryErr = opts.Durable.AppendCommit(ctx, commit); recoveryErr != nil {
+			return fail(StartupStageDurable, ErrStartupDurable, "consensus-ahead durable recovery failed", recoveryErr)
+		}
+		durableState = commit.State
 	}
 	if startupPayloadEmpty(durableState) && startupPayloadEmpty(consensusState) {
 		if opts.InitialState == nil {
@@ -380,7 +419,7 @@ func Bootstrap(ctx context.Context, opts StartupOptions) (StartupResult, error) 
 	if err := ctx.Err(); err != nil {
 		return fail(StartupStageConsensus, ErrStartupConsensus, "startup context canceled after consensus state", err)
 	}
-	if startupSnapshotRegresses(previous, durableState) {
+	if startupSnapshotRegresses(previous, durableState) || startupSnapshotRegresses(installBaseline, durableState) {
 		return fail(StartupStageSnapshot, ErrStartupDiverged, "startup snapshot regresses the local last-known-good state", nil)
 	}
 	candidate, err := NewStateMachine(clusterID, nil)
@@ -563,6 +602,85 @@ func startupCommitForLeadership(clusterID string, leadership State, request Init
 
 func startupPayloadEquivalent(a, b State) bool {
 	return a.ClusterID == b.ClusterID && a.Revision == b.Revision && a.Desired.Version == b.Desired.Version && a.Desired.Digest == b.Desired.Digest && string(a.Desired.Payload) == string(b.Desired.Payload) && sameNonceLedger(a.NonceLedger, b.NonceLedger)
+}
+
+func exactInitialConsensusCommit(ctx context.Context, consensus ConsensusBootstrap, clusterID string, request InitialStateRequest, current State) (Commit, error) {
+	recovery, ok := consensus.(ConsensusCommitRecoveryStore)
+	if !ok || isNilStartupDependency(recovery) {
+		return Commit{}, fmt.Errorf("consensus cannot provide the exact initial commit")
+	}
+	commit, err := recovery.CurrentCommit(ctx, clusterID)
+	if err != nil {
+		return Commit{}, err
+	}
+	if commit.State.ClusterID != clusterID || !startupInitialStateMatches(commit.State, request) || !initialRequestMatchesCommit(request, commit) ||
+		commit.State.FreezeReason != "" || commit.State.UpdatedAt.IsZero() {
+		return Commit{}, ErrInvalidCommit
+	}
+	reconstructed, err := startupCommitFromState(commit.State, request.Nonce)
+	if err != nil || !commitsEquivalent(reconstructed, commit) {
+		return Commit{}, ErrInvalidCommit
+	}
+	if !startupPayloadEquivalent(commit.State, current) || current.WriteFrozen || current.FreezeReason != "" || current.UpdatedAt.IsZero() {
+		return Commit{}, ErrInvalidCommit
+	}
+	if startupLeadershipEquivalent(commit.State, current) {
+		if !statesEquivalent(commit.State, current) {
+			return Commit{}, ErrInvalidCommit
+		}
+		return commit, nil
+	}
+	if err := validateLeadershipCheckpoint(commit.State, current); err != nil {
+		return Commit{}, err
+	}
+	if current.UpdatedAt.Before(commit.State.UpdatedAt) {
+		return Commit{}, ErrInvalidCommit
+	}
+	return commit, nil
+}
+
+func validateConsensusAheadRecovery(durable, consensus State, commit Commit) error {
+	if durable.Revision == 0 || consensus.Revision != durable.Revision+1 || commit.State.Revision != consensus.Revision || !startupPayloadEquivalent(commit.State, consensus) {
+		return ErrInvalidCommit
+	}
+	if !ValidIdentity(commit.State.ClusterID) || !ValidIdentity(commit.State.LeaderID) || !ValidIdentity(commit.State.Desired.Version) || !ValidIdentity(commit.Fence.Nonce) ||
+		commit.State.ClusterID != durable.ClusterID || commit.State.WriteFrozen || commit.State.FreezeReason != "" || commit.State.UpdatedAt.IsZero() || len(commit.State.Desired.Payload) == 0 ||
+		commit.State.Desired.Digest != Digest(commit.State.Desired.Payload) || commit.Fence.ClusterID != commit.State.ClusterID || commit.Fence.LeaderID != commit.State.LeaderID ||
+		commit.Fence.Epoch != commit.State.Epoch || commit.Fence.Revision != commit.State.Revision || commit.Fence.Digest != commit.State.Desired.Digest ||
+		!nonceLedgerExtends(durable.NonceLedger, commit.State.NonceLedger, commit.Fence.Nonce, commit.State.Revision) {
+		return ErrInvalidCommit
+	}
+	if commit.State.Term < durable.Term || commit.State.Epoch < durable.Epoch {
+		return ErrStaleEpoch
+	}
+	if commit.State.UpdatedAt.Before(durable.UpdatedAt) || consensus.UpdatedAt.Before(commit.State.UpdatedAt) {
+		return ErrInvalidCommit
+	}
+	if commit.State.Epoch == durable.Epoch && (commit.State.Term != durable.Term || commit.State.LeaderID != durable.LeaderID) {
+		return ErrInvalidCommit
+	}
+	if commit.State.Epoch > durable.Epoch && commit.State.Term <= durable.Term {
+		return ErrStaleEpoch
+	}
+	if startupLeadershipEquivalent(commit.State, consensus) && !statesEquivalent(commit.State, consensus) {
+		return ErrInvalidCommit
+	}
+	return nil
+}
+
+func nonceLedgerExtends(current, next map[string]Revision, nonce string, revision Revision) bool {
+	if len(next) != len(current)+1 || next[nonce] != revision {
+		return false
+	}
+	if _, exists := current[nonce]; exists {
+		return false
+	}
+	for existing, existingRevision := range current {
+		if next[existing] != existingRevision {
+			return false
+		}
+	}
+	return true
 }
 
 func startupLeadershipEquivalent(a, b State) bool {

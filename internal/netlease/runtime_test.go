@@ -620,6 +620,37 @@ func TestTLSConfigForLeaseKeepsStandardVerificationEnabled(t *testing.T) {
 	}
 }
 
+func TestTLSPolicyAllowsExplicitPeerIdentityWithLeafVerifier(t *testing.T) {
+	lease := Lease{
+		Target:         Target{Host: "203.0.113.20", Port: 443, Protocol: "https"},
+		TLSFingerprint: testTLSFingerprint,
+	}
+	policy := &TLSPolicy{
+		Config: &tls.Config{ServerName: "control-plane"},
+		VerifyLeaf: func(*x509.Certificate) error {
+			return nil
+		},
+	}
+	snapshot, err := snapshotTLSPolicy(RequestScope{Target: lease.Target}, policy)
+	if err != nil {
+		t.Fatalf("snapshot alternate peer identity: %v", err)
+	}
+	config, err := tlsConfigForLease(lease, snapshot)
+	if err != nil {
+		t.Fatalf("build alternate peer identity config: %v", err)
+	}
+	if config.InsecureSkipVerify || config.ServerName != "control-plane" {
+		t.Fatalf("alternate peer TLS identity weakened or lost: insecure=%v server_name=%q", config.InsecureSkipVerify, config.ServerName)
+	}
+}
+
+func TestTLSPolicyRejectsAlternateServerNameWithoutLeafVerifier(t *testing.T) {
+	_, err := snapshotTLSPolicy(RequestScope{Target: Target{Host: "203.0.113.20", Port: 443, Protocol: "https"}}, &TLSPolicy{Config: &tls.Config{ServerName: "control-plane"}})
+	if !errors.Is(err, ErrTLSPolicy) {
+		t.Fatalf("alternate TLS server name without leaf verifier error=%v, want %v", err, ErrTLSPolicy)
+	}
+}
+
 func TestTemporaryConfirmationIsBoundOneTimeAndSessionRevocationWins(t *testing.T) {
 	now := time.Unix(1_700_000_100, 0).UTC()
 	auth := &testAdministratorAuthenticator{sessionAllowed: true, passwordAllowed: true}

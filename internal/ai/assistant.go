@@ -58,6 +58,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 	if err := GuardToolAccessForActor(actor, tool, DefaultRoleToolPolicy()); err != nil {
 		return nil, err
 	}
+	executionCtx := ctx
 	if tool.Sensitivity() != ReadOnly {
 		if a.approvals == nil || !a.approvals.CanPersistModifications() {
 			return nil, fmt.Errorf("approval persistence is unavailable; modification tools are disabled")
@@ -68,15 +69,9 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 				return nil, ErrHighRiskApprovalUnavailable
 			}
 			if approvalID == "" {
-				preview := ""
-				diff := ""
-				if previewer, ok := tool.(ToolPreviewer); ok {
-					var err error
-					diff, err = previewer.Preview(ctx, args)
-					if err != nil {
-						return nil, err
-					}
-					preview = diff
+				diff, preview, err := previewForTool(ctx, tool, args)
+				if err != nil {
+					return nil, err
 				}
 				request, err := a.gateApproval.CreateForWithPreview(tool, args, diff, preview, actor)
 				if err != nil {
@@ -84,28 +79,19 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 				}
 				return &ToolExecution{Approval: &request}, nil
 			}
-			preview := ""
-			if previewer, ok := tool.(ToolPreviewer); ok {
-				var err error
-				preview, err = previewer.Preview(ctx, args)
-				if err != nil {
-					return nil, err
-				}
+			_, preview, err := previewForTool(ctx, tool, args)
+			if err != nil {
+				return nil, err
 			}
 			if _, err := a.gateApproval.BeginExecutionForWithPreview(approvalID, name, args, preview, actor); err != nil {
 				return nil, fmt.Errorf("tool %q requires gate-backed approved request: %w", name, err)
 			}
+			executionCtx = ContextWithToolPreviewBinding(ctx, preview)
 		} else {
 			if approvalID == "" {
-				diff := ""
-				preview := ""
-				if previewer, ok := tool.(ToolPreviewer); ok {
-					var err error
-					diff, err = previewer.Preview(ctx, args)
-					if err != nil {
-						return nil, err
-					}
-					preview = diff
+				diff, preview, err := previewForTool(ctx, tool, args)
+				if err != nil {
+					return nil, err
 				}
 				request, err := a.approvals.CreateForWithPreview(tool, args, diff, preview, actor)
 				if err != nil {
@@ -113,17 +99,14 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 				}
 				return &ToolExecution{Approval: &request}, nil
 			}
-			preview := ""
-			if previewer, ok := tool.(ToolPreviewer); ok {
-				var err error
-				preview, err = previewer.Preview(ctx, args)
-				if err != nil {
-					return nil, err
-				}
+			_, preview, err := previewForTool(ctx, tool, args)
+			if err != nil {
+				return nil, err
 			}
 			if _, err := a.approvals.BeginExecutionForWithPreview(approvalID, name, args, preview, actor); err != nil {
-				return nil, fmt.Errorf("tool %q requires approved request", name)
+				return nil, fmt.Errorf("tool %q requires approved request: %w", name, err)
 			}
+			executionCtx = ContextWithToolPreviewBinding(ctx, preview)
 		}
 	} else {
 		// Read-only tools never create approval requests, so an approval id
@@ -135,7 +118,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		// ids around.
 		approvalID = ""
 	}
-	result, err := tool.Execute(ctx, args)
+	result, err := tool.Execute(executionCtx, args)
 	if err != nil {
 		if approvalID != "" {
 			if tool.Sensitivity() == Destructive && a.gateApproval != nil {
@@ -162,6 +145,24 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		}
 	}
 	return execution, nil
+}
+
+func previewForTool(ctx context.Context, tool Tool, args map[string]any) (diff, binding string, err error) {
+	if resolver, ok := tool.(ToolPreviewResolver); ok {
+		diff, binding, err = resolver.ResolvePreview(ctx, args)
+		if err != nil {
+			return "", "", err
+		}
+		if binding == "" {
+			binding = diff
+		}
+		return diff, binding, nil
+	}
+	if previewer, ok := tool.(ToolPreviewer); ok {
+		diff, err = previewer.Preview(ctx, args)
+		return diff, diff, err
+	}
+	return "", "", nil
 }
 
 func (a *Assistant) Approve(id string) (ApprovalRequest, error) {

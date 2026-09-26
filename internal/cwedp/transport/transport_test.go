@@ -34,6 +34,16 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 )
 
+type testLeaseBoundAdapter struct {
+	Adapter
+	closed bool
+}
+
+func (a *testLeaseBoundAdapter) Close() error {
+	a.closed = true
+	return nil
+}
+
 func TestNewHTTPAdapterPreservesLeaseBinding(t *testing.T) {
 	scope := netlease.RequestScope{
 		PluginID:       "plugin",
@@ -271,17 +281,19 @@ func TestPullerRejectsUnboundAdapterProviderBeforeOpen(t *testing.T) {
 	protocolBroker := cwedp.NewBroker(cwedp.BrokerConfig{Registry: registry.ProtocolRegistry(), ResumeStore: store, LeaseVerifier: allowLease{}, MinIndependentSources: 1})
 	providerCalls := 0
 	opened := false
+	var issued *testLeaseBoundAdapter
 	puller, err := NewPuller(PullerConfig{
 		Broker:      protocolBroker,
 		ResumeStore: store,
 		Registry:    registry,
 		ChunkSize:   4,
-		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (Adapter, error) {
+		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (LeaseBoundAdapter, error) {
 			providerCalls++
-			return AdapterFunc(func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (io.ReadCloser, error) {
+			issued = &testLeaseBoundAdapter{Adapter: AdapterFunc(func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (io.ReadCloser, error) {
 				opened = true
 				return io.NopCloser(bytes.NewReader(data)), nil
-			}), nil
+			})}
+			return issued, nil
 		},
 	})
 	if err != nil {
@@ -300,6 +312,9 @@ func TestPullerRejectsUnboundAdapterProviderBeforeOpen(t *testing.T) {
 	}
 	if providerCalls != 1 || opened {
 		t.Fatalf("providerCalls=%d opened=%v, want one provider call and no adapter I/O", providerCalls, opened)
+	}
+	if issued == nil || !issued.closed {
+		t.Fatal("invalid provider adapter was not closed")
 	}
 	state, loadErr := store.Load(context.Background(), intent.ID)
 	if loadErr != nil {
@@ -333,9 +348,14 @@ func TestPullerUsesLeaseBoundAdapterProvider(t *testing.T) {
 		Broker:      protocolBroker,
 		ResumeStore: store,
 		Registry:    registry,
-		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (Adapter, error) {
+		Production:  true,
+		IntentVerifier: IntentSignatureVerifierFunc(func(cwedp.DistributionIntent) error {
+			return nil
+		}),
+		CRPImportOptions: &crp.ImportOptions{},
+		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (LeaseBoundAdapter, error) {
 			providerCalls++
-			return NewHTTPAdapter(netBroker, lease.ID, scope), nil
+			return NewHTTPAdapterWithRelease(netBroker, lease.ID, scope, func() error { return netBroker.Revoke(lease.ID) }), nil
 		},
 	})
 	if err != nil {
@@ -353,6 +373,32 @@ func TestPullerUsesLeaseBoundAdapterProvider(t *testing.T) {
 	}
 }
 
+func TestProductionPullerRejectsStaticOnlineAdapter(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	nodeID, tlsConfig := onlineTLSIdentityForServer(t, server)
+	fingerprint := CertificateFingerprint(server.Certificate())
+	netBroker, lease, scope := issueHTTPTestLease(t, server, fingerprint)
+	source := cwedp.Source{Kind: cwedp.SourceOTA, ID: "ota"}
+	registry := mustRegistry(t, Endpoint{Source: source, URL: server.URL, Root: "root-ota", IndependenceGroup: "ota", NodeID: nodeID, CertificateFingerprint: fingerprint, TLSConfig: tlsConfig, Adapter: NewHTTPAdapter(netBroker, lease.ID, scope)})
+	store := cwedp.NewMemoryResumeStore()
+	protocolBroker := cwedp.NewBroker(cwedp.BrokerConfig{Registry: registry.ProtocolRegistry(), ResumeStore: store, LeaseVerifier: allowLease{}, MinIndependentSources: 1})
+	_, err := NewPuller(PullerConfig{
+		Broker:           protocolBroker,
+		ResumeStore:      store,
+		Registry:         registry,
+		Production:       true,
+		IntentVerifier:   IntentSignatureVerifierFunc(func(cwedp.DistributionIntent) error { return nil }),
+		CRPImportOptions: &crp.ImportOptions{},
+		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (LeaseBoundAdapter, error) {
+			return NewHTTPAdapterWithRelease(netBroker, lease.ID, scope, func() error { return netBroker.Revoke(lease.ID) }), nil
+		},
+	})
+	if !errors.Is(err, ErrPullConfig) {
+		t.Fatalf("production puller accepted static adapter: %v", err)
+	}
+}
+
 func TestPullerRejectsNilAdapterFromOnlineProvider(t *testing.T) {
 	source := cwedp.Source{Kind: cwedp.SourceOTA, ID: "ota"}
 	registry := mustRegistry(t, Endpoint{Source: source, URL: "https://ota.example/artifact", Root: "root-ota", IndependenceGroup: "ota", CertificateFingerprint: "sha256:" + strings.Repeat("a", 64)})
@@ -362,7 +408,7 @@ func TestPullerRejectsNilAdapterFromOnlineProvider(t *testing.T) {
 		Broker:      protocolBroker,
 		ResumeStore: store,
 		Registry:    registry,
-		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (Adapter, error) {
+		AdapterProvider: func(context.Context, Endpoint, cwedp.DistributionIntent, cwedp.Hello, cwedp.Capabilities, int64) (LeaseBoundAdapter, error) {
 			return nil, nil
 		},
 	})

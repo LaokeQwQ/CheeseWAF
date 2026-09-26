@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,15 @@ type approvalHTTPFixture struct {
 	gate    *approval.Gate
 	now     time.Time
 	clock   *time.Time
+}
+
+type approvalHTTPFailingPersistence struct {
+	*approval.MemoryPersistence
+	err error
+}
+
+func (p approvalHTTPFailingPersistence) Apply(context.Context, approval.ApprovalMutation) error {
+	return p.err
 }
 
 func newApprovalHTTPFixture(t *testing.T, withVerifier bool) approvalHTTPFixture {
@@ -42,6 +52,20 @@ func newApprovalHTTPFixture(t *testing.T, withVerifier bool) approvalHTTPFixture
 		t.Fatal("NewApprovalHTTPHandler returned nil")
 	}
 	return approvalHTTPFixture{handler: h, gate: gate, now: now, clock: clock}
+}
+
+func TestApprovalHTTPHandlerPolicyEpochComesFromGate(t *testing.T) {
+	gate := approval.NewGate(17)
+	h := NewApprovalHTTPHandler(ApprovalHTTPOptions{Gate: gate})
+	if got := h.PolicyEpoch(); got != 17 {
+		t.Fatalf("handler policy epoch = %d, want 17", got)
+	}
+	if err := gate.AdvanceEpoch(18); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.PolicyEpoch(); got != 18 {
+		t.Fatalf("handler policy epoch after gate advance = %d, want 18", got)
+	}
 }
 
 func (f *approvalHTTPFixture) advance(d time.Duration) {
@@ -228,11 +252,62 @@ func TestApprovalHTTPConfirmationFailsClosedWithoutCredentialVerifier(t *testing
 	f.advance(approval.WarningDelay)
 	body := "{\"confirmation_id\":\"" + challenge.ConfirmationID + "\",\"confirmation_phrase\":\"" + challenge.Phrase + "\",\"password\":\"secret\",\"second_confirmation\":true}"
 	recorder := confirmApprovalHTTP(t, f, record, body, "operator", "session-operator", "127.0.0.1:1234")
-	if recorder.Code != http.StatusServiceUnavailable && recorder.Code != http.StatusForbidden {
+	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("missing verifier code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if got, _ := f.gate.Get(record.ID); got.Status != approval.StatusPending {
 		t.Fatalf("missing verifier authorized request: %+v", got)
+	}
+}
+
+func TestApprovalHTTPVerifierUnavailablePreservesSentinelAndRedactsCause(t *testing.T) {
+	f := newApprovalHTTPFixture(t, false)
+	backendErr := errors.Join(ErrApprovalVerifierUnavailable, errors.New("postgres password=do-not-expose"))
+	f.handler.passwordVerifier = func(context.Context, ApprovalSession, string) (ApprovalCredentialProof, error) {
+		return ApprovalCredentialProof{}, backendErr
+	}
+	record := submitApprovalHTTP(t, f, "http-verifier-unavailable")
+	challenge := startApprovalHTTP(t, f, record)
+	f.advance(approval.WarningDelay)
+	body := "{\"confirmation_id\":\"" + challenge.ConfirmationID + "\",\"confirmation_phrase\":\"" + challenge.Phrase + "\",\"password\":\"secret\",\"second_confirmation\":true}"
+
+	request := approvalHTTPRequest(http.MethodPost, "/api/approvals/"+record.ID+"/confirmation", body, "operator", "session-operator", "admin", "127.0.0.1:1234")
+	proof, err := f.handler.verifyApprovalCredentials(request, ApprovalSession{Subject: "operator", SessionID: "session-operator"}, approvalConfirmPayload{Password: "secret"})
+	if proof.valid() || !errors.Is(err, ErrApprovalVerifierUnavailable) {
+		t.Fatalf("verifier error=%v proof=%+v, want unavailable sentinel and no proof", err, proof)
+	}
+
+	recorder := confirmApprovalHTTP(t, f, record, body, "operator", "session-operator", "127.0.0.1:1234")
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "APPROVAL_CREDENTIAL_VERIFIER_UNAVAILABLE") {
+		t.Fatalf("unavailable verifier code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "do-not-expose") || strings.Contains(recorder.Body.String(), "postgres") {
+		t.Fatalf("unavailable verifier leaked backend details: %s", recorder.Body.String())
+	}
+	if got, _ := f.gate.Get(record.ID); got.Status != approval.StatusPending {
+		t.Fatalf("unavailable verifier authorized request: %+v", got)
+	}
+}
+
+func TestApprovalHTTPDurableSubmitFailureIsServiceUnavailableAndRedacted(t *testing.T) {
+	backendErr := errors.New("dial postgres with password=do-not-expose")
+	persistence := approvalHTTPFailingPersistence{MemoryPersistence: approval.NewMemoryPersistence(), err: backendErr}
+	gate, err := approval.NewGateWithPersistence(7, persistence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewApprovalHTTPHandler(ApprovalHTTPOptions{Gate: gate})
+	recorder := httptest.NewRecorder()
+	request := approvalHTTPRequest(http.MethodPost, "/api/approvals", `{"id":"http-durable-failure","risk":"high","scope":"site:primary","policy_epoch":7,"ttl":"1m","confirmation_language":"en-US"}`, "operator", "session-operator", "admin", "127.0.0.1:1234")
+	h.SubmitApproval(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "APPROVAL_BACKEND_UNAVAILABLE") {
+		t.Fatalf("durable failure code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "do-not-expose") || strings.Contains(recorder.Body.String(), "postgres") {
+		t.Fatalf("durable failure leaked backend details: %s", recorder.Body.String())
+	}
+	if _, ok := gate.Get("http-durable-failure"); ok {
+		t.Fatal("failed durable submit became visible")
 	}
 }
 

@@ -454,6 +454,39 @@ func TestValidateStartupUsersAllowsIncompleteFirstRun(t *testing.T) {
 	}
 }
 
+func TestFirstInstallPendingRequiresEmptyManagementStore(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := storage.OpenSQLite(filepath.Join(dataDir, "cheesewaf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := firstInstallPending(ctx, dataDir, store); err != nil || !pending {
+		t.Fatalf("empty first-install pending=%t err=%v, want true", pending, err)
+	}
+	if err := store.CreateUser(ctx, &storage.User{Username: "admin", PasswordHash: "hash", Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := firstInstallPending(ctx, dataDir, store); err != nil || pending {
+		t.Fatalf("existing administrator without marker pending=%t err=%v, want false", pending, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := firstInstallPending(ctx, dataDir, store); err == nil || pending {
+		t.Fatalf("unavailable management store pending=%t err=%v, want fail closed", pending, err)
+	}
+	if err := setup.MarkComplete(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := firstInstallPending(ctx, dataDir, store); err != nil || pending {
+		t.Fatalf("completed marker pending=%t err=%v, want false", pending, err)
+	}
+}
+
 func TestAdminHandlerServesSPAAndKeepsAPI(t *testing.T) {
 	webDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-ui"), 0o644); err != nil {
