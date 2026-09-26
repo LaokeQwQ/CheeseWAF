@@ -246,6 +246,12 @@ func (p *productionTemporaryNetworkProvider) boundTTL(ctx context.Context, ident
 	}
 	session, err := p.management.GetSession(ctx, identity.ManagementSessionID, identity.ID)
 	if err != nil {
+		// A provider shutdown cancels the operation context while a backing
+		// store lookup may still be unwinding. Preserve cancellation as the
+		// authoritative result instead of leaking a stale session-denied error.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, time.Time{}, ctxErr
+		}
 		return 0, time.Time{}, fmt.Errorf("load management session: %w", err)
 	}
 	if session == nil {
