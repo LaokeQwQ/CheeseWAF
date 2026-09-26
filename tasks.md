@@ -1339,3 +1339,5 @@ Windows runner 复核发现 POSIX 权限/目录 fsync 相关测试不能由 `chm
 随后 Ubuntu runner 的 `TestApplyCommittedTimeoutReleasesSequencerButRetainsOSLease` 在 1 秒启动观察窗内受并行/race 负载影响未见 callback；本地 `-race -count=20` 稳定通过。测试仅放宽启动观察窗至 5 秒，仍保留 10ms runtime timeout 与所有租约/补偿断言，不改变生产超时语义。
 
 MacOS runner 继续暴露临时网络 provider 关闭竞态：存储 lookup 在 provider context 已取消后可能先返回旧的 session-denied 错误。`boundTTL` 现在优先返回 `ctx.Err()`，保证关闭/取消语义不被后端错误覆盖；网络权限、租约和会话校验逻辑未放宽。
+
+随后 Ubuntu runner 捕获到同一关闭窗口在 broker 清理阶段返回 `invalid socket lease`；`ExecuteTemporaryHTTP` 现在也优先传播已取消的 operation context，避免把二次清理错误暴露给调用方。

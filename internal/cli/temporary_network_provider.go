@@ -111,7 +111,16 @@ func (p *productionTemporaryNetworkProvider) ExecuteTemporaryHTTP(ctx context.Co
 	}
 	req.TTL = ttl
 	req.ManagementSessionExpiresAt = managementExpiry
-	return p.broker.ExecuteTemporaryHTTP(opCtx, req)
+	response, err := p.broker.ExecuteTemporaryHTTP(opCtx, req)
+	if err != nil {
+		// Broker cleanup can race provider shutdown after a lease is issued.
+		// Preserve the cancellation cause instead of leaking a secondary
+		// invalid-lease error to the caller.
+		if ctxErr := opCtx.Err(); ctxErr != nil {
+			return netlease.HTTPResponse{}, ctxErr
+		}
+	}
+	return response, err
 }
 
 func (p *productionTemporaryNetworkProvider) CWEDPAdapter(ctx context.Context, req ProductionCWEDPLeaseRequest) (transport.LeaseBoundAdapter, error) {
