@@ -1310,3 +1310,20 @@ Pages 锁文件原有 `devalue@5.9.0` moderate DoS 告警已通过只更新传�
 - 本地回归：`python3 -m unittest scripts/acceptance/matrix_v2_test.py` 和 `bash scripts/acceptance/acceptance-matrix_test.sh` 通过；`git diff --check` 待本轮文档更新后再执行。
 
 遗留风险：该证据证明单台公网测试节点上的生产组合和公网 egress，不等于多节点长期部署、Cloudflare 生产资源、稳定发布或远端 CI/CodeQL 已完成。下一步先运行仓内全套静态/构建/产物门禁，再提交并检查 GitHub Actions/CodeQL；只有远端门禁与依赖 PR 收口后才晋升 `master` 和重建稳定版 `v0.3.9`。
+
+### 2026-09-26 当前 HEAD 公网验收复核
+
+本轮针对当前提交 `84ec2e43cee3f42bdd45830bfe22c1d28a6dd8f0`，重新使用用户提供的 Debian 13 amd64 公网测试节点（`156.239.4.159`）执行真实组合验收；服务器既有服务未替换，测试使用隔离 PostgreSQL 数据库、Redis 实例标识、`0700` CRP registry、权限为 `0700` 的私有临时目录和 TCP `49152` 临时监听。没有把密码、DSN、证书 pin 或运行时数据写入仓库。
+
+首轮集成探针因 Debian `/tmp` 为 `0777` 被 process-sidecar 安全门禁拒绝；未修改生产校验，改用权限为 `0700` 的私有 `TMPDIR` 后重跑。Go 依赖使用服务器现有 Go `1.26.6`、PostgreSQL `17.11`、Redis `8.0.2`，目标源文件与本机 SHA-256 一致。
+
+验证结果：`go test -race -count=1 -timeout=30m ./internal/cli/migration -run '^TestPostgres.*$'` 通过；`TestRunServeProductionRealListenerAndSessionRoute`、`TestRunServeProductionCRPActivationAndRollback`、`TestRunServeProductionTemporaryHTTPRoute`、`TestRunServeProductionCWEDPDownloadRoute` 全部通过。当前 HEAD 的 `python3 scripts/acceptance/matrix.py --full` 结果为 **23 passed、0 failed、0 skipped**；清理证据为 `processes_stopped=true`、`runtime_removed=true`、`source_template_unchanged=true`、`tracked_worktree_unchanged=true`。报告已拷回本机 `/tmp/cheesewaf-acceptance-full-84ec2e43.json`，SHA-256 为 `10a461e7bf393b62e1b17821dc9c161ec2283c0037c153339e0de201b0db2d3e`，未加入 Git。
+
+边界仍明确：这证明单台公网节点上的当前 HEAD 生产组合、session/CRP/CWEDP 和临时 HTTPS 证据，不替代 GitHub 远端 required checks、CodeQL、Cloudflare 生产资源或多节点长期部署证据；远端 Git smart-HTTP 当前仍不可达，推送、PR、晋升和发行尚未发生。
+
+### 2026-09-26 Dependabot 配对收口
+
+- React 依赖按 peer 约束成对升级：`react`、`react-dom`、`@types/react`、`@types/react-dom` 统一到 `19.3.0`，同步锁文件中的 `scheduler` 和 React 类型依赖；`npm ci --ignore-scripts`、14 项 CAPTCHA contract、4 项脚本测试、470 项 Vitest、typecheck、96 个产物构建和 `npm-audit-gate` 均通过。
+- React 19 回归修复：验证码拒绝结果测试改为在异步 `act` 中推进定时器；运维报表忽略 Select 初始化产生的空值，并按字段跟踪用户编辑，保存时以最新任务数据补齐未编辑字段。新 React 类型要求的可空 `useRef` 均已显式初始化。修复后 2 个定向测试文件（32 项）通过，完整 Web 门禁 470 项通过，typecheck、构建预算、96 个产物边界检查和 npm audit gate 均通过。
+- Dependabot 配置移除仓库不存在的 `security` label，保留可用的 `dependencies`/`ci` 标签，避免后续更新 PR 反复出现标签错误。
+- GitHub #460/#461 的半套 React 更新由上述统一变更覆盖；在统一变更进入 `dev` 并确认远端门禁前，不宣称这两个 PR 已关闭或已合并。

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Archive, Database, Edit3, History, Plus, RotateCcw, Trash2 } from 'lucide-react';
@@ -45,6 +45,15 @@ type DurationUnit = 'm' | 'h' | 'd';
 type TaskFormValues = ScheduledTask & {
   everyValue?: number;
   everyUnit?: DurationUnit;
+};
+
+type ReportFormValues = {
+  enabled: boolean;
+  frequency: string;
+  at: string;
+  channel: string;
+  recipient: string;
+  period: string;
 };
 
 const durationUnitOptions: DurationUnit[] = ['m', 'h', 'd'];
@@ -97,26 +106,19 @@ export default function OperationsPage() {
   const reportTask = tasks.find((task) => task.type === 'security_report') ?? defaultReportTask(t);
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [reportForm, setReportForm] = useState({
-    enabled: reportTask.enabled,
-    frequency: reportTask.frequency ?? 'daily',
-    at: reportTask.at ?? '08:00',
-    channel: reportTask.channel ?? 'file',
-    recipient: reportTask.recipient ?? './data/reports',
-    period: reportTask.period ?? 'daily',
-  });
+  const reportFormDirty = useRef(new Set<keyof ReportFormValues>());
+  const [reportForm, setReportForm] = useState<ReportFormValues>(() => reportFormFromTask(reportTask));
   const [taskForm, setTaskForm] = useState<TaskFormValues | null>(null);
 
   useEffect(() => {
-    setReportForm({
-      enabled: reportTask.enabled,
-      frequency: reportTask.frequency ?? 'daily',
-      at: reportTask.at ?? '08:00',
-      channel: reportTask.channel ?? 'file',
-      recipient: reportTask.recipient ?? './data/reports',
-      period: reportTask.period ?? 'daily',
-    });
+    reportFormDirty.current.clear();
+    setReportForm(reportFormFromTask(reportTask));
   }, [reportTask.id, reportTask.enabled, reportTask.frequency, reportTask.at, reportTask.channel, reportTask.recipient, reportTask.period]);
+
+  const updateReportForm = <K extends keyof ReportFormValues,>(field: K, value: ReportFormValues[K]) => {
+    reportFormDirty.current.add(field);
+    setReportForm((current) => ({ ...current, [field]: value }));
+  };
 
   useEffect(() => {
     if (editingTask) {
@@ -167,7 +169,14 @@ export default function OperationsPage() {
   const submitReport = (event: FormEvent) => {
     event.preventDefault();
     const latest = queryClient.getQueryData<ScheduledTask[]>(['tasks']) ?? tasks;
-    tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...reportForm }, t));
+    const submittedForm = reportFormFromTask(reportTask);
+    if (reportFormDirty.current.has('enabled')) submittedForm.enabled = reportForm.enabled;
+    if (reportFormDirty.current.has('frequency')) submittedForm.frequency = reportForm.frequency;
+    if (reportFormDirty.current.has('at')) submittedForm.at = reportForm.at;
+    if (reportFormDirty.current.has('channel')) submittedForm.channel = reportForm.channel;
+    if (reportFormDirty.current.has('recipient')) submittedForm.recipient = reportForm.recipient;
+    if (reportFormDirty.current.has('period')) submittedForm.period = reportForm.period;
+    tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...submittedForm }, t));
   };
 
   const submitTaskForm = (event: FormEvent) => {
@@ -227,14 +236,16 @@ export default function OperationsPage() {
                 <Label>{t('ops.report')}</Label>
                 <Switch
                   checked={reportForm.enabled}
-                  onCheckedChange={(enabled) => setReportForm((c) => ({ ...c, enabled }))}
+                  onCheckedChange={(enabled) => updateReportForm('enabled', enabled)}
                 />
               </div>
               <div className="field-stack">
                 <Label>{t('ops.every')}</Label>
                 <Select
                   value={reportForm.frequency}
-                  onValueChange={(frequency) => setReportForm((c) => ({ ...c, frequency }))}
+                  onValueChange={(frequency) => {
+                    if (frequency) updateReportForm('frequency', frequency);
+                  }}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -253,14 +264,16 @@ export default function OperationsPage() {
                   required
                   pattern="(?:[01]\d|2[0-3]):[0-5]\d"
                   title="HH:mm"
-                  onChange={(e) => setReportForm((c) => ({ ...c, at: e.target.value }))}
+                  onChange={(e) => updateReportForm('at', e.target.value)}
                 />
               </div>
               <div className="field-stack">
                 <Label>{t('ops.channel')}</Label>
                 <Select
                   value={reportForm.channel}
-                  onValueChange={(channel) => setReportForm((c) => ({ ...c, channel }))}
+                  onValueChange={(channel) => {
+                    if (channel) updateReportForm('channel', channel);
+                  }}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -274,7 +287,7 @@ export default function OperationsPage() {
                 <Input
                   id="ops-report-recipient"
                   value={reportForm.recipient}
-                  onChange={(e) => setReportForm((c) => ({ ...c, recipient: e.target.value }))}
+                  onChange={(e) => updateReportForm('recipient', e.target.value)}
                 />
               </div>
               <div className="ops-report-actions">
@@ -588,6 +601,17 @@ function defaultReportTask(t: Translate): ScheduledTask {
     format: 'markdown',
     keep: 7,
     enabled: false,
+  };
+}
+
+function reportFormFromTask(task: ScheduledTask): ReportFormValues {
+  return {
+    enabled: task.enabled,
+    frequency: task.frequency ?? 'daily',
+    at: task.at ?? '08:00',
+    channel: task.channel ?? 'file',
+    recipient: task.recipient ?? './data/reports',
+    period: task.period ?? 'daily',
   };
 }
 
