@@ -1331,3 +1331,5 @@ Pages 锁文件原有 `devalue@5.9.0` moderate DoS 告警已通过只更新传�
 ### 2026-09-26 GitHub PR 门禁复核
 
 PR #466 的首轮 GitHub `ci-static` 检查发现 `scripts/ci/verify-forgejo-workflow.sh` 在本机文件系统为 `0755`，但 Git index 仍记录为 `100644`；本机 `core.filemode` 行为掩盖了该差异，CI checkout 因而拒绝执行 Forgejo workflow gate。已将 Git 跟踪模式修正为 `100755`；提交后需等待远端 CI 和 CodeQL 对新 head 重跑，再据结果决定合并与晋升。
+
+同一轮 CI 暴露生产验收和 Go coverage 在 GitHub runner 上继承共享 `/tmp`（`0777`）的问题；process-sidecar 按设计拒绝该路径。本地已用私有 `TMPDIR` 复现并通过，现将 `scripts/ci/go-env.sh` 统一为每次 Go 命令创建并清理私有、可清理的 `0700` 临时根，确保 production acceptance、coverage 和其他 Go 门禁使用同一安全边界。
