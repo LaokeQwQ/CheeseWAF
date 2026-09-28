@@ -294,6 +294,13 @@ func TestRunSetupTokenRotateWritesRuntimeStateWithoutLeakingSecret(t *testing.T)
 	if _, err := os.Stat(filepath.Join(dataDirectory, setup.URLFileName)); err != nil {
 		t.Fatalf("setup URL missing: %v", err)
 	}
+	setupURL, err := setup.ReadURLOnce(dataDirectory)
+	if err != nil {
+		t.Fatalf("read protected setup URL: %v", err)
+	}
+	if !strings.Contains(setupURL, "#setup_token=") {
+		t.Fatal("protected setup URL omitted its token fragment")
+	}
 
 	cmd = newSetupTokenCommand()
 	cmd.SetOut(&strings.Builder{})
