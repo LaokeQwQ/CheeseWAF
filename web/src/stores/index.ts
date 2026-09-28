@@ -19,7 +19,7 @@ type AppState = {
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
-      theme: 'light',
+      theme: 'system',
       language: 'zh-CN',
       sidebarCollapsed: false,
       aiAssistantFabVisible: true,

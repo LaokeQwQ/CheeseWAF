@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
@@ -51,7 +52,116 @@ func newSetupCommand() *cobra.Command {
 	flags.StringVar(&setupOpts.adminListen, "admin-listen", "", clilang.T("setup.flag.adminListen"))
 	flags.BoolVar(&setupOpts.skipProbe, "skip-probe", false, clilang.T("setup.flag.skipProbe"))
 	flags.BoolVar(&setupOpts.skipExternal, "skip-external", false, clilang.T("setup.flag.skipExternal"))
+	cmd.AddCommand(newSetupTokenCommand())
 	return cmd
+}
+
+func newSetupTokenCommand() *cobra.Command {
+	run := func(cmd *cobra.Command, _ []string) error {
+		show, _ := cmd.Flags().GetBool("show")
+		return runSetupTokenReset(cmd, show)
+	}
+	cmd := &cobra.Command{
+		Use:   "token",
+		Short: clilang.T("setup.token.short"),
+		Long:  clilang.T("setup.token.long"),
+		Args:  cobra.NoArgs,
+		RunE:  run,
+	}
+	cmd.PersistentFlags().Bool("show", false, clilang.T("setup.token.flag.show"))
+	cmd.AddCommand(&cobra.Command{
+		Use:     "reset",
+		Aliases: []string{"rotate"},
+		Short:   clilang.T("setup.token.reset.short"),
+		Args:    cobra.NoArgs,
+		RunE:    run,
+	})
+	return cmd
+}
+
+// runSetupTokenReset generates a new first-install token without touching the
+// setup marker or administrator data. The running service reads the token
+// state file on each setup mutation, so the previous value is revoked without
+// requiring a restart.
+func runSetupTokenReset(cmd *cobra.Command, show bool) error {
+	dataDirectory, configFile := resolveSetupPaths(cmd)
+	if !setup.NeedsSetup(dataDirectory) {
+		return errors.New(clilang.T("setup.token.alreadyComplete"))
+	}
+	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{
+		DataDir:    dataDirectory,
+		ConfigPath: configFile,
+	})
+	if err != nil {
+		return fmt.Errorf("prepare setup defaults: %w", err)
+	}
+	cfg, err := config.Load(bundle.Paths.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("load setup config: %w", err)
+	}
+	if err := applyCLIDataDir(cfg, dataDirectory); err != nil {
+		return fmt.Errorf("resolve setup data directory: %w", err)
+	}
+	dataDirectory = cfg.Setup.DataDir
+	if !setup.NeedsSetup(dataDirectory) {
+		return errors.New(clilang.T("setup.token.alreadyComplete"))
+	}
+
+	ctx := context.Background()
+	store, err := openConfiguredManagementStore(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("open first-install user store: %w", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		return fmt.Errorf("migrate first-install user store: %w", err)
+	}
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("check first-install users: %w", err)
+	}
+	if len(users) > 0 {
+		return errors.New(clilang.T("setup.token.usersExist"))
+	}
+
+	tokenStore := setup.NewTokenStore(dataDirectory)
+	token, err := tokenStore.Rotate()
+	if err != nil {
+		return fmt.Errorf("reset setup token: %w", err)
+	}
+	scheme := "http"
+	if cfg.Server.AdminTLS.Enabled {
+		scheme = "https"
+	}
+	adminListen := strings.TrimSpace(cfg.Server.AdminListen)
+	if adminListen == "" {
+		adminListen = setup.DefaultAdminListen
+	}
+	page := setup.BrowserURL(scheme, adminListen, token)
+	if page == "" {
+		return errors.New(clilang.T("setup.token.badListen"))
+	}
+	receipt, err := setup.WriteURLWithReceipt(dataDirectory, page)
+	if err != nil {
+		return fmt.Errorf("write reset setup URL: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, clilang.T("setup.token.reset"))
+	fmt.Fprintf(out, clilang.T("setup.token.file")+"\n", filepath.Join(dataDirectory, setup.URLFileName), receipt)
+	if show {
+		fmt.Fprintf(out, clilang.T("setup.token.value")+"\n", token)
+		fmt.Fprintf(out, clilang.T("setup.token.url")+"\n", page)
+	} else {
+		fmt.Fprintln(out, clilang.T("setup.token.showHint"))
+	}
+	return nil
+}
+
+// runSetupTokenRotate is kept for package-level callers from the pre-reset
+// naming. The CLI's canonical spelling is now `setup token reset`.
+func runSetupTokenRotate(cmd *cobra.Command, show bool) error {
+	return runSetupTokenReset(cmd, show)
 }
 
 // setupState collects everything the wizard gathers. Nothing touches the
@@ -261,7 +371,7 @@ func stepProfile(term *wizardIO, state *setupState) error {
 		setup.ProfileSmart, setup.ProfileLow, setup.ProfileMedium, setup.ProfileHigh, setup.ProfileCustom,
 	}
 	// Without a completed probe, keep the first choice conservative. A medium
-	// profile assumes at least 4 GiB of memory and can overcommit small hosts.
+	// profile is an explicit fixed-budget choice and can overcommit small hosts.
 	recommended := setup.ProfileLow
 	if state.probe != nil {
 		recommended = state.probe.Profile

@@ -64,11 +64,9 @@ Windows 使用带替换和写穿语义的 `MoveFileEx` 适配器。artifact 和 
 staged 槽位，不执行 promotion。当前 CLI 不提供绕过确认的参数；需要管理员确认的签名类别会
 被拒绝，直到密码、10 秒等待、第三次确认和耐久审计接入控制面。
 
-该状态层仍不是完整安装系统。透明日志、吊销快照持久化、PG/控制面状态、CWEDP 分发、
-商店、OTA、sidecar 启动和跨节点 promotion 尚未接入；生产环境必须由控制面
-提供授权、持久状态和集群 fencing 适配器。
+生产环境由控制面提供授权、持久状态和集群 fencing 适配器，统一管理透明日志与吊销快照。
 Unix-like 主机在 artifact、metadata 和 state 原子替换后同步父目录；Windows 当前保留平台
-适配器边界，仍需在生产验收中验证底层文件系统的持久化语义。
+适配器边界，需在生产环境中验证底层文件系统的持久化语义。
 
 `internal/crp.Import` 已提供无文件、无网络的离线准入：它限制 manifest 和 artifact
 大小，串联 manifest、来源注册表、版本防降级、三摘要和签名阈值校验，并返回内容

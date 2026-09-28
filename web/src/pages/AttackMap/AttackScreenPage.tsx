@@ -7,6 +7,7 @@ import { fetchMonitorSummary } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import QueryErrorState from '../../components/QueryErrorState';
 import { useAppStore } from '../../stores';
+import { resolveTheme } from '../../themes';
 import type { LogEntry } from '../../types/api';
 import { displayCategory, displayCountry, displaySeverity } from '../../utils/display';
 import { aggregateRegions, buildCountryLevelMap, type AttackRegion, type ProtectedTarget, type ThreatLevel } from './attackMapData';
@@ -24,7 +25,8 @@ export default function AttackScreenPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const appTheme = useAppStore((state) => state.theme);
-  const visualTheme = appTheme === 'dark' || appTheme === 'blackGold' ? 'dark' : 'light';
+  const resolvedTheme = resolveTheme(appTheme);
+  const visualTheme = resolvedTheme === 'dark' || resolvedTheme === 'blackGold' ? 'dark' : 'light';
   const [railOpen, setRailOpen] = useState(false);
   const [timelinePercent, setTimelinePercent] = useState(100);
   const [timelineInteracting, setTimelineInteracting] = useState(false);

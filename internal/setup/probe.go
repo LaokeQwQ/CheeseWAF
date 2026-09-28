@@ -48,7 +48,7 @@ type ProfileConfig struct {
 	AccessLogSamplePct   int    `json:"access_log_sample_pct"`
 }
 
-// ProfileDefaults returns the locked mapping for low/medium/high.
+// ProfileDefaults returns the safe baseline mapping for every selectable profile.
 func ProfileDefaults(p HardwareProfile) ProfileConfig {
 	switch p {
 	case ProfileHigh:
@@ -129,18 +129,18 @@ func RunProbe(ctx context.Context, dataDir string) ProbeResult {
 }
 
 func classifyHardware(r ProbeResult) HardwareProfile {
-	// Barrel principle (locked): low ≤2 logical cores OR RAM≤2G OR weak disk;
-	// medium ≥3C and RAM≥4G; high ≥4C and RAM≥8G and disk sequential write OK.
+	// The probe is a resource-safety guard, not a mandate to lock every normal
+	// host into a fixed-depth preset. Keep constrained hosts on low, reserve
+	// high for machines that can sustain it, and let ordinary hosts use the
+	// project's adaptive smart policy. Medium remains available as an explicit
+	// fixed-budget preset in the wizard.
 	if r.CPULogical <= 2 || r.MemoryTotalMB <= 2048 || !r.DiskOK {
 		return ProfileLow
 	}
 	if r.CPULogical >= 4 && r.MemoryTotalMB >= 8192 && r.DiskOK && r.DiskWriteMBps >= 50 {
 		return ProfileHigh
 	}
-	if r.CPULogical >= 3 && r.MemoryTotalMB >= 4096 {
-		return ProfileMedium
-	}
-	return ProfileLow
+	return ProfileSmart
 }
 
 func estimateHostMemoryMB() uint64 {

@@ -4,7 +4,7 @@
 BINARY_NAME  := cheesewaf
 CLI_NAME     := waf-cli
 MODULE       := github.com/LaokeQwQ/CheeseWAF
-VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.3.9-dev")
+VERSION      := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.4.0-beta")
 COMMIT       := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME   := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 CHANNEL      := $(shell sh scripts/ci/channel-from-git.sh)

@@ -48,7 +48,7 @@ vi.mock('../../api/client', async (importOriginal) => {
 
 import SetupPage from './SetupPage';
 import { useAppStore } from '../../stores';
-import { resetSetupTokenForTest } from '../../api/client';
+import { APIRequestError, resetSetupTokenForTest } from '../../api/client';
 
 const NAV_LANGUAGE = 'en-US';
 
@@ -92,7 +92,7 @@ beforeEach(() => {
   setBrowserLanguage(NAV_LANGUAGE);
   // Start from the non-browser value and with no persisted choice, so a mount
   // has to fall back to `navigator.language` on its own.
-  useAppStore.setState({ language: 'en-US' });
+  useAppStore.setState({ language: 'en-US', theme: 'system' });
   useAppStore.persist.clearStorage();
   apiMocks.unwrapAPIResponse.mockResolvedValue(probePayload());
 });
@@ -112,6 +112,25 @@ async function advanceToEnvironmentStep() {
   clickNext();
   await waitFor(() => expect(screen.getByText('setup.probeChecklistTitle')).toBeTruthy());
 }
+
+it('places appearance selection with language and persists the selected theme', async () => {
+  const scrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = vi.fn();
+  render(<SetupPage />);
+  try {
+    const appearance = await screen.findByRole('combobox', { name: 'setup.appearanceTitle' });
+    expect(appearance.querySelector('.setup-theme-select-value')).toBeTruthy();
+    fireEvent.click(appearance);
+    expect(document.querySelector('.setup-theme-select-content')).toBeTruthy();
+    const darkOption = await screen.findByRole('option', { name: 'themes.dark' });
+    fireEvent.click(darkOption);
+
+    await waitFor(() => expect(useAppStore.getState().theme).toBe('dark'));
+    expect(useAppStore.getState().language).toBe('en-US');
+  } finally {
+    Element.prototype.scrollIntoView = scrollIntoView;
+  }
+});
 
 /** … → step 2 (profile). */
 async function advanceToProfileStep() {
@@ -167,6 +186,7 @@ describe('SetupPage', () => {
     window.history.replaceState({}, '', '/setup');
     render(<SetupPage />);
 
+    expect(screen.queryByText('setup.tokenCheckingTitle')).toBeNull();
     await waitFor(() => expect(screen.getByLabelText('setup.tokenLabel')).toBeTruthy());
     expect(apiMocks.unwrapAPIResponse).not.toHaveBeenCalled();
 
@@ -177,6 +197,54 @@ describe('SetupPage', () => {
     expect(screen.queryByLabelText('setup.tokenLabel')).toBeNull();
     clickNext();
     await waitFor(() => expect(screen.getByText('setup.probeChecklistTitle')).toBeTruthy());
+  });
+
+  it('keeps the access-check surface visible until the probe succeeds', async () => {
+    let resolveProbe: (value: ReturnType<typeof probePayload>) => void = () => undefined;
+    apiMocks.unwrapAPIResponse.mockReturnValueOnce(new Promise((resolve) => {
+      resolveProbe = resolve;
+    }));
+
+    render(<SetupPage />);
+
+    expect(await screen.findByText('setup.tokenCheckingTitle')).toBeTruthy();
+    expect(screen.queryByLabelText('setup.tokenLabel')).toBeNull();
+    expect(screen.queryByRole('radio', { name: /setup.languageZh/ })).toBeNull();
+    expect(apiMocks.unwrapAPIResponse).toHaveBeenCalledTimes(1);
+
+    resolveProbe(probePayload());
+    await waitFor(() => expect(screen.getByRole('radio', { name: /setup.languageZh/ })).toBeTruthy());
+  });
+
+  it('returns to the token gate without exposing the wizard when the probe rejects access', async () => {
+    apiMocks.unwrapAPIResponse.mockRejectedValueOnce(new APIRequestError('setup token is invalid', 'SETUP_TOKEN_REQUIRED', 401));
+
+    render(<SetupPage />);
+
+    await waitFor(() => expect(screen.getByLabelText('setup.tokenLabel')).toBeTruthy());
+    expect(screen.queryByRole('radio', { name: /setup.languageZh/ })).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('setup.tokenInvalid');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(screen.getByRole('alert').textContent).toContain('setup.tokenInvalid');
+    expect(toastMocks.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the rejection notice visible while the operator corrects the token', async () => {
+    apiMocks.unwrapAPIResponse.mockRejectedValueOnce(new APIRequestError('setup token is invalid', 'SETUP_TOKEN_REQUIRED', 401));
+
+    window.history.replaceState({}, '', '/setup#setup_token=invalid-setup-token');
+    render(<SetupPage />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('setup.tokenInvalid');
+
+    const tokenInput = screen.getByLabelText('setup.tokenLabel');
+    fireEvent.change(tokenInput, { target: { value: 'corrected-token' } });
+
+    expect(screen.getByRole('alert')).toBe(alert);
+    expect(screen.getByRole('alert').textContent).toContain('setup.tokenInvalid');
   });
 
   it('submits admin bootstrap with form values after confirmation', async () => {
@@ -237,7 +305,9 @@ describe('SetupPage', () => {
     render(<SetupPage />);
     await waitFor(() => expect(useAppStore.getState().language).toBe('zh-CN'));
 
-    fireEvent.click(screen.getByRole('radio', { name: /setup.languageEn/ }));
+    const englishCard = screen.getByText('setup.languageEn').closest('.setup-card-radio');
+    expect(englishCard).toBeTruthy();
+    fireEvent.click(englishCard!);
     await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
   });
 
@@ -254,7 +324,7 @@ describe('SetupPage', () => {
     expect(screen.getAllByText('setup.probeStatusPass').length).toBeGreaterThan(0);
   });
 
-  it('renders fishbone progress with completed, current, and upcoming states', async () => {
+  it('renders stepper progress with completed, current, and upcoming states', async () => {
     await advanceToEnvironmentStep();
     const progress = screen.getByRole('list', { name: 'setup.progressLabel' });
     const items = within(progress).getAllByRole('listitem');
@@ -297,6 +367,22 @@ describe('SetupPage', () => {
     expect(lightCard?.getAttribute('data-recommended')).toBe('true');
     fireEvent.click(lightCard as HTMLElement);
     expect(lightRadio.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('prefers smart for a normal host and keeps custom outside the preset radios', async () => {
+    apiMocks.unwrapAPIResponse.mockResolvedValue(
+      probePayload({ profile: 'smart', cpu_logical: 3, memory_total_mb: 4096 }),
+    );
+    await advanceToProfileStep();
+
+    const smartRadio = screen.getByRole('radio', { name: /setup.profileSmart/ });
+    expect(smartRadio.getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByRole('radio', { name: /setup.profileCustom/ })).toBeNull();
+
+    const customAction = screen.getByTestId('setup-profile-custom');
+    fireEvent.click(customAction);
+    expect(customAction.getAttribute('aria-pressed')).toBe('true');
+    expect(await screen.findByRole('alert')).toBeTruthy();
   });
 
   it('warns when choosing above the host recommendation without blocking the choice', async () => {
@@ -388,6 +474,33 @@ describe('SetupPage', () => {
     expect(screen.getByText('setup.passwordMatch')).toBeTruthy();
   });
 
+  it('renders password strength as one animated red-to-green bar', async () => {
+    await advanceToAccountStep();
+    const [passwordInput] = passwordInputs();
+    const meter = screen.getByRole('progressbar');
+    const fill = meter.querySelector('.setup-password-strength-fill') as HTMLElement;
+
+    expect(fill).toBeTruthy();
+    expect(meter.getAttribute('aria-valuenow')).toBe('0');
+    expect(fill.style.width).toBe('0%');
+    expect(fill.classList.contains('bg-muted')).toBe(true);
+
+    fireEvent.change(passwordInput, { target: { value: 'abc' } });
+    expect(meter.getAttribute('aria-valuenow')).toBe('1');
+    expect(fill.style.width).toBe('25%');
+    expect(fill.classList.contains('bg-red-500')).toBe(true);
+
+    fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass!' } });
+    expect(meter.getAttribute('aria-valuenow')).toBe('3');
+    expect(fill.style.width).toBe('75%');
+    expect(fill.classList.contains('bg-yellow-400')).toBe(true);
+
+    fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass-2026!' } });
+    expect(meter.getAttribute('aria-valuenow')).toBe('4');
+    expect(fill.style.width).toBe('100%');
+    expect(fill.classList.contains('bg-emerald-500')).toBe(true);
+  });
+
   // 问题 6：监听地址与访问策略不该出现在首次初始化向导。
   it('keeps the admin listener and access strategy out of the wizard', async () => {
     await advanceToAccountStep();
@@ -449,6 +562,7 @@ describe('SetupPage', () => {
   // 问题 2（续）：打字机标题一次只显示一种语言，绝不同屏混排。
   it('types the headline one language at a time so the two never mix', async () => {
     render(<SetupPage />);
+    await waitFor(() => expect(screen.getByTestId('setup-language-typewriter')).toBeTruthy());
     const headline = () => screen.getByTestId('setup-language-typewriter');
     const typed = () => (headline().textContent ?? '').replaceAll('|', '');
     const isOneLanguage = (text: string) =>
@@ -508,21 +622,40 @@ describe('SetupPage', () => {
     expect(screen.getByText('setup.integrationsSummaryNone')).toBeTruthy();
   });
 
-  it('rejects a PostgreSQL integration with a missing or malformed DSN', async () => {
+  it('uses expandable PostgreSQL fields and validates the port before continuing', async () => {
     await advanceToIntegrationsStep();
     fireEvent.click(screen.getByTestId('setup-integration-postgres-toggle'));
-    await waitFor(() => expect(screen.getByLabelText('setup.integrationsPostgresDsn')).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText('setup.integrationsPostgresUsername')).toBeTruthy());
+    expect(screen.getByLabelText('setup.integrationsPostgresPassword').getAttribute('type')).toBe('password');
+    fireEvent.click(screen.getByRole('button', { name: 'setup.showPassword' }));
+    expect(screen.getByLabelText('setup.integrationsPostgresPassword').getAttribute('type')).toBe('text');
 
     clickNext();
-    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('setup.integrationsDsnRequired'));
-    expect(screen.getByText('setup.integrationsDsnRequired')).toBeTruthy();
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('setup.integrationsPostgresFieldsRequired'));
+    expect(screen.getByText('setup.integrationsPostgresFieldsRequired')).toBeTruthy();
     expect(screen.queryByText('setup.summaryTitle')).toBeNull();
 
-    fireEvent.change(screen.getByLabelText('setup.integrationsPostgresDsn'), {
-      target: { value: 'mysql://user@localhost/cheesewaf' },
-    });
+    fireEvent.change(screen.getByLabelText('setup.integrationsPostgresUsername'), { target: { value: 'cheesewaf' } });
+    fireEvent.change(screen.getByLabelText('setup.integrationsPostgresPort'), { target: { value: '99999' } });
     clickNext();
-    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('setup.integrationsDsnInvalid'));
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('setup.integrationsPostgresPortInvalid'));
+  });
+
+  it('tests PostgreSQL and VictoriaLogs without leaving the integration step', async () => {
+    await advanceToIntegrationsStep();
+    fireEvent.click(screen.getByTestId('setup-integration-postgres-toggle'));
+    fireEvent.change(screen.getByLabelText('setup.integrationsPostgresUsername'), { target: { value: 'cheesewaf' } });
+    fireEvent.click(screen.getByRole('button', { name: 'setup.integrationsTestConnection' }));
+    expect(await screen.findByText('setup.integrationsConnected')).toBeTruthy();
+    expect(screen.queryByText('setup.summaryTitle')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('setup-integration-victoria-toggle'));
+    const victoriaEndpoint = await screen.findByLabelText('setup.integrationsVictoriaEndpoint');
+    fireEvent.change(victoriaEndpoint, {
+      target: { value: 'http://127.0.0.1:9428/insert/jsonline' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'setup.integrationsTestConnection' }));
+    expect(await screen.findByText('setup.integrationsConnected')).toBeTruthy();
   });
 
   it('rejects a VictoriaLogs endpoint that is not an http URL', async () => {

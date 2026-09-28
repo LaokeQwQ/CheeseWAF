@@ -18,7 +18,7 @@ cheesewaf migration recover
 当前仓库已经把 temporary 侧的安全生命周期接成一个可验证的最小纵切片：
 
 1. 迁移源先写入 `temporary-to-production.recovery.json` 和 `temporary-to-production.pending`，随后在同一 SQLite 连接上提升所有用户的 `credential_epoch` 并撤销全部 admin Session。
-2. `cheesewaf serve` 在创建运行目录、PID lease 或任何 listener/backend 之前检查 recovery 记录和 pending fence；任一文件缺失、损坏、权限不安全或处于未完成状态都保持 fail-closed。
+2. `cheesewaf serve` 在创建运行目录、PID lease 或任何 listener/backend 之前检查 recovery 记录和 pending fence；任一文件缺失、损坏、权限不安全或处于未决挂起状态都保持 fail-closed。
 3. 迁移回滚从快照恢复用户 epoch、Session 和 temporary 文件，并只在恢复成功后删除 fence；因此旧 Session 只能在明确回滚后重新有效。
 
 `internal/cli/migration/recovery_test.go` 的
