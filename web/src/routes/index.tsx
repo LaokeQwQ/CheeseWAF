@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { bootstrapSessionFromLegacyToken, fetchSession, isAuthenticatedFlag } from '../api/client';
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
+import SetupPage from '../pages/Setup/SetupPage';
 import { preloadAIPage, preloadAPISecurityPage, preloadAttackMapPage, preloadAttackScreenPage } from './preload';
 
 const MainLayout = lazy(() => import('../layouts/MainLayout'));
@@ -26,7 +27,6 @@ const OperationsPage = lazy(() => import('../pages/Operations/OperationsPage'));
 const ProtectionPage = lazy(() => import('../pages/Protection/ProtectionPage'));
 const ReviewPage = lazy(() => import('../pages/Review/ReviewPage'));
 const RulesPage = lazy(() => import('../pages/Rules/RulesPage'));
-const SetupPage = lazy(() => import('../pages/Setup/SetupPage'));
 const SiteDetailPage = lazy(() => import('../pages/Sites/SiteDetailPage'));
 const SitesPage = lazy(() => import('../pages/Sites/SitesPage'));
 const SSLPage = lazy(() => import('../pages/SSL/SSLPage'));

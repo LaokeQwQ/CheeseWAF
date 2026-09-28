@@ -22,7 +22,7 @@
 
 默认报告是 /tmp/acceptance_e2e_matrix_v2_report.json 和 /tmp/acceptance_e2e_matrix_v2_report.md。也可以用 --report PATH 与 --markdown PATH 指定仓库外路径；脚本拒绝仓库内报告路径，避免把运行结果写进工作区。报告文件使用私有权限。
 
-每个 gate 都执行一条预期成功的正向命令和一条预期拒绝或边界的负向命令。两侧都保存命令、断言、退出状态和输出证据。代码或运行时尚未接线的能力使用 implemented: false、status: failed 和 blockers 字段表示；没有 skipped 状态。
+每个 gate 都执行一条预期成功的正向命令和一条预期拒绝或边界的负向命令。两侧都保存命令、断言、退出状态和输出证据。未就绪或未启用的能力使用 implemented: false、status: failed 和 blockers 字段表示；没有 skipped 状态。
 
 `--full` 的部署级 gate 只有在提供真实依赖后才执行探针并动态转为 implemented：`CHEESEWAF_POSTGRES_TEST_DSN`、`CHEESEWAF_REDIS_RUNTIME_TEST_ADDR`；CRP 激活/回滚还需要 `CHEESEWAF_CRP_SIDECAR_TEST_REGISTRY_DIR` 指向权限为 `0700` 的测试目录。临时联网/CWEDP 还必须提供规范的 `CHEESEWAF_PUBLIC_NETLEASE_TEST_PIN`、公网 `CHEESEWAF_CWEDP_REAL_ROUTE_HOST` 和 `49152..65535` 高端口 `CHEESEWAF_CWEDP_REAL_ROUTE_PORT`，由真实 mTLS peer 提供签名包。缺少变量不会跳过测试或升级状态，仍按 blocker 失败。GitHub Actions 的 `production-acceptance-integration` job 使用隔离 PostgreSQL/Redis 服务和相同测试 runner，锁住迁移/session、CRP 激活及精确回滚的生产组合回归；job 通过只证明可复跑的本地 production wiring 集成验收，不等同于云端部署或公网 egress 验收。
 

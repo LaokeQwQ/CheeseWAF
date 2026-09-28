@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,7 +300,7 @@ func TestSetupDraftPatchStoresIntegrations(t *testing.T) {
 	}
 	h := New(Options{Config: &cfg, SetupDrafts: drafts, SetupToken: "local-setup-secret"})
 
-	body := `{"integrations":{"postgresEnabled":true,"postgresDsn":"postgres://u:p@127.0.0.1/db","postgresTable":"logs","prometheusEnabled":true,"prometheusPath":"/metrics","prometheusPublic":false,"victoriaEnabled":true,"victoriaEndpoint":"http://127.0.0.1:9428/insert"}}`
+	body := `{"integrations":{"postgresEnabled":true,"postgresDsn":"postgres://u:p@127.0.0.1/db","postgresTable":"logs","prometheusEnabled":true,"prometheusPath":"/metrics","prometheusPublic":false,"victoriaEnabled":true,"victoriaEndpoint":"http://user:secret@127.0.0.1:9428/insert"}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/setup/draft", strings.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.AddCookie(&http.Cookie{Name: setup.SetupSessionCookie, Value: draft.ID})
@@ -322,10 +323,88 @@ func TestSetupDraftPatchStoresIntegrations(t *testing.T) {
 	if !envelope.Data.Integrations.PostgresEnabled || envelope.Data.Integrations.PostgresTable != "logs" {
 		t.Fatalf("postgres integration mismatch: %+v", envelope.Data.Integrations)
 	}
+	if envelope.Data.Integrations.PostgresDSN != "" {
+		t.Fatalf("postgres DSN must not be retained in setup draft: %+v", envelope.Data.Integrations)
+	}
 	if !envelope.Data.Integrations.PrometheusEnabled || envelope.Data.Integrations.PrometheusPath != "/metrics" {
 		t.Fatalf("prometheus integration mismatch: %+v", envelope.Data.Integrations)
 	}
 	if !envelope.Data.Integrations.VictoriaEnabled || envelope.Data.Integrations.VictoriaEndpoint == "" {
 		t.Fatalf("victoria integration mismatch: %+v", envelope.Data.Integrations)
+	}
+	if strings.Contains(envelope.Data.Integrations.VictoriaEndpoint, "secret@") || strings.Contains(envelope.Data.Integrations.VictoriaEndpoint, "user:") {
+		t.Fatalf("victorialogs URL credentials must not be retained: %+v", envelope.Data.Integrations)
+	}
+}
+
+func TestBuildSetupPostgreSQLDSNUsesComponentsAndDoesNotLoseEscaping(t *testing.T) {
+	dsn, err := buildSetupPostgreSQLDSN(setupPostgreSQLTestRequest{
+		Username: "operator",
+		Password: "p@ss/word",
+		Host:     "2001:db8::10",
+		Port:     "5432",
+		Database: "cheese waf",
+		SSL:      true,
+	})
+	if err != nil {
+		t.Fatalf("buildSetupPostgreSQLDSN() error = %v", err)
+	}
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	if parsed.Scheme != "postgresql" || parsed.Host != "[2001:db8::10]:5432" || parsed.Path != "/cheese waf" {
+		t.Fatalf("unexpected dsn URL: %s", parsed.String())
+	}
+	if parsed.User.Username() != "operator" {
+		t.Fatalf("unexpected username: %q", parsed.User.Username())
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password != "p@ss/word" {
+		t.Fatalf("unexpected password: %q", password)
+	}
+	if parsed.Query().Get("sslmode") != "require" {
+		t.Fatalf("unexpected sslmode: %q", parsed.Query().Get("sslmode"))
+	}
+}
+
+func TestSetupPostgreSQLTestRejectsIncompleteFieldsWithoutDialing(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	h := New(Options{Config: &cfg, SetupToken: "local-setup-secret"})
+	req := httptest.NewRequest(http.MethodPost, "/api/setup/integrations/postgres/test", strings.NewReader(`{"username":"operator","host":"127.0.0.1","port":"5432"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CheeseWAF-Setup-Token", "local-setup-secret")
+	rr := httptest.NewRecorder()
+	h.SetupPostgreSQLTest(rr, req)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "SETUP_POSTGRES_INVALID") {
+		t.Fatalf("expected field validation failure, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSetupVictoriaLogsTestProbesEndpointWithoutWriting(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected read-only GET, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer server.Close()
+
+	dataDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	h := New(Options{Config: &cfg, SetupToken: "local-setup-secret"})
+	body := `{"endpoint":"` + server.URL + `/insert/jsonline"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/setup/integrations/victoria/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CheeseWAF-Setup-Token", "local-setup-secret")
+	rr := httptest.NewRecorder()
+	h.SetupVictoriaLogsTest(rr, req)
+	if rr.Code != http.StatusOK || requests != 1 || !strings.Contains(rr.Body.String(), `"connected":true`) {
+		t.Fatalf("unexpected VictoriaLogs probe: code=%d requests=%d body=%s", rr.Code, requests, rr.Body.String())
 	}
 }

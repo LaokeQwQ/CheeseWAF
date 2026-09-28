@@ -123,6 +123,7 @@ type Handler struct {
 	now                                 func() time.Time
 	StartedAt                           time.Time
 	SetupToken                          string
+	SetupTokenSource                    setup.TokenSource
 	SetupDrafts                         *setup.DraftStore
 	runSetupProbe                       func(context.Context, string) setup.ProbeResult
 	geoipMu                             sync.Mutex
@@ -372,6 +373,7 @@ type Options struct {
 	CWEDPDownload               consumer.Executor
 	CRPActivation               CRPActivationExecutor
 	SetupToken                  string
+	SetupTokenSource            setup.TokenSource
 	SetupDrafts                 *setup.DraftStore
 	RunSetupProbe               func(context.Context, string) setup.ProbeResult
 	OnSitesChanged              func([]config.SiteConfig) error
@@ -477,7 +479,8 @@ func New(opts Options) *Handler {
 		loginCAPTCHASecret:                  loginSecret,
 		now:                                 now,
 		StartedAt:                           now().UTC(),
-		SetupToken:                          strings.TrimSpace(opts.SetupToken),
+		SetupToken:                          opts.SetupToken,
+		SetupTokenSource:                    opts.SetupTokenSource,
 		SetupDrafts:                         opts.SetupDrafts,
 		runSetupProbe:                       runSetupProbe,
 		managementTokenFlushInterval:        time.Minute,
@@ -1672,6 +1675,7 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	_ = setup.RemoveURL(h.setupDataDir())
+	_ = setup.NewTokenStore(h.setupDataDir()).Remove()
 	writeData(w, map[string]any{"user": result.User, "setup_complete": true})
 }
 

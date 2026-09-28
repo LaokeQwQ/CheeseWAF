@@ -28,50 +28,66 @@
 
 ---
 
-## Table of Contents
+<p align="center">
+  <a href="#why-cheesewaf">⚡ Why CheeseWAF</a> ·
+  <a href="#quick-start">🚀 Quick Start</a> ·
+  <a href="#deployment">📦 Deployment</a> ·
+  <a href="#gateways--adapters">🔌 Gateways & Adapters</a> ·
+  <a href="#configuration-reference">⚙️ Configuration</a>
+</p>
 
-- [Core Mechanism](#core-mechanism)
-- [Architecture & Ecosystem](#architecture--ecosystem)
-- [Features](#features)
-- [Request Processing Pipeline](#request-processing-pipeline)
-- [Paranoia Levels](#paranoia-levels)
-- [Hardware Recommendations](#hardware-recommendations)
-- [Deployment](#deployment)
-  - [1. Linux Deployment (Systemd Production)](#1-linux-deployment-systemd-production)
-  - [2. Docker Deployment (Docker Compose)](#2-docker-deployment-docker-compose)
-  - [3. Windows Deployment (CLI, Zip, NSIS)](#3-windows-deployment-cli-zip-nsis)
-  - [4. macOS Deployment (DMG & Portable Tarball)](#4-macos-deployment-dmg--portable-tarball)
-- [Quick Start](#quick-start)
-- [Gateways & Adapters](#gateways--adapters)
-- [Security Plugins & Resource Packages](#security-plugins--resource-packages)
-- [Management Interfaces](#management-interfaces)
-- [Configuration Reference](#configuration-reference)
-- [Tech Stack](#tech-stack)
-- [Production Build Guidelines](#production-build-guidelines)
-- [Development & Testing](#development--testing)
-- [Corpus Governance & Security Evaluation](#corpus-governance--security-evaluation)
-- [Documentation](#documentation)
-- [License](#license)
+<details>
+<summary><strong>📑 Table of Contents (Click to expand)</strong></summary>
+
+- **Overview**: [Why CheeseWAF](#why-cheesewaf) · [Core Mechanism (ALAP)](#core-mechanism) · [Architecture & Ecosystem](#architecture--ecosystem) · [Features](#features) · [Request Pipeline](#request-processing-pipeline)
+- **Setup & Operations**: [Hardware Recommendations](#hardware-recommendations) · [Quick Start](#quick-start) · [Linux Systemd](#1-linux-deployment-systemd-production) · [Docker Compose](#2-docker-deployment-docker-compose) · [Windows](#3-windows-deployment-cli-zip-nsis) · [macOS](#4-macos-deployment-dmg--portable-tarball)
+- **Gateway & Ecosystem**: [Paranoia Levels (0–5)](#paranoia-levels) · [Gateway Adapters (adapterd)](#gateways--adapters) · [CRP Offline Security Plugins](#security-plugins--resource-packages) · [Management UI](#management-interfaces)
+- **Reference & Dev**: [Configuration](#configuration-reference) · [Tech Stack](#tech-stack) · [Production Build](#production-build-guidelines) · [Development & Testing](#development--testing) · [Corpus Governance](#corpus-governance--security-evaluation) · [Documentation](#documentation)
+
+</details>
+
+---
+
+## Why CheeseWAF
+
+Modern Web security solutions usually force teams into painful tradeoffs:
+1. **Traditional Regex WAFs (e.g., ModSecurity / CRS)**: Maintaining thousands of regular expressions is tedious. Attackers bypass signatures using character case variations, malformed encodings, or SQL comments. False positives are frequent, forcing operators to constantly tune exception lists.
+2. **Synchronous LLM WAFs**: Routing every HTTP request to an LLM adds 500 ms to 2 s of latency to each response, burns API token budgets, and risks full outages whenever external endpoints experience latency spikes.
+3. **Heavy Container Stacks (e.g., SafeLine / 雷池)**: Requiring 5 to 10 Docker containers (Tengine, Postgres, Redis, management daemons) consuming 1 to 2 GB+ of RAM, which quickly overburdens budget cloud instances and small VPSs.
+4. **Commercial Cloud WAFs (e.g., Cloudflare / Cloud Provider WAFs)**: All traffic must route through third-party infrastructure, raising privacy, data residency, and compliance concerns. Bandwidth billing is unpredictable, and air-gapped operation is impossible.
+
+CheeseWAF takes a balanced approach: **an in-process AST semantic parser provides sub-millisecond inline blocking, while an out-of-band LLM auto-pilot (ALAP) reviews ambiguous samples in the background and synthesizes persistent custom rules without adding latency to live requests.**
+
+### Comparison Overview
+
+| Dimension | Regex WAF (e.g., ModSecurity) | Synchronous LLM WAF | Heavy Container Stack | Commercial Cloud WAF | CheeseWAF |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Detection Engine** | Regex pattern matching | Synchronous LLM per request | Regex + statistical analysis | Signature sets + threat feed | **AST syntax analysis + Async LLM Auto-Pilot (ALAP)** |
+| **Inline Latency Added** | 1–10 ms | **500–2000 ms** (high) | 2–15 ms | Dependent on CDN routing | **< 1 ms** (sub-millisecond, zero model wait) |
+| **API / Token Cost** | None | Extremely high (all traffic) | None | Bandwidth & tier billing | **Low** (reviews only ambiguous samples out-of-band) |
+| **Evasion & False Positives** | Easily bypassed by encodings | Prone to hallucinations | Complex rule maintenance | Vendor-dependent updates | **Parses syntax trees; immune to obfuscation; FPR < 0.8%** |
+| **Footprint & Deployment** | Requires custom Nginx build | External API dependency | 5–10 containers, 1–2 GB+ RAM | Cloud-only | **Single binary / single container, embedded SQLite, tens of MB RAM** |
+| **Architectural Disruption** | Bound to web server | Modifies primary traffic path | Replaces primary gateway | DNS / reverse proxy takeover | **Runs as standalone reverse proxy or sidecar via `adapterd`** |
+| **Data Privacy & Compliance** | Local | Full traffic sent to external API | Local | Traffic traverses public cloud | **100% on-premises; optional private self-hosted LLM** |
+| **Air-gapped Environments** | Supported | Not supported (requires cloud API) | Partially supported | Not supported | **Fully supported with offline Ed25519 CRP verification** |
 
 ---
 
 ## Core Mechanism
 
-Traditional regex-based WAFs rely on large signature rule sets that require high maintenance and remain vulnerable to encoding evasion or false positives. Conversely, sending every request synchronously to a large language model introduces prohibitive proxy latency.
+CheeseWAF decouples request proxying from deep intelligence into two distinct layers:
 
-CheeseWAF uses a decoupled two-plane design:
+1. **Inline Data Plane (Sub-Millisecond Blocking)**: An in-process Abstract Syntax Tree (AST) engine parses parameters and inspects syntax trees in sub-millisecond time, immediately blocking deterministic exploits like SQL injection, XSS, and command injection.
+2. **Asynchronous Review Plane (ALAP Engine)**: After normal responses return to clients, ALAP (AI Large-Language-Model Auto Pilot) routes ambiguous samples to a background queue for deep model evaluation without slowing down online traffic.
+3. **Dynamic Rule Synthesis**: When auto-adoption is enabled, high-confidence malicious findings (`high` or `critical`) automatically convert into site-specific custom block rules for future traffic. Global IP bans and client fingerprint blocks remain operator decisions.
 
-1. **Inline Mitigation (Data Plane)**: An in-process Abstract Syntax Tree (AST) semantic engine decodes parameters and evaluates syntactic structures in sub-millisecond time, immediately blocking deterministic exploits such as SQL injection and XSS.
-2. **Asynchronous Review (ALAP Engine)**: **ALAP (AI Large-Language-Model Auto Pilot)** sends borderline, ambiguous, or embedded payloads to a background review queue after responses are delivered to clients. The configured model analyzes samples out-of-band without adding proxy latency.
-3. **Dynamic Rule Synthesis**: When auto-adoption is enabled for a site, high-confidence malicious findings (`high` or `critical`) are automatically transformed into persistent custom payload rules for that site, protecting subsequent traffic. Global IP bans and client fingerprint blocks remain explicit operator decisions.
-
-**Storage and Runtime Profile**: CheeseWAF stores management state in embedded SQLite by default (`storage.profile: temporary`), providing a standalone setup with zero external database dependencies. It also supports an optional asynchronous PostgreSQL log sink (`storage.postgresql`) for centralized enterprise audit and telemetry. To enforce strict fail-closed safety, selecting `storage.profile: production` enforces environment verification and fails closed with `ErrProductionStorageUnavailable` to prevent accidental insecure fallbacks.
+> **Storage Profile**: Uses embedded SQLite by default (`storage.profile: temporary`), requiring zero external database setup; access logs can stream asynchronously to external PostgreSQL. If `storage.profile: production` is explicitly set, an external production database must be configured; if missing, the service fails closed with `ErrProductionStorageUnavailable` at startup to prevent writing production state into temporary storage.
 
 ---
 
 ## Architecture & Ecosystem
 
-CheeseWAF maintains distinct operational boundaries across the core engine, gateway adapters, and plugin specifications:
+CheeseWAF consists of three primary components:
 
 ```text
 Client Request
@@ -79,7 +95,7 @@ Client Request
       ▼
 Reverse Proxy / API Gateway (NGINX / Envoy / Kubernetes Ingress)
       │
-      ├─ auth_request / ext_authz (HTTP Contract)
+      ├─ auth_request / ext_authz (HTTP Protocol)
       ▼
 Gateway Adapter (CheeseWAF-Adapters / adapterd)
       │
@@ -87,34 +103,34 @@ Gateway Adapter (CheeseWAF-Adapters / adapterd)
       ▼
 CheeseWAF Core Engine
   ├─ Data Plane: Sub-millisecond AST parsing, rate limiting, Bot defense
-  ├─ Management Plane: Web Console, REST API, interactive CLI (waf-cli)
+  ├─ Management Plane: Web Console, REST API, CLI (waf-cli)
   ├─ Asynchronous Queue: ALAP model review and rule feedback
   ├─ Plugin Management: CRP v1 offline verification and local staging
   └─ Storage State: Embedded SQLite / optional PostgreSQL log sink
 ```
 
-- **Core Engine (CheeseWAF)**: Handles traffic proxying, semantic inspection, rate limiting, administrative operations, and background ALAP auditing.
-- **Gateway Adapters ([CheeseWAF-Adapters](https://github.com/LaokeQwQ/CheeseWAF-Adapters))**: A lightweight Go daemon (`adapterd`) deployed as a sidecar alongside API gateways or reverse proxies. It converts gateway requests into CheeseWAF inspection contracts, enforcing fail-closed protection without requiring you to replace existing infrastructure.
-- **Security Plugin Ecosystem ([CheeseSec_Plugin](https://github.com/LaokeQwQ/CheeseSec_Plugin))**: Implements the CRP v1 (CheeseWAF Resources Package) specification. Packages use Ed25519 multi-signatures, strict source-root bindings, and monotonic release sequences to enable secure, offline-verifiable rule and model distribution.
+- **Core Engine (CheeseWAF)**: Handles reverse proxying, AST inspection, rate limiting, administrative operations, and background ALAP auditing.
+- **Gateway Adapters ([CheeseWAF-Adapters](https://github.com/LaokeQwQ/CheeseWAF-Adapters))**: A standalone `adapterd` daemon. Deploys via `auth_request` or `ext_authz` alongside existing NGINX, Envoy, or Kubernetes Ingress setups without replacing gateways.
+- **Security Resource Packages ([CheeseSec_Plugin](https://github.com/LaokeQwQ/CheeseSec_Plugin))**: Implements the CRP v1 specification. Packages use Ed25519 multi-signatures and monotonic version sequences to support fully offline verification.
 
 ---
 
 ## Features
 
-- **AST Semantic Analysis**: Multi-stage decoding and AST parsing detect SQL injection, XSS, command execution, and code injection without brittle regular expressions.
-- **ALAP Asynchronous Auditing**: Background queues invoke standard-compatible model endpoints without adding proxy latency to live HTTP traffic.
-- **0–5 Paranoia Levels**: Distinguishes between isolated exploit payloads and attacks embedded inside long text fields, with support for temporary elevation windows (`promote_seconds`).
-- **Access Control & Bot Defense**: Built-in IP allow/block lists, GeoIP blocking, client soft fingerprinting, slider CAPTCHA challenges, and sharded sliding-window rate limiting.
-- **Decoupled Gateway Integration**: Works with `CheeseWAF-Adapters` to support NGINX, Envoy, and Kubernetes Ingress.
-- **Cryptographic Plugin Verification**: Built-in CRP v1 parser verifies Ed25519 signatures and stages assets into content-addressed local slots.
-- **Unified Tri-Interface Management**: Responsive Web UI, interactive terminal CLI (`waf-cli`), and RESTful API backed by a single RBAC and audit logging core.
-- **Zero-Dependency Storage**: Embedded SQLite operates out of the box; asynchronous PostgreSQL streaming is available for external audit storage.
+- **AST Semantic Analysis**: Restores syntax trees to catch SQL injection, XSS, and command execution without regex false positives or bypass flaws.
+- **ALAP Asynchronous Review**: Evaluates ambiguous samples out-of-band via model APIs without increasing live proxy latency.
+- **0–5 Paranoia Levels**: Distinguishes between isolated exploit payloads and attacks embedded inside long text fields, with temporary escalation windows (`promote_seconds`).
+- **Access Control & Bot Defense**: Built-in IP allow/block lists, GeoIP blocking, client soft fingerprinting, slider CAPTCHAs, and sharded sliding-window rate limiting.
+- **Flexible Gateway Integration**: Operates as a standalone reverse proxy or sidecar integration for NGINX, Envoy, and Kubernetes Ingress via `adapterd`.
+- **Offline Security Plugins**: Supports CRP v1 offline packages with Ed25519 signature checks and rollback protection.
+- **Tri-Interface Management**: Responsive Web UI, interactive terminal CLI (`waf-cli`), and REST API.
+- **Zero-Dependency Footprint**: Embedded SQLite engine operates out of the box with tens of megabytes of baseline memory.
 
 ---
 
 ## Request Processing Pipeline
 
-Solid lines denote the inline millisecond data plane; dashed lines represent post-response asynchronous ALAP auditing and site custom rule updates:
+Solid lines denote inline data forwarding; dashed lines represent post-response asynchronous ALAP auditing and rule updates:
 
 ```mermaid
 flowchart TB
@@ -153,10 +169,10 @@ flowchart TB
 
 The paranoia level is configured per site via `waf.paranoia_level` (valid values: **0–5**, default: **3**).
 
-> **Two independent settings:**
-> - `waf.paranoia_level` (0–5) controls how strictly the **semantic engine** evaluates input structures.
-> - `protection_policy.web_attack` (`off` / `low` / `smart` / `high` / `strict`, default `smart`) sets the **proxy-level response policy**, including risk score aggregation, alerting thresholds, and timeout behavior.
-> - In access logs, `waf_policy_decision.paranoia_level` records the site sensitivity level (0–5) and `waf_policy_decision.policy_tier` records the response strategy tier (0–4).
+> **Configuration Roles:**
+> - `waf.paranoia_level` (0–5): controls how strictly the **semantic engine** evaluates input structures.
+> - `protection_policy.web_attack` (`off` / `low` / `smart` / `high` / `strict`): sets the **response strategy**, including risk score aggregation and timeout fallback.
+> - Access logs record these in `waf_policy_decision.paranoia_level` and `waf_policy_decision.policy_tier` respectively.
 
 The analyzer inspects **individual decoded parameter values** (paths and parameter names remain visible) and categorizes attack patterns into two structural shapes:
 - **Isolated Payload**: The inspected parameter value consists almost entirely of exploit syntax (e.g., `UNION SELECT 1,2,3` in a search parameter).
@@ -164,47 +180,53 @@ The analyzer inspects **individual decoded parameter values** (paths and paramet
 
 ### Paranoia Level Matrix
 
-| Level | Name | Isolated Payload | Embedded Payload | Dynamic Elevation | Mechanism & Target Scenario |
+| Level | Name | Isolated Payload | Embedded Payload | Dynamic Elevation | Target Scenario |
 | :---: | :--- | :--- | :--- | :---: | :--- |
-| **0** | Record Only | Log only | Log only | No | Initial baseline profiling and traffic discovery. |
-| **1** | Low Monitoring | Log only | Log only | No | Staging environments, rule dry-runs, and false-positive auditing. |
-| **2** | Low-Medium | **Block immediately** | **Pass to origin**, async review | No | UGC platforms, forums, and editors requiring low false-positive rates. |
-| **3** | Standard (Default) | **Block immediately** | **Pass to origin**, async review | No | Standard production web apps and corporate portals. Blocks confirmed exploits. |
-| **4** | Medium-High | **Block immediately** | **Pass to origin**, async review | **Supported** (elevates to Level 5) | Critical systems under probing. Temporarily elevates to Level 5 via `promote_seconds`. |
-| **5** | Strict Mitigation | **Block immediately** | **Block immediately**, async review | N/A (Highest level) | Financial APIs, payment backends, and active emergency mitigation. |
+| **0** | Record Only | Log only | Log only | No | Initial baseline profiling and traffic discovery |
+| **1** | Low Monitoring | Log only | Log only | No | Staging environments, rule dry-runs, and allowlist tuning |
+| **2** | Low-Medium | **Block immediately** | **Pass to origin**, async review | No | UGC platforms, forums, and editors requiring low false-positive rates |
+| **3** | Standard (Default) | **Block immediately** | **Pass to origin**, async review | No | Standard web apps and corporate portals; blocks confirmed exploits |
+| **4** | Medium-High | **Block immediately** | **Pass to origin**, async review | **Supported** (elevates to Level 5) | Critical systems under probing; temporarily elevates via `promote_seconds` |
+| **5** | Strict Mitigation | **Block immediately** | **Block immediately**, async review | N/A (Highest level) | Financial APIs, payment backends, and active emergency mitigation |
 
 > **Notes:**
-> 1. **Dynamic Elevation (`promote_seconds`)**: Under Level 4, detecting embedded attack patterns can trigger a temporary elevation to Level 5 for a specified window (e.g., 300 seconds). The deadline is persisted locally and remains active across restarts.
+> 1. **Dynamic Elevation (`promote_seconds`)**: Under Level 4, detecting embedded attack patterns triggers temporary elevation to Level 5 for a specified window (e.g., 300 seconds). The deadline is persisted locally across restarts.
 > 2. **Level 5 Constraints**: Samples blocked under Level 5 enter the audit queue with status `blocked` and cannot be retroactively allowed, but can be converted into permanent block rules.
 
 ---
 
 ## Hardware Recommendations
 
-The initial setup wizard performs a host probe (up to 30 seconds) to determine suitable resource defaults based on logical CPU cores, visible memory, and disk sequential write throughput:
+The setup wizard tests system performance and recommends an operational tier, which can also be adjusted anytime in the admin settings:
 
-- **Low (`low`)**: Logical cores <= 2, memory <= 2048 MB, or unverified disk write throughput. Recommended for 2-core / 2 GB cloud VMs.
-- **Medium (`medium`)**: At least 3 logical cores, at least 4096 MB memory, and verified sequential disk writes.
-- **High (`high`)**: At least 4 logical cores, at least 8192 MB memory, and sequential write throughput >= 50 MB/s.
-- **Smart (`smart`)**: Manually selected adaptive profile. If the environment probe times out or encounters an error, the wizard defaults to recommending `low`.
+| Tier | Hardware Baseline | Description |
+| :--- | :--- | :--- |
+| **Low (`low`)** | 1–2 CPU cores / 1–2 GB RAM | Lightweight cloud hosts or small VPSs; requests that exceed inspection budgets automatically fall back here |
+| **Smart (`smart`, default)** | 2–4 CPU cores / 4–8 GB RAM | Recommended for standard servers; dynamically tunes inspection depth based on request risk |
+| **Medium (`medium`)** | Explicit selection | Fixed inspection depth 2 with a 50 ms timeout per request |
+| **High (`high`)** | 4+ CPU cores / 8+ GB RAM | Core gateways; full deep semantic analysis |
+| **Custom (`custom`)** | Explicit selection | Manual configuration of inspection depth and timeout budgets |
 
-The profile sets baseline protection levels and rate-limit thresholds without adding unverified experimental parameters.
+### Optional External Components
+
+In addition to built-in features, CheeseWAF connects to external monitoring and storage services (testable during setup or configured later):
+- **PostgreSQL**: Centralized access logs and audit trails.
+- **VictoriaLogs**: High-performance structured log ingestion and querying.
+- **Prometheus**: Metrics scraping endpoint.
 
 ---
 
 ## Deployment
 
-CheeseWAF provides flexible deployment models across major operating systems and infrastructure environments.
+CheeseWAF provides flexible deployment models across major operating systems.
 
 ### 1. Linux Deployment (Systemd Production)
 
-Recommended for Linux physical servers and virtual machines requiring minimal resource overhead and high throughput.
+Recommended for Linux physical servers and virtual machines requiring minimal resource overhead.
 
 #### Step 1: Download and Extract Release Archive
 
 Download the official release archive matching your server architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
-
-Stable `vMAJOR.MINOR.PATCH` releases are server-first and contain Linux archives only. Windows and macOS packages are produced by branch or manually dispatched `full` profile builds; they are optional, may be unsigned, and are not part of the stable server release guarantee.
 
 | Archive Name | Architecture |
 | :--- | :--- |
@@ -250,26 +272,34 @@ Copy the service unit file to the system directory:
 sudo cp systemd/cheesewaf.service /etc/systemd/system/cheesewaf.service
 ```
 
-The service unit runs as the unprivileged `cheesewaf` user and grants `CAP_NET_BIND_SERVICE` to bind ports 80 and 443 safely.
+The service runs under a non-root user (`cheesewaf`) with `CAP_NET_BIND_SERVICE` capabilities to bind ports 80 and 443 safely.
 
-#### Step 4: Start Service and Verify
+#### Step 4: Start and Manage Service
 
 ```bash
-# Reload service definitions and enable auto-start
+# Reload service definitions and enable at boot
 sudo systemctl daemon-reload
 sudo systemctl enable --now cheesewaf
 
-# Inspect service status
+# Inspect status
 sudo systemctl status cheesewaf
 ```
 
-The administrative interface binds to `127.0.0.1:9443` by default. Access `http://127.0.0.1:9443/setup` locally or via an SSH tunnel. Initial setup requires a setup token; use the full URL from the protected `setup.url` runtime file.
+The management interface listens on `127.0.0.1:9443` by default. Access the setup wizard locally or via an SSH tunnel:
+
+```bash
+# View the initial setup URL containing the one-time access token:
+cat /var/lib/cheesewaf/setup.url
+
+# Reset the token if lost (valid only before creating the primary administrator):
+sudo -u cheesewaf cheesewaf setup token reset
+```
 
 ---
 
 ### 2. Docker Deployment (Docker Compose)
 
-Suitable for containerized environments. Builds an unprivileged container with a read-only root filesystem using `deploy/docker/Dockerfile`.
+Use Docker Compose to deploy quickly in containerized environments. Containers run as a non-privileged non-root user (UID `10001`) with a read-only root filesystem.
 
 #### Step 1: Prepare Compose File
 
@@ -308,7 +338,7 @@ volumes:
   cheesewaf-logs:
 ```
 
-#### Step 2: Start Containers
+#### Step 2: Start Container
 
 ```bash
 docker compose up -d
@@ -317,65 +347,65 @@ docker compose logs -f cheesewaf
 
 #### Step 3: Access Setup Wizard
 
-Navigate to `https://127.0.0.1:9443/setup` on the host machine (containers generate self-signed certificates by default). The `cheesewaf-data` volume persists configuration and rules across container upgrades.
+Open `https://127.0.0.1:9443/setup` in your browser to complete initialization (self-signed certificates are generated automatically). The `cheesewaf-data` volume persists configuration and rules across container upgrades.
 
 ---
 
 ### 3. Windows Deployment (CLI, Zip, NSIS)
 
-Designed for desktop testing and local operations. These packages come from a branch or manually dispatched `full` profile build, not from the stable server release:
+Supports local development and running as a native Windows service:
 
-- **Option A: Standalone CLI**: Download `cheesewaf-amd64-windows-*.exe` and run `.\cheesewaf.exe setup` and `.\cheesewaf.exe serve` directly in PowerShell.
-- **Option B: Portable ZIP**: Extract the archive to access default configuration files and run `.\cheesewaf.exe serve --data-dir .\data`.
-- **Option C: NSIS Installer**: Run the setup wizard to register CheeseWAF as a managed Windows service with a system tray controller.
+- **Single Binary CLI**: Download `cheesewaf-amd64-windows-*.exe`, then run `.\cheesewaf.exe setup` and `.\cheesewaf.exe serve` in PowerShell.
+- **Portable Zip**: Extract the archive and launch `.\cheesewaf.exe serve --data-dir .\data`.
+- **NSIS Installer**: Registers CheeseWAF as a Windows background service and includes a system tray controller.
 
 ---
 
 ### 4. macOS Deployment (DMG & Portable Tarball)
 
-These packages come from a branch or manually dispatched `full` profile build, not from the stable server release:
+Provides a status bar utility and command-line tools:
 
-1. Download the installer image matching your hardware: `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
-2. Open the DMG and drag **CheeseWAF** into the Applications folder.
-3. Launch the application to start the menu bar controller, offering one-click service management and Web console access.
-4. Runtime data is stored in `~/Library/Application Support/CheeseWAF`. For headless servers, use the CLI tarball release directly.
+1. Download the installer for your architecture: `cheesewaf-arm64-darwin-*.dmg` (Apple Silicon) or `cheesewaf-amd64-darwin-*.dmg` (Intel).
+2. Open the disk image and drag **CheeseWAF** into the Applications folder.
+3. Launch the app to access tray controls for starting, stopping, and opening the Web Console.
+4. Data is stored in `~/Library/Application Support/CheeseWAF`. Headless environments can run the CLI directly.
 
 ---
 
 ## Quick Start
 
-### 1. Initialize System
+### 1. Initial Setup
 
-After starting the service, open the initialization URL in your browser:
-- Copy the complete link containing the token from the protected `setup.url` runtime file (e.g., `http://127.0.0.1:9443/setup#setup_token=...`). The wizard automatically sends the token via headers and strips it from the address bar.
-- Create the primary administrator account. Note the administrator password; console authentication enforces strict complexity checks.
+Open the setup wizard in your browser (e.g., `http://127.0.0.1:9443/setup`):
+1. Enter the access token displayed in your terminal or `setup.url`.
+2. Follow the on-screen prompts to create the primary administrator account.
 
 ### 2. Add Reverse Proxy Site
 
-In the Web console, navigate to **Sites** -> **Add Site**:
-1. **Domain**: Enter the public domain name (e.g., `demo.example.com`).
-2. **Upstream Origin**: Configure the backend server IP and port (e.g., `192.168.1.100:8080`).
-3. **Protection Policy**: Select the initial paranoia level (Level 3 is recommended for general workloads).
-4. **Save**: Configuration changes take effect immediately via hot reload without restarting the process.
+Log into the Web Console and navigate to **Sites** -> **New Site**:
+1. Enter your domain (e.g., `demo.example.com`).
+2. Enter the upstream server address and port (e.g., `192.168.1.100:8080`).
+3. Select a paranoia level (Level 3 recommended for general production).
+4. Save the configuration to hot-reload immediately without restarting the daemon.
 
-### 3. Configure Model Review (ALAP)
+### 3. Configure Model Endpoint (ALAP)
 
 Navigate to **AI Settings**:
-1. **Endpoint**: Enter an OpenAI- or Anthropic-compatible API endpoint (e.g., `https://api.example.com/v1`). Private network endpoints require enabling private API access.
-2. **Credentials**: Supply the API key and specify the target model name.
-3. **Auto-Adoption**: Enable auto-adoption per site under site settings to automatically promote high-confidence malicious findings into permanent custom rules.
+1. Enter an OpenAI-compatible endpoint URL (e.g., `https://api.example.com/v1`). Check the private network option if using a self-hosted local model.
+2. Enter your API Key and model name.
+3. Enable "Auto Adopt" under site settings if you want high-risk audit findings to automatically convert into site block rules.
 
 ---
 
 ## Gateways & Adapters
 
-To integrate CheeseWAF with existing API gateways or reverse proxies without changing your routing topology, deploy [CheeseWAF-Adapters](https://github.com/LaokeQwQ/CheeseWAF-Adapters).
+If your infrastructure already uses a reverse proxy or API gateway, you can integrate CheeseWAF without replacing your gateway by using [CheeseWAF-Adapters](https://github.com/LaokeQwQ/CheeseWAF-Adapters).
 
-### Integration Concept
+### Architecture
 
-`CheeseWAF-Adapters` provides `adapterd`, a lightweight Go daemon that runs alongside your gateway as a sidecar. The gateway forwards subrequests or authorization requests (e.g., NGINX `auth_request`, Envoy `ext_authz`) to `adapterd`, which calls the CheeseWAF core contract at `/api/v1/check` and translates verdicts back into gateway responses.
+`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries CheeseWAF at `/api/v1/check`.
 
-### NGINX Configuration Example
+### NGINX Integration Example
 
 Start `adapterd`:
 
@@ -383,7 +413,7 @@ Start `adapterd`:
 adapterd --listen 127.0.0.1:9080 --core-url http://127.0.0.1:8080
 ```
 
-Add the following subrequest block to your NGINX server configuration:
+Add the following directives to your NGINX configuration:
 
 ```nginx
 location / {
@@ -402,36 +432,36 @@ location = /cheesewaf-check {
 }
 ```
 
-### Security & Resilience
+### Security & Fault Tolerance
 
-- **Token Authentication**: When `CHEESEWAF_ADAPTER_TOKEN` is configured, adapter requests must supply the dedicated `X-CheeseWAF-Adapter-Token` HTTP header.
-- **Fail-Closed Design**: If CheeseWAF core becomes unreachable, `adapterd` returns `503 Service Unavailable` by default, preventing uninspected traffic from slipping through.
+- **Token Authentication**: When `CHEESEWAF_ADAPTER_TOKEN` is configured, requests must include the `X-CheeseWAF-Adapter-Token` header.
+- **Fail-Closed Protection**: If the CheeseWAF core engine is unreachable, `adapterd` returns `503 Service Unavailable` by default, preventing uninspected traffic from reaching upstreams.
 
 ---
 
 ## Security Plugins & Resource Packages
 
-CheeseWAF supports distributing and applying custom rules and models via [CheeseSec_Plugin](https://github.com/LaokeQwQ/CheeseSec_Plugin). Packages adhere to the CRP v1 (CheeseWAF Resources Package) specification.
+CheeseWAF loads external security rules via [CheeseSec_Plugin](https://github.com/LaokeQwQ/CheeseSec_Plugin). Packages follow the CRP v1 (CheeseWAF Resources Package) specification using standard ZIP archives with Ed25519 digital signatures.
 
 ### CRP v1 Specification
 
-- **Archive Layout**: A valid `.crp` package strictly contains `manifest.json`, `signatures/manifest.json`, and an `artifact/<file>` entry.
-- **Signatures**: Uses Ed25519 cryptographic signatures with threshold policies (e.g., official packages require a 2-of-3 threshold).
-- **Integrity Controls**: Manifests declare SHA-256 identity digests, transfer checksums, and monotonic `release_sequence` values to prevent rollbacks and replay attacks.
+- **Package Structure**: A valid `.crp` archive contains `manifest.json`, `signatures/manifest.json`, and `artifact/<file>`.
+- **Digital Signatures**: Uses Ed25519 signatures and supports threshold policies (such as 2-of-3 signatures for official releases).
+- **Integrity Validation**: Manifests declare a unique SHA-256 payload hash and a monotonic `release_sequence` to prevent version rollbacks and replay attacks.
 
-### CLI Commands
+### CLI Operations
 
-The CheeseWAF CLI provides offline verification and controlled staging:
+The CheeseWAF CLI provides offline verification and staging commands:
 
 ```bash
-# 1. Verify signatures and source registration offline
+# 1. Verify signatures and trust roots offline
 cheesewaf crp verify \
   --package ./rules-pack.crp \
   --trust-roots ./trust-roots.json \
   --sources ./sources.json \
   --now 2026-09-06T12:00:00Z
 
-# 2. Stage verified package into local protected storage (stages without executing)
+# 2. Stage verified package into the protected runtime directory
 cheesewaf crp stage \
   --package ./rules-pack.crp \
   --trust-roots ./trust-roots.json \
@@ -440,31 +470,31 @@ cheesewaf crp stage \
   --now 2026-09-08T12:00:00Z
 ```
 
-Packages with missing signatures or unregistered sources are rejected by the core admission layer.
+Packages that fail signature checks or originate from unregistered sources are rejected by the security engine.
 
 ---
 
 ## Management Interfaces
 
-CheeseWAF provides three unified management interfaces:
+CheeseWAF provides three administrative interfaces:
 
-| Interface | Best For | Authentication & Mechanics |
+| Interface | Best For | Authentication & Interaction |
 | :--- | :--- | :--- |
-| **Web Console** | Day-to-day operations, traffic dashboards, and rule management | Browser-based, responsive design with guided setup wizards |
-| **Terminal CLI** | Shell automation, headless servers, and rapid debugging | `waf-cli` binary supporting subcommands and interactive TUI |
-| **RESTful API** | CI/CD automation and enterprise platform integration | Standard HTTP API authenticated via Bearer tokens with audit trails |
+| **Web Console** | Routine monitoring, rule adjustments, dashboard, log search | Web browser with responsive UI and step-by-step wizard |
+| **Terminal CLI** | Automation scripts, headless servers, quick troubleshooting | Run `waf-cli`, supporting subcommands and full-screen TUI |
+| **RESTful API** | CI/CD automation, internal DevOps platforms | Standard HTTP endpoints authenticated via Bearer tokens |
 
 ---
 
 ## Configuration Reference
 
-On first run, the daemon creates `data/config/cheesewaf.yaml` (template available in [configs/cheesewaf.yaml](configs/cheesewaf.yaml)). Primary configuration keys include:
+On first launch, the daemon generates `data/config/cheesewaf.yaml` in the data directory (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)). Core configuration structure:
 
 ```yaml
 server:
   listen: "127.0.0.1:8080"       # Data plane ingress listener
-  admin_listen: "127.0.0.1:9443" # Administration interface listener
-  admin_public: false             # Exposing externally requires TLS configuration
+  admin_listen: "127.0.0.1:9443" # Management plane listener
+  admin_public: false             # Set true only when TLS is configured
 
 sites:
   - id: "site-demo"
@@ -475,12 +505,12 @@ sites:
         weight: 1
     waf:
       enabled: true
-      mode: "block"              # block, monitor, or off
-      paranoia_level: 3          # Paranoia Level (0–5)
+      mode: "block"              # block / monitor / off
+      paranoia_level: 3          # Paranoia level (0–5)
       semantic_policy:
-        auto_agree: true         # Auto-adopt high-confidence model verdicts
+        auto_agree: true         # Automatically adopt high-risk findings
       access_control:
-        trusted_cidrs: []        # Trusted proxy CIDR blocks
+        trusted_cidrs: []        # Trusted proxy CIDRs
 
 protection:
   ratelimit:
@@ -500,41 +530,41 @@ ai:
   model: "provider-default"
 ```
 
-### Rule Import and Export
+### Rule Batch Import & Export
 
-Custom rules are scoped to `sites[].waf.custom_rules`. You can manage them via the console or CLI:
+Custom rules are stored under `sites[].waf.custom_rules`. You can manage them via the console or CLI:
 
 ```bash
-# Display rule schema example
+# View rule YAML template
 waf-cli --config ./data/config/cheesewaf.yaml rules example --format yaml
 
-# Import site custom rules (validates and deduplicates before applying)
+# Import custom rules (validates and deduplicates automatically)
 waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file custom_rules.yaml
 
-# Export active site rules
+# Export active rules
 waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
 ```
 
-The process monitors `cheesewaf.yaml` modification times and reloads rules automatically. You can also send `SIGHUP` to trigger an immediate reload. If a new rule set fails compilation, previous rules remain in effect.
+Configuration files hot-reload automatically upon file changes or when receiving a `SIGHUP` signal. If an imported rule contains syntax errors, the service continues running with its existing active rules.
 
 ---
 
 ## Tech Stack
 
-| Component | Technology |
+| Module | Technologies |
 | :--- | :--- |
-| **Data Plane** | Go 1.26, `chi` router, quic-go (HTTP/3 support) |
-| **Inspection Engine** | In-process AST semantic analyzer, dynamic fingerprinting, sharded sliding-window rate limiting |
-| **Review Engine** | Asynchronous in-memory & durable queues, standard protocol adapters |
-| **Storage** | Embedded SQLite management storage (zero external dependencies); optional PostgreSQL async log sink |
-| **Web Console** | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query |
-| **Terminal CLI** | Cobra CLI framework, Bubble Tea terminal UI |
+| **Networking** | Go 1.26, `chi` router, quic-go (HTTP/3 support) |
+| **Inspection Engine** | In-process AST semantic parser, client soft fingerprinting, sharded sliding-window rate limiting |
+| **Asynchronous Review** | Memory and persistent queues, standard-compatible protocol adapters |
+| **Storage** | Embedded SQLite state storage; optional asynchronous PostgreSQL log sink |
+| **Frontend** | React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query |
+| **Terminal Tooling** | Cobra CLI, Bubble Tea TUI framework |
 
 ---
 
 ## Production Build Guidelines
 
-When building production assets from source, build frontend assets exclusively via `bash scripts/ci/build-web.sh`. This script excludes local debugging tools and developmental scripts, ensuring production packages remain clean and terminating the build if non-production markers are detected.
+Production frontend assets must be built using `bash scripts/ci/build-web.sh`. This script excludes local debugging tools and developmental scripts, verifying artifact purity and failing if non-production markers are detected.
 
 ---
 
@@ -610,3 +640,7 @@ Automated CI gates require evaluation snapshots to contain at least 250 benign r
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+---
+
+<p align="center">Made with ❤️ by CheeseSec Team</p>

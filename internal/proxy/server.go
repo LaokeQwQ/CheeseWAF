@@ -1989,7 +1989,7 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 			entry.DetectorID = result.DetectorID
 			entry.Message = result.Message
 			entry.Payload = result.Payload
-			// Align with existing Codex event-level fields: keep confidence and
+			// Align with existing event-level fields: keep confidence and
 			// detector type queryable in log metadata without a schema migration.
 			if entry.Metadata == nil {
 				entry.Metadata = map[string]any{}

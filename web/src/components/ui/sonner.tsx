@@ -1,13 +1,15 @@
 import * as React from 'react';
 import { Toaster as Sonner } from 'sonner';
 import { useAppStore } from '../../stores';
+import { resolveTheme } from '../../themes';
 
 type ToasterProps = React.ComponentProps<typeof Sonner>;
 
 function Toaster({ ...props }: ToasterProps) {
   const appTheme = useAppStore((state) => state.theme);
+  const resolvedTheme = resolveTheme(appTheme);
   // Sonner only supports light/dark/system; map app themes to a real scheme.
-  const theme = appTheme === 'dark' || appTheme === 'blackGold' ? 'dark' : 'light';
+  const theme = resolvedTheme === 'dark' || resolvedTheme === 'blackGold' ? 'dark' : 'light';
   return (
     <Sonner
       className="toaster group"

@@ -1,6 +1,8 @@
-export type ThemeName = 'light' | 'dark' | 'blackGold' | 'blueWhite' | 'pinkWhite' | 'mikuGreen';
+export type ThemeName = 'system' | 'light' | 'dark' | 'blackGold' | 'blueWhite' | 'pinkWhite' | 'mikuGreen';
+export type ResolvedThemeName = Exclude<ThemeName, 'system'>;
 
 export const themeOptions: Array<{ labelKey: string; value: ThemeName }> = [
+  { labelKey: 'themes.system', value: 'system' },
   { labelKey: 'themes.light', value: 'light' },
   { labelKey: 'themes.dark', value: 'dark' },
   { labelKey: 'themes.blackGold', value: 'blackGold' },
@@ -9,7 +11,7 @@ export const themeOptions: Array<{ labelKey: string; value: ThemeName }> = [
   { labelKey: 'themes.mikuGreen', value: 'mikuGreen' },
 ];
 
-export const themeAttribute: Record<ThemeName, string> = {
+export const themeAttribute: Record<ResolvedThemeName, string> = {
   light: 'light',
   dark: 'dark',
   blackGold: 'black-gold',
@@ -19,7 +21,7 @@ export const themeAttribute: Record<ThemeName, string> = {
 };
 
 export const themeMeta: Record<
-  ThemeName,
+  ResolvedThemeName,
   { themeColor: string; colorScheme: 'light' | 'dark' }
 > = {
   light: { themeColor: '#f6f8fb', colorScheme: 'light' },

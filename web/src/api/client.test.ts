@@ -162,6 +162,20 @@ describe('first-install setup token', () => {
     expect(window.location.hash).toBe('');
   });
 
+  it('sends the setup token on integration connection tests', async () => {
+    setSetupTokenForSession('integration-secret');
+    const seenHeaders: Array<string | undefined> = [];
+    const adapter = vi.fn(async (config) => {
+      seenHeaders.push(config.headers.get('X-CheeseWAF-Setup-Token')?.toString());
+      return { data: { data: { connected: true } }, status: 200, statusText: 'OK', headers: {}, config };
+    });
+
+    await apiClient.post('/setup/integrations/postgres/test', {}, { adapter });
+    await apiClient.post('/setup/integrations/victoria/test', {}, { adapter });
+
+    expect(seenHeaders).toEqual(['integration-secret', 'integration-secret']);
+  });
+
   it('clears the in-memory setup token only after setup completes successfully', async () => {
     window.history.replaceState({}, '', '/setup#setup_token=one-time-secret');
     const seenHeaders: Array<string | undefined> = [];

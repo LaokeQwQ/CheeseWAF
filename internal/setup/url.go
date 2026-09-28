@@ -92,7 +92,7 @@ func WriteURLWithReceipt(dataDir, page string) (string, error) {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := protectSetupSecretFile(tmpName); err != nil {
 		return "", err
 	}
 	if _, err := tmp.Write(payload); err != nil {
@@ -104,7 +104,7 @@ func WriteURLWithReceipt(dataDir, page string) (string, error) {
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmpName, filepath.Join(dataDir, URLFileName)); err != nil {
+	if err := replaceSetupSecretFile(tmpName, filepath.Join(dataDir, URLFileName)); err != nil {
 		return "", err
 	}
 	removeTemp = false
@@ -141,6 +141,9 @@ func ReadURLOnce(dataDir string) (string, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return "", errors.New("setup URL claim is not a regular file")
+	}
+	if err := validateSetupSecretFilePermissions(claim, info); err != nil {
+		return "", fmt.Errorf("setup URL claim is not private: %w", err)
 	}
 	file, err := os.Open(claim)
 	if err != nil {

@@ -102,7 +102,7 @@ func applyConsensusSafety(status *Status, cfg *config.Config, mode, lang string)
 	case provider == "etcd" && sharedConfiguration:
 		status.MajorityConfirmed = false
 		status.CanWriteConfig = false
-		status.ProtectionModeReason = label(lang, "etcd 共识提供程序尚未接入；拒绝回退到内置心跳选主", "etcd consensus requires an etcd-backed coordinator; refusing builtin heartbeat election")
+		status.ProtectionModeReason = label(lang, "未配置外部 etcd 协调器；拒绝回退到内置心跳选主", "etcd consensus requires an etcd-backed coordinator; refusing builtin heartbeat election")
 	case provider != "builtin" && provider != "etcd":
 		status.MajorityConfirmed = false
 		status.CanWriteConfig = false

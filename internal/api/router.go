@@ -16,6 +16,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 	"github.com/go-chi/chi/v5"
@@ -34,6 +35,7 @@ type Options struct {
 	Hub                                 *realtime.Hub
 	Secret                              string
 	SetupToken                          string
+	SetupTokenSource                    setup.TokenSource
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
@@ -120,6 +122,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		Tokens:                              tokens,
 		Secret:                              opts.Secret,
 		SetupToken:                          opts.SetupToken,
+		SetupTokenSource:                    opts.SetupTokenSource,
 		Auditor:                             auditor,
 		AssistantApprovals:                  approvals,
 		Realtime:                            hub,
@@ -175,6 +178,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		r.With(h.ConfigReadMiddleware).Get("/setup/status", h.SetupStatus)
 		r.Post("/setup", h.Setup)
 		r.Post("/setup/probe", h.SetupProbe)
+		r.Post("/setup/integrations/postgres/test", h.SetupPostgreSQLTest)
+		r.Post("/setup/integrations/victoria/test", h.SetupVictoriaLogsTest)
 		r.Get("/setup/draft", h.SetupDraftGet)
 		r.Patch("/setup/draft", h.SetupDraftPatch)
 		r.Post("/cluster/join", h.ClusterJoin)
