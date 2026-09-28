@@ -1,21 +1,21 @@
 # Ansible 商业部署边界
 
-deploy/ansible 提供 CheeseWAF 的主机准备、外部依赖交接和 CWEDP 引导边界。它不把
-Pigsty 源码、插件包或运行时密钥放进仓库，也不把当前尚未接通的生产控制面伪装成已可用。
+deploy/ansible 提供 CheeseWAF 的主机准备、外部依赖集成与 CWEDP 引导边界。仓库不包含
+Pigsty 源码、插件包或运行时密钥。
 
 ## 入口和存储模式
 
 | 入口 | 固定 profile | 用途 | 额外 PostgreSQL/Redis |
 | --- | --- | --- | --- |
 | single-node.yml | temporary | 单节点临时运行时或主机准备 | 不启动、不安装、不探测 |
-| production.yml | production | 已有外部依赖的生产交接 | 必须显式提供外部 PG、外部 Redis、native-raft |
-| full.yml | production | 生产交接加可选 Pigsty 适配器和 CWEDP 引导 | 只调用外部适配器，不携带其源码 |
+| production.yml | production | 已有外部依赖的生产部署 | 必须显式提供外部 PG、外部 Redis、native-raft |
+| full.yml | production | 生产部署加可选 Pigsty 适配器和 CWEDP 引导 | 只调用外部适配器，不携带其源码 |
 
 入口中的 vars 是硬边界；例如给 single-node.yml 传入
 cheesewaf_storage_profile=production 会失败。生产 profile 还必须传
-cheesewaf_provision_only=true 才会进入基础设施交接阶段。原因是当前 CheeseWAF 启动路径
-仍会以 ErrProductionStorageUnavailable 拒绝未接通的 PostgreSQL/Coordinator/native-raft
-一体化启动单元。完成真实运行时接线、迁移、健康探针和回滚演练后，才可以移除该交接门禁。
+cheesewaf_provision_only=true 才会进入基础设施就绪阶段。生产启动要求外部
+PostgreSQL、Coordinator 与 native-raft 处于可用状态，缺失依赖时以 ErrProductionStorageUnavailable
+安全拦截。完成运行时初始化、迁移、健康探针与回滚演练后方可接入生产流量。
 
 生产必填变量来自外部 secret 机制（Ansible Vault、控制器密钥服务或 CI secret），本仓库只保留
 空默认值：

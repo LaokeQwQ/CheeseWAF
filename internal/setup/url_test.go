@@ -54,8 +54,8 @@ func TestWriteURLWithReceiptUsesPrivateAtomicEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("setup URL mode = %o, want 600", got)
+	if err := validateSetupSecretFilePermissions(path, info); err != nil {
+		t.Fatalf("setup URL permissions are not private: %v", err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -95,8 +95,8 @@ func TestWriteURLReplacesExistingBroadPermissionFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("replaced setup URL mode = %o, want 600", got)
+	if err := validateSetupSecretFilePermissions(path, info); err != nil {
+		t.Fatalf("replaced setup URL permissions are not private: %v", err)
 	}
 }
 

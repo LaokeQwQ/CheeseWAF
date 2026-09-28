@@ -44,6 +44,7 @@ import { normalizeWorldId, type AttackRegion, type ProtectedTarget, type ThreatL
 import { threatPaletteHex, threatPaletteRgb } from './threatPalette';
 import { displayCountry } from '../../utils/display';
 import { useAppStore } from '../../stores';
+import { resolveTheme } from '../../themes';
 import type { ThemeName } from '../../themes/tokens';
 
 type GlobeMapProps = {
@@ -784,7 +785,8 @@ function clearObjectGroup(group: ThreeGroup) {
 }
 
 function resolveGlobeTheme(theme: ThemeName): GlobeVisualTheme {
-  return theme === 'dark' || theme === 'blackGold' ? 'dark' : 'light';
+  const resolvedTheme = resolveTheme(theme);
+  return resolvedTheme === 'dark' || resolvedTheme === 'blackGold' ? 'dark' : 'light';
 }
 
 function clamp(value: number, min: number, max: number) {

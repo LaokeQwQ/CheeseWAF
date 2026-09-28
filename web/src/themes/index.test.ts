@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyTheme, loadThemeStyles, readInitialTheme } from './index';
+import { applyTheme, loadThemeStyles, readInitialTheme, resolveTheme } from './index';
 
 function stubMatchMedia(scheme: 'light' | 'dark') {
   Object.defineProperty(window, 'matchMedia', {
@@ -72,6 +72,18 @@ describe('theme bootstrap', () => {
     expect(document.documentElement.dataset.theme).toBe('pink-white');
     expect(document.documentElement.style.colorScheme).toBe('light');
     expect(document.documentElement.classList.contains('dark')).toBe(false);
+  });
+
+  it('resolves automatic appearance from the current operating-system preference', () => {
+    stubMatchMedia('dark');
+    expect(resolveTheme('system')).toBe('dark');
+    applyTheme('system');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+
+    stubMatchMedia('light');
+    expect(resolveTheme('system')).toBe('light');
+    applyTheme('system');
+    expect(document.documentElement.dataset.theme).toBe('light');
   });
 
   it('loads every theme stylesheet before it is activated', async () => {

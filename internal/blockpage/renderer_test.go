@@ -123,7 +123,7 @@ func TestErrorTemplateLocalizesFromAcceptLanguage(t *testing.T) {
 			name:   "zh-CN",
 			accept: "zh-CN,zh;q=0.9,en;q=0.1",
 			locale: "zh-CN",
-			want:   []string{`<html lang="zh-CN"`, "服务错误", "受保护服务返回错误", "CheeseWAF 未能完成对受保护源站的请求。", "错误已记录", "已记录"},
+			want:   []string{`<html lang="zh-CN"`, "服务错误", "受保护服务返回错误", "CheeseWAF 无法连通受保护源站。", "错误已记录", "已记录"},
 		},
 		{
 			name:   "ja",

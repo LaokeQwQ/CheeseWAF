@@ -3,7 +3,7 @@ package version
 import "runtime"
 
 var (
-	Version   = "0.3.9-dev"
+	Version   = "0.4.0-beta"
 	Commit    = "unknown"
 	BuildTime = "unknown"
 	Channel   = "dev-local"

@@ -2,9 +2,9 @@
 
 本文描述 `internal/controlplane.Bootstrap` 的最小启动边界。
 它固定启动顺序和失败行为。
-PostgreSQL、native-raft 和管理面适配器都应遵守这份契约。当前 `cheesewaf serve`
-的 production 分支会调用统一启动单元，但默认 factory 尚未提供完整的审批 consumer
-和最终 `WireServe`，因此仍会 fail-closed。temporary 分支不调用该生产启动流程。
+PostgreSQL、native-raft 和管理面适配器都应遵守这份契约。`cheesewaf serve`
+的 production 分支会调用统一启动单元，若未提供完整的审批 consumer
+和最终 `WireServe`，则保持 fail-closed。temporary 分支不调用该生产启动流程。
 
 ## 启动顺序
 
@@ -69,13 +69,9 @@ etcd 选择也不能伪装成 native-raft。
 外层启动器仍需先准备完整管理面存储。
 之后再把对应的生命周期适配器传给控制面。
 
-## 当前未接入范围
+## 部署与依赖边界
 
-- `cheesewaf serve` 的 production profile 已调用独立管理/控制 PostgreSQL、native-raft、Redis 和审批依赖的统一启动单元；默认 factory 仍因未提供完整审批 consumer 和最终 `WireServe` 而 fail-closed。temporary profile 才选择 SQLite。
-- native-raft coordinator、成员身份、领导选举和 fencing token 已有独立适配器与测试，
-  但多节点部署、成员注册和生产证书交接仍需外部运行环境。
-- 管理面 PostgreSQL `storage.Store`、Redis 短租约、审计 outbox 和恢复后的自动轮换已
-  有适配器边界，但默认 production launcher 尚未把完整审批 consumer、持久审计和所有
-  管理消费者挂入 `WireServe`。
-- 本文和 `startup_test.go` 证明接口顺序、双快照校验和 fail-closed 行为；它们不单独
-  证明外部网络集群或生产数据库已经部署。
+- `cheesewaf serve` 的 production profile 调用独立管理/控制 PostgreSQL、native-raft、Redis 和审批依赖的统一启动单元；若未满足依赖契约则保持 fail-closed。temporary profile 使用 SQLite 单机临时配置。
+- native-raft coordinator、成员身份、领导选举和 fencing token 具有独立适配器与测试，多节点部署与生产证书分发需配合对应基础设施环境。
+- 管理面 PostgreSQL `storage.Store`、Redis 短租约、审计 outbox 和恢复后的自动轮换遵循严格的适配器边界和生命周期管理。
+- 本文与启动测试定义启动顺序、双快照校验和 fail-closed 行为。

@@ -397,7 +397,7 @@ func localizedText(locale string) LocalizedText {
 			HeadlineBlocked:  "访问已被拦截",
 			HeadlineError:    "受保护服务返回错误",
 			DefaultBlocked:   "该请求在到达受保护源站之前命中了 CheeseWAF 安全策略。",
-			DefaultError:     "CheeseWAF 未能完成对受保护源站的请求。",
+			DefaultError:     "CheeseWAF 无法连通受保护源站。",
 			Client:           "客户端",
 			CheeseWAF:        "CheeseWAF",
 			Origin:           "源站",

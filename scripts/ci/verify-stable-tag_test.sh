@@ -3,6 +3,8 @@ set -euo pipefail
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 verifier="${root}/scripts/ci/verify-stable-tag.sh"
+product_version="$(tr -d '[:space:]' <"${root}/scripts/ci/product-version")"
+stable_ref="v${product_version}"
 test_repo="$(mktemp -d)"
 trap 'rm -rf -- "$test_repo"' EXIT
 
@@ -33,18 +35,18 @@ run_verifier() {
   )
 }
 
-run_verifier v0.3.9 "$head_sha" "$head_sha" >/dev/null ||
+run_verifier "$stable_ref" "$head_sha" "$head_sha" >/dev/null ||
   fail "stable tag verifier must accept the product version on protected master"
 
 if run_verifier v9.9.9 "$head_sha" "$head_sha" >/dev/null; then
   fail "stable tag verifier must reject a tag that differs from product-version"
 fi
 
-if run_verifier v0.3.9 "$parent_sha" "$head_sha" >/dev/null; then
+if run_verifier "$stable_ref" "$parent_sha" "$head_sha" >/dev/null; then
   fail "stable tag verifier must reject a commit that is not protected master"
 fi
 
-if run_verifier 'v0.3.9;echo-injected' "$head_sha" "$head_sha" >/dev/null; then
+if run_verifier "${stable_ref};echo-injected" "$head_sha" "$head_sha" >/dev/null; then
   fail "stable tag verifier must reject non-semver ref names"
 fi
 

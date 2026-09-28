@@ -28,7 +28,7 @@ native-raft 新快照。
 - `GET /healthz`：进程存活；frozen 状态也可以返回 200。
 - `GET /readyz`：只有 snapshot、leader 和 fencing 全部有效时返回 200，否则返回 503。
 - `GET /status`：返回 phase、leader、term、epoch、revision 和冻结原因，不返回凭据或 DSN。
-- `POST /proposals`：未进入 write-ready 前固定返回 503；当前二进制尚未挂载完整 proposal transport，ready 后仍返回明确的 501，而不是接受未授权写入。
+- `POST /proposals`：未进入 write-ready 前固定返回 503；进入 ready 状态后若未启用 proposal transport 则返回明确的 501，拒绝未授权写入。
 
 远程暴露必须另行配置 TLS、mTLS、ACL、审计和回滚。不能把 loopback 状态接口当作集群 API。
 

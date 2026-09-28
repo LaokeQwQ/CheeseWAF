@@ -3,6 +3,8 @@ set -euo pipefail
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$root"
+product_version="$(tr -d '[:space:]' <"${root}/scripts/ci/product-version")"
+stable_ref="v${product_version}"
 
 fail() {
   echo "::error::$*" >&2
@@ -89,7 +91,7 @@ elif [[ "${1:-}" == "release" && "${2:-}" == "view" ]]; then
         find "$FAKE_RELEASE_DIR" -maxdepth 1 -type f ! -name release-manifest.txt -exec basename {} \; | sort
       fi
       ;;
-    tagName) printf '%s\n' "${FAKE_REMOTE_TAG_NAME:-v0.3.9}" ;;
+    tagName) printf '%s\n' "${FAKE_REMOTE_TAG_NAME:-v${FAKE_PRODUCT_VERSION:-0.0.0}}" ;;
     isDraft) printf '%s\n' "${FAKE_REMOTE_IS_DRAFT:-false}" ;;
     isPrerelease) printf '%s\n' "${FAKE_REMOTE_IS_PRERELEASE:-false}" ;;
     targetCommitish) printf '%s\n' "${FAKE_REMOTE_TARGET:-${FAKE_REMOTE_TAG_OBJECT_SHA:-${FAKE_REMOTE_REF_SHA:-0123456789abcdef0123456789abcdef01234567}}}" ;;
@@ -165,6 +167,7 @@ run_publish() {
     FAKE_RELEASE_DIR="$dir" \
     FAKE_REMOTE_DIR="$remote_dir" \
     FAKE_SYFT_ARTIFACT_MODE="$mode" \
+    FAKE_PRODUCT_VERSION="$product_version" \
     FAKE_GH_STABLE_NEW="$new_release" \
     FAKE_REMOTE_REF_TYPE="${FAKE_REMOTE_REF_TYPE:-commit}" \
     FAKE_REMOTE_REF_SHA="${FAKE_REMOTE_REF_SHA:-$stable_commit}" \
@@ -180,6 +183,8 @@ run_stable_publish() {
     FAKE_RELEASE_DIR="$dir" \
     FAKE_REMOTE_DIR="$dir" \
     FAKE_SYFT_ARTIFACT_MODE=success \
+    FAKE_PRODUCT_VERSION="$product_version" \
+    FAKE_REMOTE_TAG_NAME="$stable_ref" \
     FAKE_GH_STABLE_NEW=1 \
     FAKE_REMOTE_REF_TYPE=tag \
     FAKE_REMOTE_REF_SHA="$stable_tag_object" \
@@ -247,27 +252,27 @@ mkdir -p "$stable_dir"
 mkdir -p "${stable_pkg}/web/dist" "${stable_pkg}/configs" "${stable_pkg}/systemd"
 printf '<html></html>\n' >"${stable_pkg}/web/dist/index.html"
 printf 'listen: 127.0.0.1:8080\n' >"${stable_pkg}/configs/cheesewaf.yaml"
-printf 'version=0.3.9\nchannel=stable\nbranch=stable\ncommit=%s\nbuild_time=2026-09-12T00:00:00Z\n' \
-  "$stable_commit" >"${stable_pkg}/VERSION"
-printf '{"name":"CheeseWAF","version":"0.3.9","channel":"stable","branch":"stable","commit":"%s"}\n' \
-  "$stable_commit" >"${stable_pkg}/release.json"
+printf 'version=%s\nchannel=stable\nbranch=stable\ncommit=%s\nbuild_time=2026-09-12T00:00:00Z\n' \
+  "$product_version" "$stable_commit" >"${stable_pkg}/VERSION"
+printf '{"name":"CheeseWAF","version":"%s","channel":"stable","branch":"stable","commit":"%s"}\n' \
+  "$product_version" "$stable_commit" >"${stable_pkg}/release.json"
 printf '[Service]\nExecStart=/usr/local/bin/cheesewaf serve\n' >"${stable_pkg}/systemd/cheesewaf.service"
 : >"${stable_pkg}/cheesewaf"
 : >"${stable_pkg}/waf-cli"
 chmod +x "${stable_pkg}/cheesewaf" "${stable_pkg}/waf-cli"
-printf 'CheeseWAF release artifacts\nversion: 0.3.9\nrelease_tag: v0.3.9\nrelease_kind: stable\nfile_suffix: stable\ncommit: %s\n' \
-  "$stable_commit" >"${stable_dir}/release-manifest.txt"
-tar -C "${tmp}/stable-pkg" -czf "${stable_dir}/cheesewaf-amd64-linux-0.3.9.tar.gz" cheesewaf
-tar -C "${tmp}/stable-pkg" -czf "${stable_dir}/cheesewaf-arm64-linux-0.3.9.tar.gz" cheesewaf
-tar -C "${tmp}/stable-pkg" -czf "${stable_dir}/cheesewaf-loong64-linux-0.3.9.tar.gz" cheesewaf
+printf 'CheeseWAF release artifacts\nversion: %s\nrelease_tag: %s\nrelease_kind: stable\nfile_suffix: stable\ncommit: %s\n' \
+  "$product_version" "$stable_ref" "$stable_commit" >"${stable_dir}/release-manifest.txt"
+tar -C "${tmp}/stable-pkg" -czf "${stable_dir}/cheesewaf-amd64-linux-${product_version}.tar.gz" cheesewaf
+tar -C "${tmp}/stable-pkg" -czf "${stable_dir}/cheesewaf-arm64-linux-${product_version}.tar.gz" cheesewaf
+tar -C "${tmp}/stable-pkg" -czf "${stable_dir}/cheesewaf-loong64-linux-${product_version}.tar.gz" cheesewaf
 run_stable_publish "$stable_dir" "$stable_log"
-grep -Fq 'release create v0.3.9' "$stable_log" ||
+grep -Fq "release create ${stable_ref}" "$stable_log" ||
   fail "stable publish must create the version tag release"
 grep -Fq -- '--verify-tag' "$stable_log" ||
   fail "stable publish must refuse to create a missing tag"
 grep -Fq "api repos/LaokeQwQ/CheeseWAF/git/tags/${stable_tag_object}" "$stable_log" ||
   fail "stable publish must peel an annotated remote tag"
-grep -Fq '| `cheesewaf-amd64-linux-0.3.9.tar.gz` | Linux x86_64 |' "${stable_log}.notes" ||
+grep -Fq "| \`cheesewaf-amd64-linux-${product_version}.tar.gz\` | Linux x86_64 |" "${stable_log}.notes" ||
   fail "server-only stable notes must list the Linux archive"
 if grep -Eq '\| `cheesewaf-.*(darwin|windows)|macOS|Windows' "${stable_log}.notes"; then
   fail "server-only stable notes must not list desktop artifacts"
@@ -275,9 +280,9 @@ fi
 if grep -Fq -- '--prerelease' "$stable_log"; then
   fail "stable publish must not mark the release as a pre-release"
 fi
-grep -Fq -- "--certificate-identity https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/v0.3.9" "${stable_log}.cosign" ||
+grep -Fq -- "--certificate-identity https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/${stable_ref}" "${stable_log}.cosign" ||
   fail "stable Sigstore verification must bind the certificate identity to this exact tag"
-grep -Fq -- "--certificate-identity 'https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/v0.3.9'" "${stable_log}.notes" ||
+grep -Fq -- "--certificate-identity 'https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/${stable_ref}'" "${stable_log}.notes" ||
   fail "stable release notes must publish the exact Sigstore identity constraint"
 if grep -Fq -- '--certificate-identity-regexp' "${stable_log}.notes"; then
   fail "stable release notes must not accept another stable tag identity"
@@ -297,7 +302,7 @@ awk '/^```$/ { in_code = !in_code; next } in_code { print }' "${stable_log}.note
 
 stable_rerun_log="${tmp}/stable-rerun-gh.log"
 run_publish "$stable_dir" success "$stable_rerun_log" "$stable_dir" 0
-if grep -Eq 'release (create|upload|edit) v0\.3\.9' "$stable_rerun_log"; then
+if grep -Eq "release (create|upload|edit) ${stable_ref}" "$stable_rerun_log"; then
   fail "a verified stable rerun must not mutate an existing immutable release"
 fi
 if grep -Fq 'sign-blob ' "${stable_rerun_log}.cosign"; then
@@ -359,7 +364,7 @@ fi
 stable_desktop_dir="${tmp}/stable-desktop"
 stable_desktop_log="${tmp}/stable-desktop-gh.log"
 cp -R "$stable_dir" "$stable_desktop_dir"
-printf 'desktop\n' >"${stable_desktop_dir}/cheesewaf-amd64-windows-0.3.9.exe"
+printf 'desktop\n' >"${stable_desktop_dir}/cheesewaf-amd64-windows-${product_version}.exe"
 if run_stable_publish "$stable_desktop_dir" "$stable_desktop_log"; then
   fail "stable server publish must reject desktop artifacts"
 fi
@@ -367,7 +372,7 @@ fi
 stable_unknown_dir="${tmp}/stable-unknown"
 stable_unknown_log="${tmp}/stable-unknown-gh.log"
 cp -R "$stable_dir" "$stable_unknown_dir"
-printf 'unknown\n' >"${stable_unknown_dir}/cheesewaf-amd64-linux-0.3.9.deb"
+printf 'unknown\n' >"${stable_unknown_dir}/cheesewaf-amd64-linux-${product_version}.deb"
 if run_stable_publish "$stable_unknown_dir" "$stable_unknown_log"; then
   fail "stable server publish must reject unclassified top-level assets"
 fi
@@ -375,13 +380,15 @@ fi
 stable_version_dir="${tmp}/stable-version"
 stable_version_log="${tmp}/stable-version-gh.log"
 cp -R "$stable_dir" "$stable_version_dir"
-sed -i.bak 's/release_tag: v0.3.9/release_tag: v9.9.9/' "${stable_version_dir}/release-manifest.txt"
+sed -i.bak "s/release_tag: ${stable_ref}/release_tag: v9.9.9/" "${stable_version_dir}/release-manifest.txt"
 rm "${stable_version_dir}/release-manifest.txt.bak"
 if PATH="${fake_bin}:${PATH}" \
   FAKE_RELEASE_DIR="$stable_version_dir" \
   FAKE_REMOTE_DIR="$stable_version_dir" \
   FAKE_SYFT_ARTIFACT_MODE=success \
   FAKE_GH_STABLE_NEW=1 \
+  FAKE_PRODUCT_VERSION="$product_version" \
+  FAKE_REMOTE_TAG_NAME="$stable_ref" \
   FAKE_REMOTE_REF_SHA="$stable_commit" \
   FAKE_GH_LOG="$stable_version_log" \
   FAKE_COSIGN_LOG="${stable_version_log}.cosign" \
@@ -395,6 +402,8 @@ if PATH="${fake_bin}:${PATH}" \
   FAKE_REMOTE_DIR="$stable_dir" \
   FAKE_SYFT_ARTIFACT_MODE=success \
   FAKE_GH_STABLE_NEW=0 \
+  FAKE_PRODUCT_VERSION="$product_version" \
+  FAKE_REMOTE_TAG_NAME="$stable_ref" \
   FAKE_REMOTE_REF_SHA="$stable_commit" \
   FAKE_REMOTE_ASSETS=$'SHA256SUMS\ncheesewaf-amd64-linux-0.3.9.tar.gz\nlegacy-installer.msi' \
   FAKE_GH_LOG="$stable_remote_extra_log" \
@@ -409,6 +418,8 @@ if PATH="${fake_bin}:${PATH}" \
   FAKE_REMOTE_DIR="$stable_dir" \
   FAKE_SYFT_ARTIFACT_MODE=success \
   FAKE_GH_STABLE_NEW=0 \
+  FAKE_PRODUCT_VERSION="$product_version" \
+  FAKE_REMOTE_TAG_NAME="$stable_ref" \
   FAKE_REMOTE_REF_SHA="$stable_commit" \
   FAKE_REMOTE_TARGET=deadbeef \
   FAKE_GH_LOG="$stable_remote_target_log" \

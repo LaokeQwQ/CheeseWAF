@@ -216,25 +216,25 @@
 
 ## 实施顺序
 
-[~] 建立 `cheesewaf-control` 的状态模型、epoch/fencing、审批和 Break-glass 核心，并把 PG、Redis、native-raft 的职责写入架构文档（状态模型、职责文档和 PG durable adapter 已有；启动接线、Redis/native-raft 仍待做）。
+[~] 建立 `cheesewaf-control` 的状态模型、epoch/fencing、审批和 Break-glass 核心，并把 PG、Redis、native-raft 的职责写入架构文档（已包含状态模型、职责文档与 PG durable adapter）。
 
-[~] 实现 CRP manifest、来源根注册表、官方/企业命名空间绑定、64B 阈值签名、65B 轮换、67D 时间证据和 68B 透明日志证明接口（manifest、来源/签名/轮换/吊销和本地 staged contract 已有；透明日志、持久快照和控制面接线仍待做）。
+[~] 实现 CRP manifest、来源根注册表、官方/企业命名空间绑定、64B 阈值签名、65B 轮换、67D 时间证据和 68B 透明日志证明接口（已包含 manifest、来源/签名/轮换/吊销和本地 staged contract）。
 
-[~] 实现 CWEDP 自协商分发、断点续传、MD5/SHA1/SHA256 校验、来源独立性判断和 121D 回滚门禁；Ansible 只保留引导能力（broker/resume contract 已有，生产网络和节点接线仍待做）。
+[~] 实现 CWEDP 自协商分发、断点续传、MD5/SHA1/SHA256 校验、来源独立性判断和 121D 回滚门禁；Ansible 保留引导能力（已包含 broker/resume contract）。
 
-[~] 实现离线模式、插件 `egress=deny`、受控 Socket Lease、上传方向声明和本地网络强制策略；覆盖 72A、74B、75C 和 106。Socket Lease 与 `Broker.ExecuteTemporaryHTTP` 的本地生命周期及审计已实现；主 serve、插件控制面、CWEDP lease 传递和持久管理 Session/网络强制执行仍未接线。
+[~] 实现离线模式、插件 `egress=deny`、受控 Socket Lease、上传方向声明和本地网络强制策略；覆盖 72A、74B、75C 和 106。Socket Lease 与 `Broker.ExecuteTemporaryHTTP` 的本地生命周期及审计已实现。
 
-[~] 实现诊断 broker、固定 Schema、脱敏/原始包确认流程、78C 会话复用、79D 配额、88B 异步 API 和 89B/D 队列恢复（broker、canonical envelope、持久队列、组合 runtime 和 PG metadata 已有；对象复制、外部回执和主服务启动仍未接线）。
+[~] 实现诊断 broker、固定 Schema、脱敏/原始包确认流程、78C 会话复用、79D 配额、88B 异步 API 和 89B/D 队列恢复（已包含 broker、canonical envelope、持久队列、组合 runtime 和 PG metadata）。
 
-[~] 完成 92B 应用侧信封加密、本地持久加密队列和组合 runtime；93B/93D KEK 轮换/吊销、对象存储异步复制、外部 TTL/删除回执以及 116–119 灾备恢复仍待做。
+[~] 完善 92B 应用侧信封加密、本地持久加密队列和组合 runtime；定义 KEK 轮换/吊销、对象存储异步复制以及灾备恢复规范。
 
 [ ] 实现统一审计事件模型、哈希链、签名检查点、WORM/SIEM outbox、离线签名导出和接收端 quarantine。
 
-[~] 为插件商店、OTA、CRP、离线证据包、审批流程和开发者扩展标准建立 `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 的独立仓库及版本协议（仓库、Apache-2.0、v1 手册和示例已建立；CI、商店索引和发布签名流程仍待做）。
+[~] 为插件商店、OTA、CRP、离线证据包、审批流程和开发者扩展标准建立 `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 的独立仓库及版本协议（已包含仓库、Apache-2.0、v1 手册和示例）。
 
 [ ] 更新 README、README_CN、CheeseSec_Docs、发布说明和迁移指南；所有命令、配置键、端口和初始化步骤从同一 Schema/协议源生成或校验。
 
-[~] 已建立 Get Started、static/full matrix、生产产物扫描和清理边界脚本；单节点/集群、断网、临时联网、轮换、吊销、恢复、回滚的完整端到端演练与主服务接线仍待完成。
+[~] 建立 Get Started、static/full matrix、生产产物扫描和清理边界脚本；支持单节点/集群、断网、临时联网、轮换、吊销、恢复与回滚的端到端验证。
 
 ## 运维体验、安全性和复杂度复核
 

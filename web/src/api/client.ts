@@ -154,7 +154,12 @@ function clearLegacySetupTokenStorage() {
 
 function isSetupMutation(method: string, requestURL: string): boolean {
   const path = requestPath(requestURL);
-  return (method === 'post' && (path === '/setup' || path === '/setup/probe'))
+  return (method === 'post' && (
+    path === '/setup'
+    || path === '/setup/probe'
+    || path === '/setup/integrations/postgres/test'
+    || path === '/setup/integrations/victoria/test'
+  ))
     || (method === 'patch' && path === '/setup/draft');
 }
 

@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  ChevronDown,
   Cpu,
   Database,
   Eye,
@@ -16,6 +17,8 @@ import {
   LockKeyhole,
   Logs,
   ShieldCheck,
+  Settings2,
+  SunMoon,
   UserRound,
   XCircle,
 } from 'lucide-react';
@@ -25,9 +28,13 @@ import {
   Checkbox,
   Input,
   Label,
-  Progress,
   RadioGroup,
   RadioGroupItem,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   Switch,
   toast,
 } from '@/components/ui';
@@ -35,6 +42,7 @@ import { APIRequestError, apiClient, captureSetupTokenFromFragment, hasSetupToke
 import BrandLogo from '../../components/BrandLogo';
 import i18n, { ensureLanguage, readPersistedLanguage } from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
+import { themeOptions, type ThemeName } from '../../themes/tokens';
 import { classifyPassword, passwordClassCount, passwordPolicyErrorKey } from '../../utils/passwordPolicy';
 import { USERNAME_MAX, USERNAME_MIN, usernameErrorKey } from '../../utils/username';
 
@@ -80,6 +88,18 @@ type ProbeResult = {
 };
 
 type CheckStatus = 'pass' | 'warn' | 'fail';
+
+type SetupAccessState = 'checking' | 'probing' | 'required' | 'ready';
+type SetupTokenErrorKey = 'setup.tokenRequired' | 'setup.tokenInvalid';
+
+function initialSetupAccessState(): SetupAccessState {
+  if (typeof window === 'undefined') return 'checking';
+  const rawFragment = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const fragmentToken = (new URLSearchParams(rawFragment).get('setup_token') ?? '').trim();
+  return fragmentToken || hasSetupToken() ? 'probing' : 'required';
+}
 
 type EnvironmentCheck = {
   id: string;
@@ -134,6 +154,8 @@ const PROFILE_OPTIONS: readonly ProfileOption[] = [
   },
 ];
 
+const PROFILE_PRESET_OPTIONS = PROFILE_OPTIONS.filter((option) => option.value !== 'custom');
+
 const PROFILE_RANK: Partial<Record<ProfileKey, number>> = {
   low: 0,
   smart: 1,
@@ -172,22 +194,25 @@ const STATUS_STYLES: Record<CheckStatus, string> = {
  *
  * Backend facts a future maintainer needs (verified against the Go code, which
  * the wizard is not allowed to change):
- * - `setupDraftPatch` (internal/api/handler/setup_wizard.go) only accepts
- *   profile / custom / username / password / admin_listen / admin_strategy /
- *   confirmed, and `dto.SetupRequest` only carries the admin credentials. So
- *   these values are *not* persisted server-side today.
- * - `decode()` (internal/api/handler/handler.go) uses a plain
- *   `json.Decoder` without `DisallowUnknownFields`, so sending `integrations`
- *   in the draft PATCH is safe — it is simply ignored until the backend grows
- *   the field. That is why the step labels itself as "recorded, applied later"
- *   instead of promising the config takes effect here.
+ * - `setupDraftPatch` stores only non-secret checklist fields. Connection
+ *   passwords and composed DSNs stay in this browser tab and only travel to
+ *   the one-shot test endpoint.
+ * - `dto.SetupRequest` only carries the administrator credentials, so the
+ *   integrations step remains a checklist and does not claim to activate the
+ *   runtime sinks during first install.
  * - Defaults below mirror configs/cheesewaf.yaml: postgresql.enabled=false,
- *   table=cheesewaf_logs; monitor.prometheus.path=/metrics, public=false;
+ *   table=cheesewaf_logs (the wizard composes a DSN from separate fields);
+ *   monitor.prometheus.path=/metrics, public=false;
  *   storage.victorialogs.enabled=false, endpoint="".
  */
 type IntegrationsState = {
   postgresEnabled: boolean;
-  postgresDsn: string;
+  postgresUsername: string;
+  postgresPassword: string;
+  postgresHost: string;
+  postgresPort: string;
+  postgresDatabase: string;
+  postgresSSL: boolean;
   postgresTable: string;
   prometheusEnabled: boolean;
   prometheusPath: string;
@@ -198,7 +223,12 @@ type IntegrationsState = {
 
 const DEFAULT_INTEGRATIONS: IntegrationsState = {
   postgresEnabled: false,
-  postgresDsn: '',
+  postgresUsername: '',
+  postgresPassword: '',
+  postgresHost: '127.0.0.1',
+  postgresPort: '5432',
+  postgresDatabase: 'cheesewaf',
+  postgresSSL: false,
   postgresTable: 'cheesewaf_logs',
   prometheusEnabled: false,
   prometheusPath: '/metrics',
@@ -207,15 +237,49 @@ const DEFAULT_INTEGRATIONS: IntegrationsState = {
   victoriaEndpoint: '',
 };
 
-const POSTGRES_DSN_RE = /^postgres(ql)?:\/\//i;
 const HTTP_ENDPOINT_RE = /^https?:\/\//i;
+
+type ConnectionTestStatus = 'idle' | 'testing' | 'success' | 'error';
+
+type ConnectionTestState = {
+  postgres: ConnectionTestStatus;
+  victoria: ConnectionTestStatus;
+};
+
+function buildPostgresDSN(state: IntegrationsState): string {
+  const username = encodeURIComponent(state.postgresUsername.trim());
+  const password = encodeURIComponent(state.postgresPassword);
+  const database = encodeURIComponent(state.postgresDatabase.trim());
+  const rawHost = state.postgresHost.trim();
+  const host = rawHost.includes(':') && !rawHost.startsWith('[') ? `[${rawHost}]` : rawHost;
+  const sslmode = state.postgresSSL ? 'require' : 'disable';
+  return `postgresql://${username}:${password}@${host}:${state.postgresPort.trim()}/${database}?sslmode=${sslmode}`;
+}
+
+/** Keep connection secrets and composed DSNs out of the setup draft API. */
+function integrationsDraftPayload(state: IntegrationsState) {
+  return {
+    postgresEnabled: state.postgresEnabled,
+    postgresDsn: '',
+    postgresTable: state.postgresTable,
+    prometheusEnabled: state.prometheusEnabled,
+    prometheusPath: state.prometheusPath,
+    prometheusPublic: state.prometheusPublic,
+    victoriaEnabled: state.victoriaEnabled,
+    victoriaEndpoint: state.victoriaEndpoint,
+  };
+}
 
 /** Returns a resolved message when an enabled integration is filled in wrong. */
 function validateIntegrations(state: IntegrationsState, t: TFunction): string | null {
   if (state.postgresEnabled) {
-    const dsn = state.postgresDsn.trim();
-    if (!dsn) return t('setup.integrationsDsnRequired');
-    if (!POSTGRES_DSN_RE.test(dsn)) return t('setup.integrationsDsnInvalid');
+    if (!state.postgresUsername.trim() || !state.postgresHost.trim() || !state.postgresPort.trim() || !state.postgresDatabase.trim()) {
+      return t('setup.integrationsPostgresFieldsRequired');
+    }
+    const port = Number(state.postgresPort.trim());
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return t('setup.integrationsPostgresPortInvalid');
+    }
   }
   if (state.prometheusEnabled) {
     const path = state.prometheusPath.trim();
@@ -259,7 +323,7 @@ function passwordScore(password: string): number {
 
 const STRENGTH_KEYS = ['setup.strengthWeak', 'setup.strengthWeak', 'setup.strengthFair', 'setup.strengthGood', 'setup.strengthStrong'];
 
-const STRENGTH_BAR_STYLES = ['bg-muted', 'bg-red-500', 'bg-amber-500', 'bg-sky-500', 'bg-emerald-500'];
+const STRENGTH_BAR_STYLES = ['bg-muted', 'bg-red-500', 'bg-orange-500', 'bg-yellow-400', 'bg-emerald-500'];
 
 function buildEnvironmentChecks(probe: ProbeResult, t: TFunction): EnvironmentCheck[] {
   const cpu = probe.cpu_logical ?? 0;
@@ -347,6 +411,8 @@ export default function SetupPage() {
   const navigate = useNavigate();
   const language = useAppStore((state) => state.language);
   const setLanguage = useAppStore((state) => state.setLanguage);
+  const theme = useAppStore((state) => state.theme);
+  const setTheme = useAppStore((state) => state.setTheme);
   const [step, setStep] = useState(STEP_LANGUAGE);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -363,14 +429,21 @@ export default function SetupPage() {
   const [accountError, setAccountError] = useState('');
   const [integrations, setIntegrations] = useState<IntegrationsState>(DEFAULT_INTEGRATIONS);
   const [integrationsError, setIntegrationsError] = useState('');
-  const [setupAccessReady, setSetupAccessReady] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    const rawFragment = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
-    return Boolean(new URLSearchParams(rawFragment).get('setup_token')?.trim()) || hasSetupToken();
-  });
+  const [expandedIntegration, setExpandedIntegration] = useState<string | null>(null);
+  const [showPostgresPassword, setShowPostgresPassword] = useState(false);
+  const [connectionTests, setConnectionTests] = useState<ConnectionTestState>({ postgres: 'idle', victoria: 'idle' });
+  // Keep the wizard and token gate hidden until the one-time token has been
+  // captured and the server has accepted it. Rendering either surface before
+  // that handshake caused a valid URL to briefly show the token-missing state,
+  // and an invalid URL to briefly show the wizard before probe rejected it.
+  // Resolve the first view synchronously. Deferring this to an effect made a
+  // bare /setup visit briefly render a loading card before the token form.
+  const [setupAccessState, setSetupAccessState] = useState<SetupAccessState>(initialSetupAccessState);
   const [setupTokenInput, setSetupTokenInput] = useState('');
-  const [setupTokenError, setSetupTokenError] = useState('');
+  const [setupTokenError, setSetupTokenError] = useState<SetupTokenErrorKey | ''>('');
   const probeProfileInitializedRef = useRef(false);
+  const setupProbeRequestRef = useRef<Promise<{ probe: ProbeResult }> | null>(null);
+  const setupAccessReady = setupAccessState === 'ready';
 
   const typewriterPhrases = useMemo(
     () => [t('setup.languageTitleZh'), t('setup.languageTitleEn')],
@@ -418,30 +491,31 @@ export default function SetupPage() {
   // token; the value is kept only in the API client's process memory.
   useEffect(() => {
     const fragmentToken = captureSetupTokenFromFragment();
-    if (fragmentToken || hasSetupToken()) setSetupAccessReady(true);
+    setSetupAccessState((current) => {
+      if (current === 'ready') return current;
+      return fragmentToken || hasSetupToken() ? 'probing' : 'required';
+    });
   }, []);
 
   function handleSetupTokenSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const token = setupTokenInput.trim();
     if (!token) {
-      const message = t('setup.tokenRequired');
-      setSetupTokenError(message);
-      toast.error(message);
+      setSetupTokenError('setup.tokenRequired');
       return;
     }
     setSetupTokenForSession(token);
     setSetupTokenInput('');
     setSetupTokenError('');
-    setSetupAccessReady(true);
+    setSetupAccessState('probing');
   }
 
   useEffect(() => {
-    if (!setupAccessReady) return;
+    if (setupAccessState !== 'probing') return;
     let cancelled = false;
-    (async () => {
-      try {
-        const data = await unwrapAPIResponse<{ probe: ProbeResult }>(apiClient.post('/setup/probe', {}));
+    const probeRequest = setupProbeRequestRef.current ?? (setupProbeRequestRef.current = unwrapAPIResponse<{ probe: ProbeResult }>(apiClient.post('/setup/probe', {})));
+    probeRequest
+      .then((data) => {
         if (!cancelled) {
           setProbe(data.probe);
           setSetupTokenInput('');
@@ -449,12 +523,14 @@ export default function SetupPage() {
             setProfile(data.probe.profile);
             probeProfileInitializedRef.current = true;
           }
+          setSetupAccessState('ready');
         }
-      } catch (err) {
+      })
+      .catch((err) => {
         if (err instanceof APIRequestError && err.code === 'SETUP_TOKEN_REQUIRED') {
           if (!cancelled) {
-            setSetupAccessReady(false);
-            setSetupTokenError(t('setup.tokenInvalid'));
+            setSetupAccessState('required');
+            setSetupTokenError('setup.tokenInvalid');
             setProbe(null);
           }
           return;
@@ -467,17 +543,23 @@ export default function SetupPage() {
             probeProfileInitializedRef.current = true;
           }
           setSetupTokenInput('');
+          setSetupAccessState('ready');
         }
-      }
-    })();
+      })
+      .finally(() => {
+        if (setupProbeRequestRef.current === probeRequest) {
+          setupProbeRequestRef.current = null;
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [setupAccessReady, t]);
+  }, [setupAccessState]);
 
   // Clear stale integration errors as soon as the operator edits any value.
   useEffect(() => {
     setIntegrationsError('');
+    setConnectionTests({ postgres: 'idle', victoria: 'idle' });
   }, [integrations]);
 
   async function persistDraft(patch: Record<string, unknown>) {
@@ -532,8 +614,60 @@ export default function SetupPage() {
       return;
     }
     setIntegrationsError('');
-    await persistDraft({ integrations });
+    await persistDraft({ integrations: integrationsDraftPayload(integrations) });
     goToStep(STEP_REVIEW);
+  }
+
+  async function testPostgresConnection() {
+    const message = validateIntegrations({ ...integrations, postgresEnabled: true }, t);
+    if (message) {
+      setIntegrationsError(message);
+      toast.error(message);
+      return;
+    }
+    setConnectionTests((prev) => ({ ...prev, postgres: 'testing' }));
+    try {
+      await unwrapAPIResponse(apiClient.post('/setup/integrations/postgres/test', {
+        username: integrations.postgresUsername,
+        password: integrations.postgresPassword,
+        host: integrations.postgresHost,
+        port: integrations.postgresPort,
+        database: integrations.postgresDatabase,
+        ssl: integrations.postgresSSL,
+      }));
+      setConnectionTests((prev) => ({ ...prev, postgres: 'success' }));
+    } catch (err) {
+      setConnectionTests((prev) => ({ ...prev, postgres: 'error' }));
+      const message = err instanceof Error ? err.message : t('setup.integrationsTestFailed');
+      setIntegrationsError(message);
+      toast.error(message);
+    }
+  }
+
+  async function testVictoriaConnection() {
+    const endpoint = integrations.victoriaEndpoint.trim();
+    if (!endpoint) {
+      const message = t('setup.integrationsEndpointRequired');
+      setIntegrationsError(message);
+      toast.error(message);
+      return;
+    }
+    if (!HTTP_ENDPOINT_RE.test(endpoint)) {
+      const message = t('setup.integrationsEndpointInvalid');
+      setIntegrationsError(message);
+      toast.error(message);
+      return;
+    }
+    setConnectionTests((prev) => ({ ...prev, victoria: 'testing' }));
+    try {
+      await unwrapAPIResponse(apiClient.post('/setup/integrations/victoria/test', { endpoint }));
+      setConnectionTests((prev) => ({ ...prev, victoria: 'success' }));
+    } catch (err) {
+      setConnectionTests((prev) => ({ ...prev, victoria: 'error' }));
+      const message = err instanceof Error ? err.message : t('setup.integrationsTestFailed');
+      setIntegrationsError(message);
+      toast.error(message);
+    }
   }
 
   /** Skipping only turns the toggles off; typed values survive a later revisit. */
@@ -564,7 +698,7 @@ export default function SetupPage() {
         admin_listen: DEFAULT_ADMIN_LISTEN,
         admin_strategy: DEFAULT_ADMIN_STRATEGY,
         confirmed: true,
-        integrations,
+        integrations: integrationsDraftPayload(integrations),
       });
       await setupAdmin(account.username, account.password, DEFAULT_ADMIN_LISTEN, DEFAULT_ADMIN_STRATEGY);
       setDone(true);
@@ -651,11 +785,13 @@ export default function SetupPage() {
     const selectedTitle = t(
       PROFILE_OPTIONS.find((option) => option.value === profile)?.titleKey ?? 'setup.profileCustom',
     );
-    const warningKey = recommendedRank != null && selectedRank != null
-      ? selectedRank > recommendedRank
-        ? 'setup.profileWarningHigher'
-        : 'setup.profileWarningLower'
-      : 'setup.profileWarningDifferent';
+    const warningKey = profile === 'custom'
+      ? 'setup.profileWarningCustom'
+      : recommendedRank != null && selectedRank != null
+        ? selectedRank > recommendedRank
+          ? 'setup.profileWarningHigher'
+          : 'setup.profileWarningLower'
+        : 'setup.profileWarningDifferent';
     const message = t(warningKey, { selected: selectedTitle, recommended: recommendedTitle });
     setProfileWarning(message);
     toast.warning(message);
@@ -698,7 +834,7 @@ export default function SetupPage() {
     );
   }
 
-  /** One collapsible integration row: header + toggle, fields only when on. */
+  /** One collapsible integration row with a dedicated expand control and switch. */
   function renderIntegrationCard(
     id: string,
     title: string,
@@ -706,26 +842,57 @@ export default function SetupPage() {
     icon: ReactNode,
     enabled: boolean,
     onToggle: (value: boolean) => void,
+    expanded: boolean,
+    onExpand: () => void,
     fields: ReactNode,
   ) {
     return (
       <section className="setup-card rounded-2xl p-5" data-testid={`setup-integration-${id}`}>
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 text-muted-foreground" aria-hidden="true">{icon}</span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium">{title}</span>
-              <Switch
-                checked={enabled}
-                onCheckedChange={onToggle}
-                aria-label={title}
-                data-testid={`setup-integration-${id}-toggle`}
-              />
-            </div>
-            <p className="m-0 mt-0.5 text-xs text-muted-foreground">{desc}</p>
+        <div className="setup-integration-header">
+          <button
+            type="button"
+            className="setup-integration-summary"
+            aria-expanded={enabled && expanded}
+            onClick={() => {
+              if (!enabled) onToggle(true);
+              onExpand();
+            }}
+          >
+            <span className="mt-0.5 text-muted-foreground" aria-hidden="true">{icon}</span>
+            <span className="min-w-0 text-left">
+              <span className="block text-sm font-medium">{title}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">{desc}</span>
+            </span>
+          </button>
+          <div className="setup-integration-controls">
+            <button
+              type="button"
+              className="setup-integration-expand-button"
+              aria-expanded={enabled && expanded}
+              aria-label={`${title} · ${expanded ? t('setup.integrationsCollapse') : t('setup.integrationsExpand')}`}
+              onClick={() => {
+                if (!enabled) onToggle(true);
+                onExpand();
+              }}
+            >
+              <span className={`setup-integration-chevron${expanded ? ' is-open' : ''}`} aria-hidden="true">
+                <ChevronDown size={17} />
+              </span>
+            </button>
+            <Switch
+              checked={enabled}
+              onCheckedChange={onToggle}
+              className="setup-integration-switch"
+              aria-label={title}
+              data-testid={`setup-integration-${id}-toggle`}
+            />
           </div>
         </div>
-        {enabled ? <div className="mt-2.5 grid gap-2">{fields}</div> : null}
+        {enabled ? (
+          <div className={`setup-integration-panel${expanded ? ' is-open' : ''}`} aria-hidden={!expanded}>
+            <div className="setup-integration-fields grid gap-3">{fields}</div>
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -741,34 +908,61 @@ export default function SetupPage() {
           </div>
         </div>
 
-        {!setupAccessReady ? (
-          <section className="setup-card setup-token-card rounded-2xl p-5" aria-live="polite">
-            <h2 className="m-0 text-base font-semibold">{t('setup.tokenTitle')}</h2>
-            <p className="mt-1 text-sm text-muted-foreground">{t('setup.tokenHint')}</p>
-            <form className="mt-3 grid gap-2" onSubmit={handleSetupTokenSubmit} noValidate>
-              <Label htmlFor="setup-token">{t('setup.tokenLabel')}</Label>
-              <Input
-                id="setup-token"
-                className="setup-input"
-                type="password"
-                inputMode="text"
-                autoComplete="off"
-                spellCheck={false}
-                value={setupTokenInput}
-                onChange={(event) => { setSetupTokenInput(event.target.value); setSetupTokenError(''); }}
-                placeholder={t('setup.tokenPlaceholder')}
-                aria-invalid={setupTokenError ? true : undefined}
-              />
-              {setupTokenError ? <p className="text-xs text-destructive" role="alert">{setupTokenError}</p> : null}
-              <p className="m-0 text-xs text-muted-foreground">{t('setup.tokenSecurity')}</p>
-              <Button className="setup-btn-primary mt-1 w-full" type="submit">{t('setup.tokenContinue')}</Button>
-            </form>
+        {setupAccessState === 'checking' || setupAccessState === 'probing' || setupAccessState === 'required' ? (
+          <section
+            className={`setup-card setup-token-card rounded-2xl p-5${setupAccessState === 'probing' || setupAccessState === 'checking' ? ' setup-token-checking' : ''}`}
+            aria-live="polite"
+            aria-busy={setupAccessState === 'probing' || setupAccessState === 'checking' ? true : undefined}
+            role={setupAccessState === 'probing' || setupAccessState === 'checking' ? 'status' : undefined}
+          >
+            {setupAccessState === 'checking' || setupAccessState === 'probing' ? (
+              <div className="setup-token-state-content">
+                <span className="setup-token-checking-icon" aria-hidden="true"><Activity size={18} /></span>
+                <div>
+                  <h2 className="m-0 text-base font-semibold">{t('setup.tokenCheckingTitle')}</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">{t('setup.tokenCheckingHint')}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="setup-token-state-content">
+                <h2 className="m-0 text-base font-semibold">{t('setup.tokenTitle')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{t('setup.tokenHint')}</p>
+                <form className="mt-3 grid gap-2" onSubmit={handleSetupTokenSubmit} noValidate>
+                  <Label htmlFor="setup-token">{t('setup.tokenLabel')}</Label>
+                  <Input
+                    id="setup-token"
+                    className="setup-input"
+                    type="password"
+                    inputMode="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={setupTokenInput}
+                    // Keep a rejected-token notice visible until the next
+                    // verification attempt. Clearing it on every keystroke
+                    // made the only actionable feedback flash away while an
+                    // operator was correcting the value (and browser
+                    // autofill/input events could make that look random).
+                    onChange={(event) => { setSetupTokenInput(event.target.value); }}
+                    placeholder={t('setup.tokenPlaceholder')}
+                    aria-invalid={setupTokenError ? true : undefined}
+                  />
+                  {setupTokenError ? (
+                    <div className="setup-token-error" role="alert" aria-live="assertive">
+                      <AlertTriangle size={15} aria-hidden="true" />
+                      <span>{t(setupTokenError)}</span>
+                    </div>
+                  ) : null}
+                  <p className="m-0 text-xs text-muted-foreground">{t('setup.tokenSecurity')}</p>
+                  <Button className="setup-btn-primary mt-1 w-full" type="submit">{t('setup.tokenContinue')}</Button>
+                </form>
+              </div>
+            )}
           </section>
         ) : null}
 
         {setupAccessReady && step > STEP_LANGUAGE && (
           <>
-            <ol className="setup-steps setup-fishbone" aria-label={t('setup.progressLabel')}>
+            <ol className="setup-steps setup-stepper" aria-label={t('setup.progressLabel')}>
               {steps.map((item, index) => {
                 const state = index < step ? 'complete' : index === step ? 'current' : 'upcoming';
                 return (
@@ -782,8 +976,10 @@ export default function SetupPage() {
                       title: item.title,
                     })}
                   >
-                    <span className="setup-step-icon" aria-hidden="true">
-                      {state === 'complete' ? <Check size={15} /> : item.icon}
+                    <span className="setup-step-marker" aria-hidden="true">
+                      <span className="setup-step-icon">
+                        {state === 'complete' ? <Check size={16} /> : item.icon}
+                      </span>
                     </span>
                     <span className="setup-step-label">{item.title}</span>
                   </li>
@@ -791,11 +987,16 @@ export default function SetupPage() {
               })}
             </ol>
             <p className="setup-progress-mobile" aria-live="polite">
-              {t('setup.progressCurrent', {
-                current: step + 1,
-                total: steps.length,
-                title: steps[step]?.title ?? '',
-              })}
+              <span className="setup-progress-mobile-label">
+                {t('setup.progressCurrent', {
+                  current: step + 1,
+                  total: steps.length,
+                  title: steps[step]?.title ?? '',
+                })}
+              </span>
+              <span className="setup-progress-mobile-track" aria-hidden="true">
+                <span style={{ width: `${((step + 1) / steps.length) * 100}%` }} />
+              </span>
             </p>
           </>
         )}
@@ -836,21 +1037,44 @@ export default function SetupPage() {
                       'setup-card-radio flex items-start gap-3 p-5',
                       language === option.value ? 'setup-card-radio-selected' : '',
                     ].join(' ')}
+                    onClick={() => setLanguage(option.value)}
                   >
                     <RadioGroupItem value={option.value} id={id} className="mt-0.5" />
                     <Label htmlFor={id} className="grid cursor-pointer gap-0.5 font-normal leading-snug">
-                      <span className="flex items-center gap-2 text-sm font-medium">
+                      <span className="setup-language-title flex items-center gap-2 text-sm font-medium">
                         {t(option.titleKey)}
                         {browserLanguage === option.value ? (
                           <Badge variant="secondary">{t('setup.languageBrowserDefault')}</Badge>
                         ) : null}
                       </span>
-                      <span className="text-xs text-muted-foreground">{t(option.noteKey)}</span>
+                      <span className="setup-language-note text-xs text-muted-foreground" title={t(option.noteKey)}>{t(option.noteKey)}</span>
                     </Label>
                   </div>
                 );
               })}
             </RadioGroup>
+            <section className="setup-card setup-appearance-card mt-3 rounded-2xl p-4" aria-labelledby="setup-appearance-title">
+              <div className="setup-appearance-copy">
+                <span className="setup-appearance-icon" aria-hidden="true"><SunMoon size={17} /></span>
+                <div className="min-w-0">
+                  <h3 id="setup-appearance-title" className="m-0 text-sm font-semibold">{t('setup.appearanceTitle')}</h3>
+                  <p className="m-0 mt-1 text-xs text-muted-foreground">{t('setup.appearanceHint')}</p>
+                </div>
+              </div>
+              <Select value={theme} onValueChange={(value) => setTheme(value as ThemeName)}>
+                <SelectTrigger className="setup-theme-select" aria-label={t('setup.appearanceTitle')}>
+                  <span className="setup-theme-select-value">
+                    <SunMoon size={15} aria-hidden="true" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="setup-theme-select-content">
+                  {themeOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </section>
             <Button className="setup-btn-primary mt-3 w-full" onClick={() => goToStep(STEP_ENVIRONMENT)}>
               {t('common.next')}
             </Button>
@@ -867,13 +1091,11 @@ export default function SetupPage() {
                   <ul className="m-0 grid list-none gap-1.5 p-0">
                     {checks.map((check) => (
                       <li key={check.id} className="setup-check-row text-sm">
-                        <span className="setup-check-main">
-                          <span className={`setup-check-status inline-flex items-center gap-1 font-medium ${STATUS_STYLES[check.status]}`}>
-                            {renderStatusIcon(check.status)}
-                            {t(STATUS_KEYS[check.status])}
-                          </span>
-                          <span className="setup-check-label text-muted-foreground">{check.label}</span>
+                        <span className={`setup-check-status inline-flex items-center gap-1 font-medium ${STATUS_STYLES[check.status]}`}>
+                          {renderStatusIcon(check.status)}
+                          {t(STATUS_KEYS[check.status])}
                         </span>
+                        <span className="setup-check-label text-muted-foreground" title={check.label}>{check.label}</span>
                         <span className="setup-check-value font-medium tabular-nums">{check.value}</span>
                       </li>
                     ))}
@@ -943,7 +1165,7 @@ export default function SetupPage() {
             ) : (
               <p>{t('common.loading')}</p>
             )}
-            <div className="mt-3 flex gap-2">
+            <div className="setup-action-row mt-3">
               <Button className="setup-btn-secondary" variant="outline" onClick={() => goToStep(STEP_LANGUAGE)}>{t('common.back')}</Button>
               <Button className="setup-btn-primary flex-1" disabled={!probe} onClick={() => goToStep(STEP_PROFILE)}>
                 {t('common.next')}
@@ -960,7 +1182,7 @@ export default function SetupPage() {
               onValueChange={(value) => handleProfileSelect(value as ProfileKey)}
               className="mt-2 grid gap-2"
             >
-              {PROFILE_OPTIONS.map((option) => {
+              {PROFILE_PRESET_OPTIONS.map((option) => {
                 const id = `setup-profile-${option.value}`;
                 const isRecommended = option.value === recommendedProfile;
                 return (
@@ -991,6 +1213,23 @@ export default function SetupPage() {
                 );
               })}
             </RadioGroup>
+            <button
+              type="button"
+              className={[
+                'setup-profile-advanced',
+                profile === 'custom' ? 'setup-profile-advanced-selected' : '',
+              ].join(' ')}
+              aria-pressed={profile === 'custom'}
+              data-testid="setup-profile-custom"
+              onClick={() => handleProfileSelect('custom')}
+            >
+              <span className="setup-profile-advanced-icon" aria-hidden="true"><Settings2 size={17} /></span>
+              <span className="setup-profile-advanced-copy">
+                <span className="setup-profile-option-title text-sm font-medium">{t('setup.profileCustom')}</span>
+                <span className="setup-profile-option-description text-xs text-muted-foreground">{t('setup.profileCustomDesc')}</span>
+              </span>
+              <span className="setup-profile-advanced-state" aria-hidden="true">{profile === 'custom' ? '✓' : '↗'}</span>
+            </button>
             {profileWarning ? (
               <div className="setup-profile-warning" role="alert">
                 <AlertTriangle size={15} aria-hidden="true" />
@@ -1000,7 +1239,7 @@ export default function SetupPage() {
             {recommendedOption ? (
               <p className="mt-2 text-xs text-muted-foreground">{t('setup.profileRecommendedReason')}</p>
             ) : null}
-            <div className="mt-3 flex gap-2">
+            <div className="setup-action-row mt-3">
               <Button className="setup-btn-secondary" variant="outline" onClick={() => goToStep(STEP_ENVIRONMENT)}>{t('common.back')}</Button>
               <Button
                 className="setup-btn-primary flex-1"
@@ -1037,7 +1276,20 @@ export default function SetupPage() {
             <div className="grid gap-1.5">
               <Label htmlFor="setup-password">{t('setup.password')}</Label>
               {renderPasswordField('setup-password', 'password', showPassword, () => setShowPassword((v) => !v))}
-              <Progress value={score * 25} className="h-1.5" aria-hidden="true" />
+              <div
+                className="setup-password-strength"
+                role="progressbar"
+                aria-label={t('setup.strengthLabel')}
+                aria-valuemin={0}
+                aria-valuemax={4}
+                aria-valuenow={score}
+              >
+                <span
+                  className={`setup-password-strength-fill ${STRENGTH_BAR_STYLES[score] ?? 'bg-muted'}`}
+                  style={{ width: `${score * 25}%` }}
+                  aria-hidden="true"
+                />
+              </div>
               <p className="text-xs text-muted-foreground">
                 <span>{t('setup.strengthLabel')}</span>
                 {': '}
@@ -1067,7 +1319,7 @@ export default function SetupPage() {
             </div>
 
             {accountError ? <p className="form-error" role="alert">{accountError}</p> : null}
-            <div className="mt-2 flex gap-2">
+            <div className="setup-action-row mt-2">
               <Button type="button" className="setup-btn-secondary" variant="outline" onClick={() => goToStep(STEP_PROFILE)}>{t('common.back')}</Button>
               <Button type="submit" className="setup-btn-primary flex-1">{t('common.next')}</Button>
             </div>
@@ -1085,30 +1337,119 @@ export default function SetupPage() {
               t('setup.integrationsPostgresDesc'),
               <Database size={16} />,
               integrations.postgresEnabled,
-              (value) => setIntegrations((prev) => ({ ...prev, postgresEnabled: value })),
+              (value) => {
+                setIntegrations((prev) => ({ ...prev, postgresEnabled: value }));
+                if (value) setExpandedIntegration('postgres');
+                else if (expandedIntegration === 'postgres') setExpandedIntegration(null);
+              },
+              expandedIntegration === 'postgres',
+              () => setExpandedIntegration((current) => current === 'postgres' ? null : 'postgres'),
               <>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="setup-postgres-dsn">{t('setup.integrationsPostgresDsn')}</Label>
-                  <Input
-                    id="setup-postgres-dsn"
-                    className="setup-input"
-                    value={integrations.postgresDsn}
-                    placeholder={t('setup.integrationsPostgresDsnPlaceholder')}
-                    spellCheck={false}
-                    autoComplete="off"
-                    onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresDsn: event.target.value }))}
-                  />
+                <div className="setup-integration-grid">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-postgres-username">{t('setup.integrationsPostgresUsername')}</Label>
+                    <Input
+                      id="setup-postgres-username"
+                      className="setup-input"
+                      value={integrations.postgresUsername}
+                      placeholder={t('setup.integrationsPostgresUsernamePlaceholder')}
+                      autoComplete="username"
+                      onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresUsername: event.target.value }))}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-postgres-password">{t('setup.integrationsPostgresPassword')}</Label>
+                    <div className="relative">
+                      <Input
+                        id="setup-postgres-password"
+                        className="setup-input pr-10"
+                        type={showPostgresPassword ? 'text' : 'password'}
+                        value={integrations.postgresPassword}
+                        placeholder={t('setup.integrationsPostgresPasswordPlaceholder')}
+                        autoComplete="current-password"
+                        onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresPassword: event.target.value }))}
+                      />
+                      <button
+                        type="button"
+                        className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                        aria-label={showPostgresPassword ? t('setup.hidePassword') : t('setup.showPassword')}
+                        title={showPostgresPassword ? t('setup.hidePassword') : t('setup.showPassword')}
+                        onClick={() => setShowPostgresPassword((visible) => !visible)}
+                      >
+                        {showPostgresPassword ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-postgres-host">{t('setup.integrationsPostgresHost')}</Label>
+                    <Input
+                      id="setup-postgres-host"
+                      className="setup-input"
+                      value={integrations.postgresHost}
+                      placeholder={t('setup.integrationsPostgresHostPlaceholder')}
+                      spellCheck={false}
+                      autoComplete="off"
+                      onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresHost: event.target.value }))}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-postgres-port">{t('setup.integrationsPostgresPort')}</Label>
+                    <Input
+                      id="setup-postgres-port"
+                      className="setup-input"
+                      inputMode="numeric"
+                      value={integrations.postgresPort}
+                      placeholder={t('setup.integrationsPostgresPortPlaceholder')}
+                      autoComplete="off"
+                      onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresPort: event.target.value }))}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-postgres-database">{t('setup.integrationsPostgresDatabase')}</Label>
+                    <Input
+                      id="setup-postgres-database"
+                      className="setup-input"
+                      value={integrations.postgresDatabase}
+                      placeholder={t('setup.integrationsPostgresDatabasePlaceholder')}
+                      spellCheck={false}
+                      autoComplete="off"
+                      onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresDatabase: event.target.value }))}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="setup-postgres-table">{t('setup.integrationsPostgresTable')}</Label>
+                    <Input
+                      id="setup-postgres-table"
+                      className="setup-input"
+                      value={integrations.postgresTable}
+                      spellCheck={false}
+                      autoComplete="off"
+                      onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresTable: event.target.value }))}
+                    />
+                  </div>
                 </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="setup-postgres-table">{t('setup.integrationsPostgresTable')}</Label>
-                  <Input
-                    id="setup-postgres-table"
-                    className="setup-input"
-                    value={integrations.postgresTable}
-                    spellCheck={false}
-                    autoComplete="off"
-                    onChange={(event) => setIntegrations((prev) => ({ ...prev, postgresTable: event.target.value }))}
+                <div className="setup-checkbox-row">
+                  <Checkbox
+                    id="setup-postgres-ssl"
+                    checked={integrations.postgresSSL}
+                    onCheckedChange={(value) => setIntegrations((prev) => ({ ...prev, postgresSSL: value === true }))}
                   />
+                  <Label htmlFor="setup-postgres-ssl" className="setup-checkbox-label font-normal leading-snug">
+                    {t('setup.integrationsPostgresSSL')}
+                  </Label>
+                </div>
+                <div className="setup-integration-actions">
+                  <Button
+                    type="button"
+                    className="setup-btn-secondary setup-integration-test"
+                    variant="outline"
+                    disabled={connectionTests.postgres === 'testing'}
+                    onClick={testPostgresConnection}
+                  >
+                    {connectionTests.postgres === 'testing' ? t('setup.integrationsTesting') : t('setup.integrationsTestConnection')}
+                  </Button>
+                  {connectionTests.postgres === 'success' ? <span className="setup-connection-status is-success" role="status"><CheckCircle2 size={15} />{t('setup.integrationsConnected')}</span> : null}
+                  {connectionTests.postgres === 'error' ? <span className="setup-connection-status is-error" role="status"><AlertTriangle size={15} />{t('setup.integrationsTestFailed')}</span> : null}
                 </div>
               </>,
             )}
@@ -1119,7 +1460,13 @@ export default function SetupPage() {
               t('setup.integrationsPrometheusDesc'),
               <Activity size={16} />,
               integrations.prometheusEnabled,
-              (value) => setIntegrations((prev) => ({ ...prev, prometheusEnabled: value })),
+              (value) => {
+                setIntegrations((prev) => ({ ...prev, prometheusEnabled: value }));
+                if (value) setExpandedIntegration('prometheus');
+                else if (expandedIntegration === 'prometheus') setExpandedIntegration(null);
+              },
+              expandedIntegration === 'prometheus',
+              () => setExpandedIntegration((current) => current === 'prometheus' ? null : 'prometheus'),
               <>
                 <div className="grid gap-1.5">
                   <Label htmlFor="setup-prometheus-path">{t('setup.integrationsPrometheusPath')}</Label>
@@ -1133,13 +1480,13 @@ export default function SetupPage() {
                     onChange={(event) => setIntegrations((prev) => ({ ...prev, prometheusPath: event.target.value }))}
                   />
                 </div>
-                <div className="flex items-start gap-2">
+                <div className="setup-checkbox-row">
                   <Checkbox
                     id="setup-prometheus-public"
                     checked={integrations.prometheusPublic}
                     onCheckedChange={(value) => setIntegrations((prev) => ({ ...prev, prometheusPublic: value === true }))}
                   />
-                  <Label htmlFor="setup-prometheus-public" className="font-normal leading-snug">
+                  <Label htmlFor="setup-prometheus-public" className="setup-checkbox-label font-normal leading-snug">
                     {t('setup.integrationsPrometheusPublic')}
                   </Label>
                 </div>
@@ -1152,24 +1499,45 @@ export default function SetupPage() {
               t('setup.integrationsVictoriaDesc'),
               <Logs size={16} />,
               integrations.victoriaEnabled,
-              (value) => setIntegrations((prev) => ({ ...prev, victoriaEnabled: value })),
-              <div className="grid gap-1.5">
-                <Label htmlFor="setup-victoria-endpoint">{t('setup.integrationsVictoriaEndpoint')}</Label>
-                <Input
-                  id="setup-victoria-endpoint"
-                  className="setup-input"
-                  value={integrations.victoriaEndpoint}
-                  placeholder={t('setup.integrationsVictoriaEndpointPlaceholder')}
-                  spellCheck={false}
-                  autoComplete="off"
-                  onChange={(event) => setIntegrations((prev) => ({ ...prev, victoriaEndpoint: event.target.value }))}
-                />
-              </div>,
+              (value) => {
+                setIntegrations((prev) => ({ ...prev, victoriaEnabled: value }));
+                if (value) setExpandedIntegration('victoria');
+                else if (expandedIntegration === 'victoria') setExpandedIntegration(null);
+              },
+              expandedIntegration === 'victoria',
+              () => setExpandedIntegration((current) => current === 'victoria' ? null : 'victoria'),
+              <>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="setup-victoria-endpoint">{t('setup.integrationsVictoriaEndpoint')}</Label>
+                  <Input
+                    id="setup-victoria-endpoint"
+                    className="setup-input"
+                    value={integrations.victoriaEndpoint}
+                    placeholder={t('setup.integrationsVictoriaEndpointPlaceholder')}
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={(event) => setIntegrations((prev) => ({ ...prev, victoriaEndpoint: event.target.value }))}
+                  />
+                </div>
+                <div className="setup-integration-actions">
+                  <Button
+                    type="button"
+                    className="setup-btn-secondary setup-integration-test"
+                    variant="outline"
+                    disabled={connectionTests.victoria === 'testing'}
+                    onClick={testVictoriaConnection}
+                  >
+                    {connectionTests.victoria === 'testing' ? t('setup.integrationsTesting') : t('setup.integrationsTestConnection')}
+                  </Button>
+                  {connectionTests.victoria === 'success' ? <span className="setup-connection-status is-success" role="status"><CheckCircle2 size={15} />{t('setup.integrationsConnected')}</span> : null}
+                  {connectionTests.victoria === 'error' ? <span className="setup-connection-status is-error" role="status"><AlertTriangle size={15} />{t('setup.integrationsTestFailed')}</span> : null}
+                </div>
+              </>,
             )}
 
             {integrationsError ? <p className="form-error" role="alert">{integrationsError}</p> : null}
 
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="setup-action-row setup-action-row-three mt-3">
               <Button className="setup-btn-secondary" variant="outline" onClick={() => goToStep(STEP_ACCOUNT)}>{t('common.back')}</Button>
               <Button className="setup-btn-secondary" variant="outline" onClick={handleIntegrationsSkip}>{t('setup.integrationsSkip')}</Button>
               <Button className="setup-btn-primary flex-1" onClick={handleIntegrationsNext}>{t('common.next')}</Button>
@@ -1188,6 +1556,10 @@ export default function SetupPage() {
                   <dd className="m-0 ml-auto font-medium">
                     {t(language === 'zh-CN' ? 'setup.languageZh' : 'setup.languageEn')}
                   </dd>
+                </div>
+                <div className="flex gap-3">
+                  <dt className="text-muted-foreground">{t('setup.summaryAppearance')}</dt>
+                  <dd className="m-0 ml-auto font-medium">{t(themeOptions.find((option) => option.value === theme)?.labelKey ?? 'themes.system')}</dd>
                 </div>
                 <div className="flex gap-3">
                   <dt className="text-muted-foreground">{t('setup.summaryProfile')}</dt>
@@ -1250,7 +1622,7 @@ export default function SetupPage() {
                 {t('setup.confirmCheck')}
               </Label>
             </div>
-            <div className="mt-3 flex gap-2">
+            <div className="setup-action-row mt-3">
               <Button className="setup-btn-secondary" variant="outline" onClick={() => goToStep(STEP_INTEGRATIONS)}>{t('common.back')}</Button>
               <Button className="setup-btn-primary flex-1" loading={loading} disabled={!confirmed || done} onClick={handleComplete}>
                 {t('setup.complete')}
