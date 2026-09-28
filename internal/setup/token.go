@@ -61,7 +61,7 @@ func (s *TokenStore) Current() string {
 	}
 	path := TokenFilePath(s.dataDir)
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || !info.Mode().IsRegular() || validateSetupSecretFilePermissions(path, info) != nil {
 		return ""
 	}
 	raw, err := os.ReadFile(path)
@@ -152,7 +152,7 @@ func (s *TokenStore) write(token string) error {
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := protectSetupSecretFile(tmpPath); err != nil {
 		return fmt.Errorf("protect setup token file: %w", err)
 	}
 	if _, err := tmp.WriteString(token + "\n"); err != nil {
@@ -164,7 +164,7 @@ func (s *TokenStore) write(token string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close setup token file: %w", err)
 	}
-	if err := os.Rename(tmpPath, TokenFilePath(s.dataDir)); err != nil {
+	if err := replaceSetupSecretFile(tmpPath, TokenFilePath(s.dataDir)); err != nil {
 		return fmt.Errorf("publish setup token file: %w", err)
 	}
 	removeTemp = false

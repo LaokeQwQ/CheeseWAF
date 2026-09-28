@@ -29,8 +29,8 @@ func TestTokenStoreRotateRevokesPreviousValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat token file: %v", err)
 	}
-	if mode := info.Mode().Perm() & 0o077; mode != 0 {
-		t.Fatalf("token file is group/world readable: mode=%#o", info.Mode().Perm())
+	if err := validateSetupSecretFilePermissions(TokenFilePath(store.dataDir), info); err != nil {
+		t.Fatalf("token file permissions are not private: %v", err)
 	}
 
 	if err := store.Remove(); err != nil {
