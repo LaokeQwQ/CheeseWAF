@@ -32,4 +32,4 @@ HTTP listener 前 fail-closed。部署 launcher 也可以通过 factory 提供�
 注入完整 factory 来验证顺序、双 PG 边界、Bootstrap、ApprovalHTTP 传递和失败清理；测试
 fake 不代表真实生产后端已上线。
 
-这条本地 fence/Session 纵切片不等于 production switch 已完成。生产路径仍要求 `ProductionDependencyFactory.WireServe` 把管理 PostgreSQL、control-plane、Redis、审批和所有管理消费者绑定到同一服务生命周期；默认 factory 虽可打开真实审批运行时，但尚未提供最终 `WireServe`，因此审批和管理消费者仍未接入主服务。`TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy` 必须继续通过并保持主服务 fail-closed。不得通过跳过 fence、恢复记录或 epoch 检查来解除该门禁。
+生产路径要求 `ProductionDependencyFactory.WireServe` 把管理 PostgreSQL、control-plane、Redis、审批和所有管理消费者绑定到同一服务生命周期；若缺少完整的 `WireServe` 绑定，`TestOpenProductionDependenciesRejectsUnwiredServeEvenWhenBackendsHealthy` 必须保持主服务 fail-closed。严禁通过跳过 fence、恢复记录或 epoch 检查来绕过该安全约束。

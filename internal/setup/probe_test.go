@@ -18,7 +18,7 @@ func TestRunProbeCompletesWithinDeadline(t *testing.T) {
 		t.Fatal("expected suggested config")
 	}
 	switch res.Profile {
-	case ProfileLow, ProfileMedium, ProfileHigh:
+	case ProfileLow, ProfileSmart, ProfileMedium, ProfileHigh:
 	default:
 		t.Fatalf("unexpected profile %q", res.Profile)
 	}
@@ -57,7 +57,7 @@ func TestClassifyHardwareUsesConservativeBoundaries(t *testing.T) {
 	}{
 		{name: "two cores and two gib low", probe: ProbeResult{CPULogical: 2, MemoryTotalMB: 2048, DiskOK: true, DiskWriteMBps: 100}, want: ProfileLow},
 		{name: "two cores and four gib still low", probe: ProbeResult{CPULogical: 2, MemoryTotalMB: 4096, DiskOK: true, DiskWriteMBps: 100}, want: ProfileLow},
-		{name: "three cores and four gib medium", probe: ProbeResult{CPULogical: 3, MemoryTotalMB: 4096, DiskOK: true, DiskWriteMBps: 20}, want: ProfileMedium},
+		{name: "three cores and four gib smart", probe: ProbeResult{CPULogical: 3, MemoryTotalMB: 4096, DiskOK: true, DiskWriteMBps: 20}, want: ProfileSmart},
 		{name: "four cores eight gib fast disk high", probe: ProbeResult{CPULogical: 4, MemoryTotalMB: 8192, DiskOK: true, DiskWriteMBps: 50}, want: ProfileHigh},
 		{name: "slow disk low", probe: ProbeResult{CPULogical: 4, MemoryTotalMB: 8192, DiskOK: false, DiskWriteMBps: 5}, want: ProfileLow},
 	}

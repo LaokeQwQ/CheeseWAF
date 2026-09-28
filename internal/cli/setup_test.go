@@ -269,6 +269,63 @@ func TestResolveSetupPathsFollowsDataDir(t *testing.T) {
 	}
 }
 
+func TestRunSetupTokenRotateWritesRuntimeStateWithoutLeakingSecret(t *testing.T) {
+	dataDirectory := t.TempDir()
+	previousDataDir, previousConfigPath := dataDir, configPath
+	dataDir = dataDirectory
+	configPath = filepath.Join(dataDirectory, "config", "cheesewaf.yaml")
+	defer func() {
+		dataDir, configPath = previousDataDir, previousConfigPath
+	}()
+
+	cmd := newSetupTokenCommand()
+	out := &strings.Builder{}
+	cmd.SetOut(out)
+	if err := runSetupTokenRotate(cmd, false); err != nil {
+		t.Fatalf("runSetupTokenRotate() error = %v", err)
+	}
+	first := setup.NewTokenStore(dataDirectory).Current()
+	if first == "" {
+		t.Fatal("rotation did not persist a setup token")
+	}
+	if strings.Contains(out.String(), first) {
+		t.Fatalf("default rotation output leaked the token: %q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dataDirectory, setup.URLFileName)); err != nil {
+		t.Fatalf("setup URL missing: %v", err)
+	}
+
+	cmd = newSetupTokenCommand()
+	cmd.SetOut(&strings.Builder{})
+	if err := runSetupTokenRotate(cmd, false); err != nil {
+		t.Fatalf("second runSetupTokenRotate() error = %v", err)
+	}
+	second := setup.NewTokenStore(dataDirectory).Current()
+	if second == "" || second == first {
+		t.Fatalf("second rotation token = %q, first = %q", second, first)
+	}
+}
+
+func TestSetupTokenResetCommandNeedsNoTokenArgument(t *testing.T) {
+	root := newSetupTokenCommand()
+	reset, _, err := root.Find([]string{"reset"})
+	if err != nil {
+		t.Fatalf("find reset command: %v", err)
+	}
+	if reset == root || reset.Name() != "reset" {
+		t.Fatalf("resolved command = %q, want reset", reset.Name())
+	}
+	if err := reset.Args(reset, nil); err != nil {
+		t.Fatalf("reset should accept no token argument: %v", err)
+	}
+	if err := reset.Args(reset, []string{"old-token"}); err == nil {
+		t.Fatal("reset unexpectedly accepted a token argument")
+	}
+	if len(reset.Aliases) != 1 || reset.Aliases[0] != "rotate" {
+		t.Fatalf("reset aliases = %#v, want [rotate]", reset.Aliases)
+	}
+}
+
 func TestValidateOptionalFile(t *testing.T) {
 	if err := validateOptionalFile("  "); err != nil {
 		t.Fatalf("blank must be allowed: %v", err)

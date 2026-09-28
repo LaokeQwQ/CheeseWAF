@@ -15,6 +15,17 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
     void loadThemeStyles(theme);
+
+    if (theme !== 'system' || typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => {
+      applyTheme('system');
+      void loadThemeStyles('system');
+    };
+    media.addEventListener?.('change', handleChange);
+    return () => media.removeEventListener?.('change', handleChange);
   }, [theme]);
 
   useEffect(() => {

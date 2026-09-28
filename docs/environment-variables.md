@@ -8,7 +8,7 @@
 
 | 变量 | 作用 | 默认值 | 示例 |
 |---|---|---|---|
-| `CHEESEWAF_SETUP_TOKEN` | 首次安装（setup）阶段允许写操作的一次性准入令牌。读取自环境变量（`internal/cli/service.go:140`）；若为空且处于首次安装阶段，服务会自动生成一个高熵令牌并通过 setup 地址的 `#setup_token=` 片段暴露。请求需带 `X-CheeseWAF-Setup-Token` 头（`internal/api/handler/setup_wizard.go:59`）。 | 空，初次安装前自动生成 | `export CHEESEWAF_SETUP_TOKEN=...` |
+| `CHEESEWAF_SETUP_TOKEN` | 首次安装阶段的准入令牌。服务首次启动时会把它写入运行时数据目录下权限为 `0600` 的 `setup.token`；未设置时自动生成高熵 Token。API 请求通过 `X-CheeseWAF-Setup-Token` 头携带，服务会在每次 setup 请求时读取当前 Token，因此 `cheesewaf setup token reset` 可在不停服的情况下立即撤销旧值且不需要输入旧 Token；`rotate` 仍为兼容别名。Token 按原值严格比较，前后空格和控制字符会被拒绝。环境变量只适合受控的 CI/临时启动场景，不应写入版本库或命令行参数。 | 空，初次安装前自动生成 | `export CHEESEWAF_SETUP_TOKEN=...` |
 | `CHEESEWAF_WEB_DIR` | 管理后台 Web 静态资源目录。`resolveWebDir()` 把它作为第一个候选路径；未设置时会依次尝试可执行文件旁的 `web/dist`、配置目录旁的 `web/dist`、`/usr/share/cheesewaf/web`、`/opt/cheesewaf/web/dist`、`./web/dist` 等，都找不到则回退到内嵌 FS（`webui.FS()`）。 | 空 = 自动探测 / 内嵌 | `/usr/share/cheesewaf/web` |
 | `CHEESEWAF_CONFIG` | 配置文件路径，`healthcheck` 子命令在 config flag 之后把它作为回退候选（`internal/cli/healthcheck.go:52`）；容器入口点 `deploy/docker/entrypoint.sh` 也用它生成/复制配置文件。 | 空；`healthcheck` 走 config flag / 数据目录默认路径。Docker 默认 `/var/lib/cheesewaf/config/cheesewaf.yaml` | `/etc/cheesewaf/cheesewaf.yaml` |
 | `CHEESEWAF_LANG` | CLI 界面语言。优先级：flag > `CHEESEWAF_LANG` > `dataDir/cli.lang` > 系统 locale > `en`（`internal/cli/clilang/lang.go`）。支持 `en` 与 `zh-CN`；`zh`、`zh-CN`、`zh-Hans`、`cn` 等都会映射成 `zh-CN`。 | 空 = 回退到系统语言或 `en` | `export CHEESEWAF_LANG=zh-CN` |
@@ -36,7 +36,7 @@
 | `CHEESEWAF_GO_IMAGE` / `CHEESEWAF_NODE_IMAGE` / `CHEESEWAF_RUNTIME_IMAGE` | `scripts/ci/docker-build.sh` | 各构建阶段基础镜像覆盖 |
 | `CHEESEWAF_SKIP_OUTBOUND_TLS` | `scripts/ci/docker-build.sh` | 置为 `1` 则跳过容器出站 HTTPS 检查，默认 `0` |
 | `CHEESEWAF_OUTBOUND_TLS_URL` | `scripts/ci/docker-build.sh` | 出站 HTTPS 检查 URL，默认 `https://example.com` |
-| `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认 `0.3.9` |
+| `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认读取 `scripts/ci/product-version`（当前为 `0.4.0`）；Beta/预发布标签由发布通道追加 |
 | `CHEESEWAF_REF_NAME` / `CHEESEWAF_COMMIT` / `CHEESEWAF_RUN_NUMBER` / `CHEESEWAF_BUILD_TIME` | `scripts/ci/package-release.sh`、`.github/workflows/ci.yml`、`.forgejo/workflows/ci.yml` | 发布元数据（分支/提交/构建号/时间） |
 | `CHEESEWAF_RELEASE_PROFILE` | `scripts/ci/release-targets.sh`、CI workflows | 发布目标档位。`server` 默认生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64；`full` 默认保留全部跨平台目标 |
 | `CHEESEWAF_RELEASE_DIR` / `CHEESEWAF_RELEASE_WORK_DIR` / `CHEESEWAF_TARGETS` | `scripts/ci/package-release.sh`、CI workflows | 发布输出目录、工作目录与目标平台列表。设置 `CHEESEWAF_TARGETS` 时会覆盖档位默认目标；`server` 档位只接受三个 Linux 目标，拒绝 Windows/macOS 目标 |
@@ -47,3 +47,13 @@
 | `CHEESEWAF_TOKEN` | `web/scripts/playwright-*.mjs` | 前端 Playwright 测试访问令牌 |
 
 > 注：以上为源码中实际出现的 CHEESEWAF_* 变量；默认值与语义以源码为准。
+
+## 重置首次安装 Token
+
+处于首次安装向导阶段（数据目录中不存在 `.setup_complete` 且管理员表为空）时，可使用：
+
+```bash
+cheesewaf setup token reset
+```
+
+标准路径下不需要任何参数或旧 Token；仅当配置和数据目录被自定义时，才添加 `--config` / `--data-dir`。命令会原子替换运行时 `setup.token`、立即使旧 Token 失效，并重新写入短期 `setup.url`。默认输出不包含 Token；只有在确认终端不会被记录时才使用 `--show`。初始化完成后，重置命令会拒绝执行；完成向导也会删除 `setup.token` 与 `setup.url`。旧命令 `cheesewaf setup token rotate` 仍作为兼容别名保留。

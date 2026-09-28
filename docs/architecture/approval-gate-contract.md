@@ -15,7 +15,7 @@
 
 即使请求标记为 `low`，以下操作也永远不能自动批准：不可信来源、测试包、Token、KMS、集群操作，以及任何 `high`/`emergency` 请求。Emergency 请求提交时必须声明 Break-glass，确认人必须是 `security_admin` 或 `tenant_owner`。
 
-上表描述的是 Gate 合约层规则。生产运行时默认只接受 `admin` 管理用户的普通审批会话，并把它映射为 `operator`。调用方必须通过 `Options.ApprovalRoles` 或显式 `AuthorityResolver` 放行受限角色；`security_admin` 只有在显式策略中才具备 Break-glass authority，`tenant_owner` 还必须命中精确的 tenant scope。claims 中的角色必须与数据库用户角色一致，未知和自定义角色保持拒绝。主 `serve` 的完整接线、会话租约和持久 authority proof 仍未完成，不能据此声称生产 Break-glass 流程已经闭合。
+上表描述的是 Gate 合约层规则。生产运行时默认只接受 `admin` 管理用户的普通审批会话，并把它映射为 `operator`。调用方必须通过 `Options.ApprovalRoles` 或显式 `AuthorityResolver` 放行受限角色；`security_admin` 只有在显式策略中才具备 Break-glass authority，`tenant_owner` 还必须命中精确的 tenant scope。claims 中的角色必须与数据库用户角色一致，未知和自定义角色保持拒绝。
 
 角色到 Gate authority 的转换使用 `approval.CanonicalActorRole`。它只识别 `admin`、`security_admin` 和 `tenant_owner` 三个精确名称；普通 `admin` 永远不会被转换为 emergency authority。HTTP 和 AI 适配器共用这份转换契约，未知角色最多保留为普通 `operator` 的非特权映射，不能绕过 runtime 的 authority policy。
 
@@ -40,12 +40,12 @@
 
 ## 审计
 
-每次提交会追加 `AuditSubmitted`；高风险首次二次确认会追加 `AuditCheckpoint`；自动或交互授权追加 `AuditAuthorized`；撤销、过期和拒绝分别追加对应事件。事件带单调 `Sequence`、时间、请求、操作者、范围、epoch、会话、操作摘要、确认 ID、确认阶段和原因。内存 `AuditEvents` 返回防御性副本；`MemoryPersistence`/PostgreSQL 适配器还会把每个事件的 request、scope、epoch、intent/workflow digest、session、nonce 与同一 Record 精确绑定，并校验序号、previous hash、事件 JSON hash 及 PostgreSQL `event_hash` 列。PG 的 `Apply`/`ApplyBatch` 写入会在同一事务中锁定并检查 epoch；旧 Gate 在 durable epoch 漂移后写入会返回 `ErrEpochChanged`，事务回滚，不会留下旧代次的 record、event 或幂等状态。该真实 PG epoch fencing 集成已通过验证，但完整服务 wiring 仍未完成。PG outbox、SIEM/WORM 的生产接线仍由后续适配器负责，不能把当前持久化 contract 误称为完整生产耐久审计。
+每次提交会追加 `AuditSubmitted`；高风险首次二次确认会追加 `AuditCheckpoint`；自动或交互授权追加 `AuditAuthorized`；撤销、过期和拒绝分别追加对应事件。事件带单调 `Sequence`、时间、请求、操作者、范围、epoch、会话、操作摘要、确认 ID、确认阶段和原因。内存 `AuditEvents` 返回防御性副本；`MemoryPersistence`/PostgreSQL 适配器还会把每个事件的 request、scope、epoch、intent/workflow digest、session、nonce 与同一 Record 精确绑定，并校验序号、previous hash、事件 JSON hash 及 PostgreSQL `event_hash` 列。PG 的 `Apply`/`ApplyBatch` 写入会在同一事务中锁定并检查 epoch；旧 Gate 在 durable epoch 漂移后写入会返回 `ErrEpochChanged`，事务回滚，不会留下旧代次的 record、event 或幂等状态。耐久审计事件由对应持久化适配器写入。
 
 ## 与工作流和运行时的边界
 
 workflow sidecar 可以编排 DAG、通知和超时，但不能直接授权；只有核心 gate 能生成 `AuthorizationCommit`。`PlanWorkflow` 只输出 39/50 风险路由决策，`WorkflowBinding`/`ValidateWorkflowBinding` 用 approval、摘要、scope、session、nonce、epoch、TTL 和事件序号绑定 sidecar 状态；`ValidateSuperBatch` 只做 Logical Super Batch 的全量预检，`ApprovalDelegation` 只允许预配置的一跳、一次性委托。上述 API 都不执行操作、不改变请求状态，也不把 sidecar 状态当成核心授权。
 
-本合约不实现 Token、Redis、KMS、UI、Break-glass 会话租约或实际操作执行。Gate 现在可由调用方显式绑定 `Persistence`，并通过 `Restore`/`RestoreRecord` 在启动时校验 record、事件哈希链、scope/intent/session/nonce/epoch/TTL 后恢复；未绑定时仍为纯内存模式。实现可选的 `EpochSnapshotPersistence.LoadWithEventsAtEpoch` 时，Gate 会在一次一致性读取中同时绑定期望的策略代次、record 和事件链；`MemoryPersistence` 在同一读锁内检查 epoch，PostgreSQL adapter 在只读 `REPEATABLE READ` 事务内读取 epoch、record 和事件，epoch 不匹配直接返回 `ErrEpochChanged`。仅实现 `SnapshotPersistence.LoadWithEvents` 的旧 adapter 仍保持 Record+Events 快照，但继续沿用独立 epoch 检查；未实现快照能力的旧 `Persistence` 继续使用 `Load` 后 `Events` 的兼容回退，所有路径均 fail-closed。持久 Gate 的 `AdvanceEpoch` 只有在 adapter 实现 durable `CompareAndSetEpoch` 时才可用：先拒绝回退，再执行 CAS，CAS 失败不会改变内存 epoch；外部已经推进 durable epoch 时必须显式重建并恢复对应代次的 Gate，不能让陈旧实例静默认领新代次。`DelegationLedger` 当前仅是进程内 contract，生产环境仍需接入 PG/控制面幂等账本。PostgreSQL adapter 已提供 request ID 枚举；`internal/approval/runtime` 已另外提供真实 credential verifier 和 `ApprovalHTTP` 组合，但这些能力尚未通过主服务的完整消费者 wiring 上线。
+本合约不实现 Token、Redis、KMS、UI、Break-glass 会话租约或实际操作执行。Gate 现在可由调用方显式绑定 `Persistence`，并通过 `Restore`/`RestoreRecord` 在启动时校验 record、事件哈希链、scope/intent/session/nonce/epoch/TTL 后恢复；未绑定时仍为纯内存模式。实现可选的 `EpochSnapshotPersistence.LoadWithEventsAtEpoch` 时，Gate 会在一次一致性读取中同时绑定期望的策略代次、record 和事件链；`MemoryPersistence` 在同一读锁内检查 epoch，PostgreSQL adapter 在只读 `REPEATABLE READ` 事务内读取 epoch、record 和事件，epoch 不匹配直接返回 `ErrEpochChanged`。仅实现 `SnapshotPersistence.LoadWithEvents` 的旧 adapter 仍保持 Record+Events 快照，但继续沿用独立 epoch 检查；未实现快照能力的旧 `Persistence` 继续使用 `Load` 后 `Events` 的兼容回退，所有路径均 fail-closed。持久 Gate 的 `AdvanceEpoch` 只有在 adapter 实现 durable `CompareAndSetEpoch` 时才可用：先拒绝回退，再执行 CAS，CAS 失败不会改变内存 epoch；外部已经推进 durable epoch 时必须显式重建并恢复对应代次的 Gate，不能让陈旧实例静默认领新代次。`DelegationLedger` 仅是进程内 contract，生产环境需接入 PG/控制面幂等账本。PostgreSQL adapter 提供 request ID 枚举；`internal/approval/runtime` 提供真实凭据校验器和 `ApprovalHTTP` 组合。
 
 生产接线必须保留：请求数据面不等待 gate 或工作流 I/O；管理面不可用时已有 last-known-good 数据面继续服务；高风险确认失败不得静默降级为自动批准。

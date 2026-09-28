@@ -11,7 +11,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 ARG TARGETOS
 ARG TARGETARCH
-ARG VERSION=0.3.9-dev
+ARG VERSION=0.4.0-beta
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 ARG CHANNEL=container

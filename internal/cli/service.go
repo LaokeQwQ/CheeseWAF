@@ -210,18 +210,17 @@ func runServe(ctx context.Context) error {
 		return err
 	}
 	setupToken := strings.TrimSpace(os.Getenv("CHEESEWAF_SETUP_TOKEN"))
+	var setupTokenSource *setup.TokenStore
 	setupPending, err := firstInstallPending(ctx, cfg.Setup.DataDir, store)
 	if err != nil {
 		return err
 	}
 	// Every first-install mutation, including loopback requests, requires this token.
 	if setupPending {
-		if setupToken == "" {
-			token, err := setup.GenerateSetupToken()
-			if err != nil {
-				return fmt.Errorf("generate setup token: %w", err)
-			}
-			setupToken = token
+		setupTokenSource = setup.NewTokenStore(cfg.Setup.DataDir)
+		setupToken, err = setupTokenSource.Ensure(setupToken)
+		if err != nil {
+			return fmt.Errorf("prepare setup token: %w", err)
 		}
 	}
 	if err := seedSites(ctx, store, cfg); err != nil {
@@ -362,6 +361,7 @@ func runServe(ctx context.Context) error {
 		Hub:                                hub,
 		Secret:                             authSecret,
 		SetupToken:                         setupToken,
+		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
 		ManagementTokenCleanupContext:      runtimeCtx,
 		ApprovalHTTP:                       productionWiring.ApprovalHTTP,
