@@ -1343,3 +1343,12 @@ MacOS runner 继续暴露临时网络 provider 关闭竞态：存储 lookup 在 
 随后 Ubuntu runner 捕获到同一关闭窗口在 broker 清理阶段返回 `invalid socket lease`；`ExecuteTemporaryHTTP` 现在也优先传播已取消的 operation context，避免把二次清理错误暴露给调用方。
 
 Windows runner 进一步复现了关闭完成与 operation `AfterFunc` 回调之间的调度窗口：session lookup 返回后可能在子 context 观察到取消前继续进入 broker，空请求因此暴露 `invalid socket lease`。`ExecuteTemporaryHTTP` 现在在 session lookup 后同步检查 provider context；`Close` 已建立关闭栅栏时不再创建临时 session。Linux `-race -count=100` 回归通过，Windows 远端门禁待新提交复核。
+
+### 2026-10-02 PostgreSQL 审计 Journal 耐久适配器
+
+- 新增 `internal/audit.PostgresJournal`，以单一 PostgreSQL 事务原子写入审计记录、签名 checkpoint 和 outbox 元数据；按 stream 行锁推进单调序号，并通过数据库触发器拒绝修改/删除记录及修改/删除 outbox 身份。
+- 链读取在只读 `REPEATABLE READ` 快照中同时校验 records 与 stream head，避免并发追加造成跨快照误报；checkpoint 按序号读取并校验持久化 commit，避免每次 checkpoint 请求重复扫描整条链。
+- 新增隔离 schema 的真实 PostgreSQL 集成测试，覆盖迁移幂等、追加与精确重放、序号/事件冲突、checkpoint 签名重启验证、outbox 确认幂等与不可变约束、outbox 冲突回滚，以及独立连接并发追加和追加期间并发校验。现有 `postgres-controlplane-integration` CI job 已纳入 `./internal/audit`。
+- 本机 PostgreSQL 17.11：`go test -race -count=10 ./internal/audit` 通过；`bash scripts/ci/go-env.sh go test ./...`、`bash scripts/ci/go-env.sh go vet ./...`、`bash scripts/ci/verify-ci-static.sh` 和文档更新后的 `git diff --check` 均以退出码 0 结束。
+
+范围边界：这只完成 `Journal` 耐久适配器及其数据库门禁，不代表主服务、NetLease 或生产事件流已切换；WORM/SIEM 外部锚定和回执、签名离线导出、接收端 quarantine、密钥生命周期与灾备演练仍未完成。主计划审计项保持未勾选，阶段 5 的“生产审计 outbox 和主服务挂载待接线”状态不变；未提交、未推送、未晋升、未发行。
