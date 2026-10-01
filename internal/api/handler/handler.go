@@ -24,6 +24,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
@@ -58,6 +59,9 @@ type Handler struct {
 	Tokens                 *middleware.TokenManager
 	Secret                 string
 	Auditor                *middleware.Auditor
+	AuditRuntime           audit.EventAppender
+	AuditPolicyEpoch       uint64
+	RequireAuditRuntime    bool
 	AssistantApprovals     *ai.ApprovalStore
 	Realtime               *realtime.Hub
 	approvalStoreError     error
@@ -358,6 +362,9 @@ type Options struct {
 	Tokens                      *middleware.TokenManager
 	Secret                      string
 	Auditor                     *middleware.Auditor
+	AuditRuntime                audit.EventAppender
+	AuditPolicyEpoch            uint64
+	RequireAuditRuntime         bool
 	AssistantApprovals          *ai.ApprovalStore
 	Realtime                    *realtime.Hub
 	ClusterIdentity             *identity.MemoryIdentityService
@@ -455,6 +462,9 @@ func New(opts Options) *Handler {
 		Tokens:                              opts.Tokens,
 		Secret:                              opts.Secret,
 		Auditor:                             opts.Auditor,
+		AuditRuntime:                        opts.AuditRuntime,
+		AuditPolicyEpoch:                    opts.AuditPolicyEpoch,
+		RequireAuditRuntime:                 opts.RequireAuditRuntime,
 		AssistantApprovals:                  approvals,
 		Realtime:                            opts.Realtime,
 		approvalStoreError:                  approvalStoreError,

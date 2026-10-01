@@ -14,6 +14,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	approvalruntime "github.com/LaokeQwQ/CheeseWAF/internal/approval/runtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/redis"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
@@ -113,9 +114,18 @@ type ProductionApprovalDependency interface {
 	ApprovalClaimResolver() activation.ApprovalClaimResolver
 }
 
+// ProductionAuditDependency is the durable, metadata-only audit boundary
+// exposed to request handlers. It deliberately does not expose the journal,
+// spool, database handle, or any file/network primitive.
+type ProductionAuditDependency interface {
+	audit.EventAppender
+	Close() error
+}
+
 // ProductionServeWiring is the validated composition-root handoff consumed by
 // the request-serving layer. It binds the management store, control-plane
-// readiness snapshot, and approval HTTP transport to one policy epoch.
+// readiness snapshot, approval HTTP transport, and (for the default
+// production factory) durable audit runtime to one policy epoch.
 type ProductionServeWiring struct {
 	ManagementStore       storage.Store
 	Startup               controlplane.StartupResult
@@ -126,6 +136,7 @@ type ProductionServeWiring struct {
 	TemporaryNetwork      ProductionTemporaryNetworkProvider
 	CWEDPDownload         consumer.Executor
 	CRPActivation         handler.CRPActivationExecutor
+	AuditRuntime          audit.EventAppender
 	CWEDP                 ProductionCWEDPOptions
 }
 
@@ -215,6 +226,7 @@ type ProductionDependencyFactory struct {
 	OpenConsensus  func(context.Context, nativeraft.Options) (ProductionConsensusDependency, error)
 	OpenRedis      func(context.Context, redis.Config) (ProductionHealthDependency, error)
 	OpenApproval   func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error)
+	OpenAudit      func(context.Context, config.ManagementPostgreSQLConfig) (ProductionAuditDependency, error)
 	// OpenTemporaryNetwork creates the session-bound provider used by the main
 	// serve composition root. Callers embedding this factory may replace it,
 	// but must preserve the same management-store and policy-epoch binding.
@@ -265,6 +277,7 @@ type ProductionDependencies struct {
 	Redis            ProductionHealthDependency
 	Approval         ProductionApprovalDependency
 	ApprovalHTTP     *handler.ApprovalHTTPHandler
+	Audit            ProductionAuditDependency
 	TemporaryNetwork *ProductionTemporaryNetworkWiring
 	CWEDPDownload    consumer.Executor
 	CRP              ProductionCRPDependency
@@ -272,6 +285,7 @@ type ProductionDependencies struct {
 	CWEDP            ProductionCWEDPOptions
 	Serve            ProductionServeWiring
 	Ready            bool
+	auditRequired    bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -293,9 +307,10 @@ func openProductionServeDependencies(ctx context.Context, cfg *config.Config) (*
 	// the launcher can consume the validated wiring when it builds the router
 	// and listeners below.
 	factory := productionServeDependencyFactory
+	requireAuditRuntime := factory.OpenAudit != nil
 	if factory.WireServe == nil && factory.WireServeWithWiring == nil {
 		factory.WireServeWithWiring = func(_ context.Context, wiring ProductionServeWiring) error {
-			if isNilProductionDependency(wiring.ManagementStore) || wiring.ApprovalHTTP == nil ||
+			if isNilProductionDependency(wiring.ManagementStore) || requireAuditRuntime && isNilProductionDependency(wiring.AuditRuntime) || wiring.ApprovalHTTP == nil ||
 				isNilProductionDependency(wiring.SessionValidator) || isNilProductionDependency(wiring.TemporaryNetwork) {
 				return fmt.Errorf("%w: main serve received incomplete production wiring", ErrProductionServeWiringUnavailable)
 			}
@@ -365,6 +380,12 @@ func (d *ProductionDependencies) Close() error {
 			return d.Control.Close()
 		})
 		close(func() error {
+			if d.Audit == nil {
+				return nil
+			}
+			return d.Audit.Close()
+		})
+		close(func() error {
 			if d.Management == nil {
 				return nil
 			}
@@ -378,7 +399,7 @@ func (d *ProductionDependencies) Close() error {
 // It fails closed if the provider, handler Gate, or control-plane snapshot
 // disagree about the policy epoch.
 func (d *ProductionDependencies) ServeWiring() (ProductionServeWiring, error) {
-	if d == nil || isNilProductionDependency(d.Management) || isNilProductionDependency(d.Approval) {
+	if d == nil || isNilProductionDependency(d.Management) || isNilProductionDependency(d.Approval) || d.auditRequired && isNilProductionDependency(d.Audit) {
 		return ProductionServeWiring{}, ErrProductionServeWiringUnavailable
 	}
 	if !d.Startup.Ready || d.Startup.Stage != controlplane.StartupStageReady || d.Startup.State.Epoch == 0 {
@@ -424,6 +445,7 @@ func (d *ProductionDependencies) ServeWiring() (ProductionServeWiring, error) {
 		TemporaryNetwork:      d.TemporaryNetwork.Provider,
 		CWEDPDownload:         d.CWEDPDownload,
 		CRPActivation:         crpActivation,
+		AuditRuntime:          d.Audit,
 		CWEDP:                 d.CWEDP,
 	}, nil
 }
@@ -503,6 +525,21 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	}
 	if err := ctx.Err(); err != nil {
 		return fail("production startup context canceled after management PostgreSQL", err)
+	}
+	deps.auditRequired = factory.OpenAudit != nil
+	if factory.OpenAudit != nil {
+		auditCtx, cancelAudit := dependencyContext(ctx, opts.ManagementPostgreSQL.Timeout)
+		auditDep, auditErr := factory.OpenAudit(auditCtx, opts.ManagementPostgreSQL)
+		if !isNilProductionDependency(auditDep) {
+			deps.Audit = auditDep
+		}
+		cancelAudit()
+		if auditErr != nil || isNilProductionDependency(auditDep) {
+			return fail("durable audit PostgreSQL could not be opened", auditErr)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fail("production startup context canceled after durable audit", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return fail("production startup context canceled before control PostgreSQL", err)
@@ -833,6 +870,7 @@ func newDefaultProductionDependencyFactory() ProductionDependencyFactory {
 			}
 			return store, nil
 		},
+		OpenAudit: openProductionAudit,
 		OpenControl: func(ctx context.Context, cfg config.ManagementPostgreSQLConfig) (ProductionControlDependency, error) {
 			return controlpostgres.Open(ctx, cfg.DSN)
 		},

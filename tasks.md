@@ -1352,3 +1352,12 @@ Windows runner 进一步复现了关闭完成与 operation `AfterFunc` 回调之
 - 本机 PostgreSQL 17.11：`go test -race -count=10 ./internal/audit` 通过；`bash scripts/ci/go-env.sh go test ./...`、`bash scripts/ci/go-env.sh go vet ./...`、`bash scripts/ci/verify-ci-static.sh` 和文档更新后的 `git diff --check` 均以退出码 0 结束。
 
 范围边界：这只完成 `Journal` 耐久适配器及其数据库门禁，不代表主服务、NetLease 或生产事件流已切换；WORM/SIEM 外部锚定和回执、签名离线导出、接收端 quarantine、密钥生命周期与灾备演练仍未完成。主计划审计项保持未勾选，阶段 5 的“生产审计 outbox 和主服务挂载待接线”状态不变；未提交、未推送、未晋升、未发行。
+
+### 2026-10-02 生产 AuditRuntime 与 CRP 审计入口接线
+
+- `ProductionDependencyFactory` 新增可选的 `OpenAudit` seam；默认 production factory 复用管理 PostgreSQL DSN 建立独立连接，迁移 `PostgresJournal` 后恢复 `audit.Runtime`。Runtime、journal 和数据库由同一个 `ProductionAuditDependency` 持有，关闭时先 flush Runtime、再关闭数据库。
+- `ProductionServeWiring`、`api.Options` 和 `handler.Options` 现在传递受限的 `audit.EventAppender`，不暴露 journal、spool、数据库或网络句柄。真实 `serve` factory 没有 AuditRuntime 时 fail-closed；嵌入式/旧测试 factory 可以明确省略该 seam，不改变既有兼容测试。
+- CRP promote/rollback 路由在执行前写入 critical `operation.started`，执行完成后同步写入 critical `operation.succeeded` 或 `operation.failed`；事件只含固定 stream/tenant、按角色编码的操作者、session、策略 epoch、CRP request/authorization/confirmation 关联 ID、插件标识摘要和枚举 reason，不序列化 descriptor、URL、请求体、响应或后端错误。审计写入使用脱离 HTTP 取消但有 5 秒上限的 context。
+- activation service 接受管理 API 生成的 request ID 并把它绑定到控制面授权请求，成功结果返回 authorization/confirmation ID；新增完成事件失败、取消请求、非 admin actor 和生命周期关闭顺序回归测试。定向 `internal/api/handler`、`internal/api`、`internal/crp/activation`、`internal/cli` 测试均通过。
+
+范围边界：本轮只接线 CRP 高风险变更入口，其他配置/审批/留观事件仍待逐一建立显式 metadata-only adapter；无签名 checkpoint 的生产 AuditRuntime 暂沿用哈希链，密钥提供者和外部 WORM/SIEM 回执仍未接入。变更已通过本地门禁并提交到 `codex/audit-hash-chain`，未推送、未晋升、未发行。
