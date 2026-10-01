@@ -2,7 +2,7 @@
 
 状态：实施基线
 版本：2026-09-05
-对应规划：[2026-09-05-commercial-grilling-plan.md](../superpowers/plans/2026-09-05-commercial-grilling-plan.md)
+本文档描述公开的架构边界与运行约束；内部规划记录不随发行仓库发布。
 
 ## 目的与边界
 
