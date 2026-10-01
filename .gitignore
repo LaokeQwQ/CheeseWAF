@@ -28,6 +28,12 @@ profile.cov
 security-gate*.json
 zap-baseline*.html
 zap-baseline*.json
+
+# Local-only agent and planning metadata
+/AGENTS.md
+/tasks.md
+/skills-lock.json
+/docs/superpowers/
 sqlmap-output/
 playwright-report/
 test-results/

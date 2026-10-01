@@ -1,6 +1,6 @@
 # CheeseWAF acceptance matrix v2
 
-这是 CheeseWAF 控制面、数据面边界和交付产物的端到端验收入口。`--static` 不启动 PostgreSQL 或 Redis；`--full` 仅在显式提供真实测试依赖时运行生产组合探针。报告写入仓库外路径；矩阵不改写 configs/cheesewaf.yaml、tasks.md 或 README。
+这是 CheeseWAF 控制面、数据面边界和交付产物的端到端验收入口。`--static` 不启动 PostgreSQL 或 Redis；`--full` 仅在显式提供真实测试依赖时运行生产组合探针。报告写入仓库外路径；矩阵不改写版本控制中的配置模板或 README。
 
 ## 稳定版发行物
 
@@ -56,7 +56,7 @@ JSON 报告的 schema_version 为 2，summary 包含 total、passed、failed、s
 
 在 2026-09-11 允许本机 loopback 的受控环境中，static matrix 得到 19 项通过、4 项失败、0 项跳过；四项失败仍是明确未接线的 migration/session、CRP activation、CRP rollback 和 temporary-network production lifecycle。桌面 sandbox 若禁止 loopback，native-raft、TLS transport、offline/no-egress 和 digest/resume 测试仍会保留环境失败证据；不能因此修改 `implemented` 状态或把失败改成 skipped。
 
-2026-09-25 本机 `--full` 使用真实 PostgreSQL、Redis、production `runServe` 与 mTLS sidecar 完成迁移/session、CRP activation/rollback 探针；矩阵结果为 22 passed、1 failed、0 skipped。随后在公网测试节点 `156.239.4.159` 上以 Go 1.26.6、PostgreSQL 17.11、Redis 8.0.2 和私有 Go 临时目录运行同一 `--full` 矩阵，结果为 **23 passed、0 failed、0 skipped**。该运行包含公网 IP 回连、高端口 `49152`、真实 TLS 1.3 双向证书、签名 CRP 包、PostgreSQL resume store、example.com HTTPS pin、Session/lease 撤销和清理门禁；报告已保存为测试节点外部临时产物，未写入源码树。缺少变量时 `--static`/`--full` 仍按 blocker 失败，不能用本地成功替代部署条件。
+在隔离的远端测试节点上执行过同一 `--full` 矩阵，覆盖真实 HTTPS、CWEDP mTLS、PostgreSQL resume store、Session/lease 撤销和清理门禁；远端报告保存在节点外部临时目录，未写入源码树。缺少变量时 `--static`/`--full` 仍按 blocker 失败，不能用本地成功替代部署条件。
 
     id, title, status, implemented, scope, blockers
     positive: status, command, assertion, evidence
