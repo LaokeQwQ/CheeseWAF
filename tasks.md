@@ -1361,3 +1361,19 @@ Windows runner 进一步复现了关闭完成与 operation `AfterFunc` 回调之
 - activation service 接受管理 API 生成的 request ID 并把它绑定到控制面授权请求，成功结果返回 authorization/confirmation ID；新增完成事件失败、取消请求、非 admin actor 和生命周期关闭顺序回归测试。定向 `internal/api/handler`、`internal/api`、`internal/crp/activation`、`internal/cli` 测试均通过。
 
 范围边界：本轮只接线 CRP 高风险变更入口，其他配置/审批/留观事件仍待逐一建立显式 metadata-only adapter；无签名 checkpoint 的生产 AuditRuntime 暂沿用哈希链，密钥提供者和外部 WORM/SIEM 回执仍未接入。变更已通过本地门禁并提交到 `codex/audit-hash-chain`，未推送、未晋升、未发行。
+
+### 2026-10-02 DuckDB Plugin 契约与文档状态同步
+
+- `CheeseSec_Plugin` 的 DuckDB descriptor/schema 定义为宿主提供的异步 one-shot job，网络出站拒绝，唯一输出为 `analysis-record/v1`；该仓库只有静态契约和 fixture，不代表 CheeseWAF 已有 DuckDB 运行时。
+- 同步更新了 Plugin 开发手册、CheeseSec 在线手册和本架构计划，移除 DuckDB sidecar/CLI、策略候选及 Socket Lease 的 v1 描述；补充输入签名/摘要/schema 验证、OS 沙箱和资源限制仍需在 WAF 运行时实现。CRP 示例的两份官方 Ed25519 签名已由离线验证器确认。
+- Plugin 手册的工作流策略、CRP schema/签名/链接、商业合同镜像、2 项 Python 测试和 secret scan 均通过；CheeseSec_Docs 的 Hugo 构建通过；三个工作区的 `git diff --check` 通过。
+- WAF `--static` 验收矩阵为 19 passed、4 failed、0 skipped。未通过项是迁移/session invalidation、CRP activation、CRP rollback 和临时网络确认；报告指出它们缺少部署级 PG/Redis/sidecar 或公网 peer 条件。本轮没有改变相关源码，不能将这四项标记为完成。
+- 本轮只同步契约与文档，不实现 DuckDB 作业运行时、Parquet 导出器或 OS 沙箱；文档分支尚未提交或推送，主仓库未晋升或发行。
+
+### 2026-10-02 Plugin 分支推送与审计阶段事实复核
+
+- `CheeseSec_Plugin` 分支 `codex/jev-edr-duckdb-contract` 已推送到 PR #9；本地与 GitHub `repository-checks / validate` 均通过。该 PR 仍要求独立 review，未合并。
+- `CheeseSec_Plugin_Docs` 已保留远端 Dependabot/Actions 更新，并推送到 PR #9；`handbook-checks / validate` 通过。`CheeseSec_Docs` 已推送 PR #2，Cloudflare Pages 构建通过。三个 PR 均未绕过保护规则自动合并。
+- DuckDB Plugin 仍只有 descriptor/schema/fixture/validator：host-provided、异步 one-shot、deny egress、analysis-record-only 已由静态门禁绑定；Parquet 实体验签、文件摘要读取、租户/站点物化、OS 沙箱、资源监督和输出签名必须在 CheeseWAF 宿主运行时实现，不能由 Plugin 门禁替代。
+- WAF 当前已具备 metadata-only audit event、哈希链、签名 checkpoint contract、PostgreSQL Journal、诊断与 CRP 高风险入口接线；统一审批/租约/配置事件 adapter、签名密钥生命周期、WORM/SIEM 真实回执、离线签名导出和接收端 quarantine 仍是未完成阶段。
+- 本次只校正进度事实，没有推送、晋升或发行主 CheeseWAF；主分支的发布与 CodeQL 门禁仍保持最终阶段要求。

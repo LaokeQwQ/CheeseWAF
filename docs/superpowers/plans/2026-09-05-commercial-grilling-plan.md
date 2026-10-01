@@ -105,10 +105,10 @@
 | 30 | 30D-AU：执法、依赖和审计三轴独立；Availability Guard 只降低概率性动作，使用短租约、Canary、迟滞和回滚 |
 | 31 | 31D：按站点/路由多信号启用 Availability Guard；攻击峰值不能单独触发放宽 |
 | 32 | 32C：DuckDB 仅用于跨集群分析和审计，不进入请求热路径、PG、native-raft 或 Redis |
-| 33 | 33B：DuckDB 作为可选 sidecar/CLI，默认关闭；日志异步写 Parquet，分析时读取，不共享写一个数据库文件 |
-| 34 | 34A+：插件全部 sidecar 化，禁止 WASM 和进程内原生插件；请求线程不等待插件，使用声明式快照和 hint |
-| 35 | 35B：扩展异步生成候选策略快照；核心验证、编译、Canary 后原子加载，插件不能影响当前请求 |
-| 36 | 36C：扩展默认 observe；只允许在 Availability Guard 范围内弱化概率性动作；协议、安全底线、管理员硬规则和核心控制永不弱化 |
+| 33 | 33B：DuckDB 扩展采用宿主提供的异步 one-shot Plugin；仅读取已验证的脱敏 Parquet 快照，只输出 analysis-record，不进入热路径、不产生策略候选且禁止网络出站。WAF 作业运行时与审计导出器另列实施和验收，不按 sidecar/CLI 上线 |
+| 34 | 34A+：Jev/EDR 等常驻扩展使用 sidecar，禁止 WASM 和进程内原生插件；请求线程不等待插件 I/O；DuckDB 按 33B 使用 one-shot job |
+| 35 | 35B：Jev/EDR 等策略扩展可异步生成候选快照，由核心验证、编译、Canary 后原子加载；DuckDB 只输出 analysis-record，不生成策略候选 |
+| 36 | 36C：Jev/EDR 默认 observe；Availability Guard 只可弱化概率性动作；DuckDB 输出不得变更策略；协议、安全底线、管理员硬规则和核心控制永不弱化 |
 | 37 | 37D-Hardened：信任级别只表达来源，不直接授予权限；权限仍由能力、资源、确认和策略决定；未知/测试/个人高权限需三次确认 |
 | 38 | 38A+B：核心 `ApprovalGate`/安全内核负责最终授权、身份、确认、PG 真相和 `AuthorizationCommit`；workflowd sidecar 负责可视化 DAG、连接器、通知和计时 |
 | 39 | 39B+C+D：工作流不可用时按风险自适应；低风险预批准自动，普通风险走核心本地人工，高风险 pending，紧急情况使用 Break-glass；不自动批准高风险 |
@@ -228,11 +228,13 @@
 
 [~] 完善 92B 应用侧信封加密、本地持久加密队列和组合 runtime；定义 KEK 轮换/吊销、对象存储异步复制以及灾备恢复规范。
 
-[ ] 实现统一审计事件模型、哈希链、签名检查点、WORM/SIEM outbox、离线签名导出和接收端 quarantine。
+[~] 实现统一审计事件模型、哈希链、签名检查点、WORM/SIEM outbox、离线签名导出和接收端 quarantine（已完成 metadata-only 事件模型、哈希链、PostgreSQL Journal、CRP/诊断入口和 outbox 元数据 contract；WORM/SIEM 真实适配器、签名密钥生命周期、离线导出与接收端 quarantine 仍待接线和验收）。
 
 [~] 为插件商店、OTA、CRP、离线证据包、审批流程和开发者扩展标准建立 `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 的独立仓库及版本协议（已包含仓库、Apache-2.0、v1 手册和示例）。
 
-[ ] 更新 README、README_CN、CheeseSec_Docs、发布说明和迁移指南；所有命令、配置键、端口和初始化步骤从同一 Schema/协议源生成或校验。
+[~] 在 `CheeseSec_Plugin` 定义 DuckDB `host-provided` one-shot 分析扩展契约和 `analysis-record/v1` 输出；CheeseWAF 尚未接入审计导出器、作业运行时、输入验签/文件校验或 OS 沙箱，不能据此宣称已发布。
+
+[~] 更新 README、README_CN、CheeseSec_Docs、发布说明和迁移指南；CheeseSec_Docs 与 Plugin/Plugin_Docs 的 DuckDB、CRP 和商业运行时边界已同步并通过各自门禁，主 WAF README/发布说明/迁移指南的全量命令一致性仍待最终门禁。
 
 [~] 建立 Get Started、static/full matrix、生产产物扫描和清理边界脚本；支持单节点/集群、断网、临时联网、轮换、吊销、恢复与回滚的端到端验证。
 
