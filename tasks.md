@@ -1375,5 +1375,11 @@ Windows runner 进一步复现了关闭完成与 operation `AfterFunc` 回调之
 - `CheeseSec_Plugin` 分支 `codex/jev-edr-duckdb-contract` 已推送到 PR #9；本地与 GitHub `repository-checks / validate` 均通过。该 PR 仍要求独立 review，未合并。
 - `CheeseSec_Plugin_Docs` 已保留远端 Dependabot/Actions 更新，并推送到 PR #9；`handbook-checks / validate` 通过。`CheeseSec_Docs` 已推送 PR #2，Cloudflare Pages 构建通过。三个 PR 均未绕过保护规则自动合并。
 - DuckDB Plugin 仍只有 descriptor/schema/fixture/validator：host-provided、异步 one-shot、deny egress、analysis-record-only 已由静态门禁绑定；Parquet 实体验签、文件摘要读取、租户/站点物化、OS 沙箱、资源监督和输出签名必须在 CheeseWAF 宿主运行时实现，不能由 Plugin 门禁替代。
+
+### 2026-10-04 扩展输出宿主签章运行时首批实现
+
+- `CheeseSec_Plugin` 的 `risk-hint/v1`、`analysis-record/v1` 和 `audit-parquet/v1` 现在明确使用 `cheesewaf-host` 的 Ed25519 宿主签章：域分离输入绑定规范化 payload 摘要、`key_id` 和 UTC `signed_at`；插件不持有宿主私钥。
+- CheeseWAF 新增 `internal/extensions` 宿主签章/验签包，覆盖规范化 JSON、payload 摘要、Ed25519 验签、key 有效期/吊销、TTL、策略代次、租户/站点/主体范围和稳定拒绝审计码；相关单测与 `internal/audit`、`internal/crp/activation` 回归均通过。
+- 当前仍缺少受认证的异步 output ingress、事件幂等/序号对账、真实 KMS signer provider/轮换及 Plugin sidecar/作业接线；本项只代表签章边界和核心验签能力落地，不代表 Jev、EDR 或 DuckDB 已发布。
 - WAF 当前已具备 metadata-only audit event、哈希链、签名 checkpoint contract、PostgreSQL Journal、诊断与 CRP 高风险入口接线；统一审批/租约/配置事件 adapter、签名密钥生命周期、WORM/SIEM 真实回执、离线签名导出和接收端 quarantine 仍是未完成阶段。
 - 本次只校正进度事实，没有推送、晋升或发行主 CheeseWAF；主分支的发布与 CodeQL 门禁仍保持最终阶段要求。
