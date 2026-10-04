@@ -232,7 +232,7 @@
 
 [~] 为插件商店、OTA、CRP、离线证据包、审批流程和开发者扩展标准建立 `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 的独立仓库及版本协议（已包含仓库、Apache-2.0、v1 手册和示例）。
 
-[~] 在 `CheeseSec_Plugin` 定义 DuckDB `host-provided` one-shot 分析扩展契约和 `analysis-record/v1` 输出；CheeseWAF 已落地扩展输出宿主签章/验签和 metadata-only 异步 ingress 基础包，但尚未接入审计导出器、作业运行时、输入验签/文件校验或 OS 沙箱，不能据此宣称已发布。
+[~] 在 `CheeseSec_Plugin` 定义 DuckDB `host-provided` one-shot 分析扩展契约和 `analysis-record/v1` 输出；CheeseWAF 已落地扩展输出宿主签章/验签、签章生命周期抽象、metadata-only 异步 ingress 和 host-normalized mTLS transport 基础包，但真实 Plugin DTO adapter、审计导出器、作业运行时、输入验签/文件校验或 OS 沙箱仍未完成，不能据此宣称已发布。
 
 [~] 更新 README、README_CN、CheeseSec_Docs、发布说明和迁移指南；CheeseSec_Docs 与 Plugin/Plugin_Docs 的 DuckDB、CRP 和商业运行时边界已同步并通过各自门禁，主 WAF README/发布说明/迁移指南的全量命令一致性仍待最终门禁。
 
