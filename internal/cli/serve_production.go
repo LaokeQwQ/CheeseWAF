@@ -148,6 +148,10 @@ type ProductionTemporaryNetworkOptions struct {
 	ManagementStore storage.Store
 	PolicyEpoch     uint64
 	DataDir         string
+	// AuditRuntime is the canonical metadata-only audit appender. Production
+	// temporary-network events are rejected if this boundary cannot persist;
+	// the JSONL path remains only as a compatibility copy.
+	AuditRuntime audit.EventAppender
 }
 
 // ProductionCWEDPLeaseRequest is the request-scoped capability needed to
@@ -644,6 +648,7 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 		ManagementStore: management,
 		PolicyEpoch:     uint64(startup.State.Epoch),
 		DataDir:         opts.DataDir,
+		AuditRuntime:    deps.Audit,
 	})
 	if temporaryNetwork != nil {
 		deps.TemporaryNetwork = temporaryNetwork
