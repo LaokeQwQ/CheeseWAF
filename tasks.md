@@ -1383,3 +1383,9 @@ Windows runner 进一步复现了关闭完成与 operation `AfterFunc` 回调之
 - 当前仍缺少受认证的异步 output ingress、事件幂等/序号对账、真实 KMS signer provider/轮换及 Plugin sidecar/作业接线；本项只代表签章边界和核心验签能力落地，不代表 Jev、EDR 或 DuckDB 已发布。
 - WAF 当前已具备 metadata-only audit event、哈希链、签名 checkpoint contract、PostgreSQL Journal、诊断与 CRP 高风险入口接线；统一审批/租约/配置事件 adapter、签名密钥生命周期、WORM/SIEM 真实回执、离线签名导出和接收端 quarantine 仍是未完成阶段。
 - 本次只校正进度事实，没有推送、晋升或发行主 CheeseWAF；主分支的发布与 CodeQL 门禁仍保持最终阶段要求。
+
+### 2026-10-04 扩展异步入口与临时网络审计接线
+
+- CheeseWAF `internal/extensions` 新增严格的异步 output ingress：先解析并验签，再校验 API/plugin/version、租户/站点、策略代次、TTL、事件幂等键和连续序号；仅把 metadata-only `audit.Event` 放入有界异步队列，不监听网络、不触碰 ACL/策略、不保留原始 payload。审计失败可重试，重放冲突、旧序号、缺号和队列满均拒绝；`go test -race ./internal/extensions` 通过。
+- 生产 temporary network 新增 `netlease.CanonicalAuditSink`，将固定 allowlist 的签发、授权、连接、结果、撤销和拒绝事件同步映射到 canonical `audit.Runtime`；目标主机、TLS 指纹和完整 egress 元数据只进入确定性 `evidence_digest`，不写入 canonical 事件。canonical 失败不会写兼容 JSONL，保持外连 fail-closed；默认 production composition root 传入 `AuditRuntime`。
+- 本轮验证：`go test ./...`、`go test -race ./internal/extensions ./internal/netlease ./internal/cli` 通过。仍未完成真实 mTLS output transport、EDR/Jev 来源流接线、DuckDB 作业运行时、KMS signer provider/轮换、WORM/SIEM 回执和离线签名导出；不据此宣称扩展能力已发布。

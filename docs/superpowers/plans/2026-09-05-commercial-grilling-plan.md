@@ -228,11 +228,11 @@
 
 [~] 完善 92B 应用侧信封加密、本地持久加密队列和组合 runtime；定义 KEK 轮换/吊销、对象存储异步复制以及灾备恢复规范。
 
-[~] 实现统一审计事件模型、哈希链、签名检查点、WORM/SIEM outbox、离线签名导出和接收端 quarantine（已完成 metadata-only 事件模型、哈希链、PostgreSQL Journal、CRP/诊断入口和 outbox 元数据 contract；WORM/SIEM 真实适配器、签名密钥生命周期、离线导出与接收端 quarantine 仍待接线和验收）。
+[~] 实现统一审计事件模型、哈希链、签名检查点、WORM/SIEM outbox、离线签名导出和接收端 quarantine（已完成 metadata-only 事件模型、哈希链、PostgreSQL Journal、CRP/诊断入口、temporary network canonical adapter 和 outbox 元数据 contract；WORM/SIEM 真实适配器、签名密钥生命周期、离线导出与接收端 quarantine 仍待接线和验收）。
 
 [~] 为插件商店、OTA、CRP、离线证据包、审批流程和开发者扩展标准建立 `CheeseSec_Plugin` 与 `CheeseSec_Plugin_Docs` 的独立仓库及版本协议（已包含仓库、Apache-2.0、v1 手册和示例）。
 
-[~] 在 `CheeseSec_Plugin` 定义 DuckDB `host-provided` one-shot 分析扩展契约和 `analysis-record/v1` 输出；CheeseWAF 已落地扩展输出的宿主签章/验签基础包，但尚未接入审计导出器、作业运行时、输入验签/文件校验或 OS 沙箱，不能据此宣称已发布。
+[~] 在 `CheeseSec_Plugin` 定义 DuckDB `host-provided` one-shot 分析扩展契约和 `analysis-record/v1` 输出；CheeseWAF 已落地扩展输出宿主签章/验签和 metadata-only 异步 ingress 基础包，但尚未接入审计导出器、作业运行时、输入验签/文件校验或 OS 沙箱，不能据此宣称已发布。
 
 [~] 更新 README、README_CN、CheeseSec_Docs、发布说明和迁移指南；CheeseSec_Docs 与 Plugin/Plugin_Docs 的 DuckDB、CRP 和商业运行时边界已同步并通过各自门禁，主 WAF README/发布说明/迁移指南的全量命令一致性仍待最终门禁。
 
