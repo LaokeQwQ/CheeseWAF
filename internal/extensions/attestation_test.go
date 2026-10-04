@@ -113,4 +113,15 @@ func TestSignerRejectsNonCanonicalAndOverlongTTL(t *testing.T) {
 	}
 }
 
+func TestCanonicalPayloadMatchesPluginUTF8Policy(t *testing.T) {
+	got, err := CanonicalPayload([]byte(`{"label":"<安全> & café","nested":{"z":1,"a":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"label":"<安全> & café","nested":{"a":2,"z":1}}`
+	if string(got) != want {
+		t.Fatalf("canonical payload = %s, want %s", got, want)
+	}
+}
+
 func ptrTime(value time.Time) *time.Time { return &value }

@@ -398,7 +398,18 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, ErrInvalidPayload
 	}
-	return json.Marshal(value)
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "")
+	if err := encoder.Encode(value); err != nil {
+		return nil, ErrInvalidPayload
+	}
+	encoded := out.Bytes()
+	if len(encoded) == 0 || encoded[len(encoded)-1] != '\n' {
+		return nil, ErrInvalidPayload
+	}
+	return encoded[:len(encoded)-1], nil
 }
 
 func digestJSON(payload []byte) string {
