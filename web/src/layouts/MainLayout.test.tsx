@@ -97,6 +97,16 @@ describe('NotificationPanel', () => {
     fireEvent.click(screen.getByText('common.retry'));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
+
+  it('exposes a keyboard-operable close control for the notification dialog', () => {
+    const onClose = vi.fn();
+    renderPanel({ total: 1, filteredTotal: 1, onClose });
+
+    const close = screen.getByRole('button', { name: 'common.close' });
+    expect(close.getAttribute('type')).toBe('button');
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('buildSearchResults', () => {

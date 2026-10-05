@@ -155,9 +155,7 @@ func (lb *LoadBalancer) nextExcluding(site config.SiteConfig, clientIP string, s
 		lb.mu.Unlock()
 	}
 	target := candidates[index].Address
-	if !strings.Contains(target, "://") {
-		target = "http://" + target
-	}
+	target = normalizeUpstream(target)
 	return url.Parse(target)
 }
 

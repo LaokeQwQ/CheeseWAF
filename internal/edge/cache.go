@@ -188,6 +188,12 @@ func (c *Cache) cacheableRequest(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
+	// Upgrade handshakes are stateful protocol switches, never cacheable HTTP
+	// representations. A WebSocket GET must not collide with a normal GET.
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") ||
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+		return false
+	}
 	if strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-store") {
 		return false
 	}

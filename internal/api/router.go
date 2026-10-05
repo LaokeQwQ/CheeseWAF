@@ -97,7 +97,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}
-	tokens := middleware.NewTokenManagerWithClock(opts.Secret, config.AdminSessionTTL, clock)
+	tokens := middleware.NewTokenManagerWithClock(opts.Secret, config.AdminSessionTTLFor(routerConfig), clock)
 	auditor := newAuditor(routerConfig.APISec.Audit.Path, clock)
 	var panicAuditor *middleware.Auditor
 	if routerConfig.APISec.Audit.Enabled {
@@ -108,7 +108,13 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 	if approvals == nil {
 		approvals = newRouterAssistantApprovalStore()
 	}
-	aiUseLimit := middleware.NewAIRequestLimiter(middleware.AIRequestLimitOptions{}).Middleware
+	aiUseLimit := middleware.NewAIRequestLimiter(middleware.AIRequestLimitOptions{
+		MaxRequests: routerConfig.AI.MaxRequests,
+		MaxInFlight: routerConfig.AI.MaxInFlight,
+		MaxSubjects: routerConfig.AI.MaxSubjects,
+		Window:      routerConfig.AI.RateWindow,
+		SubjectTTL:  routerConfig.AI.SubjectTTL,
+	}).Middleware
 	hub := opts.Hub
 	if hub == nil {
 		hub = realtime.NewHub()

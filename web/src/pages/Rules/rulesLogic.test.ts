@@ -20,6 +20,15 @@ describe('rulesLogic', () => {
     expect(testPattern(sqli!.pattern, '/health')).toEqual({ ok: true, matched: false });
   });
 
+  it('covers IPv4 and IPv6 private SSRF targets in the starter rule', () => {
+    const ssrf = ruleTemplates(t).find((item) => item.key === 'ssrf-internal');
+    expect(ssrf).toBeDefined();
+    for (const target of ['http://127.0.0.1/admin', 'http://0.0.0.0:8080', 'http://[::1]/admin', 'http://[fd00::1]/admin', 'http://[fe80::1]/']) {
+      expect(testPattern(ssrf!.pattern, target)).toEqual({ ok: true, matched: true });
+    }
+    expect(testPattern(ssrf!.pattern, 'http://example.com/health')).toEqual({ ok: true, matched: false });
+  });
+
   it('compiles inline case-insensitive flags', () => {
     const re = compileRulePattern('(?i)admin');
     expect(re.test('ADMIN')).toBe(true);

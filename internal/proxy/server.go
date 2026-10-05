@@ -900,6 +900,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	release := s.lb.Track(target)
 	unlockRuntime()
 	rp.ServeHTTP(capture, r)
+	capture.SyncPostCommitHeaders()
 	lockRuntime()
 	release()
 	if capture.Committed() {

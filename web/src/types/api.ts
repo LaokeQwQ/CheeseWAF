@@ -468,6 +468,11 @@ export type AIConfig = {
   display_model_name?: string;
   context_window?: number;
   reasoning_effort?: AIReasoningEffort;
+  max_requests?: number;
+  max_in_flight?: number;
+  max_subjects?: number;
+  rate_window?: number | string;
+  subject_ttl?: number | string;
   model_list_path?: string;
   balance_path?: string;
   usage_path?: string;
@@ -523,6 +528,7 @@ export type AIKnowledgeConfig = {
   enabled: boolean;
   builtin: boolean;
   max_snippets: number;
+  file?: string;
 };
 
 export type AIModelInfo = {
@@ -1218,6 +1224,7 @@ export type SystemConfig = {
   console: {
     login: {
       captcha: LoginCAPTCHAConfig;
+      session_ttl?: number | string;
       security_entry: LoginSecurityEntryConfig;
       background: LoginBackgroundConfig;
       copyright: string;

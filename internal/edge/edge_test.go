@@ -118,6 +118,16 @@ func TestCacheKeySeparatesIdentityAndRepresentationDimensions(t *testing.T) {
 	}
 }
 
+func TestCacheRejectsWebSocketUpgradeRequests(t *testing.T) {
+	cache := NewCache(config.CachePolicyConfig{Enabled: true, Mode: "public", PathPrefixes: []string{"/"}})
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/socket", nil)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	if cache.CaptureCandidate(request) {
+		t.Fatal("WebSocket upgrade must not be a cache candidate")
+	}
+}
+
 func TestCompressorAppliesGzip(t *testing.T) {
 	compressor := NewCompressor(config.CompressionPolicyConfig{
 		Enabled:      true,

@@ -1,6 +1,28 @@
 * {
   box-sizing: border-box;
 }
+
+.skip-link {
+  position: fixed;
+  left: 1rem;
+  top: 1rem;
+  z-index: 1000;
+  transform: translateY(-200%);
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  background: var(--surface-raised);
+  color: var(--text-strong);
+  padding: 0.55rem 0.8rem;
+  box-shadow: var(--shadow);
+  transition: transform 160ms ease;
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 :root {
   --z-base: 1;
   --z-dropdown: 10;
@@ -1365,7 +1387,8 @@ select {
 .dashboard-events-more:focus-visible {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .dashboard-chart-heading {
   width: 100%;
@@ -3476,9 +3499,9 @@ code {
   border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
 }
 .protection-level-option:focus-visible {
-  outline: 2px solid transparent;
+  outline: 2px solid var(--accent-strong);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, var(--surface));
 }
 .protection-level-option-active {
   color: var(--accent-contrast, #ffffff);
@@ -7333,8 +7356,11 @@ code {
 .cluster-deploy-method:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
   box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 8%, transparent);
-  outline: none;
   transform: translateY(-1px);
+}
+.cluster-deploy-method:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
 }
 .cluster-deploy-method strong {
   color: var(--text);

@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +122,42 @@ func TestHealthCheckerUsesStatusAndConfiguredThresholds(t *testing.T) {
 	checker.check(site)
 	if !registry.Healthy(site.Upstreams[0].Address) {
 		t.Fatal("3xx must become healthy at configured threshold")
+	}
+}
+
+func TestHealthCheckerUsesWebSocketUpgradeForWSUpstreams(t *testing.T) {
+	var upgradeSeen atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "websocket" || r.Header.Get("Connection") != "Upgrade" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		upgradeSeen.Store(true)
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("test server does not support hijacking")
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("hijack WebSocket health connection: %v", err)
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"))
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	site := config.Default().Sites[0]
+	site.Upstreams = []config.UpstreamConfig{{Address: wsURL}}
+	site.WAF.HealthCheck.HealthyThreshold = 1
+	registry := NewHealthRegistry([]config.SiteConfig{site})
+	checker := NewHealthChecker([]config.SiteConfig{site}, registry)
+	checker.check(site)
+	if !upgradeSeen.Load() {
+		t.Fatal("health check did not send a WebSocket upgrade")
+	}
+	if !registry.Healthy(wsURL) {
+		t.Fatal("successful WebSocket handshake must keep upstream healthy")
 	}
 }
 

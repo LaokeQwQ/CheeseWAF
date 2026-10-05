@@ -27,6 +27,7 @@ type SSLSystemDraft = Omit<SystemConfig, 'acme'> & {
 
 const SYSTEMD_RESTART_PROFILE = 'systemd-restart';
 const SYSTEMD_RESTART_COMMAND = '/usr/bin/systemctl restart cheesewaf.service';
+const CUSTOM_ACME_SERVER = 'custom';
 let providerDraftSequence = 0;
 
 function nextProviderUIId() {
@@ -70,6 +71,7 @@ export default function SSLPage() {
   const fallbackDraft = useMemo(() => withProviderUIIds(fallbackSystem), []);
   const { draft, setDraft, markClean } = useServerDraft(serverSystem);
   const system = draft ?? fallbackDraft;
+  const acmeServerIsCustom = Boolean(system.acme.server && !['letsencrypt', 'zerossl', 'https://acme-v02.api.letsencrypt.org/directory', 'https://acme-staging-v02.api.letsencrypt.org/directory'].includes(system.acme.server));
 
   const saveMutation = useMutation({
     mutationFn: updateSystemConfig,
@@ -185,15 +187,26 @@ export default function SSLPage() {
             </label>
             <label>
               <span>{t('system.acmeServer')}</span>
-              <Select value={system.acme.server || 'letsencrypt'} onValueChange={(server) => patchACME({ server })} disabled={!isSuccess}>
+              <Select value={acmeServerIsCustom ? CUSTOM_ACME_SERVER : (system.acme.server || 'letsencrypt')} onValueChange={(server) => patchACME({ server: server === CUSTOM_ACME_SERVER ? (acmeServerIsCustom ? system.acme.server : '') : server })} disabled={!isSuccess}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="letsencrypt">Let&apos;s Encrypt</SelectItem>
                   <SelectItem value="zerossl">ZeroSSL</SelectItem>
                   <SelectItem value="https://acme-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt API</SelectItem>
                   <SelectItem value="https://acme-staging-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt Staging</SelectItem>
+                  <SelectItem value={CUSTOM_ACME_SERVER}>{t('system.acmeServerCustom')}</SelectItem>
                 </SelectContent>
               </Select>
+              {(acmeServerIsCustom || system.acme.server === '') && (
+                <Input
+                  className="mt-2"
+                  value={acmeServerIsCustom ? system.acme.server : ''}
+                  placeholder={t('system.acmeServerCustomPlaceholder')}
+                  aria-label={t('system.acmeServerCustom')}
+                  onChange={(event) => patchACME({ server: event.target.value })}
+                  disabled={!isSuccess}
+                />
+              )}
             </label>
             <label>
               <span>{t('system.acmeAccountEmail')}</span>

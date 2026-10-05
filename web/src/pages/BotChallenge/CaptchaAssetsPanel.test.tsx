@@ -34,6 +34,21 @@ describe('CaptchaAssetsPanel', () => {
     expect(await screen.findByText('botChallenge.captchaAssets.forbidden')).toBeTruthy();
     expect(screen.getByText('botChallenge.captchaAssets.forbiddenHint')).toBeTruthy();
   });
+
+  it('supports Home/End and directional keyboard navigation between asset tabs', async () => {
+    renderPanel();
+    const assetsTab = await screen.findByRole('tab', { name: 'botChallenge.captchaAssets.library' });
+    const storageTab = screen.getByRole('tab', { name: 'botChallenge.captchaAssets.storage' });
+
+    assetsTab.focus();
+    fireEvent.keyDown(assetsTab, { key: 'End' });
+    expect(document.activeElement).toBe(storageTab);
+    expect(storageTab.getAttribute('aria-selected')).toBe('true');
+
+    fireEvent.keyDown(storageTab, { key: 'Home' });
+    expect(document.activeElement).toBe(assetsTab);
+    expect(assetsTab.getAttribute('aria-selected')).toBe('true');
+  });
   it('echoes, submits, and warns about the S3 private endpoint setting', async () => {
     api.updateCAPTCHAAssetConfig.mockResolvedValue(config);
     renderPanel();

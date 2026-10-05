@@ -22,6 +22,7 @@ const (
 	defaultACMESHPath = "acme.sh"
 	defaultServer     = "letsencrypt"
 	defaultKeyType    = "ec-256"
+	defaultRenewAfter = 60 * 24 * time.Hour
 )
 
 var (
@@ -243,7 +244,11 @@ func (i *ACMESHIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult
 	record("dns_cleanup", StepSucceeded, "acme.sh DNS API completed DNS-01 cleanup", "")
 
 	result.IssuedAt = i.now()
-	result.RenewAfter = result.IssuedAt.Add(60 * 24 * time.Hour)
+	renewAfter := defaultRenewAfter
+	if i != nil && i.cfg != nil && i.cfg.ACME.RenewAfter > 0 {
+		renewAfter = i.cfg.ACME.RenewAfter
+	}
+	result.RenewAfter = result.IssuedAt.Add(renewAfter)
 	result.ElapsedMS = int64(i.now().Sub(start) / time.Millisecond)
 	return result, nil
 }

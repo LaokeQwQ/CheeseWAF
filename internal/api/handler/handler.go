@@ -972,7 +972,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 			return
 		}
-		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
 		tracker.clearLoginFailures(rateLimitKeys, now)
 		writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 		return
@@ -997,7 +997,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 		return
 	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
 	tracker.clearLoginFailures(rateLimitKeys, now)
 	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
@@ -1505,7 +1505,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
 	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
 
@@ -1569,7 +1569,7 @@ func (h *Handler) BootstrapSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTL)
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
 	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true, "bootstrapped": true})
 }
 
