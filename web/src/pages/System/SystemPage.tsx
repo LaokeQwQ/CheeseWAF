@@ -422,6 +422,17 @@ export default function SystemPage() {
                       />
                     </label>
                     <label>
+                      <span>{t('system.loginSessionTTL')}</span>
+                      <Input
+                        type="number"
+                        min={900}
+                        max={2_592_000}
+                        step={60}
+                        value={durationSeconds(system.console.login.session_ttl)}
+                        onChange={(e) => patchConsoleLogin({ session_ttl: secondsToDuration(Number(e.target.value || 86400)) })}
+                      />
+                    </label>
+                    <label>
                       <span>{t('system.loginSliderTolerance')}</span>
                       <Input
                         type="number"

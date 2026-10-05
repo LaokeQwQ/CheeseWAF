@@ -551,6 +551,29 @@ describe('logout state contract', () => {
     expect(localStorage.getItem('cheesewaf-token')).toBe('legacy');
     expect(getCSRFToken()).toBe('csrf-token');
   });
+
+  it('does not let a late refresh response revive a logged-out session', async () => {
+    sessionStorage.setItem('cheesewaf-authed', '1');
+    sessionStorage.setItem('cheesewaf-account', '{"username":"admin"}');
+    let resolveRefresh: ((value: unknown) => void) | undefined;
+    vi.spyOn(apiClient, 'post').mockImplementation((url) => {
+      if (url === '/auth/refresh') {
+        return new Promise((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
+      return Promise.resolve({ data: { data: { revoked: true } } });
+    });
+
+    const refresh = refreshSession();
+    await Promise.resolve();
+    await expect(logout()).resolves.toEqual({ revoked: true });
+
+    resolveRefresh?.({ data: { data: { user: { username: 'admin', role: 'admin' } } } });
+    await expect(refresh).resolves.toBeUndefined();
+    expect(sessionStorage.getItem('cheesewaf-authed')).toBeNull();
+    expect(sessionStorage.getItem('cheesewaf-account')).toBeNull();
+  });
 });
 
 describe('AI approval streaming and recovery', () => {

@@ -352,6 +352,37 @@ func TestValidateAdminTLSAllowedOnLoopback(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMalformedUpstreamAndAcceptsIPv6AndWebSocketSchemes(t *testing.T) {
+	base := Default()
+	base.Sites = []SiteConfig{{
+		Name:      "edge",
+		Enabled:   true,
+		Domains:   []string{"edge.example.test"},
+		Upstreams: []UpstreamConfig{{Address: "http://[2001:db8::1]:8443"}},
+	}}
+	if err := Validate(&base); err != nil {
+		t.Fatalf("IPv6 upstream rejected: %v", err)
+	}
+
+	for _, address := range []string{"http://[2001:db8::1", "ftp://backend:21", "http://backend:70000", "http://user:pass@backend"} {
+		cfg := base
+		cfg.Sites = append([]SiteConfig(nil), base.Sites...)
+		cfg.Sites[0].Upstreams = []UpstreamConfig{{Address: address}}
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("Validate accepted malformed upstream %q", address)
+		}
+	}
+
+	for _, address := range []string{"ws://backend:8080", "wss://backend:8443", "backend:8080"} {
+		cfg := base
+		cfg.Sites = append([]SiteConfig(nil), base.Sites...)
+		cfg.Sites[0].Upstreams = []UpstreamConfig{{Address: address}}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("Validate rejected supported upstream %q: %v", address, err)
+		}
+	}
+}
+
 func idString(id int) string { return fmt.Sprintf("token-%d", id) }
 
 func TestValidateBoundsSiteHeaderAndRewriteComplexity(t *testing.T) {

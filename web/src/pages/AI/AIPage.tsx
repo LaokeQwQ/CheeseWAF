@@ -93,6 +93,7 @@ type AIFormValues = {
   knowledgeEnabled: boolean;
   knowledgeBuiltin: boolean;
   knowledgeMaxSnippets: number | string;
+  knowledgeFile: string;
 };
 
 const fallback: AIConfig = {
@@ -102,6 +103,11 @@ const fallback: AIConfig = {
   api_key: '',
   api_key_set: false,
   model: 'gpt-4o-mini',
+  max_requests: 10,
+  max_in_flight: 2,
+  max_subjects: 4096,
+  rate_window: '1m',
+  subject_ttl: '10m',
   async: true,
   allow_private_api_base: false,
   assistant: {
@@ -136,6 +142,7 @@ const fallback: AIConfig = {
     enabled: true,
     builtin: true,
     max_snippets: 5,
+    file: '',
   },
 };
 
@@ -183,6 +190,7 @@ function formValuesFromConfig(config: AIConfig, assistantConfig: AIModelConfig, 
     knowledgeEnabled: config.knowledge?.enabled ?? true,
     knowledgeBuiltin: config.knowledge?.builtin ?? true,
     knowledgeMaxSnippets: config.knowledge?.max_snippets ?? 5,
+    knowledgeFile: config.knowledge?.file ?? '',
   };
 }
 
@@ -282,6 +290,7 @@ export default function AIPage() {
     config.knowledge?.builtin,
     config.knowledge?.enabled,
     config.knowledge?.max_snippets,
+    config.knowledge?.file,
     config.model,
     config.provider,
     config.self_learning?.action,
@@ -691,6 +700,7 @@ export default function AIPage() {
                       <FieldSwitch label={t('common.enabled')} checked={formValues.knowledgeEnabled} onChange={(v) => setField('knowledgeEnabled', v)} />
                       <FieldSwitch label={t('ai.knowledgeBuiltin')} checked={formValues.knowledgeBuiltin} onChange={(v) => setField('knowledgeBuiltin', v)} />
                       <FieldInput label={t('ai.knowledgeMaxSnippets')} type="number" value={String(formValues.knowledgeMaxSnippets)} onChange={(v) => setField('knowledgeMaxSnippets', v)} min={1} max={20} />
+                      <FieldInput label={t('ai.knowledgeFile')} value={formValues.knowledgeFile} onChange={(v) => setField('knowledgeFile', v)} placeholder={t('ai.knowledgeFilePlaceholder')} />
                     </div>
                   </div>
                 </div>
@@ -1199,6 +1209,11 @@ export function buildAIConfigPayload(
     display_model_name: values.assistantDisplayModelName || values.assistantModel || values.model,
     context_window: optionalPositiveInteger(values.assistantContextWindow),
     reasoning_effort: values.assistantReasoningEffort || undefined,
+    max_requests: config.max_requests,
+    max_in_flight: config.max_in_flight,
+    max_subjects: config.max_subjects,
+    rate_window: config.rate_window,
+    subject_ttl: config.subject_ttl,
     model_list_path: values.assistantModelListPath || '',
     balance_path: values.assistantBalancePath || '',
     usage_path: values.assistantUsagePath || '',
@@ -1253,6 +1268,7 @@ export function buildAIConfigPayload(
       enabled: values.knowledgeEnabled,
       builtin: values.knowledgeBuiltin,
       max_snippets: Number(values.knowledgeMaxSnippets || 5),
+      file: String(values.knowledgeFile || '').trim(),
     },
   };
 }
@@ -1287,14 +1303,19 @@ function buildAIModelRequest(values: Record<string, any>, target: 'assistant' | 
 }
 
 function normalizeAIModel(model: AIModelConfig | undefined, config: AIConfig): AIModelConfig {
+  const provider = model?.provider || config.provider || 'openai';
+  const isOpenAI = provider.toLowerCase() === 'openai';
+  const apiBase = model?.api_base || config.api_base || (isOpenAI ? 'https://api.openai.com/v1' : '');
+  const invocationModel = model?.invocation_model_name || model?.model || config.invocation_model_name || config.model || (isOpenAI ? 'gpt-4o-mini' : '');
+  const displayModel = model?.display_model_name || config.display_model_name || model?.model || config.model || (isOpenAI ? 'gpt-4o-mini' : '');
   return {
-    provider: model?.provider || config.provider || 'openai',
-    api_base: model?.api_base || config.api_base || 'https://api.openai.com/v1',
+    provider,
+    api_base: apiBase,
     api_key: '',
     api_key_set: Boolean(model?.api_key_set ?? config.api_key_set),
-    model: model?.model || config.model || 'gpt-4o-mini',
-    invocation_model_name: model?.invocation_model_name || model?.model || config.invocation_model_name || config.model || 'gpt-4o-mini',
-    display_model_name: model?.display_model_name || config.display_model_name || model?.model || config.model || 'gpt-4o-mini',
+    model: model?.model || config.model || (isOpenAI ? 'gpt-4o-mini' : ''),
+    invocation_model_name: invocationModel,
+    display_model_name: displayModel,
     context_window: model?.context_window || config.context_window,
     reasoning_effort: model?.reasoning_effort || config.reasoning_effort,
     model_list_path: model?.model_list_path || config.model_list_path,

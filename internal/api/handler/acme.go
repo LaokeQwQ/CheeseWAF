@@ -71,6 +71,10 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runtime := h.trustedSiteACMERuntime(site)
+	if len(site.Domains) == 0 {
+		writeError(w, http.StatusBadRequest, "ACME_DOMAINS_REQUIRED", "site must define at least one routing domain before ACME issuance")
+		return
+	}
 	certificateSnapshot, err := snapshotACMECertificate(runtime.CertDir)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ACME_STAGE_ERROR", err.Error())

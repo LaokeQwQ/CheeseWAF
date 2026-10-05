@@ -55,6 +55,9 @@ const (
 	maxAIContextWindow        = 2_000_000
 	maxAIModelNameBytes       = 512
 	maxAIProviderPathBytes    = 2048
+	maxAIMaxRequests          = 100_000
+	maxAIMaxInFlight          = 256
+	maxAIMaxSubjects          = 1_000_000
 )
 
 func Validate(cfg *Config) error {
@@ -130,6 +133,9 @@ func Validate(cfg *Config) error {
 			return err
 		}
 	}
+	if cfg.Console.Login.SessionTTL != 0 && (cfg.Console.Login.SessionTTL < 15*time.Minute || cfg.Console.Login.SessionTTL > 30*24*time.Hour) {
+		return fmt.Errorf("console.login.session_ttl must be between 15m and 720h")
+	}
 	if err := validateSecurityEntry(cfg.Console.Login.SecurityEntry); err != nil {
 		return err
 	}
@@ -198,6 +204,9 @@ func Validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("ai.provider must be openai, openai-responses, openai-chat, or anthropic")
 	}
+	if err := validateAILimits(cfg.AI); err != nil {
+		return err
+	}
 	if cfg.AI.Enabled {
 		if err := validateAIModelConfig("ai", cfg.AI.RuntimeModelConfig(), true); err != nil {
 			return err
@@ -243,6 +252,9 @@ func Validate(cfg *Config) error {
 		for _, upstream := range site.Upstreams {
 			if strings.TrimSpace(upstream.Address) == "" {
 				return fmt.Errorf("site %q has an empty upstream address", site.Name)
+			}
+			if err := validateUpstreamAddress(upstream.Address); err != nil {
+				return fmt.Errorf("site %q upstream %q is invalid: %w", site.Name, upstream.Address, err)
 			}
 			// Limit upstream weight to prevent OOM from weighted round-robin expansion
 			if upstream.Weight < 0 {
@@ -674,6 +686,57 @@ func Validate(cfg *Config) error {
 	}
 	if err := validateManagementAPI(cfg.APISec.ManagementAPI); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateAILimits(cfg AIConfig) error {
+	if cfg.MaxRequests < 0 || cfg.MaxRequests > maxAIMaxRequests {
+		return fmt.Errorf("ai.max_requests must be between 0 and %d", maxAIMaxRequests)
+	}
+	if cfg.MaxInFlight < 0 || cfg.MaxInFlight > maxAIMaxInFlight {
+		return fmt.Errorf("ai.max_in_flight must be between 0 and %d", maxAIMaxInFlight)
+	}
+	if cfg.MaxSubjects < 0 || cfg.MaxSubjects > maxAIMaxSubjects {
+		return fmt.Errorf("ai.max_subjects must be between 0 and %d", maxAIMaxSubjects)
+	}
+	if cfg.RateWindow != 0 && (cfg.RateWindow < time.Second || cfg.RateWindow > 24*time.Hour) {
+		return fmt.Errorf("ai.rate_window must be between 1s and 24h")
+	}
+	if cfg.SubjectTTL != 0 && (cfg.SubjectTTL < time.Minute || cfg.SubjectTTL > 7*24*time.Hour) {
+		return fmt.Errorf("ai.subject_ttl must be between 1m and 168h")
+	}
+	return nil
+}
+
+func validateUpstreamAddress(address string) error {
+	address = strings.TrimSpace(address)
+	if !strings.Contains(address, "://") {
+		address = "http://" + address
+	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		return fmt.Errorf("must be a valid HTTP(S) or WebSocket URL: %w", err)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "ws", "wss":
+	default:
+		return fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return fmt.Errorf("host is required")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("userinfo is not allowed")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("query and fragment are not allowed")
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("port must be between 1 and 65535")
+		}
 	}
 	return nil
 }
@@ -2222,6 +2285,9 @@ func validateACME(cfg ACMEConfig) error {
 	}
 	if strings.TrimSpace(cfg.CertDir) == "" {
 		return fmt.Errorf("acme.cert_dir is required when ACME is enabled")
+	}
+	if cfg.RenewAfter != 0 && (cfg.RenewAfter < 24*time.Hour || cfg.RenewAfter > 90*24*time.Hour) {
+		return fmt.Errorf("acme.renew_after must be between 24h and 2160h")
 	}
 	if err := validateACMEServer(cfg.Server); err != nil {
 		return fmt.Errorf("acme.server is invalid: %w", err)

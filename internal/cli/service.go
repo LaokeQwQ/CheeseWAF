@@ -931,7 +931,7 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 			writeAdminTeapot(w)
 			return false
 		}
-		if !issueAdminEntryCookieAt(w, r, entry.CookieName, secret, now) {
+		if !issueAdminEntryCookieAtWithTTL(w, r, entry.CookieName, secret, config.AdminSessionTTLFor(cfg), now) {
 			writeAdminTeapot(w)
 			return false
 		}
@@ -971,10 +971,17 @@ func issueAdminEntryCookie(w http.ResponseWriter, r *http.Request, name, secret 
 }
 
 func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secret string, now func() time.Time) bool {
+	return issueAdminEntryCookieAtWithTTL(w, r, name, secret, config.AdminSessionTTL, now)
+}
+
+func issueAdminEntryCookieAtWithTTL(w http.ResponseWriter, r *http.Request, name, secret string, ttl time.Duration, now func() time.Time) bool {
 	if now == nil {
 		now = time.Now
 	}
-	expires := now().UTC().Add(config.AdminSessionTTL)
+	if ttl <= 0 {
+		ttl = config.AdminSessionTTL
+	}
+	expires := now().UTC().Add(ttl)
 	nonceBytes := make([]byte, 16)
 	if _, err := readAdminEntryNonce(nonceBytes); err != nil {
 		return false
@@ -986,7 +993,7 @@ func issueAdminEntryCookieAt(w http.ResponseWriter, r *http.Request, name, secre
 		Value:    value,
 		Path:     "/",
 		Expires:  expires,
-		MaxAge:   int(config.AdminSessionTTL / time.Second),
+		MaxAge:   int(ttl / time.Second),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})

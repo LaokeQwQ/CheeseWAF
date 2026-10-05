@@ -61,6 +61,7 @@ describe('APISecurityPage', () => {
     });
     renderPage();
     await waitFor(() => expect(screen.getAllByText('/api/users').length).toBeGreaterThan(0));
+    fireEvent.change(screen.getByPlaceholderText('/api/search'), { target: { value: '/api/search' } });
     fireEvent.click(screen.getByRole('button', { name: 'apisec.validate' }));
     await waitFor(() => expect(apiMocks.validateAPIRequest).toHaveBeenCalled());
     expect(apiMocks.validateAPIRequest.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
@@ -74,6 +75,7 @@ describe('APISecurityPage', () => {
     apiMocks.validateAPIRequest.mockResolvedValue({ findings: [] });
     renderPage();
     await waitFor(() => expect(screen.getAllByText('/api/users').length).toBeGreaterThan(0));
+    fireEvent.change(screen.getByPlaceholderText('/api/search'), { target: { value: '/api/search' } });
     fireEvent.click(screen.getByRole('button', { name: 'apisec.validate' }));
     expect(await screen.findByText('apisec.clean')).toBeTruthy();
   });

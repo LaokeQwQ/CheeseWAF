@@ -101,6 +101,29 @@ func TestIssuerRunsACMESHPipeline(t *testing.T) {
 	}
 }
 
+func TestIssuerUsesConfiguredRenewAfter(t *testing.T) {
+	runner := &fakeRunner{}
+	issuer := NewIssuer(IssuerOptions{
+		Config: &config.Config{ACME: config.ACMEConfig{RenewAfter: 30 * 24 * time.Hour}},
+		Runner: runner,
+		Now:    fixedClock(),
+	})
+
+	result, err := issuer.Issue(context.Background(), IssueRequest{
+		Domains:    []string{"example.com"},
+		DNSAPI:     "dns_cf",
+		ACMESHPath: "acme.sh",
+		Home:       t.TempDir(),
+		CertDir:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("issue failed: %v", err)
+	}
+	if got := result.RenewAfter.Sub(result.IssuedAt); got != 30*24*time.Hour {
+		t.Fatalf("renew-after = %s, want %s", got, 30*24*time.Hour)
+	}
+}
+
 func TestIssuerRejectsUnapprovedReloadCommandsBeforeExecution(t *testing.T) {
 	values := []string{
 		"/bin/sh -c 'id'",

@@ -26,6 +26,7 @@ const sessionRefreshThrottleKey = 'cheesewaf-last-refresh';
 const sessionRefreshThrottleMs = 10 * 60_000;
 const setupTokenHeaderName = 'X-CheeseWAF-Setup-Token';
 let refreshPromise: Promise<void> | null = null;
+let authGeneration = 0;
 let authRedirectScheduled = false;
 let authRedirectLocationForTest: AuthRedirectLocation | null = null;
 let cachedCSRF = '';
@@ -207,6 +208,7 @@ apiClient.interceptors.response.use(
 );
 
 export function handleUnauthorizedAuthFailure(locationRef: AuthRedirectLocation = authRedirectLocationForTest ?? window.location) {
+  authGeneration += 1;
   clearLegacyTokenStorage();
   markAuthenticated(false);
   clearAccount();
@@ -291,6 +293,7 @@ async function refreshSessionIfNeeded() {
 
 export async function refreshSession() {
   if (!refreshPromise) {
+    const generation = authGeneration;
     refreshPromise = apiClient
       .post<Envelope<AuthResponse>>('/auth/refresh', {})
       .then((response) => {
@@ -301,6 +304,9 @@ export async function refreshSession() {
             response.status,
             errorLookupID(response.data.error, response),
           );
+        }
+        if (generation !== authGeneration) {
+          return;
         }
         if (response.data.data.csrf) {
           setCSRFToken(response.data.data.csrf);
@@ -469,6 +475,7 @@ export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload, signal?: AbortS
 }
 
 export async function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
+  authGeneration += 1;
   const result = await unwrap<AuthResponse>(
     apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
   );
@@ -482,6 +489,9 @@ export async function login(username: string, password: string, totpCode?: strin
 }
 
 export async function logout() {
+  // Invalidate in-flight refresh responses before asking the server to revoke
+  // the session. This prevents a late refresh from reviving local auth state.
+  authGeneration += 1;
   const result = await unwrap<{ revoked: boolean }>(apiClient.post('/auth/logout', {}));
   // Only clear local state after server confirms logout success
   markAuthenticated(false);
