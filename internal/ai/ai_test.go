@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -753,6 +755,20 @@ func TestKnowledgeBaseCoversM4ReadinessTopics(t *testing.T) {
 		if !found {
 			t.Fatalf("query %q expected snippet %q, got %+v", query, wantID, items)
 		}
+	}
+}
+
+func TestKnowledgeBaseLoadsAdministratorManagedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "knowledge.json")
+	content := `[{"id":"custom-runbook","title":"Custom runbook","tags":["operations","custom"],"content":"Use the operator supplied runbook."}]`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write custom knowledge: %v", err)
+	}
+
+	kb := NewKnowledgeBase(config.AIKnowledgeConfig{Enabled: true, Builtin: true, File: path, MaxSnippets: 5})
+	results := kb.Search("custom runbook", 5)
+	if len(results) != 1 || results[0].ID != "custom-runbook" {
+		t.Fatalf("custom knowledge was not loaded: %+v", results)
 	}
 }
 

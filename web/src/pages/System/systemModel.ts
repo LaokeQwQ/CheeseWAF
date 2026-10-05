@@ -44,6 +44,7 @@ export const fallbackSystem: SystemConfig = {
           pow_max_number: 12000,
         },
       },
+      session_ttl: 24 * 60 * 60 * second,
       security_entry: { enabled: false, path: '/__cheesewaf-entry', cookie_name: 'cheesewaf_admin_entry' },
       background: { enabled: false, type: 'auto', url: '' },
       copyright: 'Copyright © CheeseWAF. All rights reserved.',
@@ -69,7 +70,7 @@ export const fallbackSystem: SystemConfig = {
     admin_listen: '127.0.0.1:9443',
     admin_public: false,
     admin_tls: { enabled: false, cert_file: './data/certs/admin.crt', key_file: './data/certs/admin.key', self_signed: true },
-    read_timeout: 15 * second,
+    read_timeout: 10 * second,
     write_timeout: 30 * second,
     idle_timeout: 60 * second,
     http3: { enabled: false, zero_rtt: false },
@@ -78,9 +79,9 @@ export const fallbackSystem: SystemConfig = {
   storage: {
     sqlite: { path: './data/cheesewaf.db' },
     redis: { enabled: false, address: '127.0.0.1:6379' },
-    clickhouse: { enabled: false, endpoint: '', allow_private_endpoint: false, database: 'cheesewaf', table: 'waf_logs', username: '', password: '', timeout: 5 * second },
-    victorialogs: { enabled: false, endpoint: '', allow_private_endpoint: false, timeout: 5 * second },
-    postgresql: { enabled: false, dsn: '', table: 'waf_logs', timeout: 5 * second },
+    clickhouse: { enabled: false, endpoint: '', allow_private_endpoint: false, database: 'default', table: 'cheesewaf_logs', username: '', password: '', timeout: 10 * second },
+    victorialogs: { enabled: false, endpoint: '', allow_private_endpoint: false, timeout: 10 * second },
+    postgresql: { enabled: false, dsn: '', table: 'cheesewaf_logs', timeout: 10 * second },
     elasticsearch: { enabled: false, endpoint: '', allow_private_endpoint: false, index: 'cheesewaf-logs', username: '', password: '', api_key: '', headers: {}, timeout: 5 * second },
   },
   logging: { level: 'info', format: 'json', output: { type: 'file', file: { path: './logs/access.log', max_size: '100MB', max_backups: 10 } } },
@@ -129,6 +130,7 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
       login: {
         ...fallbackSystem.console.login,
         ...next.console?.login,
+        session_ttl: next.console?.login?.session_ttl ?? fallbackSystem.console.login.session_ttl,
         captcha: {
           ...fallbackSystem.console.login.captcha,
           ...next.console?.login?.captcha,

@@ -76,3 +76,23 @@ func TestAdaptiveCaptureWriterDisableBufferingCommitsOnHeaders(t *testing.T) {
 		t.Fatalf("streamed body = %q", got)
 	}
 }
+
+func TestAdaptiveCaptureWriterSyncsPostCommitTrailers(t *testing.T) {
+	destination := httptest.NewRecorder()
+	writer := NewAdaptiveCaptureWriter(destination, 8<<20)
+	writer.Header().Set("Trailer", "Grpc-Status, Grpc-Message")
+	writer.DisableBuffering()
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte("grpc body"))
+	writer.Header().Set("Grpc-Status", "0")
+	writer.Header().Set("Grpc-Message", "ok")
+	writer.SyncPostCommitHeaders()
+
+	response := destination.Result()
+	if got := response.Trailer.Get("Grpc-Status"); got != "0" {
+		t.Fatalf("grpc-status trailer = %q, want 0", got)
+	}
+	if got := response.Trailer.Get("Grpc-Message"); got != "ok" {
+		t.Fatalf("grpc-message trailer = %q, want ok", got)
+	}
+}

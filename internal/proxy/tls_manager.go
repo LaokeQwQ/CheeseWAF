@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
@@ -236,6 +237,12 @@ func siteTLSCertificate(site config.SiteConfig) (*tls.Certificate, error) {
 
 func normalizeSNI(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	} else {
+		value = strings.TrimPrefix(value, "[")
+		value = strings.TrimSuffix(value, "]")
+	}
 	value = strings.TrimSuffix(value, ".")
-	return strings.Split(value, ":")[0]
+	return value
 }

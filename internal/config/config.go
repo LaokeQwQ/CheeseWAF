@@ -294,6 +294,9 @@ type ConsoleLoginConfig struct {
 	Copyright string `yaml:"copyright" json:"copyright"`
 	// ShowProductVersion controls the "CheeseWAF vX.Y" line under copyright.
 	ShowProductVersion *bool `yaml:"show_product_version" json:"show_product_version"`
+	// SessionTTL controls browser/API admin session lifetime. Zero keeps the
+	// secure 24-hour default for backwards-compatible configurations.
+	SessionTTL time.Duration `yaml:"session_ttl" json:"session_ttl"`
 }
 
 type LoginCAPTCHAConfig struct {
@@ -883,13 +886,16 @@ type FileLogConfig struct {
 }
 
 type ACMEConfig struct {
-	Enabled       bool                    `yaml:"enabled" json:"enabled"`
-	ACMESHPath    string                  `yaml:"acme_sh_path" json:"acme_sh_path"`
-	Home          string                  `yaml:"home" json:"home"`
-	Server        string                  `yaml:"server" json:"server"`
-	AccountEmail  string                  `yaml:"account_email" json:"account_email"`
-	CertDir       string                  `yaml:"cert_dir" json:"cert_dir"`
-	KeyType       string                  `yaml:"key_type" json:"key_type"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	ACMESHPath   string `yaml:"acme_sh_path" json:"acme_sh_path"`
+	Home         string `yaml:"home" json:"home"`
+	Server       string `yaml:"server" json:"server"`
+	AccountEmail string `yaml:"account_email" json:"account_email"`
+	CertDir      string `yaml:"cert_dir" json:"cert_dir"`
+	KeyType      string `yaml:"key_type" json:"key_type"`
+	// RenewAfter controls when an issued certificate becomes eligible for
+	// renewal metadata. The issuer keeps a conservative default when unset.
+	RenewAfter    time.Duration           `yaml:"renew_after" json:"renew_after"`
 	ReloadCommand string                  `yaml:"reload_command" json:"reload_command"`
 	DNSProviders  []ACMEDNSProviderConfig `yaml:"dns_providers" json:"dns_providers"`
 	Notify        bool                    `yaml:"notify" json:"notify"`
@@ -921,10 +927,18 @@ type AIConfig struct {
 	BalancePath         string                `yaml:"balance_path" json:"balance_path"`
 	UsagePath           string                `yaml:"usage_path" json:"usage_path"`
 	ConfiguredCatalog   []AIModelCatalogEntry `yaml:"configured_catalog" json:"configured_catalog"`
-	Assistant           AIModelConfig         `yaml:"assistant" json:"assistant"`
-	Reasoning           AIModelConfig         `yaml:"reasoning" json:"reasoning"`
-	SelfLearning        AISelfLearningConfig  `yaml:"self_learning" json:"self_learning"`
-	Knowledge           AIKnowledgeConfig     `yaml:"knowledge" json:"knowledge"`
+	// Request limits bound paid AI work per authenticated principal. Zero uses
+	// conservative built-in defaults; operators may tune them within validator
+	// ceilings without changing application code.
+	MaxRequests  int                  `yaml:"max_requests" json:"max_requests"`
+	MaxInFlight  int                  `yaml:"max_in_flight" json:"max_in_flight"`
+	MaxSubjects  int                  `yaml:"max_subjects" json:"max_subjects"`
+	RateWindow   time.Duration        `yaml:"rate_window" json:"rate_window"`
+	SubjectTTL   time.Duration        `yaml:"subject_ttl" json:"subject_ttl"`
+	Assistant    AIModelConfig        `yaml:"assistant" json:"assistant"`
+	Reasoning    AIModelConfig        `yaml:"reasoning" json:"reasoning"`
+	SelfLearning AISelfLearningConfig `yaml:"self_learning" json:"self_learning"`
+	Knowledge    AIKnowledgeConfig    `yaml:"knowledge" json:"knowledge"`
 }
 
 type AIModelConfig struct {
@@ -973,6 +987,9 @@ type AIKnowledgeConfig struct {
 	Enabled     bool `yaml:"enabled" json:"enabled"`
 	Builtin     bool `yaml:"builtin" json:"builtin"`
 	MaxSnippets int  `yaml:"max_snippets" json:"max_snippets"`
+	// File optionally points to an administrator-managed JSON knowledge file.
+	// When set, it replaces the bundled knowledge snippets at runtime.
+	File string `yaml:"file" json:"file"`
 }
 
 func (cfg AIConfig) AssistantRuntimeConfig() AIConfig {

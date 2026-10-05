@@ -12,7 +12,7 @@ export default function APISecurityPage() {
   const [hasValidated, setHasValidated] = useState(false);
   const [ignoredEndpoints, setIgnoredEndpoints] = useState<Set<string>>(new Set());
   const [method, setMethod] = useState('GET');
-  const [path, setPath] = useState('/api/search');
+  const [path, setPath] = useState('');
   const [query, setQuery] = useState('');
   const [headers, setHeaders] = useState('');
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
@@ -48,6 +48,10 @@ export default function APISecurityPage() {
 
   function onValidate(event: FormEvent) {
     event.preventDefault();
+    if (!path.trim()) {
+      toast.error(t('apisec.pathRequired'));
+      return;
+    }
     validateMutation.mutate({
       method,
       path,
@@ -185,7 +189,7 @@ export default function APISecurityPage() {
             </div>
             <div className="space-y-1.5">
               <Label>{t('apisec.path')}</Label>
-              <Input placeholder="/api/search" value={path} onChange={(e) => setPath(e.target.value)} />
+              <Input placeholder="/api/search" value={path} onChange={(e) => setPath(e.target.value)} required />
             </div>
             <div className="space-y-1.5">
               <Label>{t('apisec.query')}</Label>

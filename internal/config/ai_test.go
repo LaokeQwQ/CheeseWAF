@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAIConfigLegacyFieldsRemainAssistantFallback(t *testing.T) {
@@ -107,5 +108,28 @@ func TestValidateRejectsEscapingAIProviderPathsAndUnknownCatalogEffort(t *testin
 	}}
 	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "reasoning_efforts") {
 		t.Fatalf("expected catalog reasoning effort validation error, got %v", err)
+	}
+}
+
+func TestValidateAIRequestLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"negative requests", func(cfg *Config) { cfg.AI.MaxRequests = -1 }, "ai.max_requests"},
+		{"too many in flight", func(cfg *Config) { cfg.AI.MaxInFlight = 257 }, "ai.max_in_flight"},
+		{"too many subjects", func(cfg *Config) { cfg.AI.MaxSubjects = 1_000_001 }, "ai.max_subjects"},
+		{"short window", func(cfg *Config) { cfg.AI.RateWindow = 500 * time.Millisecond }, "ai.rate_window"},
+		{"long subject ttl", func(cfg *Config) { cfg.AI.SubjectTTL = 8 * 24 * time.Hour }, "ai.subject_ttl"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(&cfg)
+			if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }

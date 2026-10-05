@@ -20,6 +20,21 @@ func TestParseMinTLSVersion(t *testing.T) {
 	}
 }
 
+func TestNormalizeSNIPreservesIPv6Literals(t *testing.T) {
+	cases := map[string]string{
+		"[2001:db8::1]":     "2001:db8::1",
+		"[2001:db8::1]:443": "2001:db8::1",
+		"2001:db8::1":       "2001:db8::1",
+		"example.test:443":  "example.test",
+		"Example.TEST.":     "example.test",
+	}
+	for input, want := range cases {
+		if got := normalizeSNI(input); got != want {
+			t.Errorf("normalizeSNI(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestSiteCertificateStoreAppliesSiteMinTLS(t *testing.T) {
 	store := &SiteCertificateStore{
 		minTLSByDomain: map[string]uint16{

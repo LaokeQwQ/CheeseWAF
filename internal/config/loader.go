@@ -18,6 +18,13 @@ import (
 
 const AdminSessionTTL = 24 * time.Hour
 
+func AdminSessionTTLFor(cfg *Config) time.Duration {
+	if cfg != nil && cfg.Console.Login.SessionTTL > 0 {
+		return cfg.Console.Login.SessionTTL
+	}
+	return AdminSessionTTL
+}
+
 func Default() Config {
 	return Config{
 		Deployment: DeploymentConfig{Mode: "standalone"},
@@ -79,6 +86,7 @@ func Default() Config {
 		},
 		Console: ConsoleConfig{
 			Login: ConsoleLoginConfig{
+				SessionTTL: AdminSessionTTL,
 				CAPTCHA: LoginCAPTCHAConfig{
 					Enabled:   true,
 					Mode:      "slider",
@@ -296,6 +304,7 @@ func Default() Config {
 			AccountEmail:  "",
 			CertDir:       "./data/certs",
 			KeyType:       "ec-256",
+			RenewAfter:    60 * 24 * time.Hour,
 			ReloadCommand: "",
 			DNSProviders:  []ACMEDNSProviderConfig{},
 			Notify:        true,
@@ -316,6 +325,11 @@ func Default() Config {
 			Model:               "gpt-4o-mini",
 			MaxTokens:           4096,
 			Async:               true,
+			MaxRequests:         10,
+			MaxInFlight:         2,
+			MaxSubjects:         4096,
+			RateWindow:          time.Minute,
+			SubjectTTL:          10 * time.Minute,
 			AllowPrivateAPIBase: false,
 			Assistant:           AIModelConfig{},
 			Reasoning:           AIModelConfig{},
@@ -335,6 +349,7 @@ func Default() Config {
 				Enabled:     true,
 				Builtin:     true,
 				MaxSnippets: 5,
+				File:        "",
 			},
 		},
 		Update: UpdateConfig{
