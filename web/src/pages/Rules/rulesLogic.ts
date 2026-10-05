@@ -14,7 +14,7 @@ export function ruleTemplates(t: (key: string, options?: Record<string, unknown>
     { key: 'xss-script', label: t('rules.templateXSS'), pattern: '(?i)(?:<\\s*script|javascript:|on\\w+\\s*=|srcset\\s*=|formaction\\s*=)', description: t('rules.templateXSSHint') },
     { key: 'lfi', label: t('rules.templateLFI'), pattern: '(?i)(?:\\.\\./|\\.\\.\\\\|/etc/(?:passwd|shadow|hosts)|boot\\.ini|win\\.ini|proc/self)', description: t('rules.templateLFIHint') },
     { key: 'rce', label: t('rules.templateRCE'), pattern: '(?i)(?:;|\\|\\||&&|\\$\\()\\s*(?:cat|curl|wget|bash|sh|powershell|cmd|python|perl|php)\\b', description: t('rules.templateRCEHint') },
-    { key: 'ssrf-internal', label: t('rules.templateSSRF'), pattern: '(?i)(?:https?|gopher|dict|ftp)://(?:localhost|127\\.|10\\.|172\\.1[6-9]|172\\.2\\d|172\\.3[0-1]|192\\.168\\.|169\\.254)', description: t('rules.templateSSRFHint') },
+    { key: 'ssrf-internal', label: t('rules.templateSSRF'), pattern: '(?i)(?:https?|gopher|dict|ftp)://(?:localhost|0\\.0\\.0\\.0|127\\.|10\\.|172\\.(?:1[6-9]|2\\d|3[0-1])\\.|192\\.168\\.|169\\.254\\.|\\[?(?:::1|::ffff:127\\.|f[cd][0-9a-f:]*|fe80:[0-9a-f:]*)\\]?)', description: t('rules.templateSSRFHint') },
     { key: 'json-field', label: t('rules.templateJSONField'), pattern: '"(?:role|is_admin|permission|admin|root)"\\s*:\\s*(?:true|1|null)', description: t('rules.templateJSONFieldHint') },
     { key: 'header-auth', label: t('rules.templateAuthHeader'), pattern: '^(?:Bearer\\s+(?:ey|invalid)|Basic\\s+(?:test|admin):|Authorization:\\s*$)', description: t('rules.templateAuthHeaderHint') },
     { key: 'ua-bot', label: t('rules.templateBotUA'), pattern: '(?i)(?:sqlmap|nikto|nuclei|masscan|zgrab|dirbuster|burp|nessus)', description: t('rules.templateBotUAHint') },

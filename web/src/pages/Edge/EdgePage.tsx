@@ -36,11 +36,11 @@ const statusCodeChoices = ['2xx', '3xx', '4xx', '5xx', '200', '201', '204', '301
 
 const fallback: EdgeConfig = {
   headers: {
-    enabled: false,
-    rules: [],
+    enabled: true,
+    rules: [{ id: 'add-request-id', name: 'Add request marker', operation: 'set', header: 'X-CheeseWAF', value: 'edge', path_prefix: '', enabled: true }],
   },
-  cache: { enabled: false, mode: 'off', ttl: '', status_codes: [], path_prefixes: [], max_body_bytes: 0 },
-  compression: { enabled: false, algorithms: [], level: 0, min_bytes: 0, content_types: [] },
+  cache: { enabled: true, mode: 'public', ttl: '5m', status_codes: [200, 304], path_prefixes: ['/assets/', '/static/'], max_body_bytes: 2 * 1024 * 1024 },
+  compression: { enabled: true, algorithms: ['br', 'gzip'], level: 5, min_bytes: 1024, content_types: ['text/', 'application/json', 'application/javascript', 'application/xml', 'image/svg+xml'] },
 };
 
 export default function EdgePage() {
@@ -180,7 +180,7 @@ export default function EdgePage() {
   };
 
   const saveDraft = () => {
-    if (!isSuccess && !draft) {
+    if (!isSuccess) {
       return;
     }
     // Ensure latest form values are in draft
@@ -210,6 +210,7 @@ export default function EdgePage() {
 
   const saveCache = (event: FormEvent) => {
     event.preventDefault();
+    if (!isSuccess) return;
     const next: EdgeConfig = {
       ...edge,
       cache: {
@@ -228,6 +229,7 @@ export default function EdgePage() {
 
   const saveCompression = (event: FormEvent) => {
     event.preventDefault();
+    if (!isSuccess) return;
     const next: EdgeConfig = {
       ...edge,
       compression: {
@@ -284,7 +286,7 @@ export default function EdgePage() {
           <h1>{t('edge.title')}</h1>
           <p>{t('edge.subtitle')}</p>
         </div>
-        <Button onClick={saveDraft} loading={mutation.isPending} disabled={!isSuccess && !draft}>
+        <Button onClick={saveDraft} loading={mutation.isPending} disabled={!isSuccess}>
           {t('common.save')}
         </Button>
       </header>
@@ -386,7 +388,7 @@ export default function EdgePage() {
               />
               <span className="field-help">{t('edge.maxBodyHint')}</span>
             </div>
-            <div className="form-action-row"><Button type="submit">{t('common.save')}</Button></div>
+            <div className="form-action-row"><Button type="submit" disabled={!isSuccess || mutation.isPending}>{t('common.save')}</Button></div>
           </form>
         </section>
 
@@ -474,7 +476,7 @@ export default function EdgePage() {
               />
               <span className="field-help">{t('edge.typesHint')}</span>
             </div>
-            <div className="form-action-row"><Button type="submit">{t('common.save')}</Button></div>
+            <div className="form-action-row"><Button type="submit" disabled={!isSuccess || mutation.isPending}>{t('common.save')}</Button></div>
           </form>
         </section>
       </div>
@@ -484,7 +486,7 @@ export default function EdgePage() {
           <h2><ListPlus size={16} /> {t('edge.headers')}</h2>
           <div className="table-identity">
             <Button variant="outline" onClick={addHeader}><Plus size={14} />{t('common.add')}</Button>
-            <Button onClick={saveDraft} loading={mutation.isPending}>{t('common.save')}</Button>
+            <Button onClick={saveDraft} loading={mutation.isPending} disabled={!isSuccess}>{t('common.save')}</Button>
           </div>
         </div>
         {edge.headers.rules.length === 0 ? (

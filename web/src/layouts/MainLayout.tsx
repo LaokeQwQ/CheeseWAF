@@ -232,6 +232,8 @@ export default function MainLayout() {
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const notificationShellRef = useRef<HTMLDivElement | null>(null);
   const notificationTriggerRef = useRef<HTMLSpanElement | null>(null);
+  const mobileNavRef = useRef<HTMLElement | null>(null);
+  const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
   const searchBlurTimerRef = useRef<number | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const shellClassName = [
@@ -328,6 +330,12 @@ export default function MainLayout() {
     if (!mobileNavOpen) {
       return undefined;
     }
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const nav = mobileNavRef.current;
+    const focusable = nav?.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    focusable?.[0]?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -335,10 +343,26 @@ export default function MainLayout() {
         setMobileNavOpen(false);
       }
     };
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !focusable || focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('keydown', trapFocus);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('keydown', trapFocus);
+      if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
+      else mobileNavTriggerRef.current?.focus();
     };
   }, [mobileNavOpen]);
 
@@ -485,7 +509,17 @@ export default function MainLayout() {
 
   return (
     <div className={shellClassName}>
-      <aside className="app-sidebar">
+      <a className="skip-link" href="#main-content">
+        {t('common.skipToContent')}
+      </a>
+      <aside
+        ref={mobileNavRef}
+        id="cheesewaf-mobile-nav"
+        className="app-sidebar"
+        role={mobileNavOpen ? 'dialog' : undefined}
+        aria-modal={mobileNavOpen ? true : undefined}
+        aria-label={mobileNavOpen ? t('common.primaryNav') : undefined}
+      >
         <div className="brand-row">
           <button className="brand-mark" type="button" aria-label={t('common.home')} onClick={() => navigate('/')}>
             <BrandLogo />
@@ -504,7 +538,8 @@ export default function MainLayout() {
                 <button
                   type="button"
                   className="nav-group-heading"
-                  aria-expanded={!collapsed}
+                  aria-controls={`nav-group-${group.labelKey.replace(/[^a-z0-9]+/gi, '-')}`}
+                  aria-expanded={sidebarCollapsed || !collapsed}
                   onClick={() =>
                     setCollapsedGroups((prev) => ({
                       ...prev,
@@ -514,7 +549,12 @@ export default function MainLayout() {
                 >
                   <span>{t(group.labelKey)}</span>
                 </button>
-                <div className={collapsed ? 'nav-group-items nav-group-collapsed' : 'nav-group-items'}>
+                <div
+                  id={`nav-group-${group.labelKey.replace(/[^a-z0-9]+/gi, '-')}`}
+                  className={collapsed ? 'nav-group-items nav-group-collapsed' : 'nav-group-items'}
+                  aria-hidden={collapsed && !sidebarCollapsed ? true : undefined}
+                  inert={collapsed && !sidebarCollapsed ? true : undefined}
+                >
                   {group.items.map((item) => {
                     const Icon = item.icon;
                     const active = currentKey === item.key;
@@ -523,6 +563,7 @@ export default function MainLayout() {
                         key={item.key}
                         to={item.key}
                         className={active ? 'nav-item nav-item-active' : 'nav-item'}
+                        aria-current={active ? 'page' : undefined}
                         onClick={() => setMobileNavOpen(false)}
                         onMouseEnter={() => preloadRoute(item.key)}
                         onFocus={() => preloadRoute(item.key)}
@@ -572,10 +613,12 @@ export default function MainLayout() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  ref={mobileNavTriggerRef}
                   className="icon-button"
                   size="icon"
                   variant="outline"
                   aria-expanded={mobileNavOpen}
+                  aria-controls="cheesewaf-mobile-nav"
                   aria-label={sidebarToggleLabel}
                   onClick={() => {
                     if (window.matchMedia('(max-width: 1024px)').matches) {
@@ -603,8 +646,11 @@ export default function MainLayout() {
                 className="pl-9 pr-8"
                 placeholder={t('common.search')}
                 aria-label={t('common.search')}
+                role="combobox"
+                aria-autocomplete="list"
                 aria-controls={searchOpen ? 'cheesewaf-search-results' : undefined}
                 aria-expanded={searchOpen}
+                aria-activedescendant={searchOpen && searchResults[searchHighlight] ? `cheesewaf-search-option-${searchHighlight}` : undefined}
                 value={searchValue}
                 onChange={(event) => {
                   const value = event.target.value;
@@ -676,6 +722,7 @@ export default function MainLayout() {
                     key={item.key}
                     type="button"
                     role="option"
+                    id={`cheesewaf-search-option-${index}`}
                     aria-selected={index === searchHighlight}
                     className={index === searchHighlight ? 'topbar-search-result topbar-search-result-active' : 'topbar-search-result'}
                     onMouseDown={(event) => event.preventDefault()}
@@ -738,6 +785,7 @@ export default function MainLayout() {
                     }}
                     onMarkAllRead={markAllNotificationsRead}
                     onClearAll={clearAllNotifications}
+                    onClose={() => setNotificationsOpen(false)}
                     onToggleRead={toggleNotificationRead}
                     onTogglePin={toggleNotificationPin}
                     onOpen={(item) => {
@@ -799,7 +847,7 @@ export default function MainLayout() {
           </div>
         </header>
 
-        <main className="workspace">
+        <main id="main-content" className="workspace" tabIndex={-1}>
           <Outlet />
         </main>
         {showGlobalAssistant && <AIAssistantEntry />}
@@ -848,6 +896,7 @@ export function NotificationPanel({
   onOpen,
   onMarkAllRead,
   onClearAll,
+  onClose,
   onToggleRead,
   onTogglePin,
 }: {
@@ -869,6 +918,7 @@ export function NotificationPanel({
   onOpen: (item: Notification) => void;
   onMarkAllRead: () => void;
   onClearAll: () => void;
+  onClose?: () => void;
   onToggleRead: (item: Notification) => void;
   onTogglePin: (item: Notification) => void;
 }) {
@@ -892,6 +942,9 @@ export function NotificationPanel({
     >
       <header>
         <strong>{t('shell.notifications')}</strong>
+        <Button type="button" variant="ghost" size="icon" className="notification-close" aria-label={t('common.close')} onClick={onClose}>
+          <X size={16} />
+        </Button>
         <Badge variant={unread > 0 ? 'warning' : 'success'}>
           {total ? t('shell.notificationPanelSummary', { unread, total }) : t('common.healthy')}
         </Badge>
@@ -903,8 +956,24 @@ export function NotificationPanel({
               key={option.key}
               type="button"
               role="tab"
+              id={`notification-tab-${option.key}`}
+              aria-controls="notification-tabpanel"
               className={filter === option.key ? 'notification-filter-active' : ''}
               aria-selected={filter === option.key}
+              tabIndex={filter === option.key ? 0 : -1}
+              onKeyDown={(event) => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const currentIndex = filterOptions.findIndex((item) => item.key === option.key);
+                const nextIndex = event.key === 'Home'
+                  ? 0
+                  : event.key === 'End'
+                    ? filterOptions.length - 1
+                    : (currentIndex + (event.key === 'ArrowLeft' ? -1 : 1) + filterOptions.length) % filterOptions.length;
+                const next = filterOptions[nextIndex];
+                onFilterChange(next.key);
+                requestAnimationFrame(() => document.getElementById(`notification-tab-${next.key}`)?.focus());
+              }}
               onClick={() => onFilterChange(option.key)}
             >
               {option.label}
@@ -922,7 +991,7 @@ export function NotificationPanel({
           </Button>
         </div>
       )}
-      <div className="notification-list">
+      <div id="notification-tabpanel" className="notification-list" role={total > 0 ? 'tabpanel' : undefined} aria-labelledby={total > 0 ? `notification-tab-${filter}` : undefined} tabIndex={total > 0 ? 0 : undefined}>
         {error ? (
           <div className="notification-empty">
             <span>{t('shell.notificationLoadFailed')}</span>

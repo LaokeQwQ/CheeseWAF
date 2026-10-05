@@ -581,23 +581,28 @@ export default function SetupPage() {
     const usernameMessage = usernameError(username, t);
     if (usernameMessage) {
       toast.error(usernameMessage);
+      requestAnimationFrame(() => document.getElementById('setup-username')?.focus());
       return;
     }
     if (!account.password) {
       toast.error(t('setup.passwordRequired'));
+      requestAnimationFrame(() => document.getElementById('setup-password')?.focus());
       return;
     }
     const policyKey = passwordPolicyErrorKey(account.password, username);
     if (policyKey) {
       toast.error(t(`passwordPolicy.${policyKey}`));
+      requestAnimationFrame(() => document.getElementById('setup-password')?.focus());
       return;
     }
     if (!account.confirm) {
       toast.error(t('setup.passwordConfirmRequired'));
+      requestAnimationFrame(() => document.getElementById('setup-password-confirm')?.focus());
       return;
     }
     if (account.confirm !== account.password) {
       toast.error(t('setup.passwordMismatch'));
+      requestAnimationFrame(() => document.getElementById('setup-password-confirm')?.focus());
       return;
     }
 
@@ -808,6 +813,8 @@ export default function SetupPage() {
     field: 'password' | 'confirm',
     shown: boolean,
     onToggle: () => void,
+    describedBy?: string,
+    invalid?: boolean,
   ) {
     return (
       <div className="relative">
@@ -820,6 +827,8 @@ export default function SetupPage() {
           value={account[field]}
           onChange={(event) => setAccount((prev) => ({ ...prev, [field]: event.target.value }))}
           onBlur={() => setTouched((prev) => ({ ...prev, [field]: true }))}
+          aria-invalid={invalid || undefined}
+          aria-describedby={describedBy}
         />
         <button
           type="button"
@@ -852,6 +861,7 @@ export default function SetupPage() {
           <button
             type="button"
             className="setup-integration-summary"
+            aria-controls={`setup-integration-panel-${id}`}
             aria-expanded={enabled && expanded}
             onClick={() => {
               if (!enabled) onToggle(true);
@@ -868,6 +878,7 @@ export default function SetupPage() {
             <button
               type="button"
               className="setup-integration-expand-button"
+              aria-controls={`setup-integration-panel-${id}`}
               aria-expanded={enabled && expanded}
               aria-label={`${title} · ${expanded ? t('setup.integrationsCollapse') : t('setup.integrationsExpand')}`}
               onClick={() => {
@@ -889,7 +900,7 @@ export default function SetupPage() {
           </div>
         </div>
         {enabled ? (
-          <div className={`setup-integration-panel${expanded ? ' is-open' : ''}`} aria-hidden={!expanded}>
+          <div id={`setup-integration-panel-${id}`} className={`setup-integration-panel${expanded ? ' is-open' : ''}`} aria-hidden={!expanded} inert={!expanded}>
             <div className="setup-integration-fields grid gap-3">{fields}</div>
           </div>
         ) : null}
@@ -1264,10 +1275,11 @@ export default function SetupPage() {
                 onChange={(event) => setAccount((prev) => ({ ...prev, username: event.target.value }))}
                 onBlur={() => setTouched((prev) => ({ ...prev, username: true }))}
                 aria-invalid={usernameVisibleError ? true : undefined}
+                aria-describedby={usernameVisibleError ? 'setup-username-error setup-username-hint' : 'setup-username-hint'}
               />
-              <p className="text-xs text-muted-foreground">{t('setup.usernameFormat')}</p>
+              <p id="setup-username-hint" className="text-xs text-muted-foreground">{t('setup.usernameFormat')}</p>
               {usernameVisibleError ? (
-                <p className="text-xs text-destructive" role="alert">
+                <p id="setup-username-error" className="text-xs text-destructive" role="alert">
                   {usernameVisibleError}
                 </p>
               ) : null}
@@ -1275,7 +1287,7 @@ export default function SetupPage() {
 
             <div className="grid gap-1.5">
               <Label htmlFor="setup-password">{t('setup.password')}</Label>
-              {renderPasswordField('setup-password', 'password', showPassword, () => setShowPassword((v) => !v))}
+              {renderPasswordField('setup-password', 'password', showPassword, () => setShowPassword((v) => !v), passwordVisibleError ? 'setup-password-error setup-password-hint' : 'setup-password-hint', Boolean(passwordVisibleError))}
               <div
                 className="setup-password-strength"
                 role="progressbar"
@@ -1283,6 +1295,7 @@ export default function SetupPage() {
                 aria-valuemin={0}
                 aria-valuemax={4}
                 aria-valuenow={score}
+                aria-valuetext={t(STRENGTH_KEYS[score])}
               >
                 <span
                   className={`setup-password-strength-fill ${STRENGTH_BAR_STYLES[score] ?? 'bg-muted'}`}
@@ -1295,15 +1308,15 @@ export default function SetupPage() {
                 {': '}
                 <span className="font-medium">{t(STRENGTH_KEYS[score])}</span>
               </p>
-              <p className="text-xs text-muted-foreground">{t('users.passwordHint')}</p>
+              <p id="setup-password-hint" className="text-xs text-muted-foreground">{t('users.passwordHint')}</p>
               {passwordVisibleError ? (
-                <p className="text-xs text-destructive" role="alert">{t(passwordVisibleError)}</p>
+                <p id="setup-password-error" className="text-xs text-destructive" role="alert">{t(passwordVisibleError)}</p>
               ) : null}
             </div>
 
             <div className="grid gap-1.5">
               <Label htmlFor="setup-password-confirm">{t('setup.passwordConfirm')}</Label>
-              {renderPasswordField('setup-password-confirm', 'confirm', showConfirm, () => setShowConfirm((v) => !v))}
+              {renderPasswordField('setup-password-confirm', 'confirm', showConfirm, () => setShowConfirm((v) => !v), confirmVisibleError && confirmVisibleError !== t('setup.passwordMatch') ? 'setup-password-confirm-error' : undefined, Boolean(confirmVisibleError && confirmVisibleError !== t('setup.passwordMatch')))}
               {confirmVisibleError ? (
                 <p
                   className={
@@ -1313,7 +1326,7 @@ export default function SetupPage() {
                   }
                   role={confirmVisibleError === t('setup.passwordMatch') ? undefined : 'alert'}
                 >
-                  {confirmVisibleError}
+                  <span id="setup-password-confirm-error">{confirmVisibleError}</span>
                 </p>
               ) : null}
             </div>

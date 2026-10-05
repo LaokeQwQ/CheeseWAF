@@ -46,6 +46,7 @@ import { displayCountry } from '../../utils/display';
 import { useAppStore } from '../../stores';
 import { resolveTheme } from '../../themes';
 import type { ThemeName } from '../../themes/tokens';
+import { initialGlobePerformanceState, updateGlobePerformance } from './globePerformance';
 
 type GlobeMapProps = {
   regions: AttackRegion[];
@@ -173,7 +174,9 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     }
     const isTouch = window.matchMedia('(pointer: coarse)').matches;
     const prefersReducedData = window.matchMedia?.('(prefers-reduced-data: reduce)').matches ?? false;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, prefersReducedData ? 1.12 : (isTouch ? 1.28 : 1.55)));
+    let basePixelRatio = Math.min(window.devicePixelRatio, prefersReducedData ? 1.12 : (isTouch ? 1.28 : 1.55));
+    let adaptivePixelRatio = basePixelRatio;
+    renderer.setPixelRatio(adaptivePixelRatio);
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.06;
@@ -478,6 +481,9 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const startedAt = performance.now();
     let lastFrameAt = startedAt;
     let frame = 0;
+    let performanceWindowStartedAt = startedAt;
+    let performanceWindowFrames = 0;
+    let performanceState = initialGlobePerformanceState;
     const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     let hidden = document.visibilityState === 'hidden';
     let reducedMotion = motionQuery.matches;
@@ -493,6 +499,27 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
       if (hidden) {
         lastFrameAt = now;
         return;
+      }
+      performanceWindowFrames += 1;
+      const performanceWindowElapsed = now - performanceWindowStartedAt;
+      if (performanceWindowElapsed >= 1000) {
+        const performanceUpdate = updateGlobePerformance(
+          performanceState,
+          (performanceWindowFrames * 1000) / performanceWindowElapsed,
+          basePixelRatio,
+        );
+        performanceState = performanceUpdate;
+        performanceWindowStartedAt = now;
+        performanceWindowFrames = 0;
+        if (performanceUpdate.pixelRatio !== adaptivePixelRatio) {
+          adaptivePixelRatio = performanceUpdate.pixelRatio;
+          renderer.setPixelRatio(adaptivePixelRatio);
+          resize();
+        }
+        if (starField.visible === performanceUpdate.hideStarField) {
+          starField.visible = !performanceUpdate.hideStarField;
+          runtime.render();
+        }
       }
       const delta = Math.min((now - lastFrameAt) / 1000, 0.05);
       const elapsed = (now - startedAt) / 1000;
@@ -536,11 +563,13 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     const updatePause = () => {
       hidden = document.visibilityState === 'hidden';
       reducedMotion = motionQuery.matches;
+      performanceWindowStartedAt = performance.now();
+      performanceWindowFrames = 0;
       if (hidden) {
         stopFrame();
         return;
       }
-      lastFrameAt = performance.now();
+      lastFrameAt = performanceWindowStartedAt;
       requestFrame();
     };
     document.addEventListener('visibilitychange', updatePause);
@@ -550,7 +579,11 @@ export default function GlobeMap({ regions, zoom, countryLevels, worldFeatures, 
     // Re-render when devicePixelRatio changes (e.g. browser zoom / monitor switch).
     let dprQuery: MediaQueryList | null = null;
     const applyDevicePixelRatio = () => {
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, prefersReducedData ? 1.12 : (isTouch ? 1.28 : 1.55)));
+      basePixelRatio = Math.min(window.devicePixelRatio, prefersReducedData ? 1.12 : (isTouch ? 1.28 : 1.55));
+      adaptivePixelRatio = basePixelRatio;
+      performanceState = initialGlobePerformanceState;
+      starField.visible = true;
+      renderer.setPixelRatio(adaptivePixelRatio);
       resize();
     };
     const bindDprQuery = () => {

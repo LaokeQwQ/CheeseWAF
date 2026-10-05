@@ -33,6 +33,7 @@ type DurationUnit = 's' | 'm' | 'h' | 'd';
 type ByteUnit = 'KB' | 'MB' | 'GB';
 
 const acmeStepOrder = ['validate', 'prepare', 'account', 'dns_create', 'issue', 'deploy', 'dns_cleanup', 'notify'];
+const CUSTOM_ACME_SERVER = 'custom';
 
 export default function SiteDetailPage() {
   const { t } = useTranslation();
@@ -1070,15 +1071,19 @@ function ACMEWizard({
             </label>
             <label>
               <span>{t('sites.acmeServer')}</span>
-              <Select value={acme.server || 'letsencrypt'} onValueChange={(server) => onPatchACME({ server })}>
+              <Select value={acme.server && !['letsencrypt', 'zerossl', 'https://acme-v02.api.letsencrypt.org/directory', 'https://acme-staging-v02.api.letsencrypt.org/directory'].includes(acme.server) ? CUSTOM_ACME_SERVER : (acme.server || 'letsencrypt')} onValueChange={(server) => onPatchACME({ server: server === CUSTOM_ACME_SERVER ? (acme.server && !['letsencrypt', 'zerossl', 'https://acme-v02.api.letsencrypt.org/directory', 'https://acme-staging-v02.api.letsencrypt.org/directory'].includes(acme.server) ? acme.server : '') : server })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="letsencrypt">Let&apos;s Encrypt</SelectItem>
                   <SelectItem value="zerossl">ZeroSSL</SelectItem>
                   <SelectItem value="https://acme-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt API</SelectItem>
                   <SelectItem value="https://acme-staging-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt Staging</SelectItem>
+                  <SelectItem value={CUSTOM_ACME_SERVER}>{t('system.acmeServerCustom')}</SelectItem>
                 </SelectContent>
               </Select>
+              {(acme.server === '' || (acme.server && !['letsencrypt', 'zerossl', 'https://acme-v02.api.letsencrypt.org/directory', 'https://acme-staging-v02.api.letsencrypt.org/directory'].includes(acme.server))) && (
+                <Input className="mt-2" value={acme.server} placeholder={t('system.acmeServerCustomPlaceholder')} aria-label={t('system.acmeServerCustom')} onChange={(event) => onPatchACME({ server: event.target.value })} />
+              )}
             </label>
             <label>
               <span>{t('sites.acmeKeyType')}</span>

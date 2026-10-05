@@ -48,7 +48,6 @@ const CAPTCHA_USERNAME_DEBOUNCE_MS = 300;
 const CAPTCHA_RETRY_DELAY_MS = 1000;
 const CAPTCHA_RETRY_MAX_FAILURES = 4;
 const CAPTCHA_RETRY_MAX_DELAY_MS = 4000;
-let captchaRetryFailures = 0;
 
 export default function LoginPage() {
   const { t } = useTranslation();
@@ -60,6 +59,7 @@ export default function LoginPage() {
   const setLanguage = useAppStore((state) => state.setLanguage);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [invalidField, setInvalidField] = useState<'username' | 'password' | 'totp' | null>(null);
   const [success, setSuccess] = useState('');
   const [requires2FA, setRequires2FA] = useState(false);
   const [username, setUsername] = useState('');
@@ -97,6 +97,7 @@ export default function LoginPage() {
   const captchaIssueControllerRef = useRef<AbortController | null>(null);
   const captchaVerifyControllerRef = useRef<AbortController | null>(null);
   const captchaPowControllerRef = useRef<AbortController | null>(null);
+  const captchaRetryFailuresRef = useRef(0);
   const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
   // Session is cookie-based; do not gate the UI on localStorage tokens.
   const token = null as string | null;
@@ -157,6 +158,8 @@ export default function LoginPage() {
     cancelCaptchaWork(true);
     setCaptchaModalOpen(false);
     setCaptchaState(options?.captcha.enabled && isLoginUsernameReady(value) ? 'loading' : options?.captcha.enabled ? 'ready' : 'disabled');
+    setInvalidField(null);
+    setError('');
     setUsername(value);
   }, [cancelCaptchaWork, options?.captcha.enabled, username]);
 
@@ -190,7 +193,7 @@ export default function LoginPage() {
     setPowPayload(null);
     setSlider(response.slider ?? null);
     resetSlider();
-    captchaRetryFailures = 0;
+    captchaRetryFailuresRef.current = 0;
     setCaptchaState('ready');
   }, [resetSlider, t]);
 
@@ -411,17 +414,22 @@ export default function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setError('');
+    setInvalidField(null);
     setSuccess('');
     try {
       const submittedUsername = normalizeLoginUsername(username);
       const usernameIssue = usernameValidationError(submittedUsername);
       if (usernameIssue) {
+        setInvalidField('username');
+        requestAnimationFrame(() => document.getElementById('login-username')?.focus());
         setError(usernameIssue === 'whitespace'
           ? localizedLoginText(t, 'login.usernameWhitespace', 'Username must not contain whitespace or invisible characters. Re-enter it without them.')
           : localizedLoginText(t, usernameIssue === 'required' ? 'login.usernameRequired' : 'login.usernameInvalid', 'Enter a valid username.'));
         return;
       }
       if (!password) {
+        setInvalidField('password');
+        requestAnimationFrame(() => document.getElementById('login-password')?.focus());
         setError(t('login.passwordRequired'));
         return;
       }
@@ -460,6 +468,8 @@ export default function LoginPage() {
     } catch (err) {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
+        setInvalidField('totp');
+        requestAnimationFrame(() => document.getElementById('login-totp')?.focus());
         setError(t('login.totpRequired'));
         toast.warning(t('login.totpRequired'));
         await refreshCaptcha(false);
@@ -650,13 +660,13 @@ export default function LoginPage() {
       window.clearTimeout(captchaRefreshTimerRef.current);
       captchaRefreshTimerRef.current = null;
     }
-    if (captchaRetryFailures >= CAPTCHA_RETRY_MAX_FAILURES) {
+    if (captchaRetryFailuresRef.current >= CAPTCHA_RETRY_MAX_FAILURES) {
       setCaptchaState('error');
       setError(localizedLoginText(t, 'login.captchaUnavailable', 'Verification is unavailable. Please try again.'));
       return;
     }
-    const delay = Math.min(CAPTCHA_RETRY_DELAY_MS * (1 << captchaRetryFailures), CAPTCHA_RETRY_MAX_DELAY_MS);
-    captchaRetryFailures += 1;
+    const delay = Math.min(CAPTCHA_RETRY_DELAY_MS * (1 << captchaRetryFailuresRef.current), CAPTCHA_RETRY_MAX_DELAY_MS);
+    captchaRetryFailuresRef.current += 1;
     captchaRefreshTimerRef.current = window.setTimeout(() => {
       captchaRefreshTimerRef.current = null;
       void refreshCaptcha();
@@ -783,6 +793,8 @@ export default function LoginPage() {
                   id="login-username"
                   className="pl-9"
                   autoComplete="username"
+                  aria-invalid={invalidField === 'username'}
+                  aria-describedby={invalidField === 'username' && error ? 'login-error' : undefined}
                   value={username}
                   onChange={(event) => handleUsernameChange(event.target.value)}
                 />
@@ -797,6 +809,8 @@ export default function LoginPage() {
                   type="password"
                   className="pl-9"
                   autoComplete="current-password"
+                  aria-invalid={invalidField === 'password'}
+                  aria-describedby={invalidField === 'password' && error ? 'login-error' : undefined}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                 />
@@ -813,6 +827,8 @@ export default function LoginPage() {
                     maxLength={6}
                     inputMode="numeric"
                     autoComplete="one-time-code"
+                    aria-invalid={invalidField === 'totp'}
+                    aria-describedby={invalidField === 'totp' && error ? 'login-error' : undefined}
                     value={totpCode}
                     onChange={(event) => setTotpCode(event.target.value)}
                   />
@@ -845,7 +861,7 @@ export default function LoginPage() {
                 {t('login.submit')}
               </Button>
             </div>
-            {error && <p className="form-error" role="alert">{error}</p>}
+            {error && <p id="login-error" className="form-error" role="alert">{error}</p>}
             {success && <p className="form-success" role="status">{success}</p>}
           </form>
           {(copyrightText || showProductVersion) && (

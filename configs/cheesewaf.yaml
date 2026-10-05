@@ -79,6 +79,7 @@ cluster:
         allow_traffic_in_protection_mode: true
 console:
     login:
+        session_ttl: 24h0m0s
         captcha:
             enabled: true
             mode: slider
@@ -400,6 +401,7 @@ acme:
     account_email: ""
     cert_dir: ./data/certs
     key_type: ec-256
+    renew_after: 1440h0m0s
     reload_command: ""
     dns_providers: []
     notify: true
@@ -412,6 +414,11 @@ ai:
     model: gpt-4o-mini
     max_tokens: 4096
     async: true
+    max_requests: 10
+    max_in_flight: 2
+    max_subjects: 4096
+    rate_window: 1m0s
+    subject_ttl: 10m0s
     allow_private_api_base: false
     assistant:
         provider: openai
@@ -444,6 +451,8 @@ ai:
         enabled: true
         builtin: true
         max_snippets: 5
+        # Optional administrator-managed JSON snippets. Set to an absolute path on the host.
+        file: ""
 update:
     ota:
         enabled: false

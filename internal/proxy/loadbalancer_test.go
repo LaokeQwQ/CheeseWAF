@@ -201,3 +201,22 @@ func TestLoadBalancerMatchesIPv6LiteralHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadBalancerNormalizesWebSocketUpstreamSchemes(t *testing.T) {
+	site := config.SiteConfig{ID: "ws", Enabled: true, Upstreams: []config.UpstreamConfig{
+		{Address: "ws://127.0.0.1:8080"},
+		{Address: "wss://origin.example.test:8443"},
+	}}
+	lb := NewLoadBalancer([]config.SiteConfig{site})
+	first, err := lb.Next(site, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := lb.Next(site, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Scheme != "http" || second.Scheme != "https" {
+		t.Fatalf("websocket upstream schemes were not normalized: first=%s second=%s", first, second)
+	}
+}

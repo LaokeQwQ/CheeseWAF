@@ -208,6 +208,7 @@ func (h *HealthChecker) check(site config.SiteConfig) {
 	client := *h.client
 	client.Timeout = timeout
 	for _, upstream := range site.Upstreams {
+		rawURL, _ := url.Parse(strings.TrimSpace(upstream.Address))
 		target := normalizeUpstream(upstream.Address)
 		u, err := url.Parse(target)
 		if err != nil {
@@ -215,13 +216,31 @@ func (h *HealthChecker) check(site config.SiteConfig) {
 			continue
 		}
 		u.Path = path
-		resp, err := client.Get(u.String())
+		var resp *http.Response
+		if rawURL != nil && (strings.EqualFold(rawURL.Scheme, "ws") || strings.EqualFold(rawURL.Scheme, "wss")) {
+			request, requestErr := http.NewRequest(http.MethodGet, u.String(), nil)
+			if requestErr != nil {
+				h.registry.Set(upstream.Address, false)
+				continue
+			}
+			request.Header.Set("Connection", "Upgrade")
+			request.Header.Set("Upgrade", "websocket")
+			request.Header.Set("Sec-WebSocket-Version", "13")
+			request.Header.Set("Sec-WebSocket-Key", "Y2hlZXNld2FmLWhlYWx0aA==")
+			resp, err = client.Do(request)
+		} else {
+			resp, err = client.Get(u.String())
+		}
 		if err != nil {
 			h.registry.Set(upstream.Address, false)
 			continue
 		}
 		_ = netguard.DrainAndClose(resp.Body)
-		h.registry.Set(upstream.Address, resp.StatusCode >= 200 && resp.StatusCode < 400)
+		healthy := resp.StatusCode >= 200 && resp.StatusCode < 400
+		if rawURL != nil && (strings.EqualFold(rawURL.Scheme, "ws") || strings.EqualFold(rawURL.Scheme, "wss")) {
+			healthy = resp.StatusCode == http.StatusSwitchingProtocols
+		}
+		h.registry.Set(upstream.Address, healthy)
 	}
 }
 
@@ -253,8 +272,18 @@ func (r *HealthRegistry) addUpstream(address string, cfg config.HealthCheckConfi
 }
 
 func normalizeUpstream(address string) string {
+	address = strings.TrimSpace(address)
 	if !strings.Contains(address, "://") {
-		return "http://" + address
+		address = "http://" + address
+	}
+	if parsed, err := url.Parse(address); err == nil {
+		switch strings.ToLower(parsed.Scheme) {
+		case "ws":
+			parsed.Scheme = "http"
+		case "wss":
+			parsed.Scheme = "https"
+		}
+		return parsed.String()
 	}
 	return address
 }

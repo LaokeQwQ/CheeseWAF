@@ -34,6 +34,11 @@ type aiConfigPayload struct {
 	ContextWindow       int                          `json:"context_window,omitempty"`
 	ReasoningEffort     string                       `json:"reasoning_effort,omitempty"`
 	MaxTokens           int                          `json:"max_tokens"`
+	MaxRequests         int                          `json:"max_requests,omitempty"`
+	MaxInFlight         int                          `json:"max_in_flight,omitempty"`
+	MaxSubjects         int                          `json:"max_subjects,omitempty"`
+	RateWindow          time.Duration                `json:"rate_window,omitempty"`
+	SubjectTTL          time.Duration                `json:"subject_ttl,omitempty"`
 	Async               bool                         `json:"async"`
 	AllowPrivateAPIBase bool                         `json:"allow_private_api_base"`
 	ModelListPath       *string                      `json:"model_list_path,omitempty"`
@@ -227,6 +232,21 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.MaxTokens != 0 {
 			next.MaxTokens = req.MaxTokens
+		}
+		if req.MaxRequests != 0 {
+			next.MaxRequests = req.MaxRequests
+		}
+		if req.MaxInFlight != 0 {
+			next.MaxInFlight = req.MaxInFlight
+		}
+		if req.MaxSubjects != 0 {
+			next.MaxSubjects = req.MaxSubjects
+		}
+		if req.RateWindow != 0 {
+			next.RateWindow = req.RateWindow
+		}
+		if req.SubjectTTL != 0 {
+			next.SubjectTTL = req.SubjectTTL
 		}
 		next.Async = req.Async
 		next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
@@ -1749,6 +1769,11 @@ func aiConfigView(cfg config.AIConfig) aiConfigPayload {
 		ContextWindow:       assistant.ContextWindow,
 		ReasoningEffort:     assistant.ReasoningEffort,
 		MaxTokens:           assistant.MaxTokens,
+		MaxRequests:         cfg.MaxRequests,
+		MaxInFlight:         cfg.MaxInFlight,
+		MaxSubjects:         cfg.MaxSubjects,
+		RateWindow:          cfg.RateWindow,
+		SubjectTTL:          cfg.SubjectTTL,
 		Async:               cfg.Async,
 		AllowPrivateAPIBase: assistant.AllowPrivateAPIBase,
 		ModelListPath:       stringPointer(assistant.ModelListPath),
@@ -2025,6 +2050,9 @@ func validateAIConfigForSave(cfg config.AIConfig) error {
 	}
 	if cfg.SelfLearning.Interval != 0 && cfg.SelfLearning.Interval < time.Hour {
 		return fmt.Errorf("self_learning.interval must be at least 1h")
+	}
+	if len(strings.TrimSpace(cfg.Knowledge.File)) > 4096 {
+		return fmt.Errorf("knowledge.file must be at most 4096 characters")
 	}
 	return nil
 }

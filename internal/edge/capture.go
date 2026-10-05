@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strings"
 )
 
 var ErrCaptureBodyTooLarge = errors.New("captured response body exceeds configured limit")
@@ -23,6 +25,7 @@ type CaptureWriter struct {
 	tooLarge          bool
 	destination       http.ResponseWriter
 	committed         bool
+	committedHeader   http.Header
 	headerWritten     bool
 	bufferingDisabled bool
 	writeErr          error
@@ -148,6 +151,7 @@ func (w *CaptureWriter) commit() error {
 	}
 	w.destination.WriteHeader(status)
 	w.committed = true
+	w.committedHeader = w.header.Clone()
 	if len(w.body) == 0 {
 		return nil
 	}
@@ -156,6 +160,25 @@ func (w *CaptureWriter) commit() error {
 		w.body = nil
 	}
 	return err
+}
+
+// SyncPostCommitHeaders propagates header mutations made after the response
+// was committed. net/http uses those mutations for trailers, including
+// grpc-status and grpc-message; ordinary headers must still be set before
+// WriteHeader, so only changed values are copied here.
+func (w *CaptureWriter) SyncPostCommitHeaders() {
+	if w == nil || !w.committed || w.destination == nil {
+		return
+	}
+	for key, values := range w.header {
+		if reflect.DeepEqual(values, w.committedHeader[key]) {
+			continue
+		}
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		copyHeader(w.destination.Header(), http.Header{key: values})
+	}
 }
 
 func (w *CaptureWriter) TooLarge() bool {

@@ -683,6 +683,38 @@ func TestIssueSiteACMEIgnoresUntrustedRuntimeFields(t *testing.T) {
 	}
 }
 
+func TestIssueSiteACMERejectsMissingRoutingDomains(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	handler.Config.ACME.Enabled = true
+	handler.Config.ACME.ACMESHPath = "/opt/cheesewaf/bin/acme.sh"
+	handler.Config.ACME.Home = filepath.Join(t.TempDir(), "acme-home")
+	handler.Config.ACME.CertDir = filepath.Join(t.TempDir(), "certs")
+	handler.Config.ACME.ReloadCommand = config.ACMEReloadProfileSystemdRestart
+	issuer := &recordingACMEIssuer{}
+	handler.ACMEIssuer = issuer
+
+	site.Domains = nil
+	site.Advanced.Certificate.Mode = "acme"
+	site.Advanced.Certificate.ACME.Domains = []string{"legacy.example.test"}
+	if err := store.UpdateSite(context.Background(), &site); err != nil {
+		t.Fatalf("update site: %v", err)
+	}
+
+	body := []byte(`{"provider_id":"cf","dns_api":"dns_cf","dns_env":{"CF_TOKEN":"secret"},"account_email":"ops@example.test","server":"letsencrypt","key_type":"ec-256"}`)
+	router := chi.NewRouter()
+	router.Post("/sites/{id}/acme/issue", handler.IssueSiteACME)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/sites/"+site.ID+"/acme/issue", bytes.NewReader(body))
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "ACME_DOMAINS_REQUIRED") {
+		t.Fatalf("expected explicit routing domain error, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if issuer.request.Domains != nil {
+		t.Fatalf("issuer must not run without routing domains: %+v", issuer.request.Domains)
+	}
+}
+
 func newSiteTestHandler(t *testing.T) (*Handler, *storage.SQLiteStore, storage.Site) {
 	t.Helper()
 	ctx := context.Background()

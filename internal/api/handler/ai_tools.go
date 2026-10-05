@@ -434,7 +434,7 @@ func (knowledgeBaseTool) Name() string {
 }
 
 func (knowledgeBaseTool) Description() string {
-	return "Search built-in CheeseWAF product and WAF operation knowledge snippets. Read-only."
+	return "Search configured CheeseWAF product and WAF operation knowledge snippets. Read-only."
 }
 
 func (knowledgeBaseTool) Sensitivity() ai.ToolSensitivity {
