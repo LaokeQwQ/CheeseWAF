@@ -6,6 +6,7 @@ release_dir="${1:-release}"
 # shellcheck disable=SC1091
 source "${script_dir}/stable-release-policy.sh"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+product_version="$(tr -d '[:space:]' <"${repo_root}/scripts/ci/product-version")"
 [[ -d "$release_dir" ]] || {
   echo "::error::release directory not found: ${release_dir}" >&2
   exit 1
@@ -47,8 +48,14 @@ case "$release_kind" in
       exit 1
     }
     ;;
+  beta)
+    [[ "$tag" == "v${product_version}-beta" ]] || {
+      echo "::error::beta release tag ${tag} does not match product version v${product_version}-beta" >&2
+      exit 1
+    }
+    ;;
   *)
-    echo "::error::release_kind must be prerelease or stable" >&2
+    echo "::error::release_kind must be prerelease, stable, or beta" >&2
     exit 1
     ;;
 esac
@@ -63,27 +70,29 @@ if [[ "$suffix" == "stable" ]]; then
   suffix="beta"
 fi
 
-if [[ "$release_kind" == "stable" ]]; then
-  product_version="$(tr -d '[:space:]' <"${repo_root}/scripts/ci/product-version")"
+if [[ "$release_kind" == "stable" || "$release_kind" == "beta" ]]; then
   expected_product_tag="v${product_version}"
+  [[ "$release_kind" != "beta" ]] || expected_product_tag="${expected_product_tag}-beta"
   [[ "$tag" == "$expected_product_tag" ]] || {
-    echo "::error::stable release tag ${tag} does not match product version ${expected_product_tag}" >&2
+    echo "::error::versioned release tag ${tag} does not match product version ${expected_product_tag}" >&2
     exit 1
   }
   [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]] || {
-    echo "::error::stable release manifest commit must be a full 40-character SHA" >&2
+    echo "::error::versioned release manifest commit must be a full 40-character SHA" >&2
     exit 1
   }
-  stable_release_validate_top_level "$release_dir" "stable release" "$product_version" || exit 1
-  stable_release_require_archives "$release_dir" "$product_version" || exit 1
+  release_version="${tag#v}"
+  stable_release_validate_top_level "$release_dir" "versioned release" "$release_version" || exit 1
+  stable_release_require_archives "$release_dir" "$release_version" || exit 1
 fi
 
-if [[ "$release_kind" == "stable" ]]; then
-  identity_flag='--certificate-identity'
-  identity_value="https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/${tag}"
-else
+release_version="${tag#v}"
+if [[ "$release_kind" == "prerelease" ]]; then
   identity_flag='--certificate-identity-regexp'
   identity_value='^https://github\.com/LaokeQwQ/CheeseWAF/\.github/workflows/ci\.yml@refs/(heads/(master|canary)|tags/Alpha-[^/]+)$'
+else
+  identity_flag='--certificate-identity'
+  identity_value="https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/${tag}"
 fi
 
 notes=""
@@ -124,12 +133,12 @@ resolve_remote_tag_commit() {
   local depth
 
   [[ "$release_repository" == "LaokeQwQ/CheeseWAF" ]] || {
-    echo "::error::stable releases may only be published from LaokeQwQ/CheeseWAF" >&2
+    echo "::error::versioned releases may only be published from LaokeQwQ/CheeseWAF" >&2
     return 1
   }
   object_line="$(gh api "repos/${release_repository}/git/ref/tags/${tag}" \
     --jq '.object.type + " " + .object.sha')" || {
-    echo "::error::remote stable tag ${tag} does not exist" >&2
+    echo "::error::remote release tag ${tag} does not exist" >&2
     return 1
   }
 
@@ -155,13 +164,13 @@ resolve_remote_tag_commit() {
         }
         ;;
       *)
-        echo "::error::remote stable tag ${tag} resolves to unsupported object type ${object_type}" >&2
+        echo "::error::remote release tag ${tag} resolves to unsupported object type ${object_type}" >&2
         return 1
         ;;
     esac
   done
 
-  echo "::error::remote stable tag ${tag} exceeds the supported annotation depth" >&2
+  echo "::error::remote release tag ${tag} exceeds the supported annotation depth" >&2
   return 1
 }
 
@@ -170,7 +179,7 @@ asset_count() {
   awk -v wanted="$wanted" '$0 == wanted { count++ } END { print count + 0 }' <<<"$existing_assets"
 }
 
-verify_existing_stable_release() {
+verify_existing_versioned_release() {
   local existing_tag_name
   local existing_is_draft
   local existing_is_prerelease
@@ -190,11 +199,11 @@ verify_existing_stable_release() {
     return 1
   }
   [[ "$existing_is_draft" == "false" ]] || {
-    echo "::error::stable release ${tag} must not be a draft" >&2
+    echo "::error::versioned release ${tag} must not be a draft" >&2
     return 1
   }
   [[ "$existing_is_prerelease" == "false" ]] || {
-    echo "::error::stable release ${tag} must not be marked as a pre-release" >&2
+    echo "::error::versioned release ${tag} must not be marked as a pre-release" >&2
     return 1
   }
   [[ "$existing_target" == "$commit" ]] || {
@@ -204,32 +213,32 @@ verify_existing_stable_release() {
 
   existing_assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
   [[ -n "$existing_assets" ]] || {
-    echo "::error::existing stable release ${tag} has no assets" >&2
+    echo "::error::existing versioned release ${tag} has no assets" >&2
     return 1
   }
   duplicate_asset="$(printf '%s\n' "$existing_assets" | sort | uniq -d | head -n 1)"
   [[ -z "$duplicate_asset" ]] || {
-    echo "::error::existing stable release contains duplicate asset name: ${duplicate_asset}" >&2
+    echo "::error::existing versioned release contains duplicate asset name: ${duplicate_asset}" >&2
     return 1
   }
   while IFS= read -r existing_name; do
     [[ -n "$existing_name" ]] || continue
-    stable_release_asset_is_allowed "$existing_name" "$product_version" || {
-      echo "::error::existing stable release contains an unclassified asset: ${existing_name}" >&2
+    stable_release_asset_is_allowed "$existing_name" "$release_version" || {
+      echo "::error::existing versioned release contains an unclassified asset: ${existing_name}" >&2
       return 1
     }
   done <<<"$existing_assets"
 
   for required_asset in \
-    "cheesewaf-amd64-linux-${product_version}.tar.gz" \
-    "cheesewaf-arm64-linux-${product_version}.tar.gz" \
-    "cheesewaf-loong64-linux-${product_version}.tar.gz" \
+    "cheesewaf-amd64-linux-${release_version}.tar.gz" \
+    "cheesewaf-arm64-linux-${release_version}.tar.gz" \
+    "cheesewaf-loong64-linux-${release_version}.tar.gz" \
     SHA256SUMS \
     SHA256SUMS.bundle \
     cheesewaf.cdx.json \
     cheesewaf.cdx.json.bundle; do
     [[ "$(asset_count "$required_asset")" -eq 1 ]] || {
-      echo "::error::existing stable release requires exactly one ${required_asset} asset" >&2
+      echo "::error::existing versioned release requires exactly one ${required_asset} asset" >&2
       return 1
     }
   done
@@ -246,7 +255,7 @@ verify_existing_stable_release() {
     "$(asset_count cheesewaf-artifacts.cdx.json.bundle)" -eq 0 ]]; then
     product_asset="artifacts.manifest.json"
   else
-    echo "::error::existing stable release must contain exactly one signed product SBOM variant" >&2
+    echo "::error::existing versioned release must contain exactly one signed product SBOM variant" >&2
     return 1
   fi
 
@@ -267,11 +276,11 @@ verify_existing_stable_release() {
     bash "${script_dir}/verify-release.sh" "$existing_asset_dir"
 
   for archive_name in \
-    "cheesewaf-amd64-linux-${product_version}.tar.gz" \
-    "cheesewaf-arm64-linux-${product_version}.tar.gz" \
-    "cheesewaf-loong64-linux-${product_version}.tar.gz"; do
+    "cheesewaf-amd64-linux-${release_version}.tar.gz" \
+    "cheesewaf-arm64-linux-${release_version}.tar.gz" \
+    "cheesewaf-loong64-linux-${release_version}.tar.gz"; do
     [[ "$(sha256_file "${release_dir}/${archive_name}")" == "$(sha256_file "${existing_asset_dir}/${archive_name}")" ]] || {
-      echo "::error::existing stable release archive differs from the current verified package: ${archive_name}" >&2
+      echo "::error::existing versioned release archive differs from the current verified package: ${archive_name}" >&2
       return 1
     }
   done
@@ -279,7 +288,7 @@ verify_existing_stable_release() {
   verify_sigstore_blob "${existing_asset_dir}/SHA256SUMS"
   verify_sigstore_blob "${existing_asset_dir}/cheesewaf.cdx.json"
   verify_sigstore_blob "${existing_asset_dir}/${product_asset}"
-  echo "Stable release ${tag} already exists with the exact immutable server asset set; keeping it."
+  echo "Versioned release ${tag} already exists with the exact immutable server asset set; keeping it."
 }
 
 command -v gh >/dev/null 2>&1 || {
@@ -291,16 +300,16 @@ command -v cosign >/dev/null 2>&1 || {
   exit 1
 }
 
-if [[ "$release_kind" == "stable" ]]; then
+if [[ "$release_kind" == "stable" || "$release_kind" == "beta" ]]; then
   remote_tag_commit="$(resolve_remote_tag_commit)" || exit 1
   [[ "$remote_tag_commit" == "$commit" ]] || {
-    echo "::error::remote stable tag ${tag} points to ${remote_tag_commit}, expected ${commit}" >&2
+    echo "::error::remote release tag ${tag} points to ${remote_tag_commit}, expected ${commit}" >&2
     exit 1
   }
 fi
 
-if [[ "$release_kind" == "stable" ]] && gh release view "$tag" >/dev/null 2>&1; then
-  verify_existing_stable_release
+if [[ "$release_kind" == "stable" || "$release_kind" == "beta" ]] && gh release view "$tag" >/dev/null 2>&1; then
+  verify_existing_versioned_release
   exit 0
 fi
 
@@ -399,6 +408,9 @@ release_notice="This is a stable release. Review the upgrade and rollback instru
 if [[ "$release_kind" == "prerelease" ]]; then
   release_label="pre-release"
   release_notice="This is an alpha build, not a stable release. Configuration and APIs may change."
+elif [[ "$release_kind" == "beta" ]]; then
+  release_label="beta release"
+  release_notice="This is a beta release. Validate it in a controlled environment before production deployment."
 fi
 cat >"$notes" <<EOF
 CheeseWAF ${release_label} \`${tag}\`.
@@ -471,21 +483,21 @@ done < <(find "$release_dir" -maxdepth 1 -type f ! -name release-manifest.txt | 
   exit 1
 }
 
-if [[ "$release_kind" == "stable" ]]; then
-  stable_release_validate_top_level "$release_dir" "stable release" "$product_version" || exit 1
-  stable_release_require_archives "$release_dir" "$product_version" || exit 1
+if [[ "$release_kind" == "stable" || "$release_kind" == "beta" ]]; then
+  stable_release_validate_top_level "$release_dir" "versioned release" "$release_version" || exit 1
+  stable_release_require_archives "$release_dir" "$release_version" || exit 1
   for required_asset in \
     SHA256SUMS \
     SHA256SUMS.bundle \
     cheesewaf.cdx.json \
     cheesewaf.cdx.json.bundle; do
     [[ -s "${release_dir}/${required_asset}" ]] || {
-      echo "::error::stable server release is missing signed metadata: ${required_asset}" >&2
+      echo "::error::versioned server release is missing signed metadata: ${required_asset}" >&2
       exit 1
     }
   done
   if [[ ! -s "$product_sbom" || ! -s "${product_sbom}.bundle" ]]; then
-    echo "::error::stable server release is missing the signed product SBOM" >&2
+    echo "::error::versioned server release is missing the signed product SBOM" >&2
     exit 1
   fi
 fi
@@ -539,6 +551,14 @@ if [[ "$release_kind" == "prerelease" ]]; then
   gh release create "$tag" \
     --target "$commit" \
     --prerelease \
+    --title "$tag" \
+    --notes-file "$notes" \
+    "${assets[@]}"
+elif [[ "$release_kind" == "beta" ]]; then
+  gh release create "$tag" \
+    --target "$commit" \
+    --verify-tag \
+    --latest=false \
     --title "$tag" \
     --notes-file "$notes" \
     "${assets[@]}"

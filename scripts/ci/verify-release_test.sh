@@ -234,6 +234,20 @@ if ! CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$ser
   fail "server signing scope must allow a release without platform signing tools"
 fi
 
+server_beta="${tmp}/server-beta"
+mkdir -p "${server_beta}/pkg/systemd"
+make_package "${server_beta}/pkg" master beta no 0.1.0-beta "$server_commit"
+printf '[Service]\nExecStart=/usr/local/bin/cheesewaf serve\n' >"${server_beta}/pkg/systemd/cheesewaf.service"
+printf 'CheeseWAF release artifacts\nversion: 0.1.0-beta\nrelease_tag: v0.1.0-beta\nrelease_kind: beta\ncommit: %s\n' \
+  "$server_commit" >"${server_beta}/release-manifest.txt"
+tar -C "$server_beta" -czf "${server_beta}/cheesewaf-amd64-linux-0.1.0-beta.tar.gz" pkg
+tar -C "$server_beta" -czf "${server_beta}/cheesewaf-arm64-linux-0.1.0-beta.tar.gz" pkg
+tar -C "$server_beta" -czf "${server_beta}/cheesewaf-loong64-linux-0.1.0-beta.tar.gz" pkg
+rewrite_sums "$server_beta"
+if ! CHEESEWAF_REQUIRE_SIGNING=1 CHEESEWAF_SIGNING_SCOPE=server run_static "$server_beta"; then
+  fail "server signing scope must allow a beta release with versioned Linux archives"
+fi
+
 server_bad_version="${tmp}/server-bad-version"
 cp -R "$server_ok" "$server_bad_version"
 sed -i.bak 's/^version=0.1.0$/version=9.9.9/' "${server_bad_version}/pkg/VERSION"

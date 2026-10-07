@@ -195,6 +195,25 @@ run_stable_publish() {
     bash scripts/ci/publish-release.sh "$dir"
 }
 
+run_beta_publish() {
+  local dir="$1"
+  local log="$2"
+  PATH="${fake_bin}:${PATH}" \
+    FAKE_RELEASE_DIR="$dir" \
+    FAKE_REMOTE_DIR="$dir" \
+    FAKE_SYFT_ARTIFACT_MODE=success \
+    FAKE_PRODUCT_VERSION="$product_version" \
+    FAKE_REMOTE_TAG_NAME="${stable_ref}-beta" \
+    FAKE_GH_STABLE_NEW=1 \
+    FAKE_REMOTE_REF_TYPE=tag \
+    FAKE_REMOTE_REF_SHA="$stable_tag_object" \
+    FAKE_REMOTE_TAG_OBJECT_TYPE=commit \
+    FAKE_REMOTE_TAG_OBJECT_SHA="$stable_commit" \
+    FAKE_GH_LOG="$log" \
+    FAKE_COSIGN_LOG="${log}.cosign" \
+    bash scripts/ci/publish-release.sh "$dir"
+}
+
 mismatch_dir="${tmp}/mismatch"
 mismatch_remote_dir="${tmp}/mismatch-remote"
 mismatch_log="${tmp}/mismatch-gh.log"
@@ -289,6 +308,36 @@ if grep -Fq -- '--certificate-identity-regexp' "${stable_log}.notes"; then
 fi
 if grep -Fq '${identity_value}' "${stable_log}.notes"; then
   fail "stable release notes must not contain an unexpanded identity placeholder"
+fi
+
+beta_ref="${stable_ref}-beta"
+beta_dir="${tmp}/beta-release"
+beta_log="${tmp}/beta-gh.log"
+cp -R "$stable_dir" "$beta_dir"
+for arch in amd64 arm64 loong64; do
+  mv "${beta_dir}/cheesewaf-${arch}-linux-${product_version}.tar.gz" \
+    "${beta_dir}/cheesewaf-${arch}-linux-${product_version}-beta.tar.gz"
+done
+sed -i.bak \
+  -e "s/^version: ${product_version}$/version: ${product_version}-beta/" \
+  -e "s/^release_tag: ${stable_ref}$/release_tag: ${beta_ref}/" \
+  -e 's/^release_kind: stable$/release_kind: beta/' \
+  -e 's/^file_suffix: stable$/file_suffix: beta/' \
+  "${beta_dir}/release-manifest.txt"
+rm "${beta_dir}/release-manifest.txt.bak"
+run_beta_publish "$beta_dir" "$beta_log"
+grep -Fq "release create ${beta_ref}" "$beta_log" ||
+  fail "beta publish must create the exact beta tag release"
+grep -Fq -- '--latest=false' "$beta_log" ||
+  fail "beta publish must keep the release out of GitHub Latest"
+grep -Fq -- '--verify-tag' "$beta_log" ||
+  fail "beta publish must refuse to create a missing tag"
+grep -Fq -- "--certificate-identity https://github.com/LaokeQwQ/CheeseWAF/.github/workflows/ci.yml@refs/tags/${beta_ref}" "${beta_log}.cosign" ||
+  fail "beta Sigstore verification must bind the certificate identity to this exact tag"
+grep -Fq "CheeseWAF beta release \`${beta_ref}\`." "${beta_log}.notes" ||
+  fail "beta release notes must identify the release as beta"
+if grep -Fq -- '--prerelease' "$beta_log"; then
+  fail "beta publish must create a regular GitHub Release"
 fi
 
 stable_notes_command="${tmp}/stable-notes-command.sh"

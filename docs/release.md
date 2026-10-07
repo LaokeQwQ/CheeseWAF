@@ -2,15 +2,15 @@
 
 ## 版本规则
 
-正式版本使用 `vMAJOR.MINOR.PATCH` 标签，例如 `v1.2.0`。
+正式版本使用 `vMAJOR.MINOR.PATCH` 标签，例如 `v1.2.0`。Beta 版本使用当前产品版本派生的 `vMAJOR.MINOR.PATCH-beta` 标签，例如 `v1.2.0-beta`；Beta 会发布为普通 GitHub Release（不标记为 pre-release），但不会覆盖 GitHub Latest。
 
 `MAJOR` 表示不兼容的配置、数据库或 API 变化。`MINOR` 表示向后兼容的功能增加。`PATCH` 表示向后兼容的修复。
 
 `dev`、`canary` 和 `master` 只用于开发、预览和稳定分支构建。它们不是正式版本标签。
 
-分支推送只生成并校验构建产物，不会自动创建 Alpha 预发布。只有在 GitHub Actions 中手动运行工作流，并明确将 `publish_prerelease` 设为 `true`，才允许从 `canary` 或 `master` 发布 Alpha；稳定版发布仍只使用 `vMAJOR.MINOR.PATCH` 标签和 `publish-release` 环境审批。
+分支推送只生成并校验构建产物，不会自动创建 Alpha 预发布。只有在 GitHub Actions 中手动运行工作流，并明确将 `publish_prerelease` 设为 `true`，才允许从 `canary` 或 `master` 发布 Alpha；稳定版和 Beta 发布均要求精确版本标签指向受保护的 `master` 提交，并经过 `publish-release` 环境审批。
 
-稳定 `vMAJOR.MINOR.PATCH` 版本采用服务器优先档位：工作流只生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64 归档，并要求 `SHA256SUMS`、Sigstore 签名和 SBOM 校验。稳定服务器版不依赖 Windows Authenticode 或 macOS Developer ID 凭据。
+稳定 `vMAJOR.MINOR.PATCH` 和 Beta 版本采用服务器优先档位：工作流只生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64 归档，并要求 `SHA256SUMS`、Sigstore 签名和 SBOM 校验。服务器版不依赖 Windows Authenticode 或 macOS Developer ID 凭据。
 
 分支和手动工作流可以使用完整档位生成 Windows 与 macOS 操作端包。它们没有稳定服务器版的交付保证，可能没有平台签名；下载后先核对 `SHA256SUMS`。这类可选包不能改变稳定版的服务器交付范围。
 
@@ -19,12 +19,12 @@
 ## 发布正式版本
 
 1. 确认 `dev` 的检查全部通过，并按项目分支规则逐级合入 `canary` 和 `master`。
-2. 确认标签版本与 `scripts/ci/product-version` 一致，再在 `master` 当前提交上创建并推送 `vMAJOR.MINOR.PATCH` 标签。工作流会在打包前重新核对版本和 `master` 提交。发布前还会解析 GitHub 上的标签对象；带注释的标签会先解析到最终提交。任一结果不一致，工作流都会停止。
+2. 确认标签版本与 `scripts/ci/product-version` 一致，再在 `master` 当前提交上创建并推送 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-beta` 标签。Beta 后缀只允许精确的 `-beta`。工作流会在打包前重新核对版本和 `master` 提交。发布前还会解析 GitHub 上的标签对象；带注释的标签会先解析到最终提交。任一结果不一致，工作流都会停止。
 3. 标签工作流会生成服务器档位的 Linux 压缩包、`SHA256SUMS`、SBOM 和发布元数据；稳定发布不依赖桌面打包任务。
 4. `publish-release` 环境只接受 `v*` 标签，并要求明确批准。批准前核对归档内容、`SHA256SUMS`、Sigstore 签名和 SBOM。每个归档内的 `VERSION` 与 `release.json` 必须和发布清单使用相同的版本与提交。若另行构建桌面操作端包，再单独检查对应平台的签名状态。
 5. 发布后下载一个目标平台的压缩包，核对 `SHA256SUMS`，再执行启动冒烟测试。
 
-Sigstore 验证会绑定当前标签对应的工作流身份，例如 `.github/workflows/ci.yml@refs/tags/v0.3.9`。脚本不会接受同一仓库中其他稳定标签的签名身份。
+Sigstore 验证会绑定当前标签对应的工作流身份，例如 `.github/workflows/ci.yml@refs/tags/v0.3.9` 或 `.github/workflows/ci.yml@refs/tags/v0.3.9-beta`。脚本不会接受同一仓库中其他版本标签的签名身份。
 
 如果同名稳定 Release 已存在，脚本只下载并验证现有文件。它不会重新生成 SBOM、替换文件或改写发布说明。远端文件缺失、多出未登记文件或内容与当前归档不一致时，发布会停止。
 
