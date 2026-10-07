@@ -21,6 +21,17 @@ run_number="${CHEESEWAF_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-0}}"
 build_time="${CHEESEWAF_BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 
 case "$ref_name" in
+  v[0-9]*.[0-9]*.[0-9]*-beta)
+    if [[ "$ref_name" != "v${product_version}-beta" ]]; then
+      echo "::error::beta release tag ${ref_name} does not match product version v${product_version}-beta" >&2
+      exit 1
+    fi
+    channel="beta"
+    file_suffix="beta"
+    version="${product_version}-beta"
+    release_tag="$ref_name"
+    release_kind="beta"
+    ;;
   v[0-9]*.[0-9]*.[0-9]*)
     if [[ ! "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       echo "::error::stable release tag must use vMAJOR.MINOR.PATCH: ${ref_name}" >&2
