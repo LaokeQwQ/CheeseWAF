@@ -1,0 +1,31 @@
+{
+  "files": [
+    {
+      "path": "docs/architecture/commercial-platform.md",
+      "description": "Commercial platform architecture, ownership boundaries, and deployment contracts"
+    },
+    {
+      "path": "docs/architecture/control-plane-contract.md",
+      "description": "Control-plane API and runtime contract"
+    },
+    {
+      "path": "docs/architecture/approval-gate-contract.md",
+      "description": "Approval and AI decision gate contract",
+      "scope": ["internal/engine/**", "internal/security/**", "internal/api/**"]
+    },
+    {
+      "path": "docs/architecture/ai-approval-gate-adapter.md",
+      "description": "AI approval adapter behavior and safety boundaries",
+      "scope": ["internal/engine/**", "internal/security/**"]
+    },
+    {
+      "path": "docs/acceptance-matrix.md",
+      "description": "Verification and acceptance requirements for production behavior"
+    },
+    {
+      "path": "configs/cheesewaf.yaml",
+      "description": "Canonical runtime configuration and defaults",
+      "scope": ["internal/config/**", "internal/api/**", "internal/proxy/**", "configs/**"]
+    }
+  ]
+}
