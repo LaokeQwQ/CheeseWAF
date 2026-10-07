@@ -46,8 +46,8 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not enforce go vet"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh coverage' "$workflow" ||
     fail "${workflow} does not enforce Go coverage"
-  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.1' "$workflow" ||
-    fail "${workflow} does not pin the Vitest coverage provider"
+  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.3 vitest@5.0.3' "$workflow" ||
+    fail "${workflow} does not pin matching Vitest and coverage provider versions"
   grep -Fq 'npm test -- --coverage' "$workflow" ||
     fail "${workflow} does not execute project tests with coverage"
   grep -Fq 'test -s coverage/coverage-summary.json' "$workflow" ||
@@ -287,6 +287,12 @@ grep -Fq 'scripts/ci/publish-prerelease.sh' .github/workflows/ci.yml ||
   fail "CI must publish Alpha- GitHub pre-releases"
 grep -Fq 'scripts/ci/publish-release.sh' .github/workflows/ci.yml ||
   fail "CI must publish stable vMAJOR.MINOR.PATCH releases"
+grep -Fq 'release_kind="beta"' scripts/ci/package-release.sh ||
+  fail "package-release must classify the exact product beta tag separately"
+grep -Fq 'v${product_version}-beta' scripts/ci/package-release.sh ||
+  fail "beta packaging must bind its tag and version to product-version"
+grep -Fq -- '--latest=false' scripts/ci/publish-prerelease.sh ||
+  fail "beta releases must not become GitHub Latest automatically"
 grep -Fq -- "- 'v*'" .github/workflows/ci.yml ||
   fail "CI must run on stable version tags"
 grep -Fq 'CHEESEWAF_RELEASE_PROFILE:' .github/workflows/ci.yml ||
@@ -302,29 +308,31 @@ grep -Fq 'git fetch --no-tags --depth=1 origin master' .github/workflows/ci.yml 
 grep -Fq 'does not match product version' scripts/ci/package-release.sh ||
   fail "stable release packaging must bind the tag to product-version"
 grep -Fq 'stable_release_validate_top_level' scripts/ci/verify-release.sh ||
-  fail "server verification must use the fail-closed stable asset allowlist"
+  fail "server verification must use the fail-closed versioned asset allowlist"
 grep -Fq 'stable_release_validate_top_level' scripts/ci/publish-prerelease.sh ||
   fail "stable publishing must use the fail-closed stable asset allowlist"
-grep -Fq 'verify_existing_stable_release' scripts/ci/publish-prerelease.sh ||
-  fail "stable release reruns must verify the immutable release before returning"
-grep -Fq 'existing stable release contains an unclassified asset' scripts/ci/publish-prerelease.sh ||
-  fail "stable release reruns must reject remote assets outside the local invariant"
+grep -Fq 'verify_existing_versioned_release' scripts/ci/publish-prerelease.sh ||
+  fail "versioned release reruns must verify the immutable release before returning"
+grep -Fq 'existing versioned release contains an unclassified asset' scripts/ci/publish-prerelease.sh ||
+  fail "versioned release reruns must reject remote assets outside the local invariant"
 grep -Fq 'resolve_remote_tag_commit' scripts/ci/publish-prerelease.sh ||
   fail "stable publishing must resolve and peel the authoritative remote tag"
-grep -Fq 'remote stable tag ${tag} points to' scripts/ci/publish-prerelease.sh ||
-  fail "stable publishing must bind the remote tag to the manifest commit"
+grep -Fq 'remote release tag ${tag} points to' scripts/ci/publish-prerelease.sh ||
+  fail "versioned publishing must bind the remote tag to the manifest commit"
 grep -Fq -- '--verify-tag' scripts/ci/publish-prerelease.sh ||
   fail "stable release creation must fail instead of creating a missing tag"
 grep -Fq "identity_flag='--certificate-identity'" scripts/ci/publish-prerelease.sh ||
   fail "stable Sigstore verification must use an exact certificate identity"
+grep -Fq 'release_kind" == "beta"' scripts/ci/publish-prerelease.sh ||
+  fail "beta publication must use the exact-tag Sigstore identity"
 grep -Fq 'release_json_commit' scripts/ci/verify-release.sh ||
   fail "server release verification must bind archive release.json commits to the manifest"
 grep -Fq 'archive_version' scripts/ci/verify-release.sh ||
   fail "server release verification must bind archive VERSION metadata to the manifest"
 grep -Fq 'CHEESEWAF_REF_NAME: ${{ github.ref_name }}' .github/workflows/ci.yml ||
   fail "release verification must pass the ref name through the environment"
-grep -Fq '"$CHEESEWAF_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$' .github/workflows/ci.yml ||
-  fail "stable release verification must validate the environment ref as exact semver"
+grep -Fq '"$CHEESEWAF_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta)?$' .github/workflows/ci.yml ||
+  fail "versioned release verification must validate the environment ref as exact stable or beta version"
 if grep -nE '\[\[.*\$\{\{[[:space:]]*github\.' .github/workflows/ci.yml .forgejo/workflows/ci.yml; then
   fail "workflow expressions must not be interpolated directly into shell conditionals"
 fi
@@ -697,6 +705,18 @@ CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
   CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
   CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-work \
   bash scripts/ci/package-release.sh >/dev/null
+CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_REF_NAME="v$(cat scripts/ci/product-version)-beta" \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-beta-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-beta-work \
+  bash scripts/ci/package-release.sh >/dev/null
+if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
+  CHEESEWAF_REF_NAME=v9.9.9-beta \
+  CHEESEWAF_RELEASE_DIR=tmp/r2-static-invalid-beta-release \
+  CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-invalid-beta-work \
+  bash scripts/ci/package-release.sh >/dev/null 2>&1; then
+  fail "package-release accepted a beta tag that differs from product-version"
+fi
 if CHEESEWAF_VALIDATE_OUTPUT_DIRS_ONLY=1 \
   CHEESEWAF_RELEASE_DIR=tmp/r2-static-release \
   CHEESEWAF_RELEASE_WORK_DIR=tmp/r2-static-release/work \

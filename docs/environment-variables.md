@@ -36,7 +36,7 @@
 | `CHEESEWAF_GO_IMAGE` / `CHEESEWAF_NODE_IMAGE` / `CHEESEWAF_RUNTIME_IMAGE` | `scripts/ci/docker-build.sh` | 各构建阶段基础镜像覆盖 |
 | `CHEESEWAF_SKIP_OUTBOUND_TLS` | `scripts/ci/docker-build.sh` | 置为 `1` 则跳过容器出站 HTTPS 检查，默认 `0` |
 | `CHEESEWAF_OUTBOUND_TLS_URL` | `scripts/ci/docker-build.sh` | 出站 HTTPS 检查 URL，默认 `https://example.com` |
-| `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认读取 `scripts/ci/product-version`（当前为 `0.4.0`）；Beta/预发布标签由发布通道追加 |
+| `CHEESEWAF_VERSION_PREFIX` | `scripts/ci/package-release.sh` | 发布版本前缀，默认读取 `scripts/ci/product-version`（当前为 `0.4.2`）；Beta/预发布标签由发布通道追加 |
 | `CHEESEWAF_REF_NAME` / `CHEESEWAF_COMMIT` / `CHEESEWAF_RUN_NUMBER` / `CHEESEWAF_BUILD_TIME` | `scripts/ci/package-release.sh`、`.github/workflows/ci.yml`、`.forgejo/workflows/ci.yml` | 发布元数据（分支/提交/构建号/时间） |
 | `CHEESEWAF_RELEASE_PROFILE` | `scripts/ci/release-targets.sh`、CI workflows | 发布目标档位。`server` 默认生成 Linux x86_64、Linux ARM64 和 Linux LoongArch64；`full` 默认保留全部跨平台目标 |
 | `CHEESEWAF_RELEASE_DIR` / `CHEESEWAF_RELEASE_WORK_DIR` / `CHEESEWAF_TARGETS` | `scripts/ci/package-release.sh`、CI workflows | 发布输出目录、工作目录与目标平台列表。设置 `CHEESEWAF_TARGETS` 时会覆盖档位默认目标；`server` 档位只接受三个 Linux 目标，拒绝 Windows/macOS 目标 |

@@ -269,7 +269,7 @@ jobs:
         run: npm run test:scripts
       - name: Install pinned coverage provider
         working-directory: web
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.1
+        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.3 vitest@5.0.3
       - name: Run dashboard tests with coverage
         working-directory: web
         run: npm test -- --coverage
@@ -541,7 +541,7 @@ jobs:
         run: |
           signing_mode=warn
           signing_scope=all
-          if [[ "$CHEESEWAF_EVENT_NAME" == "push" && "$CHEESEWAF_REF_TYPE" == "tag" && "$CHEESEWAF_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ "$CHEESEWAF_EVENT_NAME" == "push" && "$CHEESEWAF_REF_TYPE" == "tag" && "$CHEESEWAF_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta)?$ ]]; then
             signing_mode=1
             signing_scope=server
           fi

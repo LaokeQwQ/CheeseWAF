@@ -285,8 +285,8 @@ if [[ "$signing_scope" == "server" ]]; then
   [[ -f "$server_manifest" ]] || fail "server release scope requires release-manifest.txt"
   server_release_tag="$(manifest_value "$server_manifest" release_tag)" ||
     fail "server release scope requires exactly one release_tag"
-  [[ "$server_release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-    fail "server release scope requires an exact stable release_tag"
+  [[ "$server_release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta)?$ ]] ||
+    fail "server release scope requires an exact stable or beta release_tag"
   server_version="${server_release_tag#v}"
   server_manifest_version="$(manifest_value "$server_manifest" version)" ||
     fail "server release scope requires exactly one manifest version"
@@ -298,8 +298,14 @@ if [[ "$signing_scope" == "server" ]]; then
     fail "server release manifest commit must be a full 40-character SHA"
   server_release_kind="$(manifest_value "$server_manifest" release_kind)" ||
     fail "server release scope requires exactly one release_kind"
-  [[ "$server_release_kind" == "stable" ]] ||
-    fail "server release scope requires release_kind stable"
+  case "$server_release_kind:$server_release_tag" in
+    "stable:v${server_version}") ;;
+    "beta:v${server_version}")
+      [[ "$server_version" == *-beta ]] ||
+        fail "server release kind ${server_release_kind} does not match tag ${server_release_tag}"
+      ;;
+    *) fail "server release kind ${server_release_kind} does not match tag ${server_release_tag}" ;;
+  esac
   stable_release_validate_top_level "$release_dir" "server release scope" "$server_version" || exit 1
   stable_release_require_archives "$release_dir" "$server_version" || exit 1
 fi

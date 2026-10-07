@@ -12,10 +12,13 @@ fail() {
   exit 1
 }
 
-[[ "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-  fail "stable release ref must use vMAJOR.MINOR.PATCH: ${ref_name}"
-[[ "$ref_name" == "v${product_version}" ]] ||
-  fail "stable release ref ${ref_name} does not match product version v${product_version}"
+case "$ref_name" in
+  "v${product_version}") ;;
+  "v${product_version}-beta") ;;
+  *)
+    fail "release ref ${ref_name} must be v${product_version} or v${product_version}-beta"
+    ;;
+esac
 [[ "$tag_commit" =~ ^[0-9a-fA-F]{40}$ ]] ||
   fail "stable release commit must be a full 40-character SHA"
 
