@@ -1,7 +1,7 @@
 {
   "name": "cheesewaf-web",
   "private": true,
-  "version": "0.4.0-beta",
+  "version": "0.4.2-beta",
   "type": "module",
   "scripts": {
     "dev": "vite",
