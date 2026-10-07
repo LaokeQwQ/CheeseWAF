@@ -1,0 +1,68 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "security", "syntax"],
+  "includeBranches": ["dev", "canary", "master"],
+  "autoReview": ["open", "push", "rebase"],
+  "statusCheck": true,
+  "fixWithAI": true,
+  "ignorePatterns": "**/*.generated.*\n**/dist/**\n**/node_modules/**\n**/*.png\n**/*.ico\n**/*.icns\n**/go.sum",
+  "summarySection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": true
+  },
+  "issuesTableSection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": false
+  },
+  "confidenceScoreSection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": true
+  },
+  "sequenceDiagramSection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": false
+  },
+  "instructions": "CheeseWAF is a security-sensitive Go reverse proxy with a TypeScript/React management console. Review changes against the repository contracts and architecture documents listed in .greptile/files.json. Treat authentication, authorization, request filtering, redaction, CAPTCHA, rate limiting, proxy routing, configuration validation, CI workflows, and public API behavior as security-sensitive. Prefer evidence-backed findings over style preferences, and do not report tests or generated assets as defects unless they change production behavior.",
+  "rules": [
+    {
+      "id": "security-boundaries",
+      "rule": "Do not weaken authentication, authorization, input validation, redaction, ACLs, rate limits, CAPTCHA checks, or fail-safe behavior. Flag bypasses, trust-boundary changes, missing expiry checks, and error paths that fail open.",
+      "scope": [
+        "internal/api/**",
+        "internal/config/**",
+        "internal/protection/**",
+        "internal/proxy/**",
+        "internal/security/**"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "contract-consistency",
+      "rule": "When an API, configuration key, port, workflow gate, or runtime contract changes, require matching validation, tests, and documentation updates. Flag stale examples or contradictory contract definitions.",
+      "scope": ["internal/**", "configs/**", "docs/**", ".github/**"],
+      "severity": "medium"
+    },
+    {
+      "id": "go-runtime-safety",
+      "rule": "Go changes must handle errors explicitly, respect context cancellation, bound memory and retry behavior, and preserve deterministic cleanup for resources such as bodies, files, locks, and goroutines.",
+      "scope": ["internal/**/*.go", "cmd/**/*.go"],
+      "severity": "high"
+    },
+    {
+      "id": "console-i18n",
+      "rule": "User-facing web text must use the existing i18n layer. Preserve keyboard accessibility, responsive layout, theme contrast, and reduced-motion behavior when changing the management console.",
+      "scope": ["web/src/**"],
+      "severity": "medium"
+    },
+    {
+      "id": "verification-before-completion",
+      "rule": "Behavior changes should include focused regression coverage or a clear reason why existing coverage is sufficient. Review completion claims against the repository's verification commands and CI gates.",
+      "scope": ["internal/**", "web/**", ".github/workflows/**"],
+      "severity": "medium"
+    }
+  ]
+}
