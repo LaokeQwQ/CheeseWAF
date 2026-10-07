@@ -11,12 +11,23 @@
     {
       "path": "docs/architecture/approval-gate-contract.md",
       "description": "Approval and AI decision gate contract",
-      "scope": ["internal/engine/**", "internal/security/**", "internal/api/**"]
+      "scope": [
+        "internal/engine/**",
+        "internal/security/**",
+        "internal/api/**",
+        "internal/approval/**",
+        "internal/ai/**"
+      ]
     },
     {
       "path": "docs/architecture/ai-approval-gate-adapter.md",
       "description": "AI approval adapter behavior and safety boundaries",
-      "scope": ["internal/engine/**", "internal/security/**"]
+      "scope": [
+        "internal/engine/**",
+        "internal/security/**",
+        "internal/approval/**",
+        "internal/ai/**"
+      ]
     },
     {
       "path": "docs/acceptance-matrix.md",
