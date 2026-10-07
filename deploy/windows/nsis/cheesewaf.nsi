@@ -7,7 +7,7 @@
 ;   - NEVER ship API keys, private keys, or default weak passwords
 ;
 ; Build (on a machine with NSIS + built binaries):
-;   makensis /DVERSION=0.4.0-beta /DSOURCE_DIR=..\..\..\dist\windows-payload cheesewaf.nsi
+;   makensis /DVERSION=0.4.2-beta /DSOURCE_DIR=..\..\..\dist\windows-payload cheesewaf.nsi
 ;
 ; SOURCE_DIR is expected to contain:
 ;   cheesewaf.exe

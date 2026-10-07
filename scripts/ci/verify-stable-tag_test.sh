@@ -37,9 +37,14 @@ run_verifier() {
 
 run_verifier "$stable_ref" "$head_sha" "$head_sha" >/dev/null ||
   fail "stable tag verifier must accept the product version on protected master"
+run_verifier "${stable_ref}-beta" "$head_sha" "$head_sha" >/dev/null ||
+  fail "beta tag verifier must accept the product beta version on protected master"
 
 if run_verifier v9.9.9 "$head_sha" "$head_sha" >/dev/null; then
   fail "stable tag verifier must reject a tag that differs from product-version"
+fi
+if run_verifier v9.9.9-beta "$head_sha" "$head_sha" >/dev/null; then
+  fail "beta tag verifier must reject a tag that differs from product-version"
 fi
 
 if run_verifier "$stable_ref" "$parent_sha" "$head_sha" >/dev/null; then
