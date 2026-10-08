@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -260,17 +261,44 @@ func seedLauncherTemporaryBrowserSession(t *testing.T, ctx context.Context, dbPa
 	return token
 }
 
+var (
+	runServeAddressMu         sync.Mutex
+	runServeReservedAddresses = make(map[string]struct{})
+)
+
+// Keep selected addresses for the lifetime of the test process because other
+// integration listeners may still be using a previously released port.
 func reserveRunServeAddress(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	runServeAddressMu.Lock()
+	defer runServeAddressMu.Unlock()
+	for {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := listener.Addr().String()
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := runServeReservedAddresses[address]; exists {
+			continue
+		}
+		runServeReservedAddresses[address] = struct{}{}
+		return address
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+}
+
+func TestReserveRunServeAddressReturnsDistinctAddresses(t *testing.T) {
+	const count = 32
+	seen := make(map[string]struct{}, count)
+	for range count {
+		address := reserveRunServeAddress(t)
+		if _, exists := seen[address]; exists {
+			t.Fatalf("runServe test address was reused: %s", address)
+		}
+		seen[address] = struct{}{}
 	}
-	return address
 }
 
 func seedRunServeClusterTLS(t *testing.T, root string) (string, string, string, string, string) {
