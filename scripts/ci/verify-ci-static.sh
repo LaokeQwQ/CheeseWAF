@@ -18,7 +18,11 @@ run_regression_test() {
   local output_file status=0
   output_file="$(mktemp)"
   "$@" >"$output_file" 2>&1 || status=$?
-  sed -E 's/^::(error|warning)::/expected \1:/' "$output_file"
+  if ((status == 0)); then
+    sed -E 's/^::(error|warning)::/expected \1:/' "$output_file"
+  else
+    cat "$output_file"
+  fi
   rm -f "$output_file"
   if ((status != 0)); then
     fail "${name} failed with exit code ${status}"
