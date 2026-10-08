@@ -12,6 +12,19 @@ fail() {
   exit 1
 }
 
+run_regression_test() {
+  local name="$1"
+  shift
+  local output_file status=0
+  output_file="$(mktemp)"
+  "$@" >"$output_file" 2>&1 || status=$?
+  sed -E 's/^::(error|warning)::/expected \1:/' "$output_file"
+  rm -f "$output_file"
+  if ((status != 0)); then
+    fail "${name} failed with exit code ${status}"
+  fi
+}
+
 workflow_files=(
   .github/workflows/ci.yml
   .forgejo/workflows/ci.yml
@@ -658,6 +671,14 @@ grep -Fq 'CHEESEWAF_REQUIRE_SIGNING=warn CHEESEWAF_SIGNING_SCOPE=all' .forgejo/w
   fail "Forgejo branch release CI must keep signing advisory-only"
 grep -Fq 'signing_scope=all' .github/workflows/ci.yml ||
   fail "GitHub full-profile release verification must keep the all-platform signing scope"
+[[ "$(grep -A4 -F 'name: Verify GoReleaser snapshot' .github/workflows/ci.yml | grep -F 'CHEESEWAF_REQUIRE_SIGNING: "0"' | wc -l | tr -d '[:space:]')" == "1" ]] ||
+  fail "GoReleaser snapshot verification must not emit desktop signing warnings"
+[[ "$(grep -A4 -F 'name: Verify release package' .github/workflows/ci.yml | grep -F 'CHEESEWAF_REQUIRE_SIGNING: "0"' | wc -l | tr -d '[:space:]')" == "1" ]] ||
+  fail "Linux release package smoke must not emit desktop signing warnings"
+grep -A18 -F 'name: Verify branch release artifacts' .github/workflows/ci.yml | grep -F 'signing_mode=1' >/dev/null ||
+  fail "stable versioned release artifacts must retain mandatory signing verification"
+grep -A18 -F 'name: Verify branch release artifacts' .github/workflows/ci.yml | grep -F 'signing_scope=server' >/dev/null ||
+  fail "stable versioned release artifacts must retain server-only signing scope"
 grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
   fail "GitHub macOS release verification must use the macOS signing scope"
 if grep -Fq 'secrets.WINDOWS_CERT' .forgejo/workflows/ci.yml; then
@@ -757,12 +778,12 @@ if grep -E 'rate_limit:|requests_per_second:|ip_block:' README.md README_CN.md; 
   fail "README configuration examples contain obsolete keys"
 fi
 
-bash scripts/ci/generate-release-metadata_test.sh
-bash scripts/ci/rewrite-release-checksums_test.sh
-bash scripts/ci/package-release_profile_test.sh
-bash scripts/ci/verify-stable-tag_test.sh
-bash scripts/ci/publish-prerelease_test.sh
-bash scripts/ci/verify-release_test.sh
-bash scripts/ci/package-macos-dmg_lifecycle_test.sh
+run_regression_test generate-release-metadata bash scripts/ci/generate-release-metadata_test.sh
+run_regression_test rewrite-release-checksums bash scripts/ci/rewrite-release-checksums_test.sh
+run_regression_test package-release-profile bash scripts/ci/package-release_profile_test.sh
+run_regression_test verify-stable-tag bash scripts/ci/verify-stable-tag_test.sh
+run_regression_test publish-prerelease bash scripts/ci/publish-prerelease_test.sh
+run_regression_test verify-release bash scripts/ci/verify-release_test.sh
+run_regression_test package-macos-dmg-lifecycle bash scripts/ci/package-macos-dmg_lifecycle_test.sh
 
 echo "CI static regression checks passed."
