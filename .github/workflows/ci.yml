@@ -438,7 +438,7 @@ jobs:
       - name: Verify GoReleaser snapshot
         shell: bash
         env:
-          CHEESEWAF_REQUIRE_SIGNING: warn
+          CHEESEWAF_REQUIRE_SIGNING: "0"
         run: bash scripts/ci/verify-release.sh dist
 
   release-package-smoke:
@@ -472,7 +472,7 @@ jobs:
       - name: Verify release package
         shell: bash
         env:
-          CHEESEWAF_REQUIRE_SIGNING: warn
+          CHEESEWAF_REQUIRE_SIGNING: "0"
         run: bash scripts/ci/verify-release.sh release-smoke
 
   release-artifacts:
