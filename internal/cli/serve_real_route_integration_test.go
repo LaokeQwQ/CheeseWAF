@@ -266,6 +266,8 @@ var (
 	runServeReservedAddresses = make(map[string]struct{})
 )
 
+// Keep selected addresses for the lifetime of the test process because other
+// integration listeners may still be using a previously released port.
 func reserveRunServeAddress(t *testing.T) string {
 	t.Helper()
 	runServeAddressMu.Lock()
