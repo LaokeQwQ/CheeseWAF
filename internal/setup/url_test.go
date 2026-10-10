@@ -17,6 +17,31 @@ func TestBrowserURLUsesFragmentAndLoopback(t *testing.T) {
 	}
 }
 
+func TestBrowserURLWithHostUsesAdvertisedAddress(t *testing.T) {
+	got := BrowserURLWithHost("https", "0.0.0.0:9443", "203.0.113.10", "token")
+	want := "https://203.0.113.10:9443/setup#setup_token=token"
+	if got != want {
+		t.Fatalf("BrowserURLWithHost() = %q, want %q", got, want)
+	}
+}
+
+func TestBrowserURLWithHostDoesNotOverridePrivateListener(t *testing.T) {
+	got := BrowserURLWithHost("https", "127.0.0.1:9443", "203.0.113.10", "token")
+	want := "https://127.0.0.1:9443/setup#setup_token=token"
+	if got != want {
+		t.Fatalf("BrowserURLWithHost() = %q, want %q", got, want)
+	}
+}
+
+func TestBrowserSetupURLUsesReachableHostWithoutToken(t *testing.T) {
+	t.Setenv("CHEESEWAF_ADMIN_PUBLIC_HOST", "203.0.113.10")
+	got := BrowserSetupURL("https", "0.0.0.0:9443")
+	want := "https://203.0.113.10:9443/setup"
+	if got != want {
+		t.Fatalf("BrowserSetupURL() = %q, want %q", got, want)
+	}
+}
+
 func TestWriteAndRemoveURL(t *testing.T) {
 	dir := t.TempDir()
 	page := BrowserURL("http", "127.0.0.1:9443", "tok")

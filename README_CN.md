@@ -159,8 +159,8 @@ flowchart TB
 
 | 平面 | 默认监听地址 | 说明 |
 | :--- | :--- | :--- |
-| **数据平面** | `http://127.0.0.1:8080` | 接收 Web 业务流量并执行安全检测与反向代理 |
-| **管理平面** | `http://127.0.0.1:9443` | 承载 Web 控制台、REST API 与初始化向导（Docker 默认为 HTTPS） |
+| **数据平面** | 由配置决定（示例：`http://127.0.0.1:8080`） | 接收 Web 业务流量并执行安全检测与反向代理 |
+| **管理平面** | 由配置决定（安装器 profile 绑定 `0.0.0.0:9443`，并单独广告可访问主机） | 承载 Web 控制台、REST API 与初始化向导；请以安装器输出或 `server.admin_listen` 为准 |
 | **集群平面** | `https://127.0.0.1:9444` | `cluster.enabled: true` 时启用的可选 TLS/mTLS 节点互联，负责健康检查与节点拓扑发现 |
 
 ---
@@ -224,7 +224,17 @@ CheeseWAF 针对主流运维基础设施提供部署支持。
 
 适用于 Linux 物理机与云服务器，原生运行，极低资源开销。
 
-#### 步骤 1：下载并解压发行包
+#### 推荐：一键安装
+
+在目标 Linux 主机以 root 执行下面的命令。脚本会让你选择语言，识别 CPU 架构，拉取最新稳定版并校验 SHA256，然后安装、启动 systemd 服务并输出公网/内网地址、一次性初始化 URL、配置路径和服务状态：
+
+```bash
+curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
+```
+
+安装过程中会生成一个仅含 ASCII 字母和数字的安全入口；直接回车使用随机值，或输入 8-64 位自定义值。公网管理面使用 HTTPS 和一次性 setup Token，首次访问自签名证书会出现浏览器警告，生产环境应替换为受信证书或反向代理。脚本会把 RFC1918/内网接口与公网候选地址分开输出；如果服务器在 NAT 后面或使用域名，请设置 `CHEESEWAF_ADMIN_PUBLIC_HOST`。云安全组只开放 TCP 9443。只有交互式终端会直接显示敏感 URL，安装信息同时保存到 root-only 回执文件。
+
+#### 离线/手动安装
 
 从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应架构的软件包：
 
@@ -285,7 +295,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-管理口默认仅监听 `127.0.0.1:9443`。在本机或通过 SSH 隧道访问初始化页面：
+安装器默认将管理口绑定到 `0.0.0.0:9443`，并在输出中同时给出公网和内网地址。初始化 URL 只在短时间内有效，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
 
 ```bash
 # 查看包含准入 Token 的完整初始化链接：
@@ -376,7 +386,7 @@ docker compose logs -f cheesewaf
 
 ### 1. 系统初始化
 
-浏览器打开初始化向导（如 `http://127.0.0.1:9443/setup`）：
+浏览器打开安装器输出的 `https://公网IP:9443/setup`（或内网地址）完成初始化；初始化后访问输出的 `https://公网IP:9443/<安全入口>` 进入控制台：
 1. 输入终端或 `setup.url` 中的准入 Token。
 2. 按照向导提示创建超级管理员账号。
 
@@ -493,8 +503,11 @@ cheesewaf crp stage \
 ```yaml
 server:
   listen: "127.0.0.1:8080"       # 数据平面监听地址
-  admin_listen: "127.0.0.1:9443" # 管理后台监听地址
-  admin_public: false             # 开启公网访问时必须配置 TLS 证书
+  admin_listen: "0.0.0.0:9443"   # 安装器默认的公网管理监听地址
+  admin_public: true
+  admin_tls:
+    enabled: true
+  # 完成初始化后由安装器写入随机安全入口
 
 sites:
   - id: "site-demo"

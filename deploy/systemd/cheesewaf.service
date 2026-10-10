@@ -9,6 +9,9 @@ User=cheesewaf
 Group=cheesewaf
 WorkingDirectory=/var/lib/cheesewaf
 Environment=CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
+# Optional advertised host used in the one-time setup URL. The bind address
+# may remain 0.0.0.0 while this value points to the operator's public IP/DNS.
+EnvironmentFile=-/etc/cheesewaf/admin.env
 # Optional Cloudflare edge-origin trust values. The file is provisioned by
 # the host secret mechanism and is never stored in this repository.
 EnvironmentFile=-/etc/cheesewaf/edge-origin.env

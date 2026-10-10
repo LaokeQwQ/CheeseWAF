@@ -44,6 +44,8 @@ type RuleDraft = {
   priority: number;
 };
 
+const DEFAULT_RULE_PRIORITY = 200;
+
 const emptyDraft = (): RuleDraft => ({
   name: '',
   description: '',
@@ -51,7 +53,7 @@ const emptyDraft = (): RuleDraft => ({
   location: 'uri',
   action: 'block',
   severity: 'medium',
-  priority: 100,
+  priority: DEFAULT_RULE_PRIORITY,
 });
 
 const PAGE_SIZE = 8;
@@ -159,7 +161,7 @@ export default function RulesPage() {
   const handleRuleSubmit = (event: FormEvent) => {
     event.preventDefault();
     const pattern = draft.pattern.trim();
-    const priority = Number(draft.priority ?? 100);
+    const priority = Number(draft.priority ?? DEFAULT_RULE_PRIORITY);
     const validation = validateRuleDraft(pattern, priority, t);
     if (!validation.ok) {
       toast.warning(validation.error);
@@ -520,7 +522,7 @@ export default function RulesPage() {
                     min={1}
                     max={999}
                     value={draft.priority}
-                    onChange={(e) => setDraft((c) => ({ ...c, priority: Number(e.target.value || 100) }))}
+                    onChange={(e) => setDraft((c) => ({ ...c, priority: Number(e.target.value || DEFAULT_RULE_PRIORITY) }))}
                   />
                   <span className="field-help">{t('rules.priorityHelp')}</span>
                 </div>

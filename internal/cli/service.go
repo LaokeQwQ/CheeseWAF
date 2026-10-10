@@ -1386,7 +1386,7 @@ func loadConfig() (*config.Config, string, error) {
 	}
 	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{
 		DataDir:    dataDir,
-		ConfigPath: filepath.Join(dataDir, setup.DefaultConfigFile),
+		ConfigPath: setup.DefaultConfigPath(dataDir),
 	})
 	if err != nil {
 		return nil, "", err
@@ -1458,6 +1458,9 @@ func ensureAdminTLSCertificate(cfg *config.Config) error {
 	}
 	if hostname, hostnameErr := os.Hostname(); hostnameErr == nil && strings.TrimSpace(hostname) != "" {
 		hosts = append(hosts, hostname)
+	}
+	if advertised := strings.TrimSpace(os.Getenv("CHEESEWAF_ADMIN_PUBLIC_HOST")); advertised != "" {
+		hosts = append(hosts, strings.Trim(advertised, "[]"))
 	}
 	if err := setup.GenerateSelfSignedCertificate(
 		cfg.Server.AdminTLS.CertFile,

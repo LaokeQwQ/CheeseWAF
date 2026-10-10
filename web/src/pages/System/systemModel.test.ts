@@ -8,6 +8,10 @@ import {
 } from './systemModel';
 
 describe('system login branding model', () => {
+  it('does not invent an admin endpoint when the API is unavailable', () => {
+    expect(fallbackSystem.server.admin_listen).toBe('');
+  });
+
   it('round-trips copyright and show_product_version through normalizeSystem', () => {
     const normalized = normalizeSystem({
       ...fallbackSystem,

@@ -28,11 +28,12 @@ var (
 )
 
 type SetupPayload struct {
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	AdminListen   string `json:"admin_listen"`
-	AdminStrategy string `json:"admin_strategy"`
-	AdminPublic   bool   `json:"admin_public"`
+	Username          string `json:"username"`
+	Password          string `json:"password"`
+	AdminListen       string `json:"admin_listen"`
+	AdminStrategy     string `json:"admin_strategy"`
+	AdminPublic       bool   `json:"admin_public"`
+	SecurityEntryPath string `json:"security_entry_path"`
 }
 
 type CompleteOptions struct {
@@ -112,6 +113,11 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err != nil {
 		return nil, err
 	}
+	entryPath, err := resolveSecurityEntryPath(cfg, payload.SecurityEntryPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSetupValidation, err)
+	}
+	payload.SecurityEntryPath = entryPath
 	fileState, err := snapshotSetupFiles(paths)
 	if err != nil {
 		return nil, err
@@ -298,6 +304,7 @@ func SetupErrorStatus(err error) int {
 func normalizeSetupPayload(payload SetupPayload, defaultAdminListen string) (SetupPayload, error) {
 	payload.AdminListen = strings.TrimSpace(payload.AdminListen)
 	payload.AdminStrategy = strings.TrimSpace(payload.AdminStrategy)
+	payload.SecurityEntryPath = strings.TrimSpace(strings.TrimPrefix(payload.SecurityEntryPath, "/"))
 	if err := identity.ValidateUsername(payload.Username); err != nil {
 		return payload, fmt.Errorf("%w: %s", ErrSetupValidation, err)
 	}
@@ -313,7 +320,29 @@ func normalizeSetupPayload(payload SetupPayload, defaultAdminListen string) (Set
 	if payload.AdminStrategy == "public_tls" {
 		payload.AdminPublic = true
 	}
+	if payload.SecurityEntryPath != "" {
+		if err := ValidateSecurityEntrySegment(payload.SecurityEntryPath); err != nil {
+			return payload, fmt.Errorf("%w: %s", ErrSetupValidation, err)
+		}
+	}
 	return payload, nil
+}
+
+func resolveSecurityEntryPath(cfg *config.Config, requested string) (string, error) {
+	requested = strings.TrimSpace(strings.TrimPrefix(requested, "/"))
+	if requested != "" {
+		if err := ValidateSecurityEntrySegment(requested); err != nil {
+			return "", err
+		}
+		return requested, nil
+	}
+	if cfg != nil {
+		existing := strings.TrimSpace(strings.TrimPrefix(cfg.Console.Login.SecurityEntry.Path, "/"))
+		if ValidateSecurityEntrySegment(existing) == nil {
+			return existing, nil
+		}
+	}
+	return NewSecurityEntrySegment()
 }
 
 func setupStore(existing storage.Store, sqlitePath string) (storage.Store, bool, error) {
@@ -343,6 +372,11 @@ func applySetupConfig(cfg *config.Config, paths DefaultPaths, payload SetupPaylo
 		KeyFile:    paths.KeyFile,
 		SelfSigned: payload.AdminPublic,
 	}
+	cfg.Console.Login.SecurityEntry.Path = "/" + payload.SecurityEntryPath
+	// The bootstrap config keeps the entry disabled so /setup remains reachable;
+	// once this mutation succeeds the persisted config enables the gate for all
+	// subsequent console/API requests.
+	cfg.Console.Login.SecurityEntry.Enabled = true
 	cfg.Setup.DataDir = paths.DataDir
 	cfg.Setup.RuntimeDir = paths.RuntimeDir
 	cfg.Storage.SQLite.Path = paths.SQLiteFile
@@ -425,6 +459,9 @@ func normalizeDataDir(dataDir string) string {
 
 func adminCertificateHosts(adminListen string) []string {
 	hosts := append([]string(nil), DefaultCertificateHosts...)
+	if advertised := strings.Trim(strings.TrimSpace(os.Getenv("CHEESEWAF_ADMIN_PUBLIC_HOST")), "[]"); advertised != "" {
+		hosts = append(hosts, advertised)
+	}
 	host, _, err := net.SplitHostPort(adminListen)
 	if err != nil {
 		host = strings.TrimSpace(adminListen)

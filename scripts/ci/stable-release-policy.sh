@@ -20,6 +20,7 @@ stable_release_asset_is_allowed() {
         | "cheesewaf-arm64-linux-${version}.tar.gz" \
         | "cheesewaf-loong64-linux-${version}.tar.gz" \
         | SHA256SUMS \
+        | install-linux.sh \
         | SHA256SUMS.bundle \
         | cheesewaf.cdx.json \
         | cheesewaf.cdx.json.bundle \
@@ -39,6 +40,7 @@ stable_release_asset_is_allowed() {
       | cheesewaf-arm64-linux-*.tar.gz \
       | cheesewaf-loong64-linux-*.tar.gz \
       | SHA256SUMS \
+      | install-linux.sh \
       | SHA256SUMS.bundle \
       | cheesewaf.cdx.json \
       | cheesewaf.cdx.json.bundle \

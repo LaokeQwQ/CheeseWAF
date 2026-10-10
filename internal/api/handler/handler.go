@@ -1639,11 +1639,12 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		Store:              h.Store,
 		DefaultAdminListen: defaultAdminListen,
 	}, setup.SetupPayload{
-		Username:      req.Username,
-		Password:      req.Password,
-		AdminListen:   req.AdminListen,
-		AdminStrategy: req.AdminStrategy,
-		AdminPublic:   req.AdminPublic,
+		Username:          req.Username,
+		Password:          req.Password,
+		AdminListen:       req.AdminListen,
+		AdminStrategy:     req.AdminStrategy,
+		AdminPublic:       req.AdminPublic,
+		SecurityEntryPath: req.SecurityEntryPath,
 	})
 	if err != nil {
 		status := setup.SetupErrorStatus(err)

@@ -11,7 +11,7 @@ import (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "启动 CheeseWAF 服务",
-	Long:  `启动 WAF 反向代理服务，监听数据平面端口 (:80/:443) 和管理平面端口 (127.0.0.1:9443)。`,
+	Long:  `启动 WAF 反向代理服务；实际监听地址、TLS 与管理面暴露范围均以 --config 指定的配置为准。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runServeCommand()
 	},

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,9 +175,10 @@ type setupState struct {
 	probe   *setup.ProbeResult
 	profile setup.HardwareProfile
 
-	username    string
-	password    string
-	adminListen string
+	username          string
+	password          string
+	adminListen       string
+	securityEntryPath string
 
 	externalVisited bool
 	geoipStandard   string
@@ -246,7 +248,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	if state.profile == "" {
 		steps = append(steps, stepProfile)
 	}
-	steps = append(steps, stepAdmin)
+	steps = append(steps, stepAdmin, stepSecurityEntry)
 	if !setupOpts.skipExternal {
 		steps = append(steps, stepExternal)
 	}
@@ -451,6 +453,20 @@ func stepAdmin(term *wizardIO, state *setupState) error {
 	}
 }
 
+func stepSecurityEntry(term *wizardIO, state *setupState) error {
+	fmt.Fprintf(term.out, "\n%s\n", clilang.T("setup.securityEntry.title"))
+	generated, err := setup.NewSecurityEntrySegment()
+	if err != nil {
+		return err
+	}
+	value, err := term.prompt(clilang.T("setup.securityEntry.prompt"), generated, setup.ValidateSecurityEntrySegment)
+	if err != nil {
+		return err
+	}
+	state.securityEntryPath = value
+	return nil
+}
+
 func stepExternal(term *wizardIO, state *setupState) error {
 	fmt.Fprintf(term.out, "\n%s\n", clilang.T("setup.external.title"))
 	configure, err := term.promptYesNo(clilang.T("setup.external.prompt"), false)
@@ -563,6 +579,7 @@ func stepSummary(term *wizardIO, state *setupState) error {
 	fmt.Fprintf(term.out, "  %s\n", clilang.T("setup.summary.adminUser", state.username))
 	fmt.Fprintf(term.out, "  %s\n", clilang.T("setup.summary.password", clilang.T("setup.summary.passwordSet")))
 	fmt.Fprintf(term.out, "  %s\n", clilang.T("setup.summary.adminListen", state.adminListen))
+	fmt.Fprintf(term.out, "  %s\n", clilang.T("setup.summary.securityEntry", "/"+state.securityEntryPath))
 
 	if !state.externalVisited {
 		fmt.Fprintf(term.out, "  %s\n", clilang.T("setup.external.skipped"))
@@ -640,10 +657,12 @@ func (s *setupState) commit(out io.Writer) error {
 		Paths:              bundle.Paths,
 		Config:             cfg,
 	}, setup.SetupPayload{
-		Username:      s.username,
-		Password:      s.password,
-		AdminListen:   s.adminListen,
-		AdminStrategy: "local",
+		Username:          s.username,
+		Password:          s.password,
+		AdminListen:       s.adminListen,
+		AdminStrategy:     adminStrategyForListen(s.adminListen),
+		AdminPublic:       adminPublicForListen(s.adminListen),
+		SecurityEntryPath: s.securityEntryPath,
 	}); err != nil {
 		return fmt.Errorf("%s: %w", clilang.T("setup.write.failed"), err)
 	}
@@ -660,6 +679,25 @@ func (s *setupState) commit(out io.Writer) error {
 	fmt.Fprintf(out, "  %s\n", clilang.T("setup.write.panel", adminScheme, s.adminListen))
 	fmt.Fprintf(out, "  %s\n", clilang.T("setup.write.next"))
 	return nil
+}
+
+func adminPublicForListen(raw string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if err != nil {
+		return true
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
+
+func adminStrategyForListen(raw string) string {
+	if adminPublicForListen(raw) {
+		return "public_tls"
+	}
+	return "local"
 }
 
 // applySetupProfile maps the chosen tier onto the config knobs that exist.

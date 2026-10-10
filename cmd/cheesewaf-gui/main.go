@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/winctl"
@@ -28,15 +29,17 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("cheesewaf-gui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	defaultConfig := "./data/config/cheesewaf.yaml"
-	defaultDataDir := "./data"
-	if exe, err := os.Executable(); err == nil && runningInsideMacApp(exe) {
+	configFromEnv := strings.TrimSpace(os.Getenv("CHEESEWAF_CONFIG"))
+	dataDirFromEnv := strings.TrimSpace(os.Getenv("CHEESEWAF_DATA_DIR"))
+	defaultConfig := envOrDefault("CHEESEWAF_CONFIG", "./data/config/cheesewaf.yaml")
+	defaultDataDir := envOrDefault("CHEESEWAF_DATA_DIR", "./data")
+	if exe, err := os.Executable(); err == nil && runningInsideMacApp(exe) && configFromEnv == "" && dataDirFromEnv == "" {
 		defaultConfig, defaultDataDir = applyMacAppLaunchPaths(exe)
 	}
 	configPath := fs.String("config", defaultConfig, "Path to cheesewaf.yaml")
 	dataDir := fs.String("data-dir", defaultDataDir, "Runtime data directory")
 	binary := fs.String("binary", "", "Path to cheesewaf binary (default: sibling of this GUI)")
-	adminURL := fs.String("admin-url", "http://127.0.0.1:9443/setup", "Web console URL")
+	adminURL := fs.String("admin-url", "", "Web console URL (default: derive from config)")
 	listen := fs.String("listen", "127.0.0.1:17943", "Loopback control UI listen address")
 
 	if err := fs.Parse(args); err != nil {
@@ -64,4 +67,11 @@ func run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func envOrDefault(name, fallback string) string {
+	if value, ok := os.LookupEnv(name); ok && strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
 }
