@@ -24,12 +24,11 @@ validate_install_path() {
   local label="$1"
   local path="$2"
   local component current="/"
-  [[ "$path" == /* && "$path" != "/" ]] || die "${label} must be an absolute non-root path"
+  [[ "$path" =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || die "${label} must be an absolute path with safe ASCII components"
   case "$path" in
     /bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var|/var/lib|/var/log)
       die "${label} must name a dedicated application directory, not a shared system directory" ;;
   esac
-  [[ "$path" != *$'\n'* && "$path" != *$'\r'* && "$path" != *' '* && "$path" != *'#'* && "$path" != *'%'* && "$path" != *'&'* && "$path" != *'\\'* ]] || die "${label} contains unsupported characters"
   IFS='/' read -r -a components <<< "${path#/}"
   for component in "${components[@]}"; do
     [[ -n "$component" && "$component" != "." && "$component" != ".." ]] || die "${label} contains an unsafe path component"
@@ -68,7 +67,7 @@ msg() {
   if [[ "$lang" == "zh-CN" ]]; then
     case "$1" in
       entry_prompt) printf '安全入口（8-64位，仅字母和数字，回车自动生成）: ' ;;
-      install_root_prompt) printf '应用安装根目录（回车使用 FHS 默认布局，例如 /opt/cheesewaf）: ' ;;
+      install_root_prompt) printf '应用安装根目录（回车保留分散的 FHS 默认目录）: ' ;;
       entry_invalid) printf '安全入口无效：只能包含8-64位 ASCII 字母和数字。\n' >&2 ;;
       entry_generated) printf '已生成安全入口：/%s\n' "$2" ;;
       installed) printf 'CheeseWAF 安装完成（版本 %s）。\n' "$2" ;;
@@ -86,7 +85,7 @@ msg() {
   else
     case "$1" in
       entry_prompt) printf 'Admin security entry (8-64 ASCII letters/digits, Enter to generate): ' ;;
-      install_root_prompt) printf 'Application install root (Enter for the FHS layout, for example /opt/cheesewaf): ' ;;
+      install_root_prompt) printf 'Application install root (Enter to keep the standard FHS directories): ' ;;
       entry_invalid) printf 'Invalid security entry: use 8-64 ASCII letters and digits only.\n' >&2 ;;
       entry_generated) printf 'Generated security entry: /%s\n' "$2" ;;
       installed) printf 'CheeseWAF installation complete (version %s).\n' "$2" ;;
