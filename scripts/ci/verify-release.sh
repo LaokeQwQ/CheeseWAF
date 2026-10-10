@@ -549,9 +549,9 @@ done
 proxy_port="$base_port"
 admin_port=$((base_port + 1))
 cluster_port=$((base_port + 2))
-sed \
+sed -E \
   -e "s/127.0.0.1:8080/127.0.0.1:${proxy_port}/g" \
-  -e "s/127.0.0.1:9443/127.0.0.1:${admin_port}/g" \
+  -e "s#^([[:space:]]*admin_listen:[[:space:]]*)\"[^\"]+\"#\\1\"127.0.0.1:${admin_port}\"#" \
   -e "s/127.0.0.1:9444/127.0.0.1:${cluster_port}/g" \
   "${smoke_root}/configs/cheesewaf.yaml" >"$config"
 grep -Fq "127.0.0.1:${proxy_port}" "$config" || fail "smoke config data listener replacement did not apply"

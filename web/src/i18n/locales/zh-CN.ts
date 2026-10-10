@@ -2249,7 +2249,6 @@ const zhCN = {
     advancedHint: '管理端监听地址与访问策略使用默认值（{{listen}} · {{strategy}}），不在首次初始化向导中配置。安装完成后可到「系统设置」修改。',
     adminListen: '管理端监听',
     adminStrategy: '管理端访问策略',
-    strategyLocal: '本地监听 / 反代 / 跳板机 / SSH 隧道',
     reviewHint: '以下是即将写入的配置，请核对后勾选确认并完成安装。',
     summaryTitle: '配置摘要',
     summaryLanguage: '界面语言',
