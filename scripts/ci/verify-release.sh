@@ -558,6 +558,24 @@ grep -Fq "127.0.0.1:${proxy_port}" "$config" || fail "smoke config data listener
 grep -Fq "127.0.0.1:${admin_port}" "$config" || fail "smoke config admin listener replacement did not apply"
 grep -Fq "127.0.0.1:${cluster_port}" "$config" || fail "smoke config cluster listener replacement did not apply"
 
+admin_scheme="http"
+if awk '
+  /^    admin_tls:/ { in_admin_tls = 1; next }
+  in_admin_tls && $0 !~ /^        / { exit }
+  in_admin_tls && $1 == "enabled:" && $2 == "true" { print "https"; exit }
+' "$config" | grep -qx "https"; then
+  admin_scheme="https"
+fi
+admin_url="${admin_scheme}://127.0.0.1:${admin_port}"
+
+curl_admin() {
+  if [[ "$admin_scheme" == "https" ]]; then
+    curl -k "$@"
+  else
+    curl "$@"
+  fi
+}
+
 (
   cd "$tmp_dir"
   config_arg="$config"
@@ -577,8 +595,8 @@ check_mime() {
   local expected="$2"
   local relative="${file#"$web_dir"}"
   local headers="${tmp_dir}/headers.txt"
-  curl -fsS --connect-timeout 2 --max-time 5 -D "$headers" -o /dev/null \
-    "http://127.0.0.1:${admin_port}${relative}"
+  curl_admin -fsS --connect-timeout 2 --max-time 5 -D "$headers" -o /dev/null \
+    "${admin_url}${relative}"
   content_type="$(
     awk 'BEGIN { IGNORECASE=1 } /^Content-Type:/ {
       sub(/^[^:]+:[[:space:]]*/, "")
@@ -597,7 +615,7 @@ for ((attempt = 0; attempt < 30; attempt++)); do
     cat "$log_file"
     fail "release binary exited during startup smoke"
   fi
-  if curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${admin_port}/" >/dev/null 2>&1; then
+  if curl_admin -fsS --connect-timeout 2 --max-time 5 "${admin_url}/" >/dev/null 2>&1; then
     ready="yes"
     break
   fi
