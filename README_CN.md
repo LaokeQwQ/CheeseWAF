@@ -234,6 +234,8 @@ curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/instal
 
 安装过程中会生成一个仅含 ASCII 字母和数字的安全入口；直接回车使用随机值，或输入 8-64 位自定义值。公网管理面使用 HTTPS 和一次性 setup Token，首次访问自签名证书会出现浏览器警告，生产环境应替换为受信证书或反向代理。脚本会把 RFC1918/内网接口与公网候选地址分开输出；如果服务器在 NAT 后面或使用域名，请设置 `CHEESEWAF_ADMIN_PUBLIC_HOST`。云安全组只开放 TCP 9443。只有交互式终端会直接显示敏感 URL，安装信息同时保存到 root-only 回执文件。
 
+交互安装时可输入应用安装根目录；例如 `/opt/cheesewaf` 会派生 `bin`、`web`、`config`、`data`、`logs` 子目录。直接回车保留 `/usr/local`、`/usr/share`、`/etc`、`/var/lib`、`/var/log` 的 FHS 默认布局；自动化部署也可设置 `CHEESEWAF_INSTALL_DIR` 或各个 `CHEESEWAF_*_DIR` 环境变量。
+
 #### 离线/手动安装
 
 从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应架构的软件包：

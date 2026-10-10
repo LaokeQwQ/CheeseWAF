@@ -4,6 +4,7 @@
 # delegates here, so this script also remains useful for offline installs.
 set -euo pipefail
 
+install_root="${CHEESEWAF_INSTALL_DIR:-}"
 prefix="${CHEESEWAF_PREFIX:-/usr/local}"
 bin_dir="${prefix}/bin"
 web_dir="${CHEESEWAF_WEB_DIR:-/usr/share/cheesewaf/web}"
@@ -19,7 +20,6 @@ fi
 [[ -n "$template_admin_listen" ]] || die "configs/cheesewaf.yaml has no admin_listen bootstrap value"
 admin_listen="${CHEESEWAF_ADMIN_LISTEN:-$template_admin_listen}"
 admin_port="${admin_listen##*:}"
-secret_file="${config_dir}/install-secrets.txt"
 validate_install_path() {
   local label="$1"
   local path="$2"
@@ -68,6 +68,7 @@ msg() {
   if [[ "$lang" == "zh-CN" ]]; then
     case "$1" in
       entry_prompt) printf '安全入口（8-64位，仅字母和数字，回车自动生成）: ' ;;
+      install_root_prompt) printf '应用安装根目录（回车使用 FHS 默认布局，例如 /opt/cheesewaf）: ' ;;
       entry_invalid) printf '安全入口无效：只能包含8-64位 ASCII 字母和数字。\n' >&2 ;;
       entry_generated) printf '已生成安全入口：/%s\n' "$2" ;;
       installed) printf 'CheeseWAF 安装完成（版本 %s）。\n' "$2" ;;
@@ -85,6 +86,7 @@ msg() {
   else
     case "$1" in
       entry_prompt) printf 'Admin security entry (8-64 ASCII letters/digits, Enter to generate): ' ;;
+      install_root_prompt) printf 'Application install root (Enter for the FHS layout, for example /opt/cheesewaf): ' ;;
       entry_invalid) printf 'Invalid security entry: use 8-64 ASCII letters and digits only.\n' >&2 ;;
       entry_generated) printf 'Generated security entry: /%s\n' "$2" ;;
       installed) printf 'CheeseWAF installation complete (version %s).\n' "$2" ;;
@@ -101,6 +103,21 @@ msg() {
     esac
   fi
 }
+
+if [[ -z "$install_root" && ( -t 0 || -r /dev/tty ) ]]; then
+  msg install_root_prompt
+  prompt_read selected_install_root
+  install_root="${selected_install_root:-}"
+fi
+if [[ -n "$install_root" ]]; then
+  prefix="${CHEESEWAF_PREFIX:-$install_root}"
+  bin_dir="${prefix}/bin"
+  web_dir="${CHEESEWAF_WEB_DIR:-${install_root}/web}"
+  config_dir="${CHEESEWAF_CONFIG_DIR:-${install_root}/config}"
+  data_dir="${CHEESEWAF_DATA_DIR:-${install_root}/data}"
+  log_dir="${CHEESEWAF_LOG_DIR:-${install_root}/logs}"
+fi
+secret_file="${config_dir}/install-secrets.txt"
 
 entry="${CHEESEWAF_SECURITY_ENTRY:-}"
 if [[ -z "$entry" ]]; then

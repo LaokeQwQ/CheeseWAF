@@ -234,6 +234,8 @@ curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/instal
 
 The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The public admin surface uses HTTPS and a one-time setup token; browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
 
+The interactive installer also accepts an application root directory. For example, `/opt/cheesewaf` derives `bin`, `web`, `config`, `data`, and `logs` beneath that root. Press Enter to keep the FHS layout under `/usr/local`, `/usr/share`, `/etc`, `/var/lib`, and `/var/log`; automation can set `CHEESEWAF_INSTALL_DIR` or override individual `CHEESEWAF_*_DIR` variables.
+
 #### Offline/manual installation
 
 Download the official release archive matching your server architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:

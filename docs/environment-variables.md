@@ -33,6 +33,7 @@
 | `CHEESEWAF_DATA_DIR` | `scripts/ci/install-linux.sh` | 数据目录，默认 `/var/lib/cheesewaf` |
 | `CHEESEWAF_LOG_DIR` | `scripts/ci/install-linux.sh` | 日志目录，默认 `/var/log/cheesewaf` |
 | `CHEESEWAF_UNIT_DIR` | `scripts/ci/install-linux.sh` | systemd unit 目录，默认 `/etc/systemd/system` |
+| `CHEESEWAF_INSTALL_DIR` | `scripts/ci/install-linux.sh` | 交互式选择的应用安装根目录；设置后自动派生 `bin`、`web`、`config`、`data`、`logs` 子目录，各个 `CHEESEWAF_*_DIR` 仍可单独覆盖；留空则保留 FHS 默认布局 |
 | `CHEESEWAF_ADMIN_LISTEN` | `scripts/ci/install-linux.sh` | 管理监听地址，默认读取发布包 `configs/cheesewaf.yaml` 的 `server.admin_listen`（当前模板为 `0.0.0.0:9443`）；公网监听必须保持管理 TLS 开启 |
 | `CHEESEWAF_SECURITY_ENTRY` | `scripts/ci/install-linux.sh` | 安装期安全入口后缀，仅接受 8-64 位 ASCII 字母和数字；留空随机生成 |
 | `CHEESEWAF_DETECT_PUBLIC_IP` | `scripts/ci/install-linux.sh` | 设为 `1` 才允许安装器通过 HTTPS 请求 `api.ipify.org` 探测出口地址；默认不外呼，优先使用本机公网接口或 `CHEESEWAF_ADMIN_PUBLIC_HOST` |
