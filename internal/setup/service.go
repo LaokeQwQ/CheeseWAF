@@ -48,9 +48,10 @@ type CompleteOptions struct {
 }
 
 type CompleteResult struct {
-	User   *storage.User
-	Config *config.Config
-	Paths  DefaultPaths
+	User              *storage.User
+	Config            *config.Config
+	Paths             DefaultPaths
+	SecurityEntryPath string
 }
 
 func NeedsSetup(dataDir string) bool {
@@ -171,7 +172,7 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 		return nil, rollbackSetup(ctx, store, cfg, previousConfig, user, fileState, err)
 	}
 	committed = true
-	return &CompleteResult{User: user, Config: cfg, Paths: paths}, nil
+	return &CompleteResult{User: user, Config: cfg, Paths: paths, SecurityEntryPath: cfg.Console.Login.SecurityEntry.Path}, nil
 }
 
 func setupExistingAccountError(users []storage.User) error {

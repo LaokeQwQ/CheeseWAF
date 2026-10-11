@@ -1677,8 +1677,8 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = setup.RemoveURL(h.setupDataDir())
 	_ = setup.NewTokenStore(h.setupDataDir()).Remove()
-	securityEntryPath := ""
-	if result.Config != nil {
+	securityEntryPath := result.SecurityEntryPath
+	if securityEntryPath == "" && result.Config != nil {
 		securityEntryPath = result.Config.Console.Login.SecurityEntry.Path
 	}
 	writeData(w, map[string]any{
