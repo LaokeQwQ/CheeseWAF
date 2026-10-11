@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -829,6 +830,12 @@ func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name
 	info, err := file.Stat()
 	if err != nil || info.IsDir() {
 		return false
+	}
+	// Do not depend on the host's MIME database for release assets. Minimal
+	// Linux images can return an empty type for hashed JavaScript files, which
+	// browsers reject under the admin nosniff policy.
+	if contentType := mime.TypeByExtension(filepath.Ext(name)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
 	}
 	setAdminStaticCacheHeaders(w, name)
 	if seeker, ok := file.(io.ReadSeeker); ok {

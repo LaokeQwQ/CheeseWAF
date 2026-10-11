@@ -858,6 +858,9 @@ func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
 	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
 		t.Fatalf("expected gzip asset, got %q", got)
 	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Fatalf("expected JavaScript content type, got %q", got)
+	}
 
 	index := httptest.NewRecorder()
 	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/login", nil))
