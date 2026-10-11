@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -830,6 +831,12 @@ func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name
 	if err != nil || info.IsDir() {
 		return false
 	}
+	// Do not depend solely on the host's MIME database for release assets.
+	// Minimal Linux images can return an empty type for hashed JavaScript files,
+	// which browsers reject under the admin nosniff policy.
+	if contentType := adminStaticContentType(name); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
 	setAdminStaticCacheHeaders(w, name)
 	if seeker, ok := file.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, info.Name(), info.ModTime(), seeker)
@@ -837,6 +844,29 @@ func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name
 	}
 	_, _ = io.Copy(w, file)
 	return true
+}
+
+func adminStaticContentType(name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	if contentType := mime.TypeByExtension(ext); contentType != "" {
+		return contentType
+	}
+	switch ext {
+	case ".js":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	case ".wasm":
+		return "application/wasm"
+	case ".webmanifest":
+		return "application/manifest+json"
+	default:
+		return ""
+	}
 }
 
 func isAdminStaticAssetPath(path string) bool {
@@ -1386,7 +1416,7 @@ func loadConfig() (*config.Config, string, error) {
 	}
 	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{
 		DataDir:    dataDir,
-		ConfigPath: filepath.Join(dataDir, setup.DefaultConfigFile),
+		ConfigPath: setup.DefaultConfigPath(dataDir),
 	})
 	if err != nil {
 		return nil, "", err
@@ -1458,6 +1488,9 @@ func ensureAdminTLSCertificate(cfg *config.Config) error {
 	}
 	if hostname, hostnameErr := os.Hostname(); hostnameErr == nil && strings.TrimSpace(hostname) != "" {
 		hosts = append(hosts, hostname)
+	}
+	if advertised := strings.TrimSpace(os.Getenv("CHEESEWAF_ADMIN_PUBLIC_HOST")); advertised != "" {
+		hosts = append(hosts, strings.Trim(advertised, "[]"))
 	}
 	if err := setup.GenerateSelfSignedCertificate(
 		cfg.Server.AdminTLS.CertFile,

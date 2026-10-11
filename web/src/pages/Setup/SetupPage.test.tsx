@@ -512,7 +512,7 @@ describe('SetupPage', () => {
     apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true });
     await advanceToReviewStep();
     await completeSetup();
-    expect(apiMocks.setupAdmin).toHaveBeenCalledWith('root-admin', 'S3cure-Pass!', '127.0.0.1:9443', 'local');
+    expect(apiMocks.setupAdmin).toHaveBeenCalledWith('root-admin', 'S3cure-Pass!', '0.0.0.0:9443', 'public_tls');
   });
 
   // 问题 7：review 使用 i18n 标签。
@@ -534,7 +534,7 @@ describe('SetupPage', () => {
     expect(screen.getByText('setup.advancedTitle')).toBeTruthy();
     expect(screen.getByText('setup.adminListen')).toBeTruthy();
     expect(screen.getByText('setup.adminStrategy')).toBeTruthy();
-    expect(screen.getByText('127.0.0.1:9443')).toBeTruthy();
+    expect(screen.getByText('0.0.0.0:9443')).toBeTruthy();
   });
 
   // 问题 8：成功只提示一次。
