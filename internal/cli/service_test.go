@@ -869,6 +869,21 @@ func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
 	}
 }
 
+func TestAdminStaticContentTypeHasDeterministicFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "app.js", want: "javascript"},
+		{name: "app.css", want: "text/css"},
+		{name: "manifest.webmanifest", want: "manifest+json"},
+	} {
+		if got := adminStaticContentType(tc.name); !strings.Contains(got, tc.want) {
+			t.Fatalf("%s: content type = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func assertAdminSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder, wantHSTS bool) {
 	t.Helper()
 	for name, want := range map[string]string{
