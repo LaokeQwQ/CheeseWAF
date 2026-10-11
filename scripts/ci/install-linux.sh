@@ -46,15 +46,6 @@ prompt_read() {
 [[ -f ./web/dist/index.html ]] || die "web/dist/index.html missing; extract the full tar.gz"
 command -v awk >/dev/null 2>&1 || die "awk is required"
 command -v od >/dev/null 2>&1 || die "od is required"
-validate_install_path CHEESEWAF_PREFIX "$prefix"
-validate_install_path CHEESEWAF_WEB_DIR "$web_dir"
-validate_install_path CHEESEWAF_CONFIG_DIR "$config_dir"
-validate_install_path CHEESEWAF_DATA_DIR "$data_dir"
-validate_install_path CHEESEWAF_LOG_DIR "$log_dir"
-validate_install_path CHEESEWAF_UNIT_DIR "$unit_dir"
-[[ "$admin_listen" =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]*):[0-9]{1,5}$ ]] || die "invalid CHEESEWAF_ADMIN_LISTEN: use host:port"
-((10#$admin_port >= 1 && 10#$admin_port <= 65535)) || die "invalid admin port: ${admin_port}"
-
 lang="${CHEESEWAF_LANG:-}"
 if [[ -z "$lang" && ( -t 0 || -r /dev/tty ) ]]; then
   printf 'Language / 语言 [1=English, 2=简体中文] (1): '
@@ -116,6 +107,17 @@ if [[ -n "$install_root" ]]; then
   data_dir="${CHEESEWAF_DATA_DIR:-${install_root}/data}"
   log_dir="${CHEESEWAF_LOG_DIR:-${install_root}/logs}"
 fi
+
+# Validate after interactive root selection: these are the paths privileged
+# writes below actually use, rather than only the initial FHS defaults.
+validate_install_path CHEESEWAF_PREFIX "$prefix"
+validate_install_path CHEESEWAF_WEB_DIR "$web_dir"
+validate_install_path CHEESEWAF_CONFIG_DIR "$config_dir"
+validate_install_path CHEESEWAF_DATA_DIR "$data_dir"
+validate_install_path CHEESEWAF_LOG_DIR "$log_dir"
+validate_install_path CHEESEWAF_UNIT_DIR "$unit_dir"
+[[ "$admin_listen" =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]*):[0-9]{1,5}$ ]] || die "invalid CHEESEWAF_ADMIN_LISTEN: use host:port"
+((10#$admin_port >= 1 && 10#$admin_port <= 65535)) || die "invalid admin port: ${admin_port}"
 secret_file="${config_dir}/install-secrets.txt"
 
 entry="${CHEESEWAF_SECURITY_ENTRY:-}"
@@ -138,12 +140,22 @@ fi
 [[ "$entry" =~ ^[A-Za-z0-9]{8,64}$ ]] || { msg entry_invalid; exit 1; }
 
 install -d -m 0755 "$bin_dir" "$web_dir" "$config_dir" "$data_dir" "$log_dir" "$unit_dir"
+# Re-check final destinations after creation so a pre-existing symlink cannot
+# redirect a privileged write through a selected install root.
+validate_install_path CHEESEWAF_PREFIX "$prefix"
+validate_install_path CHEESEWAF_WEB_DIR "$web_dir"
+validate_install_path CHEESEWAF_CONFIG_DIR "$config_dir"
+validate_install_path CHEESEWAF_DATA_DIR "$data_dir"
+validate_install_path CHEESEWAF_LOG_DIR "$log_dir"
+validate_install_path CHEESEWAF_UNIT_DIR "$unit_dir"
 install -m 0755 ./cheesewaf "${bin_dir}/cheesewaf"
 ln -sfn "${bin_dir}/cheesewaf" "${bin_dir}/waf-cli"
 if [[ -x ./waf-cli ]]; then install -m 0755 ./waf-cli "${bin_dir}/waf-cli-wrapper"; fi
 cp -R ./web/dist/. "$web_dir/"
+fresh_config=0
 if [[ -f ./configs/cheesewaf.yaml && ! -e "${config_dir}/cheesewaf.yaml" ]]; then
   install -m 0640 ./configs/cheesewaf.yaml "${config_dir}/cheesewaf.yaml"
+  fresh_config=1
 fi
 [[ -f "${config_dir}/cheesewaf.yaml" ]] || die "config file is missing: ${config_dir}/cheesewaf.yaml"
 if [[ -f ./systemd/cheesewaf.service ]]; then
@@ -160,24 +172,37 @@ if [[ -f ./systemd/cheesewaf.service ]]; then
     "${unit_dir}/cheesewaf.service"
 fi
 
-# The installer owns only bootstrap fields. Existing site and policy settings
-# remain untouched on upgrades.
-sed -i -E "s#^([[:space:]]*)admin_listen:.*#\1admin_listen: \"${admin_listen}\"#" "${config_dir}/cheesewaf.yaml"
-sed -i -E 's#^([[:space:]]*)admin_public:.*#\1admin_public: true#' "${config_dir}/cheesewaf.yaml"
-sed -i -E '/^[[:space:]]*admin_tls:/,/^[[:space:]]*read_timeout:/{s#^([[:space:]]*)enabled:.*#\1enabled: true#}' "${config_dir}/cheesewaf.yaml"
-sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)path:.*#\1path: /'"${entry}"'#}' "${config_dir}/cheesewaf.yaml"
-sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)enabled:.*#\1enabled: false#}' "${config_dir}/cheesewaf.yaml"
+# The installer owns bootstrap fields only for a fresh config. Existing
+# listener, TLS, security-entry, site, and policy settings stay untouched.
+if (( fresh_config == 1 )); then
+  sed -i -E "s#^([[:space:]]*)admin_listen:.*#\1admin_listen: \"${admin_listen}\"#" "${config_dir}/cheesewaf.yaml"
+  sed -i -E 's#^([[:space:]]*)admin_public:.*#\1admin_public: true#' "${config_dir}/cheesewaf.yaml"
+  sed -i -E '/^[[:space:]]*admin_tls:/,/^[[:space:]]*read_timeout:/{s#^([[:space:]]*)enabled:.*#\1enabled: true#}' "${config_dir}/cheesewaf.yaml"
+  sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)path:.*#\1path: /'"${entry}"'#}' "${config_dir}/cheesewaf.yaml"
+  sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)enabled:.*#\1enabled: false#}' "${config_dir}/cheesewaf.yaml"
+fi
 
 # Fail closed if a template format change made one of the installer-owned
 # substitutions miss its target. A silent partial patch could start a service
 # with a different listener, TLS mode, or security-entry route than the receipt.
 installed_admin_listen="$(awk '$1 == "admin_listen:" {gsub(/"/, "", $2); print $2; exit}' "${config_dir}/cheesewaf.yaml")"
-[[ "$installed_admin_listen" == "$admin_listen" ]] || die "failed to set server.admin_listen"
-grep -Eq '^[[:space:]]+admin_public:[[:space:]]*true[[:space:]]*$' "${config_dir}/cheesewaf.yaml" || die "failed to enable public admin mode"
-sed -n '/^[[:space:]]*admin_tls:[[:space:]]*$/,/^[[:space:]]*read_timeout:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*true[[:space:]]*$' || die "failed to enable admin TLS"
+[[ -n "$installed_admin_listen" ]] || die "config has no server.admin_listen"
+if (( fresh_config == 1 )); then
+  [[ "$installed_admin_listen" == "$admin_listen" ]] || die "failed to set server.admin_listen"
+  grep -Eq '^[[:space:]]+admin_public:[[:space:]]*true[[:space:]]*$' "${config_dir}/cheesewaf.yaml" || die "failed to enable public admin mode"
+  sed -n '/^[[:space:]]*admin_tls:[[:space:]]*$/,/^[[:space:]]*read_timeout:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*true[[:space:]]*$' || die "failed to enable admin TLS"
+else
+  admin_listen="$installed_admin_listen"
+  admin_port="${admin_listen##*:}"
+fi
 installed_entry="$(sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | awk '$1 == "path:" {gsub(/"/, "", $2); print $2; exit}')"
-[[ "$installed_entry" == "/${entry}" ]] || die "failed to set security-entry path"
-sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*false[[:space:]]*$' || die "failed to keep security entry disabled during setup"
+[[ "$installed_entry" =~ ^/[A-Za-z0-9]{8,64}$ ]] || die "config has an invalid security-entry path"
+if (( fresh_config == 1 )); then
+  [[ "$installed_entry" == "/${entry}" ]] || die "failed to set security-entry path"
+  sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*false[[:space:]]*$' || die "failed to keep security entry disabled during setup"
+else
+  entry="${installed_entry#/}"
+fi
 
 global_hosts=""
 private_hosts=""

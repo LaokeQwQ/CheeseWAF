@@ -97,6 +97,10 @@ func TestSetupAPIUsesSharedCompletionPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload config: %v", err)
 	}
+	securityEntryPath, ok := envelope.Data["security_entry_path"].(string)
+	if !ok || securityEntryPath == "" || securityEntryPath != "/"+strings.TrimPrefix(reloaded.Console.Login.SecurityEntry.Path, "/") {
+		t.Fatalf("setup response should include the configured security entry path: %+v", envelope.Data)
+	}
 	if !reloaded.Server.AdminPublic || !reloaded.Server.AdminTLS.Enabled {
 		t.Fatalf("setup API should persist public TLS admin settings: %+v", reloaded.Server)
 	}

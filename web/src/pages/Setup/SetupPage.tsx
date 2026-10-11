@@ -38,7 +38,7 @@ import {
   Switch,
   toast,
 } from '@/components/ui';
-import { APIRequestError, apiClient, captureSetupTokenFromFragment, hasSetupToken, setSetupTokenForSession, setupAdmin, unwrapAPIResponse } from '../../api/client';
+import { APIRequestError, apiClient, captureSetupTokenFromFragment, hasSetupToken, sanitizeInternalReturnPath, setSetupTokenForSession, setupAdmin, unwrapAPIResponse } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import i18n, { ensureLanguage, readPersistedLanguage } from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
@@ -705,10 +705,22 @@ export default function SetupPage() {
         confirmed: true,
         integrations: integrationsDraftPayload(integrations),
       });
-      await setupAdmin(account.username, account.password, DEFAULT_ADMIN_LISTEN, DEFAULT_ADMIN_STRATEGY);
+      const setupResult = await setupAdmin(account.username, account.password, DEFAULT_ADMIN_LISTEN, DEFAULT_ADMIN_STRATEGY);
+      const securityEntryPath = typeof setupResult.security_entry_path === 'string'
+        ? sanitizeInternalReturnPath(setupResult.security_entry_path)
+        : '/';
       setDone(true);
       goToStep(STEP_DONE);
-      window.setTimeout(() => navigate('/login', { replace: true }), 800);
+      window.setTimeout(() => {
+        // The security entry must be requested as a real document so the
+        // server can mint its short-lived entry cookie before /login loads.
+        if (securityEntryPath !== '/') {
+          window.location.assign(securityEntryPath);
+          return;
+        }
+        // Keep the legacy client-side redirect for older API responses/mocks.
+        navigate('/login', { replace: true });
+      }, 800);
     } catch (err) {
       const message = err instanceof Error ? err.message : t('setup.failed');
       setErrorMessage(message);

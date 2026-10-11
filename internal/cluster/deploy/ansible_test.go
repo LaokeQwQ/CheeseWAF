@@ -210,7 +210,8 @@ func TestAnsibleUnitStartsServeWithDataDir(t *testing.T) {
 		t.Fatalf("cluster config template must set admin TLS and data dir")
 	}
 	if !strings.Contains(cfg, `listen: "{{ cheesewaf_data_listen }}"`) ||
-		!strings.Contains(cfg, `admin_listen: "{{ cheesewaf_management_listen }}"`) {
+		!strings.Contains(cfg, `admin_listen: "{{ cheesewaf_management_listen }}"`) ||
+		!strings.Contains(cfg, `admin_public: {{ cheesewaf_management_listen is not match(`) {
 		t.Fatalf("cluster config template must use configurable listener variables")
 	}
 }

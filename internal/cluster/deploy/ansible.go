@@ -183,6 +183,8 @@ cheesewaf_data_dir: "/var/lib/cheesewaf"
 cheesewaf_unit_dir: "/etc/systemd/system"
 cheesewaf_data_listen: "127.0.0.1:8080"
 cheesewaf_management_listen: "127.0.0.1:9443"
+# admin_public is derived from the selected listener in the generated config.
+# Keep the listener itself as the single source of truth for exposure policy.
 cheesewaf_management_probe_url: "https://127.0.0.1:9443/health/ready"
 cheesewaf_service_user: "cheesewaf"
 cheesewaf_interconnect_port: 9444
@@ -454,6 +456,7 @@ func configTemplate() string {
 	return `server:
   listen: "{{ cheesewaf_data_listen }}"
   admin_listen: "{{ cheesewaf_management_listen }}"
+  admin_public: {{ cheesewaf_management_listen is not match('^(127\\.0\\.0\\.1|localhost|::1|\\[::1\\]):') }}
   admin_tls:
     enabled: true
     self_signed: true

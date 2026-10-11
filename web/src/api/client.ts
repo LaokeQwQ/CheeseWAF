@@ -542,7 +542,11 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
 }
 
 export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
-  const result = await unwrap<{ user: { username: string; role: string } }>(
+  const result = await unwrap<{
+    user: { username: string; role: string };
+    setup_complete?: boolean;
+    security_entry_path?: string;
+  }>(
     apiClient.post('/setup', {
       username,
       password,

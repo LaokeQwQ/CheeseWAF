@@ -29,13 +29,15 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("cheesewaf-gui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	configFromEnv := strings.TrimSpace(os.Getenv("CHEESEWAF_CONFIG"))
-	dataDirFromEnv := strings.TrimSpace(os.Getenv("CHEESEWAF_DATA_DIR"))
-	defaultConfig := envOrDefault("CHEESEWAF_CONFIG", "./data/config/cheesewaf.yaml")
-	defaultDataDir := envOrDefault("CHEESEWAF_DATA_DIR", "./data")
-	if exe, err := os.Executable(); err == nil && runningInsideMacApp(exe) && configFromEnv == "" && dataDirFromEnv == "" {
+	defaultConfig := "./data/config/cheesewaf.yaml"
+	defaultDataDir := "./data"
+	if exe, err := os.Executable(); err == nil && runningInsideMacApp(exe) {
 		defaultConfig, defaultDataDir = applyMacAppLaunchPaths(exe)
 	}
+	// Compute application defaults first, then honor each explicit override
+	// independently so setting one path does not disable the other default.
+	defaultConfig = envOrDefault("CHEESEWAF_CONFIG", defaultConfig)
+	defaultDataDir = envOrDefault("CHEESEWAF_DATA_DIR", defaultDataDir)
 	configPath := fs.String("config", defaultConfig, "Path to cheesewaf.yaml")
 	dataDir := fs.String("data-dir", defaultDataDir, "Runtime data directory")
 	binary := fs.String("binary", "", "Path to cheesewaf binary (default: sibling of this GUI)")

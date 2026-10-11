@@ -33,11 +33,17 @@ esac
 
 api_url="https://api.github.com/repos/${repo}/releases/latest"
 if [[ "$release_ref" != "latest" ]]; then
-  api_url="https://api.github.com/repos/${repo}/releases/tags/${release_ref#v}"
+  [[ "$release_ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "CHEESEWAF_RELEASE must be a semver tag such as v0.4.2 or v0.4.2-beta"
+  release_tag="$release_ref"
+  [[ "$release_tag" == v* ]] || release_tag="v${release_tag}"
+  api_url="https://api.github.com/repos/${repo}/releases/tags/${release_tag}"
 fi
 metadata="$(curl --proto '=https' --proto-redir '=https' -fsSL --retry 3 --connect-timeout 10 "$api_url")" || die "unable to read the CheeseWAF release metadata"
-tag="$(printf '%s' "$metadata" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' | head -n 1)"
-[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "latest release is not a stable semver tag"
+tag="$(printf '%s' "$metadata" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*[-.][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
+if [[ -z "$tag" ]]; then
+  tag="$(printf '%s' "$metadata" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' | head -n 1)"
+fi
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "release is not a semver tag"
 version="${tag#v}"
 asset="cheesewaf-${arch}-linux-${version}.tar.gz"
 asset_url="https://github.com/${repo}/releases/download/${tag}/${asset}"
@@ -61,4 +67,4 @@ mapfile -t package_roots < <(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d -na
 [[ "${#package_roots[@]}" -eq 1 ]] || die "release archive must contain exactly one Linux package root"
 package_root="${package_roots[0]}"
 [[ -f "${package_root}/install-linux.sh" && ! -L "${package_root}/install-linux.sh" && -x "${package_root}/install-linux.sh" ]] || die "release archive has no regular Linux installer"
-CHEESEWAF_LANG="$lang" CHEESEWAF_RELEASE_VERSION="$version" "${package_root}/install-linux.sh"
+(cd "$package_root" && CHEESEWAF_LANG="$lang" CHEESEWAF_RELEASE_VERSION="$version" ./install-linux.sh)

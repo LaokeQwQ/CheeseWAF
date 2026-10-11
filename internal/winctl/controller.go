@@ -41,10 +41,11 @@ type Options struct {
 
 // Controller is a pure-Go local service controller.
 type Controller struct {
-	opts   Options
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	server *http.Server
+	opts             Options
+	adminURLExplicit bool
+	mu               sync.Mutex
+	cmd              *exec.Cmd
+	server           *http.Server
 	// controlToken authenticates mutating local control requests.
 	controlToken string
 }
@@ -88,12 +89,28 @@ func New(opts Options) (*Controller, error) {
 	if abs, err := filepath.Abs(opts.Binary); err == nil {
 		opts.Binary = abs
 	}
-	if opts.AdminURL == "" {
+	adminURLExplicit := strings.TrimSpace(opts.AdminURL) != ""
+	if !adminURLExplicit {
 		opts.AdminURL = adminURLFromConfig(opts.ConfigPath)
 	}
 	// Align CLI status/stop helpers with the same config/data dirs the GUI uses.
 	cli.ConfigurePaths(opts.ConfigPath, opts.DataDir)
-	return &Controller{opts: opts, controlToken: hex.EncodeToString(tokenBytes)}, nil
+	return &Controller{opts: opts, adminURLExplicit: adminURLExplicit, controlToken: hex.EncodeToString(tokenBytes)}, nil
+}
+
+// currentAdminURL keeps the UI link synchronized with the persisted listener
+// and security-entry settings. An explicit -admin-url remains authoritative.
+func (c *Controller) currentAdminURL() string {
+	if c == nil {
+		return ""
+	}
+	if c.adminURLExplicit {
+		return c.opts.AdminURL
+	}
+	if url := adminURLFromConfig(c.opts.ConfigPath); url != "" {
+		return url
+	}
+	return c.opts.AdminURL
 }
 
 // adminURLFromConfig derives a browser-safe URL from the persisted config.
@@ -262,7 +279,7 @@ func (c *Controller) Paths() map[string]string {
 		"binary":     c.opts.Binary,
 		"config":     c.opts.ConfigPath,
 		"data_dir":   c.opts.DataDir,
-		"admin_url":  c.opts.AdminURL,
+		"admin_url":  c.currentAdminURL(),
 		"config_dir": filepath.Dir(c.opts.ConfigPath),
 		"controller": c.opts.Listen,
 		"autostart":  strconv.FormatBool(IsAutostartEnabled()),
@@ -277,7 +294,7 @@ func (c *Controller) Paths() map[string]string {
 
 // OpenAdmin opens the Web console in the default browser.
 func (c *Controller) OpenAdmin() error {
-	return openURL(c.opts.AdminURL)
+	return openURL(c.currentAdminURL())
 }
 
 // OpenConfigDir opens the directory containing the config file.

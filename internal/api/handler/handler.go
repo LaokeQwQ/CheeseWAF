@@ -1677,7 +1677,15 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = setup.RemoveURL(h.setupDataDir())
 	_ = setup.NewTokenStore(h.setupDataDir()).Remove()
-	writeData(w, map[string]any{"user": result.User, "setup_complete": true})
+	securityEntryPath := ""
+	if result.Config != nil {
+		securityEntryPath = result.Config.Console.Login.SecurityEntry.Path
+	}
+	writeData(w, map[string]any{
+		"user":                result.User,
+		"setup_complete":      true,
+		"security_entry_path": securityEntryPath,
+	})
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dest any) bool {
