@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -51,8 +52,8 @@ func TestEnsureDefaultsCreatesConfigAndCertificate(t *testing.T) {
 	if bytes.Contains(config, []byte("change-me-in-production")) {
 		t.Fatalf("default config must not write the placeholder bot secret")
 	}
-	if !bytes.Contains(config, []byte("admin_public: false")) {
-		t.Fatalf("default config should keep admin public access disabled")
+	if !bytes.Contains(config, []byte("admin_public: true")) || !bytes.Contains(config, []byte("enabled: true")) {
+		t.Fatalf("default config should enable public admin TLS")
 	}
 }
 
@@ -78,6 +79,34 @@ func TestEnsureDefaultsDoesNotOverwriteExistingConfig(t *testing.T) {
 	}
 	if string(config) != "custom: true\n" {
 		t.Fatalf("config was overwritten: %q", string(config))
+	}
+}
+
+func TestBootstrapTemplateMatchesGeneratedAdminProfile(t *testing.T) {
+	t.Parallel()
+
+	generatedPath := filepath.Join(t.TempDir(), DefaultConfigFile)
+	generatedDir := t.TempDir()
+	generated := filepath.Join(generatedDir, DefaultConfigFile)
+	paths := ResolveDefaultPaths(DefaultOptions{DataDir: generatedDir, ConfigPath: generated})
+	if err := os.WriteFile(generatedPath, DefaultConfigYAML(paths), 0o640); err != nil {
+		t.Fatalf("write generated bootstrap config: %v", err)
+	}
+	sample, err := config.Load("../../configs/cheesewaf.yaml")
+	if err != nil {
+		t.Fatalf("load repository bootstrap config: %v", err)
+	}
+	generatedConfig, err := config.Load(generatedPath)
+	if err != nil {
+		t.Fatalf("load generated bootstrap config: %v", err)
+	}
+	if sample.Server.AdminListen != generatedConfig.Server.AdminListen ||
+		sample.Server.AdminPublic != generatedConfig.Server.AdminPublic ||
+		sample.Server.AdminTLS.Enabled != generatedConfig.Server.AdminTLS.Enabled ||
+		sample.Console.Login.CAPTCHA.MaxNumber != generatedConfig.Console.Login.CAPTCHA.MaxNumber ||
+		sample.Protection.Bot.CAPTCHABlockDuration != generatedConfig.Protection.Bot.CAPTCHABlockDuration ||
+		sample.Protection.Bot.AltchaMaxNumber != generatedConfig.Protection.Bot.AltchaMaxNumber {
+		t.Fatalf("repository and generated bootstrap profiles diverged: sample server=%+v generated server=%+v", sample.Server, generatedConfig.Server)
 	}
 }
 
@@ -190,6 +219,9 @@ func TestWizardSetupHandlerCreatesAdminAndMarksComplete(t *testing.T) {
 	if cfg.Server.AdminListen != "127.0.0.1:9444" {
 		t.Fatalf("admin listener was not persisted: %q", cfg.Server.AdminListen)
 	}
+	if !cfg.Console.Login.SecurityEntry.Enabled || !regexp.MustCompile(`^/[A-Za-z0-9]{8,64}$`).MatchString(cfg.Console.Login.SecurityEntry.Path) {
+		t.Fatalf("security entry was not generated for web setup: %+v", cfg.Console.Login.SecurityEntry)
+	}
 }
 
 func TestWizardSetupCanEnablePublicAdminTLS(t *testing.T) {
@@ -200,10 +232,11 @@ func TestWizardSetupCanEnablePublicAdminTLS(t *testing.T) {
 		t.Fatalf("PrepareDefaults() error = %v", err)
 	}
 	payload := SetupPayload{
-		Username:      "admin",
-		Password:      "Correct-Horse-9x!",
-		AdminListen:   "0.0.0.0:9443",
-		AdminStrategy: "public_tls",
+		Username:          "admin",
+		Password:          "Correct-Horse-9x!",
+		AdminListen:       "0.0.0.0:9443",
+		AdminStrategy:     "public_tls",
+		SecurityEntryPath: "InstallerEntry123",
 	}
 	if err := wizard.completeSetup(context.Background(), bundle, payload); err != nil {
 		t.Fatalf("completeSetup() error = %v", err)
@@ -214,6 +247,9 @@ func TestWizardSetupCanEnablePublicAdminTLS(t *testing.T) {
 	}
 	if !cfg.Server.AdminPublic || !cfg.Server.AdminTLS.Enabled {
 		t.Fatalf("public admin TLS was not persisted: %+v", cfg.Server)
+	}
+	if !cfg.Console.Login.SecurityEntry.Enabled || cfg.Console.Login.SecurityEntry.Path != "/InstallerEntry123" {
+		t.Fatalf("security entry was not preserved and enabled: %+v", cfg.Console.Login.SecurityEntry)
 	}
 }
 

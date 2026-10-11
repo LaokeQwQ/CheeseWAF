@@ -7,7 +7,37 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 )
+
+func TestLoadConfigUsesCanonicalGeneratedConfigPath(t *testing.T) {
+	originalConfigPath := configPath
+	originalDataDir := dataDir
+	t.Cleanup(func() {
+		configPath = originalConfigPath
+		dataDir = originalDataDir
+	})
+
+	dataDir = t.TempDir()
+	configPath = filepath.Join(dataDir, "missing.yaml")
+	_, path, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	want := setup.DefaultConfigPath(dataDir)
+	if path != want {
+		t.Fatalf("generated config path = %q, want canonical path %q", path, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("canonical generated config was not created: %v", err)
+	}
+	if legacy := filepath.Join(dataDir, setup.DefaultConfigFile); legacy != want {
+		if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+			t.Fatalf("legacy generated config path should remain unused, stat error = %v", err)
+		}
+	}
+}
 
 func TestInspectServiceStatusUsesConfiguredRuntimeDir(t *testing.T) {
 	originalConfigPath := configPath

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 	climigration "github.com/LaokeQwQ/CheeseWAF/internal/cli/migration"
@@ -21,10 +22,17 @@ const (
 )
 
 var (
-	configPath = "./data/config/cheesewaf.yaml"
-	dataDir    = "./data"
+	configPath = envOrDefault("CHEESEWAF_CONFIG", "./data/config/cheesewaf.yaml")
+	dataDir    = envOrDefault("CHEESEWAF_DATA_DIR", "./data")
 	cliLang    = ""
 )
+
+func envOrDefault(name, fallback string) string {
+	if value, ok := os.LookupEnv(name); ok && strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
+}
 
 var rootCmd = newRootCommand()
 

@@ -2249,7 +2249,6 @@ const enUS = {
     advancedHint: 'The admin listener and access strategy keep their defaults ({{listen}} · {{strategy}}) and are not part of the first-run wizard. Change them under System Settings after install.',
     adminListen: 'Admin listener',
     adminStrategy: 'Admin access strategy',
-    strategyLocal: 'Local listener / reverse proxy / jump host / SSH tunnel',
     reviewHint: 'These settings will be written. Review them, tick the confirmation, and finish the install.',
     summaryTitle: 'Configuration summary',
     summaryLanguage: 'Interface language',

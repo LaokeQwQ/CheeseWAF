@@ -858,11 +858,29 @@ func TestAdminHandlerCachesAndCompressesStaticAssets(t *testing.T) {
 	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
 		t.Fatalf("expected gzip asset, got %q", got)
 	}
+	if got := rr.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Fatalf("expected JavaScript content type, got %q", got)
+	}
 
 	index := httptest.NewRecorder()
 	handler.ServeHTTP(index, httptest.NewRequest(http.MethodGet, "/login", nil))
 	if got := index.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Fatalf("unexpected index cache header %q", got)
+	}
+}
+
+func TestAdminStaticContentTypeHasDeterministicFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "app.js", want: "javascript"},
+		{name: "app.css", want: "text/css"},
+		{name: "manifest.webmanifest", want: "manifest+json"},
+	} {
+		if got := adminStaticContentType(tc.name); !strings.Contains(got, tc.want) {
+			t.Fatalf("%s: content type = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -913,12 +931,10 @@ func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
 					Mode:          "block",
 					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
-						SQL:  true,
-						XSS:  true,
-						RCE:  true,
-						LFI:  true,
-						XXE:  true,
-						SSRF: true,
+						// This test verifies the SQL path and the shared analyzer
+						// identity. Keeping unrelated engines disabled makes the
+						// assertion deterministic under macOS -race's 100ms budget.
+						SQL: true,
 					},
 				},
 			},

@@ -4,13 +4,13 @@ server:
     listen: "127.0.0.1:8080"
     listen_tls: ""
     listen_http3: ""
-    # Keep the management listener on loopback. Remote console/API access is
-    # terminated by Cloudflare Tunnel and still requires Access, Origin HMAC,
-    # Session, CSRF and RBAC checks.
-    admin_listen: "127.0.0.1:9443"
-    admin_public: false
+    # The one-command installer exposes the admin surface over TLS. It replaces
+    # the placeholder security entry with a random alphanumeric segment before
+    # starting the service; setup remains token-gated until the wizard finishes.
+    admin_listen: "0.0.0.0:9443"
+    admin_public: true
     admin_tls:
-        enabled: false
+        enabled: true
         cert_file: "./data/certs/admin.crt"
         key_file: "./data/certs/admin.key"
         self_signed: true

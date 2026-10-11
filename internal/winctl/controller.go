@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/cli"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 )
 
@@ -31,7 +32,8 @@ type Options struct {
 	ConfigPath string
 	// DataDir is passed as --data-dir.
 	DataDir string
-	// AdminURL is the Web console URL opened by the GUI (default local HTTPS).
+	// AdminURL is the Web console URL opened by the GUI. When empty, it is
+	// derived from the configured admin listener after config loading.
 	AdminURL string
 	// Listen is the controller HTTP bind address (must be loopback).
 	Listen string
@@ -39,10 +41,11 @@ type Options struct {
 
 // Controller is a pure-Go local service controller.
 type Controller struct {
-	opts   Options
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	server *http.Server
+	opts             Options
+	adminURLExplicit bool
+	mu               sync.Mutex
+	cmd              *exec.Cmd
+	server           *http.Server
 	// controlToken authenticates mutating local control requests.
 	controlToken string
 }
@@ -61,9 +64,6 @@ func New(opts Options) (*Controller, error) {
 	}
 	if opts.DataDir == "" {
 		opts.DataDir = filepath.Join(".", "data")
-	}
-	if opts.AdminURL == "" {
-		opts.AdminURL = "http://127.0.0.1:9443/setup"
 	}
 	if opts.Listen == "" {
 		opts.Listen = "127.0.0.1:17943"
@@ -89,9 +89,66 @@ func New(opts Options) (*Controller, error) {
 	if abs, err := filepath.Abs(opts.Binary); err == nil {
 		opts.Binary = abs
 	}
+	adminURLExplicit := strings.TrimSpace(opts.AdminURL) != ""
+	if !adminURLExplicit {
+		opts.AdminURL = adminURLFromConfig(opts.ConfigPath)
+	}
 	// Align CLI status/stop helpers with the same config/data dirs the GUI uses.
 	cli.ConfigurePaths(opts.ConfigPath, opts.DataDir)
-	return &Controller{opts: opts, controlToken: hex.EncodeToString(tokenBytes)}, nil
+	return &Controller{opts: opts, adminURLExplicit: adminURLExplicit, controlToken: hex.EncodeToString(tokenBytes)}, nil
+}
+
+// currentAdminURL keeps the UI link synchronized with the persisted listener
+// and security-entry settings. An explicit -admin-url remains authoritative.
+func (c *Controller) currentAdminURL() string {
+	if c == nil {
+		return ""
+	}
+	if c.adminURLExplicit {
+		return c.opts.AdminURL
+	}
+	if url := adminURLFromConfig(c.opts.ConfigPath); url != "" {
+		return url
+	}
+	return c.opts.AdminURL
+}
+
+// adminURLFromConfig derives a browser-safe URL from the persisted config.
+// Wildcard listeners are replaced with localhost because they are bind
+// addresses, not valid browser destinations. An empty result is intentional:
+// callers can surface that the config is unavailable instead of guessing an
+// endpoint.
+func adminURLFromConfig(path string) string {
+	cfg, err := config.Load(path)
+	if err != nil || cfg == nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(cfg.Server.AdminListen)
+	if err != nil || port == "" {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		// A wildcard is a bind address, not a browser destination. Reuse the
+		// same explicit advertisement override as the installer/CLI when one is
+		// configured; otherwise stay local instead of guessing a public address.
+		if advertised := strings.Trim(strings.TrimSpace(os.Getenv("CHEESEWAF_ADMIN_PUBLIC_HOST")), "[]"); advertised != "" {
+			host = advertised
+		} else {
+			host = "localhost"
+		}
+	}
+	scheme := "http"
+	if cfg.Server.AdminTLS.Enabled {
+		scheme = "https"
+	}
+	routePath := "/setup"
+	if cfg.Console.Login.SecurityEntry.Enabled && cfg.Console.Login.SecurityEntry.Path != "" {
+		routePath = cfg.Console.Login.SecurityEntry.Path
+		if !strings.HasPrefix(routePath, "/") {
+			routePath = "/" + routePath
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port) + routePath
 }
 
 func defaultCheeseWAFBinary(self string) string {
@@ -222,7 +279,7 @@ func (c *Controller) Paths() map[string]string {
 		"binary":     c.opts.Binary,
 		"config":     c.opts.ConfigPath,
 		"data_dir":   c.opts.DataDir,
-		"admin_url":  c.opts.AdminURL,
+		"admin_url":  c.currentAdminURL(),
 		"config_dir": filepath.Dir(c.opts.ConfigPath),
 		"controller": c.opts.Listen,
 		"autostart":  strconv.FormatBool(IsAutostartEnabled()),
@@ -237,7 +294,7 @@ func (c *Controller) Paths() map[string]string {
 
 // OpenAdmin opens the Web console in the default browser.
 func (c *Controller) OpenAdmin() error {
-	return openURL(c.opts.AdminURL)
+	return openURL(c.currentAdminURL())
 }
 
 // OpenConfigDir opens the directory containing the config file.

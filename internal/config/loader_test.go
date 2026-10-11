@@ -804,6 +804,8 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 func TestValidatePublicAdminRequiresExplicitTLS(t *testing.T) {
 	cfg := Default()
 	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Server.AdminPublic = false
+	cfg.Server.AdminTLS.Enabled = false
 
 	if err := Validate(&cfg); err == nil {
 		t.Fatal("expected public admin listener validation error")
