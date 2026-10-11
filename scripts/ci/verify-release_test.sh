@@ -33,6 +33,18 @@ case "$host_uname" in
 esac
 expect_match 'cheesewaf-sparc-darwin-0.1.0-PreTest.tar.gz' no
 
+# macOS ships BSD awk, which ignores GNU awk's IGNORECASE variable. The
+# release smoke parser must therefore handle HTTP/2's lowercase header names
+# through POSIX tolower() instead of relying on IGNORECASE.
+content_type="$(printf 'content-type: text/javascript; charset=utf-8\r\n' | awk 'tolower($0) ~ /^content-type:/ {
+  sub(/^[^:]+:[[:space:]]*/, "")
+  sub(/\r$/, "")
+  print
+  exit
+}')"
+[[ "$content_type" == "text/javascript; charset=utf-8" ]] ||
+  fail "case-insensitive Content-Type parsing returned ${content_type@Q}"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
