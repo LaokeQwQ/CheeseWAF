@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
 func testController(t *testing.T) *Controller {
@@ -88,6 +90,108 @@ func TestNewDefaultsLoopback(t *testing.T) {
 	paths := c.Paths()
 	if paths["binary"] == "" || paths["config"] == "" {
 		t.Fatalf("paths incomplete: %+v", paths)
+	}
+}
+
+func TestAdminURLIsDerivedFromConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := config.Default()
+	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Server.AdminPublic = true
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.CertFile = "./data/certs/admin.crt"
+	cfg.Server.AdminTLS.KeyFile = "./data/certs/admin.key"
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/InstallerEntry123"
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: path, DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.opts.AdminURL, "https://localhost:9443/InstallerEntry123"; got != want {
+		t.Fatalf("admin URL = %q, want %q", got, want)
+	}
+}
+
+func TestAdminURLRemainsEmptyWhenConfigUnavailable(t *testing.T) {
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: filepath.Join(t.TempDir(), "missing.yaml"), DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.opts.AdminURL != "" {
+		t.Fatalf("admin URL = %q, want empty when config cannot be loaded", c.opts.AdminURL)
+	}
+}
+
+func TestAdminURLUsesAdvertisedHostForWildcardListener(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := config.Default()
+	cfg.Server.AdminListen = "0.0.0.0:9443"
+	cfg.Server.AdminPublic = true
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.CertFile = "./data/certs/admin.crt"
+	cfg.Server.AdminTLS.KeyFile = "./data/certs/admin.key"
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CHEESEWAF_ADMIN_PUBLIC_HOST", "admin.example.test")
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: path, DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.opts.AdminURL, "https://admin.example.test:9443/setup"; got != want {
+		t.Fatalf("admin URL = %q, want %q", got, want)
+	}
+}
+
+func TestAdminURLRefreshesWhenConfigChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := config.Default()
+	cfg.Server.AdminListen = "127.0.0.1:9443"
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: path, DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.Paths()["admin_url"], "http://127.0.0.1:9443/setup"; got != want {
+		t.Fatalf("initial admin URL = %q, want %q", got, want)
+	}
+	cfg.Server.AdminListen = "127.0.0.1:10443"
+	cfg.Server.AdminTLS.Enabled = true
+	cfg.Server.AdminTLS.CertFile = "./data/certs/admin.crt"
+	cfg.Server.AdminTLS.KeyFile = "./data/certs/admin.key"
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/InstallerEntry123"
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.Paths()["admin_url"], "https://127.0.0.1:10443/InstallerEntry123"; got != want {
+		t.Fatalf("refreshed admin URL = %q, want %q", got, want)
+	}
+}
+
+func TestAdminURLOverrideRemainsStableWhenConfigChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := config.Default()
+	cfg.Server.AdminListen = "127.0.0.1:9443"
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	const override = "https://console.example.test/custom"
+	c, err := New(Options{Binary: "cheesewaf", ConfigPath: path, DataDir: t.TempDir(), AdminURL: override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Server.AdminListen = "127.0.0.1:10443"
+	if err := config.Save(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Paths()["admin_url"]; got != override {
+		t.Fatalf("admin URL = %q, want explicit override %q", got, override)
 	}
 }
 

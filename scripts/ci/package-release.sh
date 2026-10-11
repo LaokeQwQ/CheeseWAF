@@ -253,6 +253,11 @@ for target in "${targets[@]}"; do
   fi
 done
 
+# Publish the small bootstrap separately so operators can use the documented
+# curl|sudo bash flow without downloading an architecture-specific archive.
+cp "${repo_root}/scripts/install-linux.sh" "${release_dir}/install-linux.sh"
+chmod 0755 "${release_dir}/install-linux.sh"
+
 pushd "$release_dir" >/dev/null
 hashed=()
 while IFS= read -r artifact; do

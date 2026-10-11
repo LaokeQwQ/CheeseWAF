@@ -67,7 +67,10 @@ export const fallbackSystem: SystemConfig = {
     listen: ':80',
     listen_tls: ':443',
     listen_http3: ':443',
-    admin_listen: '127.0.0.1:9443',
+    // A failed config request must not invent an endpoint. The installer and
+    // backend own the actual admin bind address; an empty value keeps the UI
+    // honest until the API response is available.
+    admin_listen: '',
     admin_public: false,
     admin_tls: { enabled: false, cert_file: './data/certs/admin.crt', key_file: './data/certs/admin.key', self_signed: true },
     read_timeout: 10 * second,

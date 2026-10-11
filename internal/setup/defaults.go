@@ -35,7 +35,9 @@ const (
 	DefaultAdminCAFile    = "admin-ca.crt"
 	DefaultAdminCAKeyFile = "admin-ca.key"
 
-	DefaultAdminListen = "127.0.0.1:9443"
+	// The admin surface is intentionally public-by-default for the one-command
+	// installer. TLS and the post-setup random security entry are mandatory.
+	DefaultAdminListen = "0.0.0.0:9443"
 	DefaultHTTPListen  = ":80"
 	DefaultHTTPSListen = ":443"
 
@@ -136,9 +138,9 @@ server:
   listen_tls: %s
   listen_http3: ""
   admin_listen: %s
-  admin_public: false
+  admin_public: true
   admin_tls:
-    enabled: false
+    enabled: true
     cert_file: %s
     key_file: %s
     self_signed: true

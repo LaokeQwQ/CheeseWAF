@@ -29,7 +29,9 @@ func Default() Config {
 	return Config{
 		Deployment: DeploymentConfig{Mode: "standalone"},
 		Server: ServerConfig{
-			Listen:       ":8080",
+			// Safe programmatic fallback; installer and deployment profiles may
+			// explicitly expose the data plane through their rendered config.
+			Listen:       "127.0.0.1:8080",
 			ListenTLS:    "",
 			ListenHTTP3:  "",
 			AdminListen:  "127.0.0.1:9443",

@@ -159,8 +159,8 @@ flowchart TB
 
 | Plane | Default Address | Description |
 | :--- | :--- | :--- |
-| **Data Plane** | `http://127.0.0.1:8080` | Ingress listener for incoming Web traffic and reverse proxying |
-| **Admin Plane** | `http://127.0.0.1:9443` | Web UI, RESTful API, and setup wizard (`https://` in Docker) |
+| **Data Plane** | Configuration-defined (sample: `http://127.0.0.1:8080`) | Ingress listener for incoming Web traffic and reverse proxying |
+| **Admin Plane** | Configuration-defined (installer profile binds `0.0.0.0:9443` and advertises a host) | Web UI, RESTful API, and setup wizard; use the installer output or `server.admin_listen` |
 | **Cluster Plane** | `https://127.0.0.1:9444` | Optional TLS/mTLS node interconnect when `cluster.enabled: true` for health checks and topology discovery |
 
 ---
@@ -224,7 +224,19 @@ CheeseWAF provides flexible deployment models across major operating systems.
 
 Recommended for Linux physical servers and virtual machines requiring minimal resource overhead.
 
-#### Step 1: Download and Extract Release Archive
+#### Recommended: One-command installation
+
+Run this command as root on the target Linux host. It prompts for a language, detects the CPU architecture, downloads the latest stable release, verifies SHA256, installs and starts the systemd service, then prints public/private addresses, the one-time setup URL, paths, and service status:
+
+```bash
+curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
+```
+
+The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The public admin surface uses HTTPS and a one-time setup token; browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
+
+The interactive installer also accepts an application root directory. For example, `/opt/cheesewaf` derives `bin`, `web`, `config`, `data`, and `logs` beneath that root. Press Enter to keep the FHS layout under `/usr/local`, `/usr/share`, `/etc`, `/var/lib`, and `/var/log`; automation can set `CHEESEWAF_INSTALL_DIR` or override individual `CHEESEWAF_*_DIR` variables.
+
+#### Offline/manual installation
 
 Download the official release archive matching your server architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
 
@@ -285,7 +297,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-The management interface listens on `127.0.0.1:9443` by default. Access the setup wizard locally or via an SSH tunnel:
+The installer binds the management interface to `0.0.0.0:9443` by default and prints both public and private addresses. The setup URL is short-lived; completing the wizard revokes its token, and the admin API then requires the generated security-entry cookie:
 
 ```bash
 # View the initial setup URL containing the one-time access token:
@@ -376,7 +388,7 @@ Provides a status bar utility and command-line tools:
 
 ### 1. Initial Setup
 
-Open the setup wizard in your browser (e.g., `http://127.0.0.1:9443/setup`):
+Open the installer-provided `https://PUBLIC_IP:9443/setup` URL (or its private address) for initial setup; afterwards use `https://PUBLIC_IP:9443/<security-entry>` to enter the console:
 1. Enter the access token displayed in your terminal or `setup.url`.
 2. Follow the on-screen prompts to create the primary administrator account.
 
@@ -493,8 +505,11 @@ On first launch, the daemon generates `data/config/cheesewaf.yaml` in the data d
 ```yaml
 server:
   listen: "127.0.0.1:8080"       # Data plane ingress listener
-  admin_listen: "127.0.0.1:9443" # Management plane listener
-  admin_public: false             # Set true only when TLS is configured
+  admin_listen: "0.0.0.0:9443"   # Public management listener used by the installer
+  admin_public: true
+  admin_tls:
+    enabled: true
+  # The installer writes a random security entry after bootstrap
 
 sites:
   - id: "site-demo"

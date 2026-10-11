@@ -180,6 +180,12 @@ cheesewaf_binary_sha256: ""
 cheesewaf_install_dir: "/opt/cheesewaf"
 cheesewaf_config_dir: "/etc/cheesewaf"
 cheesewaf_data_dir: "/var/lib/cheesewaf"
+cheesewaf_unit_dir: "/etc/systemd/system"
+cheesewaf_data_listen: "127.0.0.1:8080"
+cheesewaf_management_listen: "127.0.0.1:9443"
+# admin_public is derived from the selected listener in the generated config.
+# Keep the listener itself as the single source of truth for exposure policy.
+cheesewaf_management_probe_url: "https://127.0.0.1:9443/health/ready"
 cheesewaf_service_user: "cheesewaf"
 cheesewaf_interconnect_port: 9444
 cheesewaf_join_requires_approval: true
@@ -233,7 +239,7 @@ func tasks() string {
       loop:
         - { name: binary, path: "{{ cheesewaf_install_dir }}/cheesewaf" }
         - { name: config, path: "{{ cheesewaf_config_dir }}/cheesewaf.yaml" }
-        - { name: unit, path: /etc/systemd/system/cheesewaf.service }
+        - { name: unit, path: "{{ cheesewaf_unit_dir }}/cheesewaf.service" }
       register: cheesewaf_original_files
 
     - name: Capture CheeseWAF enabled state
@@ -303,7 +309,7 @@ func tasks() string {
 
     - name: Stage CheeseWAF systemd unit
       ansible.builtin.copy:
-        dest: /etc/systemd/system/.cheesewaf.service.new
+        dest: "{{ cheesewaf_unit_dir }}/.cheesewaf.service.new"
         mode: "0644"
         content: |
           [Unit]
@@ -354,7 +360,7 @@ func tasks() string {
 
     - name: Activate CheeseWAF systemd unit atomically
       ansible.builtin.command:
-        argv: [mv, /etc/systemd/system/.cheesewaf.service.new, /etc/systemd/system/cheesewaf.service]
+        argv: [mv, "{{ cheesewaf_unit_dir }}/.cheesewaf.service.new", "{{ cheesewaf_unit_dir }}/cheesewaf.service"]
       changed_when: true
 
     - name: Reload systemd after deployment
@@ -369,7 +375,7 @@ func tasks() string {
 
     - name: Verify CheeseWAF readiness
       ansible.builtin.uri:
-        url: "https://127.0.0.1:9443/health/ready"
+        url: "{{ cheesewaf_management_probe_url }}"
         method: GET
         validate_certs: false
         status_code: 200
@@ -414,7 +420,7 @@ func tasks() string {
       loop:
         - "{{ cheesewaf_install_dir }}/.cheesewaf.new"
         - "{{ cheesewaf_config_dir }}/.cheesewaf.yaml.new"
-        - /etc/systemd/system/.cheesewaf.service.new
+        - "{{ cheesewaf_unit_dir }}/.cheesewaf.service.new"
 
     - name: Reload systemd after rollback
       ansible.builtin.systemd_service:
@@ -448,8 +454,9 @@ func tasks() string {
 
 func configTemplate() string {
 	return `server:
-  listen: ":8080"
-  admin_listen: "127.0.0.1:9443"
+  listen: "{{ cheesewaf_data_listen }}"
+  admin_listen: "{{ cheesewaf_management_listen }}"
+  admin_public: {{ cheesewaf_management_listen is not match('^(127\\.0\\.0\\.1|localhost|::1|\\[::1\\]):') }}
   admin_tls:
     enabled: true
     self_signed: true

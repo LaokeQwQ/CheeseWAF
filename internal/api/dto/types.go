@@ -44,9 +44,10 @@ type SliderCAPTCHAPayload struct {
 }
 
 type SetupRequest struct {
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	AdminListen   string `json:"admin_listen"`
-	AdminStrategy string `json:"admin_strategy"`
-	AdminPublic   bool   `json:"admin_public"`
+	Username          string `json:"username"`
+	Password          string `json:"password"`
+	AdminListen       string `json:"admin_listen"`
+	AdminStrategy     string `json:"admin_strategy"`
+	AdminPublic       bool   `json:"admin_public"`
+	SecurityEntryPath string `json:"security_entry_path,omitempty"`
 }
