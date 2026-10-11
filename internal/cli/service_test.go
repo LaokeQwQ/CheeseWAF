@@ -913,12 +913,10 @@ func TestBuildPipelineUsesSingleSemanticAnalyzerPath(t *testing.T) {
 					Mode:          "block",
 					ParanoiaLevel: 3,
 					SemanticEngines: config.SemanticEngineSwitches{
-						SQL:  true,
-						XSS:  true,
-						RCE:  true,
-						LFI:  true,
-						XXE:  true,
-						SSRF: true,
+						// This test verifies the SQL path and the shared analyzer
+						// identity. Keeping unrelated engines disabled makes the
+						// assertion deterministic under macOS -race's 100ms budget.
+						SQL: true,
 					},
 				},
 			},

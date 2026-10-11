@@ -38,7 +38,7 @@ import {
   Switch,
   toast,
 } from '@/components/ui';
-import { APIRequestError, apiClient, captureSetupTokenFromFragment, hasSetupToken, setSetupTokenForSession, setupAdmin, unwrapAPIResponse } from '../../api/client';
+import { APIRequestError, apiClient, captureSetupTokenFromFragment, hasSetupToken, sanitizeInternalReturnPath, setSetupTokenForSession, setupAdmin, unwrapAPIResponse } from '../../api/client';
 import BrandLogo from '../../components/BrandLogo';
 import i18n, { ensureLanguage, readPersistedLanguage } from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
@@ -52,8 +52,8 @@ import { USERNAME_MAX, USERNAME_MIN, usernameErrorKey } from '../../utils/userna
  * lock themselves out before the console ever loads. Both stay on backend
  * defaults and are documented in the review step instead.
  */
-const DEFAULT_ADMIN_LISTEN = '127.0.0.1:9443';
-const DEFAULT_ADMIN_STRATEGY = 'local';
+const DEFAULT_ADMIN_LISTEN = '0.0.0.0:9443';
+const DEFAULT_ADMIN_STRATEGY = 'public_tls';
 
 const TYPING_INTERVAL_MS = 70;
 const DELETING_INTERVAL_MS = 34;
@@ -705,10 +705,22 @@ export default function SetupPage() {
         confirmed: true,
         integrations: integrationsDraftPayload(integrations),
       });
-      await setupAdmin(account.username, account.password, DEFAULT_ADMIN_LISTEN, DEFAULT_ADMIN_STRATEGY);
+      const setupResult = await setupAdmin(account.username, account.password, DEFAULT_ADMIN_LISTEN, DEFAULT_ADMIN_STRATEGY);
+      const securityEntryPath = typeof setupResult.security_entry_path === 'string'
+        ? sanitizeInternalReturnPath(setupResult.security_entry_path)
+        : '/';
       setDone(true);
       goToStep(STEP_DONE);
-      window.setTimeout(() => navigate('/login', { replace: true }), 800);
+      window.setTimeout(() => {
+        // The security entry must be requested as a real document so the
+        // server can mint its short-lived entry cookie before /login loads.
+        if (securityEntryPath !== '/') {
+          window.location.assign(securityEntryPath);
+          return;
+        }
+        // Keep the legacy client-side redirect for older API responses/mocks.
+        navigate('/login', { replace: true });
+      }, 800);
     } catch (err) {
       const message = err instanceof Error ? err.message : t('setup.failed');
       setErrorMessage(message);
@@ -1611,7 +1623,7 @@ export default function SetupPage() {
             <section className="setup-card mt-2 rounded-2xl border-dashed p-4">
               <h3 className="m-0 mb-1 text-sm font-semibold">{t('setup.advancedTitle')}</h3>
               <p className="m-0 text-xs text-muted-foreground">
-                {t('setup.advancedHint', { listen: DEFAULT_ADMIN_LISTEN, strategy: t('setup.strategyLocal') })}
+                {t('setup.advancedHint', { listen: DEFAULT_ADMIN_LISTEN, strategy: t('setup.strategyPublicTLS') })}
               </p>
               <dl className="m-0 mt-2 grid gap-1 text-xs">
                 <div className="flex gap-3">
@@ -1620,7 +1632,7 @@ export default function SetupPage() {
                 </div>
                 <div className="flex gap-3">
                   <dt className="text-muted-foreground">{t('setup.adminStrategy')}</dt>
-                  <dd className="m-0 ml-auto font-medium">{t('setup.strategyLocal')}</dd>
+                  <dd className="m-0 ml-auto font-medium">{t('setup.strategyPublicTLS')}</dd>
                 </div>
               </dl>
             </section>

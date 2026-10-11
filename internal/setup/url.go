@@ -36,18 +36,45 @@ var (
 )
 
 // BrowserURL is the first-install page, with the token in the URL fragment.
+// A public host supplied by CHEESEWAF_ADMIN_PUBLIC_HOST is preferred when the
+// listener binds a wildcard address; otherwise the historical loopback URL is
+// retained for local CLI use.
 func BrowserURL(scheme, adminListen, token string) string {
+	return BrowserURLWithHost(scheme, adminListen, os.Getenv("CHEESEWAF_ADMIN_PUBLIC_HOST"), token)
+}
+
+// BrowserSetupURL returns the setup page without a token fragment. It uses the
+// same bind-versus-advertised-host rules as the tokenized URL.
+func BrowserSetupURL(scheme, adminListen string) string {
+	return browserURLWithHost(scheme, adminListen, os.Getenv("CHEESEWAF_ADMIN_PUBLIC_HOST"), "", false)
+}
+
+// BrowserURLWithHost separates the bind address from the address an operator
+// can actually open in a browser. This prevents 0.0.0.0 from leaking into
+// setup links while allowing the installer to advertise the detected public IP.
+func BrowserURLWithHost(scheme, adminListen, publicHost, token string) string {
+	return browserURLWithHost(scheme, adminListen, publicHost, token, true)
+}
+
+func browserURLWithHost(scheme, adminListen, publicHost, token string, includeToken bool) string {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(adminListen))
 	if err != nil {
 		return ""
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	publicHost = strings.TrimSpace(strings.Trim(publicHost, "[]"))
+	if (host == "" || host == "0.0.0.0" || host == "::") && publicHost != "" {
+		host = publicHost
+	} else if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
 	if scheme == "" {
 		scheme = "http"
 	}
-	return fmt.Sprintf("%s://%s/setup#setup_token=%s", scheme, net.JoinHostPort(host, port), url.QueryEscape(token))
+	page := fmt.Sprintf("%s://%s/setup", scheme, net.JoinHostPort(host, port))
+	if includeToken {
+		page += "#setup_token=" + url.QueryEscape(token)
+	}
+	return page
 }
 
 // WriteURL stores the first-install URL next to the data directory. It keeps

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/cli/clilang"
 )
 
 const (
@@ -97,10 +99,10 @@ func (w *Wizard) RunWebWizard(ctx context.Context) error {
 		errCh <- server.ListenAndServeTLS(bundle.Paths.CertFile, bundle.Paths.KeyFile)
 	}()
 
-	fmt.Println("🧀 首次启动 — 请在浏览器中完成初始化向导")
-	fmt.Printf("   → 打开 https://%s/setup\n", w.adminAPI())
-	fmt.Printf("   → 默认配置: %s\n", bundle.Paths.ConfigFile)
-	fmt.Printf("   → 管理端证书: %s\n", bundle.Paths.CertFile)
+	fmt.Println(clilang.T("setup.web.intro"))
+	fmt.Printf("   → %s\n", clilang.T("setup.web.open", BrowserSetupURL("https", w.adminAPI())))
+	fmt.Printf("   → %s\n", clilang.T("setup.web.config", bundle.Paths.ConfigFile))
+	fmt.Printf("   → %s\n", clilang.T("setup.web.certificate", bundle.Paths.CertFile))
 
 	select {
 	case <-ctx.Done():
@@ -218,6 +220,7 @@ func readSetupPayload(req *http.Request) (SetupPayload, error) {
 	}
 	payload.AdminStrategy = req.Form.Get("admin_strategy")
 	payload.AdminPublic = req.Form.Get("admin_public") == "true" || req.Form.Get("admin_public") == "on"
+	payload.SecurityEntryPath = req.Form.Get("security_entry_path")
 	return payload, nil
 }
 
@@ -285,9 +288,10 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
       <label>Admin access strategy
         <select name="admin_strategy">
           <option value="local">Local listener, reverse proxy, jump host, or SSH tunnel</option>
-          <option value="public_tls">Public HTTPS with generated local CA-signed certificate</option>
+          <option value="public_tls" selected>Public HTTPS with generated local CA-signed certificate</option>
         </select>
       </label>
+      <label>Admin security entry (ASCII letters and digits only; blank generates one)<input name="security_entry_path" pattern="[A-Za-z0-9]{8,64}" minlength="8" maxlength="64" autocomplete="off"></label>
       <button type="submit">Complete setup</button>
     </form>
   </main>

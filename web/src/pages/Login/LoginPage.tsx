@@ -1305,7 +1305,7 @@ function normalizeLoginOptions(value: LoginOptions | null | undefined): LoginOpt
       enabled: value?.captcha?.enabled ?? true,
       mode: value?.captcha?.mode || 'slider',
       algorithm: value?.captcha?.algorithm ?? 'SHA-256',
-      max_number: value?.captcha?.max_number ?? 12000,
+      max_number: value?.captcha?.max_number ?? 75000,
       slider: value?.captcha?.slider ?? {
         width: 320,
         height: 150,

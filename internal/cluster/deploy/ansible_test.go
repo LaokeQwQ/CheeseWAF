@@ -66,6 +66,16 @@ func TestAnsiblePackageRequiresEtcdForMultiNodeConfiguration(t *testing.T) {
 	if !strings.Contains(vars, "cheesewaf_etcd_endpoints: []") {
 		t.Fatalf("group vars missing explicit etcd endpoint setting:\n%s", vars)
 	}
+	for _, want := range []string{
+		"cheesewaf_unit_dir:",
+		"cheesewaf_data_listen:",
+		"cheesewaf_management_listen:",
+		"cheesewaf_management_probe_url:",
+	} {
+		if !strings.Contains(vars, want) {
+			t.Fatalf("group vars missing configurable deployment value %q:\n%s", want, vars)
+		}
+	}
 	if !strings.Contains(config, "groups['cheesewaf'] | length > 1 %}etcd") ||
 		!strings.Contains(config, "etcd_endpoints: {{ cheesewaf_etcd_endpoints | to_json }}") {
 		t.Fatalf("multi-node template does not select etcd explicitly:\n%s", config)
@@ -73,6 +83,11 @@ func TestAnsiblePackageRequiresEtcdForMultiNodeConfiguration(t *testing.T) {
 	if !strings.Contains(tasks, "Require etcd endpoints for shared cluster configuration") ||
 		!strings.Contains(tasks, "groups['cheesewaf'] | length <= 1 or cheesewaf_etcd_endpoints | length > 0") {
 		t.Fatalf("deployment preflight does not fail closed without etcd endpoints:\n%s", tasks)
+	}
+	for _, hardcoded := range []string{"/etc/systemd/system/cheesewaf.service", "https://127.0.0.1:9443/health/ready"} {
+		if strings.Contains(tasks, hardcoded) {
+			t.Fatalf("generated tasks hardcode deployment value %q", hardcoded)
+		}
 	}
 }
 
@@ -102,7 +117,7 @@ func TestAnsiblePackageFailsClosedWithoutVerifiedRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := string(pkg.File("roles/cheesewaf/tasks/main.yml"))
-	for _, want := range []string{"cheesewaf_binary_sha256", "ansible.builtin.get_url", "ansible.builtin.systemd_service", "/health/ready"} {
+	for _, want := range []string{"cheesewaf_binary_sha256", "ansible.builtin.get_url", "ansible.builtin.systemd_service", "cheesewaf_management_probe_url"} {
 		if !strings.Contains(tasks, want) {
 			t.Fatalf("generated tasks missing %q", want)
 		}
@@ -193,6 +208,11 @@ func TestAnsibleUnitStartsServeWithDataDir(t *testing.T) {
 	cfg := string(pkg.File("roles/cheesewaf/templates/cheesewaf.yaml.j2"))
 	if !strings.Contains(cfg, "admin_tls:") || !strings.Contains(cfg, `data_dir: "{{ cheesewaf_data_dir }}"`) {
 		t.Fatalf("cluster config template must set admin TLS and data dir")
+	}
+	if !strings.Contains(cfg, `listen: "{{ cheesewaf_data_listen }}"`) ||
+		!strings.Contains(cfg, `admin_listen: "{{ cheesewaf_management_listen }}"`) ||
+		!strings.Contains(cfg, `admin_public: {{ cheesewaf_management_listen is not match(`) {
+		t.Fatalf("cluster config template must use configurable listener variables")
 	}
 }
 
