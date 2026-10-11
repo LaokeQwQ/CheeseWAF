@@ -598,7 +598,7 @@ check_mime() {
   curl_admin -fsS --connect-timeout 2 --max-time 5 -D "$headers" -o /dev/null \
     "${admin_url}${relative}"
   content_type="$(
-    awk 'BEGIN { IGNORECASE=1 } /^Content-Type:/ {
+    awk 'tolower($0) ~ /^content-type:/ {
       sub(/^[^:]+:[[:space:]]*/, "")
       sub(/\r$/, "")
       print
