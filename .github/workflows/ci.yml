@@ -154,7 +154,7 @@ jobs:
           SEMANTIC_BENCH_OUTPUT: /tmp/cheesewaf-semantic-benchmark.json
         run: bash scripts/ci/run-semantic-benchmark.sh
       - name: Upload semantic performance baseline
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: semantic-benchmark-${{ github.run_number }}-${{ github.sha }}
           path: /tmp/cheesewaf-semantic-benchmark.json
@@ -548,7 +548,7 @@ jobs:
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE="$signing_scope" \
             bash scripts/ci/verify-release.sh release
       - name: Upload branch release artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release/*
@@ -596,7 +596,7 @@ jobs:
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=macos \
             bash scripts/ci/verify-release.sh release
       - name: Upload macOS disk images
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}-dmg
           path: |
