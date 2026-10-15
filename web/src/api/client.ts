@@ -1,6 +1,7 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
+import i18n from '../i18n';
 import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AIProviderOpsResponse, AISelfLearningReport, AIUsageSnapshot, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { ScheduledTaskHistoryEntry, TimeSyncStatus } from '../types/api';
 import type { OTAStatus } from '../types/api';
@@ -342,7 +343,8 @@ export class APIRequestError extends Error {
   approval?: AIApprovalRequest;
 
   constructor(message: string, code?: string, status?: number, traceID?: string, data?: unknown) {
-    super(traceID ? `${message} · Event / Trace ID: ${traceID}` : message);
+    const displayMessage = localizedAPIErrorMessage(message, code, status);
+    super(traceID ? `${displayMessage} · ${i18n.t('common.apiErrors.traceID', { id: traceID })}` : displayMessage);
     this.name = 'APIRequestError';
     this.rawMessage = message;
     this.code = code;
@@ -353,6 +355,37 @@ export class APIRequestError extends Error {
       this.approval = data as AIApprovalRequest;
     }
   }
+}
+
+const apiErrorTranslationKeys: Record<string, string> = {
+  NETWORK_ERROR: 'common.apiErrors.network',
+  REQUEST_TIMEOUT: 'common.apiErrors.timeout',
+  CAPTCHA_UNAVAILABLE: 'login.captchaUnavailable',
+  CAPTCHA_CAPACITY_REACHED: 'common.apiErrors.captchaCapacityReached',
+  CAPTCHA_ERROR: 'common.apiErrors.captchaFailure',
+};
+
+function localizedAPIErrorMessage(message: string, code?: string, status?: number): string {
+  const codeKey = code ? apiErrorTranslationKeys[code] : undefined;
+  const genericHTTPFailure = /^Request failed with status code \d+$/i.test(message);
+  const statusKey = !codeKey && genericHTTPFailure ? apiHTTPErrorTranslationKey(status) : undefined;
+  const key = codeKey ?? statusKey;
+  return key ? i18n.t(key, { status }) : message;
+}
+
+function apiHTTPErrorTranslationKey(status?: number): string | undefined {
+  if (!status) return undefined;
+  if (status === 401) return 'common.apiErrors.unauthorized';
+  if (status === 403) return 'common.apiErrors.forbidden';
+  if (status === 404) return 'common.apiErrors.notFound';
+  if (status === 409) return 'common.apiErrors.conflict';
+  if (status === 413) return 'common.apiErrors.requestTooLarge';
+  if (status === 429) return 'common.apiErrors.rateLimited';
+  if (status === 502) return 'common.apiErrors.badGateway';
+  if (status === 503) return 'common.apiErrors.serviceUnavailable';
+  if (status === 504) return 'common.apiErrors.gatewayTimeout';
+  if (status >= 500) return 'common.apiErrors.serverError';
+  return 'common.apiErrors.httpStatus';
 }
 
 const sessionInvalidErrorCodes = new Set(['UNAUTHORIZED', 'SESSION_EXPIRED', 'SESSION_INVALID']);

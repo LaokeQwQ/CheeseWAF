@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import i18n, { ensureLanguage } from '../i18n';
 import {
   APIRequestError,
   askAIAssistantStream,
@@ -511,6 +512,34 @@ describe('authenticated fetch 401 handling', () => {
 
     await expect(analyzeEventsStream({ limit: 10 }, onItem)).rejects.toMatchObject({ code: 'AI_EVENTS_ANALYSIS_STREAM_INCOMPLETE' });
     expect(onItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('localized API errors', () => {
+  it('localizes HTTP failures and stable CAPTCHA error codes while preserving raw details', async () => {
+    const previousLanguage = i18n.language;
+    await ensureLanguage('en-US');
+    await i18n.changeLanguage('en-US');
+    try {
+      vi.spyOn(apiClient, 'get').mockRejectedValueOnce(Object.assign(new Error('Request failed with status code 502'), {
+        isAxiosError: true,
+        response: { status: 502, headers: {}, config: {}, data: 'upstream unavailable' },
+      }));
+      await expect(fetchStats()).rejects.toMatchObject({
+        message: 'The console API gateway could not reach the backend (HTTP 502). Check the service or proxy.',
+        rawMessage: 'Request failed with status code 502',
+        status: 502,
+      });
+
+      const tracedError = new APIRequestError('Request failed with status code 502', undefined, 502, 'event-123');
+      expect(tracedError.message).toContain('Event / Trace ID: event-123');
+
+      const captchaError = new APIRequestError('captcha verification is not configured', 'CAPTCHA_UNAVAILABLE', 503);
+      expect(captchaError.message).toBe('Login CAPTCHA is unavailable. Refresh and try again.');
+      expect(captchaError.rawMessage).toBe('captcha verification is not configured');
+    } finally {
+      await i18n.changeLanguage(previousLanguage || 'zh-CN');
+    }
   });
 });
 

@@ -115,6 +115,11 @@ func (h *Handler) applyLiveRuntime(candidate *config.Config) error {
 			return err
 		}
 	}
+	if h.OnCAPTCHAProvidersChanged != nil {
+		if err := h.OnCAPTCHAProvidersChanged(candidate.CAPTCHAProviders); err != nil {
+			return err
+		}
+	}
 	if h.OnProtectionChanged != nil {
 		if err := h.OnProtectionChanged(candidate.Protection); err != nil {
 			return err

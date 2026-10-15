@@ -6,7 +6,7 @@ import CaptchaAssetsPanel from './CaptchaAssetsPanel';
 
 const api = vi.hoisted(() => ({ fetchCAPTCHAAssets: vi.fn(), fetchCAPTCHAAssetConfig: vi.fn(), uploadCAPTCHAAsset: vi.fn(), deleteCAPTCHAAsset: vi.fn(), fetchCAPTCHAAssetPreview: vi.fn(), updateCAPTCHAAssetConfig: vi.fn(), testCAPTCHAAssetConfig: vi.fn() }));
 vi.mock('../../api/captchaAssets', () => api);
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}:${options.name}` : key, i18n: { resolvedLanguage: 'en-US' } }) }));
+vi.mock('react-i18next', () => ({ initReactI18next: { type: '3rdParty', init: () => undefined }, useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}:${options.name}` : key, i18n: { resolvedLanguage: 'en-US' } }) }));
 
 const config = { backend: 's3' as const, local: { path: './data' }, s3: { endpoint: 's3.example.test', bucket: 'captcha', region: 'us-east-1', path_style: true, prefix: 'assets', use_tls: true, allow_private_endpoint: true, request_timeout: 5_000_000_000, credential_configured: true, metadata_key_configured: true }, limits: { max_image_bytes: 100, max_font_bytes: 200, max_pixels: 300 } };
 function renderPanel() { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return render(<QueryClientProvider client={client}><CaptchaAssetsPanel/></QueryClientProvider>); }

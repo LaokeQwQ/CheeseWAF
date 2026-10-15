@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyTheme, loadThemeStyles, readInitialTheme, resolveTheme } from './index';
 
 function stubMatchMedia(scheme: 'light' | 'dark') {
@@ -19,10 +19,17 @@ function stubMatchMedia(scheme: 'light' | 'dark') {
 }
 
 describe('theme bootstrap', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.removeAttribute('data-theme');
     document.documentElement.classList.remove('dark');
+    document.documentElement.classList.remove('theme-transitioning');
   });
 
   it('reads a valid persisted theme before React mounts', () => {
@@ -72,6 +79,27 @@ describe('theme bootstrap', () => {
     expect(document.documentElement.dataset.theme).toBe('pink-white');
     expect(document.documentElement.style.colorScheme).toBe('light');
     expect(document.documentElement.classList.contains('dark')).toBe(false);
+  });
+
+  it('animates actual theme changes and clears the temporary transition state', () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false }));
+    applyTheme('light');
+
+    applyTheme('dark', true);
+    expect(document.documentElement.classList.contains('theme-transitioning')).toBe(true);
+
+    vi.advanceTimersByTime(320);
+    expect(document.documentElement.classList.contains('theme-transitioning')).toBe(false);
+  });
+
+  it('keeps theme changes immediate when reduced motion is preferred', () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
+    applyTheme('light');
+
+    applyTheme('dark', true);
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.classList.contains('theme-transitioning')).toBe(false);
   });
 
   it('resolves automatic appearance from the current operating-system preference', () => {

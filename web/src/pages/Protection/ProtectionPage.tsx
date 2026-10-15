@@ -61,6 +61,7 @@ const fallback: ProtectionConfig = {
   ratelimit: { enabled: true, default: { requests: 100, window: '1m', burst: 20 } },
   bot: {
     enabled: false,
+    captcha_provider: 'builtin',
     js_challenge: false,
     captcha: false,
     captcha_type: 'pow',
@@ -113,6 +114,7 @@ const geoRegionGroups = [
 
 type BotFormState = {
   enabled: boolean;
+  captchaProvider: string;
   jsChallenge: boolean;
   captcha: boolean;
   captchaType: string;
@@ -153,6 +155,7 @@ type BotFormState = {
 function botToForm(bot: ProtectionConfig['bot']): BotFormState {
   return {
     enabled: bot.enabled,
+    captchaProvider: bot.captcha_provider || 'builtin',
     jsChallenge: bot.js_challenge,
     captcha: bot.captcha,
     captchaType: bot.captcha_type || 'pow',
@@ -386,6 +389,7 @@ export default function ProtectionPage() {
     botMutation.mutate({ payload: {
       ...protection.bot,
       enabled: values.enabled ?? protection.bot.enabled,
+      captcha_provider: values.captchaProvider ?? protection.bot.captcha_provider ?? 'builtin',
       js_challenge: values.jsChallenge ?? protection.bot.js_challenge,
       captcha: values.captcha ?? protection.bot.captcha,
       captcha_type: values.captchaType ?? protection.bot.captcha_type,
@@ -549,6 +553,15 @@ export default function ProtectionPage() {
                   </Field>
                   <Field label={t('protection.captcha')} hint={t('protection.captchaHint')}>
                     <Switch checked={botForm.captcha} onCheckedChange={(v) => patchBot('captcha', v)} />
+                  </Field>
+                  <Field label={t('protection.captchaProvider')} hint={t('protection.captchaProviderHint')}>
+                    <Select value={botForm.captchaProvider} onValueChange={(v) => patchBot('captchaProvider', v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="builtin">{t('protection.captchaProviderBuiltin')}</SelectItem>
+                        <SelectItem value="cap">Cap Standalone</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </Field>
                   <Field label={t('protection.captchaType')} hint={t('protection.captchaTypeHint')}>
                     <CaptchaTypeSelect value={botForm.captchaType} onChange={(v) => patchBot('captchaType', String(v))} />

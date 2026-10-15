@@ -8,6 +8,31 @@ import {
 } from './systemModel';
 
 describe('system login branding model', () => {
+  it('normalizes shared Cap provider settings while preserving secret readiness only', () => {
+    const normalized = normalizeSystem({
+      ...fallbackSystem,
+      captcha_providers: {
+        cap: {
+          api_endpoint: 'https://captcha.example.test',
+          widget_url: 'https://captcha.example.test/cap.js',
+          wasm_url: 'https://captcha.example.test/wasm/',
+          hashwx_url: 'https://captcha.example.test/hashwx/',
+          timeout: 8_000_000_000,
+          secret_set: true,
+        },
+      },
+    });
+
+    expect(normalized.captcha_providers.cap).toEqual({
+      api_endpoint: 'https://captcha.example.test',
+      widget_url: 'https://captcha.example.test/cap.js',
+      wasm_url: 'https://captcha.example.test/wasm/',
+      hashwx_url: 'https://captcha.example.test/hashwx/',
+      timeout: 8_000_000_000,
+      secret_set: true,
+    });
+  });
+
   it('round-trips copyright and show_product_version through normalizeSystem', () => {
     const normalized = normalizeSystem({
       ...fallbackSystem,

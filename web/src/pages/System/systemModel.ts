@@ -27,6 +27,16 @@ export const fallbackSystem: SystemConfig = {
     vulnerability_feeds: { available: false, reason: 'NOT_IMPLEMENTED' },
     bot_challenge_redis: { available: false, reason: 'NOT_IMPLEMENTED' },
   },
+  captcha_providers: {
+    cap: {
+      api_endpoint: '',
+      widget_url: '',
+      wasm_url: '',
+      hashwx_url: '',
+      timeout: 5 * second,
+      secret_set: false,
+    },
+  },
   console: {
     login: {
       captcha: {
@@ -120,6 +130,14 @@ export function normalizeSystem(input?: Partial<SystemConfig>): SystemConfig {
   return {
     ...fallbackSystem,
     ...next,
+    captcha_providers: {
+      ...fallbackSystem.captcha_providers,
+      ...next.captcha_providers,
+      cap: {
+        ...fallbackSystem.captcha_providers.cap,
+        ...next.captcha_providers?.cap,
+      },
+    },
     capabilities: {
       ...fallbackSystem.capabilities,
       ...next.capabilities,

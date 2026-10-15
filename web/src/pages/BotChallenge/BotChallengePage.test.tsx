@@ -19,7 +19,8 @@ vi.mock('../../api/client', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/client')>(),
   fetchLogs: clientAPI.fetchLogs,
 }));
-vi.mock('react-i18next', () => ({
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...await importOriginal<typeof import('react-i18next')>(),
   useTranslation: () => ({
     t: (key: string) => key,
     i18n: { resolvedLanguage: 'en-US' },
@@ -131,6 +132,11 @@ describe('Bot challenge trend interaction', () => {
 
     expect(screen.getByRole('group', { name: 'botChallenge.trendAria' })).toBeTruthy();
     const bucket = screen.getByRole('button', { name: /botChallenge\.bucketAria/ });
+    const bars = bucket.querySelectorAll('i');
+    expect(bars[0].style.getPropertyValue('--bar-scale')).toBe('1');
+    expect(bars[1].style.getPropertyValue('--bar-scale')).toBe('0.75');
+    expect(bars[2].style.getPropertyValue('--bar-scale')).toBe('0.25');
+    expect(stylesSource).toContain('transform: scaleY(var(--bar-scale, 0))');
     expect(bucket.getAttribute('aria-expanded')).toBe('false');
     expect(bucket.tabIndex).toBe(0);
 

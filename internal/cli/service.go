@@ -376,6 +376,7 @@ func runServe(ctx context.Context) error {
 		OnSitesChanged:                     reloadSites,
 		OnEdgeChanged:                      proxyServer.UpdateEdge,
 		OnProtectionChanged:                proxyServer.UpdateProtection,
+		OnCAPTCHAProvidersChanged:          proxyServer.UpdateCAPTCHAProviders,
 		RequireProtectionPolicyCoordinator: productionDeps != nil,
 		OnAPISecChanged:                    proxyServer.UpdateAPISec,
 		OnBlockPageChanged:                 proxyServer.UpdateBlockPage,

@@ -10,28 +10,29 @@ import (
 )
 
 type Config struct {
-	Deployment    DeploymentConfig    `yaml:"deployment" json:"deployment"`
-	Server        ServerConfig        `yaml:"server" json:"server"`
-	TimeSync      TimeSyncConfig      `yaml:"time_sync" json:"time_sync"`
-	TLS           TLSConfig           `yaml:"tls" json:"tls"`
-	Setup         SetupConfig         `yaml:"setup" json:"setup"`
-	Cluster       ClusterConfig       `yaml:"cluster" json:"cluster"`
-	Console       ConsoleConfig       `yaml:"console" json:"console"`
-	CAPTCHAAssets CAPTCHAAssetsConfig `yaml:"captcha_assets" json:"captcha_assets"`
-	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
-	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
-	Storage       StorageConfig       `yaml:"storage" json:"storage"`
-	Logging       LoggingConfig       `yaml:"logging" json:"logging"`
-	ACME          ACMEConfig          `yaml:"acme" json:"acme"`
-	AI            AIConfig            `yaml:"ai" json:"ai"`
-	Update        UpdateConfig        `yaml:"update" json:"update"`
-	Vulnerability VulnerabilityConfig `yaml:"vulnerability" json:"vulnerability"`
-	Scheduler     SchedulerConfig     `yaml:"scheduler" json:"scheduler"`
-	Edge          EdgeConfig          `yaml:"edge" json:"edge"`
-	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
-	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
-	BlockPage     BlockPageConfig     `yaml:"block_page" json:"block_page"`
-	Performance   PerformanceConfig   `yaml:"performance" json:"performance"`
+	Deployment       DeploymentConfig       `yaml:"deployment" json:"deployment"`
+	Server           ServerConfig           `yaml:"server" json:"server"`
+	TimeSync         TimeSyncConfig         `yaml:"time_sync" json:"time_sync"`
+	TLS              TLSConfig              `yaml:"tls" json:"tls"`
+	Setup            SetupConfig            `yaml:"setup" json:"setup"`
+	Cluster          ClusterConfig          `yaml:"cluster" json:"cluster"`
+	Console          ConsoleConfig          `yaml:"console" json:"console"`
+	CAPTCHAAssets    CAPTCHAAssetsConfig    `yaml:"captcha_assets" json:"captcha_assets"`
+	CAPTCHAProviders CAPTCHAProvidersConfig `yaml:"captcha_providers" json:"captcha_providers"`
+	Sites            []SiteConfig           `yaml:"sites" json:"sites"`
+	Protection       ProtectionConfig       `yaml:"protection" json:"protection"`
+	Storage          StorageConfig          `yaml:"storage" json:"storage"`
+	Logging          LoggingConfig          `yaml:"logging" json:"logging"`
+	ACME             ACMEConfig             `yaml:"acme" json:"acme"`
+	AI               AIConfig               `yaml:"ai" json:"ai"`
+	Update           UpdateConfig           `yaml:"update" json:"update"`
+	Vulnerability    VulnerabilityConfig    `yaml:"vulnerability" json:"vulnerability"`
+	Scheduler        SchedulerConfig        `yaml:"scheduler" json:"scheduler"`
+	Edge             EdgeConfig             `yaml:"edge" json:"edge"`
+	Monitor          MonitorConfig          `yaml:"monitor" json:"monitor"`
+	APISec           APISecConfig           `yaml:"apisec" json:"apisec"`
+	BlockPage        BlockPageConfig        `yaml:"block_page" json:"block_page"`
+	Performance      PerformanceConfig      `yaml:"performance" json:"performance"`
 }
 
 // PerformanceConfig holds runtime tuning that is independent of security policy.
@@ -119,6 +120,27 @@ type CAPTCHAAssetsConfig struct {
 	Local   CAPTCHAAssetLocal  `yaml:"local" json:"local"`
 	S3      CAPTCHAAssetS3     `yaml:"s3" json:"s3"`
 	Limits  CAPTCHAAssetLimits `yaml:"limits" json:"limits"`
+}
+
+// CAPTCHAProvidersConfig configures optional external CAPTCHA services shared
+// by the administrator login and the public Bot challenge page.
+type CAPTCHAProvidersConfig struct {
+	Cap CapStandaloneConfig `yaml:"cap" json:"cap"`
+}
+
+// CapStandaloneConfig points to a Cap Standalone site. SecretFile contains
+// the server-only siteverify secret and is deliberately omitted from JSON.
+type CapStandaloneConfig struct {
+	APIEndpoint string        `yaml:"api_endpoint" json:"api_endpoint"`
+	WidgetURL   string        `yaml:"widget_url" json:"widget_url"`
+	WASMURL     string        `yaml:"wasm_url" json:"wasm_url"`
+	HashWXURL   string        `yaml:"hashwx_url" json:"hashwx_url"`
+	SecretFile  string        `yaml:"secret_file" json:"-"`
+	Timeout     time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+func (c CapStandaloneConfig) SiteVerifyEndpoint() string {
+	return strings.TrimRight(strings.TrimSpace(c.APIEndpoint), "/") + "/siteverify"
 }
 
 type CAPTCHAAssetLocal struct {
@@ -301,6 +323,7 @@ type ConsoleLoginConfig struct {
 
 type LoginCAPTCHAConfig struct {
 	Enabled   bool                     `yaml:"enabled" json:"enabled"`
+	Provider  string                   `yaml:"provider" json:"provider"`
 	Mode      string                   `yaml:"mode" json:"mode"` // slider/pow
 	MaxNumber int                      `yaml:"max_number" json:"max_number"`
 	TTL       time.Duration            `yaml:"ttl" json:"ttl"`
@@ -656,6 +679,7 @@ type BotProtectionConfig struct {
 	RiskConfidenceMin          float64       `yaml:"risk_confidence_min" json:"risk_confidence_min"`
 	JSChallenge                bool          `yaml:"js_challenge" json:"js_challenge"`
 	CAPTCHA                    bool          `yaml:"captcha" json:"captcha"`
+	CAPTCHAProvider            string        `yaml:"captcha_provider" json:"captcha_provider"`
 	CAPTCHAType                string        `yaml:"captcha_type" json:"captcha_type"`
 	CAPTCHATypes               []string      `yaml:"captcha_types" json:"captcha_types"`
 	CAPTCHAChallengeTTL        time.Duration `yaml:"captcha_challenge_ttl" json:"captcha_challenge_ttl"`

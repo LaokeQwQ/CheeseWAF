@@ -89,6 +89,7 @@ func Default() Config {
 				SessionTTL: AdminSessionTTL,
 				CAPTCHA: LoginCAPTCHAConfig{
 					Enabled:   true,
+					Provider:  "builtin",
 					Mode:      "slider",
 					MaxNumber: 75000,
 					TTL:       2 * time.Minute,
@@ -129,6 +130,7 @@ func Default() Config {
 			S3:     CAPTCHAAssetS3{Region: "us-east-1", UseTLS: true, RequestTimeout: 15 * time.Second},
 			Limits: CAPTCHAAssetLimits{MaxImageBytes: 8 << 20, MaxFontBytes: 16 << 20, MaxPixels: 16_000_000, MaxAssets: 512, MaxTotalBytes: 512 << 20},
 		},
+		CAPTCHAProviders: CAPTCHAProvidersConfig{Cap: CapStandaloneConfig{Timeout: 5 * time.Second}},
 		Sites: []SiteConfig{
 			{
 				ID:          "default",
@@ -207,6 +209,7 @@ func Default() Config {
 				RiskConfidenceMin:      0.6,
 				JSChallenge:            true,
 				CAPTCHA:                false,
+				CAPTCHAProvider:        "builtin",
 				CAPTCHAType:            "pow",
 				CAPTCHATypes:           []string{"pow", "shape_slider", "rotate", "text_click"},
 				CAPTCHAChallengeTTL:    2 * time.Minute,
@@ -704,6 +707,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.CAPTCHAAssets.Backend == "" {
 		cfg.CAPTCHAAssets.Backend = def.CAPTCHAAssets.Backend
 	}
+	if cfg.CAPTCHAProviders.Cap.Timeout == 0 {
+		cfg.CAPTCHAProviders.Cap.Timeout = def.CAPTCHAProviders.Cap.Timeout
+	}
 	if cfg.CAPTCHAAssets.Local.Path == "" {
 		cfg.CAPTCHAAssets.Local.Path = filepath.Join(cfg.Setup.DataDir, "captcha-assets")
 	}
@@ -754,6 +760,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Console.Login.CAPTCHA.Mode == "" {
 		cfg.Console.Login.CAPTCHA.Mode = def.Console.Login.CAPTCHA.Mode
+	}
+	if cfg.Console.Login.CAPTCHA.Provider == "" {
+		cfg.Console.Login.CAPTCHA.Provider = def.Console.Login.CAPTCHA.Provider
 	}
 	if cfg.Console.Login.CAPTCHA.TTL == 0 {
 		cfg.Console.Login.CAPTCHA.TTL = def.Console.Login.CAPTCHA.TTL
@@ -978,6 +987,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Protection.Bot.CAPTCHAType == "" {
 		cfg.Protection.Bot.CAPTCHAType = def.Protection.Bot.CAPTCHAType
+	}
+	if cfg.Protection.Bot.CAPTCHAProvider == "" {
+		cfg.Protection.Bot.CAPTCHAProvider = def.Protection.Bot.CAPTCHAProvider
 	}
 	cfg.Protection.Bot.CAPTCHATypes = migrateBehaviorCAPTCHATypeList(cfg.Protection.Bot.CAPTCHATypes)
 	if len(cfg.Protection.Bot.CAPTCHATypes) == 0 {

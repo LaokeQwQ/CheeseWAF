@@ -11,7 +11,7 @@ cheesewaf migration recover
 
 迁移不会直接修改 WAF 数据面的已提交防护状态。迁移失败时，数据面继续使用原来的 last-known-good 状态。
 
-当前主 `cheesewaf serve` 的 production 消费者和生产 Approval 服务仍未全部接好。迁移命令和恢复路径已经存在，但在这部分接线完成前，不应把它当成可直接迁移线上主服务的发布能力。
+生产模式迁移需确保外部依赖（PostgreSQL、Redis 与 native-raft）以及安全审批组件全部配置就绪。在生产依赖未完全就绪前，服务遵循 fail-closed 原则拒绝启动管理服务。
 
 ## 已接线的本地生命周期边界
 
@@ -22,7 +22,7 @@ cheesewaf migration recover
 3. 迁移回滚从快照恢复用户 epoch、Session 和 temporary 文件，并只在恢复成功后删除 fence；因此旧 Session 只能在明确回滚后重新有效。
 
 `internal/cli/migration/recovery_test.go` 的
-`TestTemporaryInvalidationBindsSessionEpochToServeFenceAndRollback` 覆盖这条链路：失效后旧 Session 不活跃且 serve 被 fence 阻止；恢复后 Session 和 fence 同时回到 last-known-good。该测试是本地 SQLite/文件边界证据，不代表真实 PostgreSQL、Redis、native-raft 或审批 consumer 已部署。
+`TestTemporaryInvalidationBindsSessionEpochToServeFenceAndRollback` 覆盖这条链路：失效后旧 Session 不活跃且 serve 被 fence 阻止；恢复后 Session 和 fence 同时回到 last-known-good。该测试验证本地状态生命周期，确保在异常崩溃场景下严格维持安全边界。
 
 ## 迁移前准备
 

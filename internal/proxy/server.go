@@ -51,6 +51,9 @@ type requestDetectionPipeline interface {
 type Server struct {
 	config           *config.Config
 	runtimeMu        sync.RWMutex
+	policyUpdateMu   sync.Mutex
+	protection       config.ProtectionConfig
+	captchaProviders config.CAPTCHAProvidersConfig
 	pipeline         requestDetectionPipeline
 	pipelineMu       sync.RWMutex
 	logSink          storage.LogSink
@@ -194,8 +197,14 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if pipeline != nil {
 		activePipeline = pipeline
 	}
+	botPolicy, err := bot.NewPolicyWithCAPTCHAProviders(cfg.Protection.Bot, cfg.CAPTCHAProviders, clock)
+	if err != nil {
+		return nil, fmt.Errorf("create bot policy: %w", err)
+	}
 	server := &Server{
 		config:           cfg,
+		protection:       cfg.Protection,
+		captchaProviders: cfg.CAPTCHAProviders,
 		pipeline:         activePipeline,
 		logSink:          sink,
 		renderer:         renderer,
@@ -204,7 +213,7 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 		geoip:            geoip,
 		intel:            intel,
 		acl:              acl.NewPolicy(cfg.Protection.ACL),
-		bot:              bot.NewPolicyWithClock(cfg.Protection.Bot, clock),
+		bot:              botPolicy,
 		limiter:          ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
 		health:           health,
 		apiSchema:        apiSchema,
@@ -336,6 +345,8 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	if s == nil {
 		return nil
 	}
+	s.policyUpdateMu.Lock()
+	defer s.policyUpdateMu.Unlock()
 	access, err := ip.NewAccessPolicy(protection.IP)
 	if err != nil {
 		return err
@@ -349,19 +360,48 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 		_ = geoip.Close()
 		return err
 	}
+	s.runtimeMu.RLock()
+	providers := s.captchaProviders
+	s.runtimeMu.RUnlock()
+	botPolicy, err := bot.NewPolicyWithCAPTCHAProviders(protection.Bot, providers, s.clock)
+	if err != nil {
+		_ = geoip.Close()
+		return fmt.Errorf("create bot policy: %w", err)
+	}
 	s.runtimeMu.Lock()
 	oldGeoIP := s.geoip
 	s.access = access
 	s.geoip = geoip
 	s.intel = intel
 	s.acl = acl.NewPolicy(protection.ACL)
-	s.bot = bot.NewPolicyWithClock(protection.Bot, s.clock)
+	s.bot = botPolicy
 	s.limiter = ratelimit.New(protection.RateLimit.Default, protection.RateLimit.Enabled)
 	s.protectionPolicy = protection.Policy
+	s.protection = protection
 	s.runtimeMu.Unlock()
 	if oldGeoIP != nil {
 		_ = oldGeoIP.Close()
 	}
+	return nil
+}
+
+func (s *Server) UpdateCAPTCHAProviders(providers config.CAPTCHAProvidersConfig) error {
+	if s == nil {
+		return nil
+	}
+	s.policyUpdateMu.Lock()
+	defer s.policyUpdateMu.Unlock()
+	s.runtimeMu.RLock()
+	protection := s.protection
+	s.runtimeMu.RUnlock()
+	botPolicy, err := bot.NewPolicyWithCAPTCHAProviders(protection.Bot, providers, s.clock)
+	if err != nil {
+		return fmt.Errorf("create bot policy: %w", err)
+	}
+	s.runtimeMu.Lock()
+	s.captchaProviders = providers
+	s.bot = botPolicy
+	s.runtimeMu.Unlock()
 	return nil
 }
 

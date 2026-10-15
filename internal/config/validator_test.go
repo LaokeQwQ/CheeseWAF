@@ -107,6 +107,33 @@ func TestValidatorUpstreamWeightLimits(t *testing.T) {
 	}
 }
 
+func TestValidateCAPTCHAProviderPublicURLs(t *testing.T) {
+	tests := []struct {
+		name        string
+		field       string
+		value       string
+		trailing    bool
+		wantErrText string
+	}{
+		{name: "site key endpoint", field: "api_endpoint", value: "https://cap.example/site-key/", trailing: true},
+		{name: "loopback development endpoint", field: "api_endpoint", value: "http://127.0.0.1:3000/site-key/", trailing: true},
+		{name: "root is not a site key", field: "api_endpoint", value: "https://cap.example/", trailing: true, wantErrText: "site key"},
+		{name: "missing trailing slash", field: "api_endpoint", value: "https://cap.example/site-key", trailing: true, wantErrText: "site key"},
+		{name: "public http is denied", field: "widget_url", value: "http://cap.example/widget.js", wantErrText: "HTTPS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCAPublicURL("captcha_providers.cap."+tt.field, tt.value, tt.trailing)
+			if tt.wantErrText == "" && err != nil {
+				t.Fatalf("validateCAPublicURL() error = %v", err)
+			}
+			if tt.wantErrText != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrText)) {
+				t.Fatalf("validateCAPublicURL() error = %v, want %q", err, tt.wantErrText)
+			}
+		})
+	}
+}
+
 func TestValidatorDecodeDepthBounds(t *testing.T) {
 	for _, depth := range []int{0, 1, DefaultDecodeDepth, MaxDecodeDepth} {
 		cfg := Default()

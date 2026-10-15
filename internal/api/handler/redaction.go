@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -51,20 +53,21 @@ func systemConfigView(cfg *config.Config) map[string]any {
 	update := effectiveUpdateConfigView(cfg.Update)
 	vulnerability := effectiveVulnerabilityConfigView(cfg.Vulnerability)
 	return map[string]any{
-		"server":        cfg.Server,
-		"time_sync":     cfg.TimeSync,
-		"tls":           cfg.TLS,
-		"storage":       storageConfigView(cfg.Storage),
-		"logging":       cfg.Logging,
-		"console":       consoleConfigView(cfg.Console),
-		"acme":          acmeConfigView(cfg.ACME),
-		"protection":    protectionConfigView(cfg.Protection),
-		"setup":         cfg.Setup,
-		"scheduler":     cfg.Scheduler,
-		"edge":          cfg.Edge,
-		"ai":            aiConfigView(cfg.AI),
-		"update":        update,
-		"vulnerability": vulnerability,
+		"server":            cfg.Server,
+		"time_sync":         cfg.TimeSync,
+		"tls":               cfg.TLS,
+		"storage":           storageConfigView(cfg.Storage),
+		"logging":           cfg.Logging,
+		"console":           consoleConfigView(cfg.Console),
+		"captcha_providers": captchaProvidersConfigView(cfg.CAPTCHAProviders),
+		"acme":              acmeConfigView(cfg.ACME),
+		"protection":        protectionConfigView(cfg.Protection),
+		"setup":             cfg.Setup,
+		"scheduler":         cfg.Scheduler,
+		"edge":              cfg.Edge,
+		"ai":                aiConfigView(cfg.AI),
+		"update":            update,
+		"vulnerability":     vulnerability,
 		"capabilities": map[string]any{
 			"ota_updates":         map[string]any{"available": false, "reason": "EXECUTOR_UNAVAILABLE", "message": "OTA remains read-only until CRP/CWEDP activation is wired"},
 			"vulnerability_feeds": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
@@ -74,6 +77,43 @@ func systemConfigView(cfg *config.Config) map[string]any {
 		"apisec":     apiSecConfigView(cfg.APISec),
 		"block_page": cfg.BlockPage,
 	}
+}
+
+func captchaProvidersConfigView(in config.CAPTCHAProvidersConfig) map[string]any {
+	return map[string]any{
+		"cap": map[string]any{
+			"api_endpoint": in.Cap.APIEndpoint,
+			"widget_url":   in.Cap.WidgetURL,
+			"wasm_url":     in.Cap.WASMURL,
+			"hashwx_url":   in.Cap.HashWXURL,
+			"timeout":      in.Cap.Timeout,
+			"secret_set":   readableSecretFile(in.Cap.SecretFile),
+		},
+	}
+}
+
+// readableSecretFile reports whether a configured secret can actually be read
+// by the running process. A non-empty path alone is not enough: it can point
+// to a deleted file, a directory, or a file unavailable to the service user.
+func readableSecretFile(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 4<<10 {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	contents, readErr := io.ReadAll(io.LimitReader(file, 4<<10+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(contents) > 4<<10 {
+		return false
+	}
+	return strings.TrimSpace(string(contents)) != ""
 }
 
 func effectiveUpdateConfigView(in config.UpdateConfig) config.UpdateConfig {

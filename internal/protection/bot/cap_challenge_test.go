@@ -1,0 +1,311 @@
+package bot
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+)
+
+var capFieldPattern = regexp.MustCompile(`name="(cw_cap_[a-z_]+)" value="([^"]*)"`)
+
+type capChallengeFields struct {
+	ChallengeID string
+	Context     string
+	Method      string
+}
+
+func newCapBotPolicy(t *testing.T, verify http.HandlerFunc, challengeType string) (*Policy, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/siteverify" {
+			http.NotFound(w, r)
+			return
+		}
+		calls.Add(1)
+		if verify != nil {
+			verify(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	secretFile := filepath.Join(t.TempDir(), "cap-secret")
+	if err := os.WriteFile(secretFile, []byte("test-cap-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default().Protection.Bot
+	cfg.Enabled = true
+	cfg.CAPTCHA = true
+	cfg.CAPTCHAType = challengeType
+	cfg.CAPTCHATypes = []string{challengeType}
+	cfg.CAPTCHAEscalationTypes = []string{"pow", "shape_slider"}
+	cfg.CAPTCHAMaxAttempts = 3
+	cfg.CAPTCHAProvider = "cap"
+	cfg.Secret = strings.Repeat("s", 48)
+	cfg.CookieName = "cw_clearance"
+	cfg.ChallengeTTL = 10 * time.Minute
+	cfg.CAPTCHAChallengeTTL = 2 * time.Minute
+	cfg.CAPTCHAPolicyVersion = "cap-test-v1"
+	cfg.ClearanceMethodScope = true
+	providers := config.CAPTCHAProvidersConfig{Cap: config.CapStandaloneConfig{
+		APIEndpoint: server.URL,
+		WidgetURL:   server.URL + "/assets/cap.js",
+		WASMURL:     server.URL + "/assets/cap.wasm",
+		HashWXURL:   server.URL + "/assets/hash-wx.js",
+		SecretFile:  secretFile,
+		Timeout:     time.Second,
+	}}
+	policy, err := NewPolicyWithCAPTCHAProviders(cfg, providers, nil)
+	if err != nil {
+		t.Fatalf("construct Cap policy: %v", err)
+	}
+	return policy, &calls
+}
+
+func capChallengePage(t *testing.T, p *Policy, method, target, ip, site, ua string) (*httptest.ResponseRecorder, capChallengeFields) {
+	t.Helper()
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = site
+	req.Header.Set("User-Agent", ua)
+	rec := httptest.NewRecorder()
+	p.ServeChallengeForSite(rec, req, ip, site)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("challenge status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	fields := capChallengeFields{}
+	for _, match := range capFieldPattern.FindAllStringSubmatch(rec.Body.String(), -1) {
+		switch match[1] {
+		case "cw_cap_challenge_id":
+			fields.ChallengeID = match[2]
+		case "cw_cap_context":
+			fields.Context = match[2]
+		case "cw_cap_method":
+			fields.Method = match[2]
+		}
+	}
+	if fields.ChallengeID == "" || fields.Context == "" || fields.Method == "" {
+		t.Fatalf("Cap challenge fields missing: %+v", fields)
+	}
+	return rec, fields
+}
+
+func postCapAnswer(p *Policy, target, ip, site, ua string, fields capChallengeFields) *httptest.ResponseRecorder {
+	values := url.Values{
+		"cw_cap_challenge_id": {fields.ChallengeID},
+		"cw_cap_context":      {fields.Context},
+		"cw_cap_method":       {fields.Method},
+		"cw_cap_token":        {"cap-valid-token"},
+	}
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
+	req.Host = site
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	p.ServeChallengeForSite(rec, req, ip, site)
+	return rec
+}
+
+func TestCapBotClassicChallengeUsesWidgetAndLocalClearance(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Secret   string `json:"secret"`
+			Response string `json:"response"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode siteverify body: %v", err)
+		}
+		if payload.Secret != "test-cap-secret" || payload.Response != "cap-valid-token" {
+			t.Errorf("unexpected siteverify payload: secret=%q response=%q", payload.Secret, payload.Response)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}, "pow")
+	const ip, site, ua = "203.0.113.8", "site-a", "browser-a"
+	page, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private?return=1", ip, site, ua)
+	if !strings.Contains(page.Body.String(), "<cap-widget") || !strings.Contains(page.Body.String(), "cap.js") || strings.Contains(page.Body.String(), "cw_pow_token") {
+		t.Fatalf("classic challenge is not Cap-backed: %q", page.Body.String())
+	}
+	csp := page.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"frame-ancestors 'none'", "http://127.0.0.1", "script-src", "connect-src"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q missing %q", csp, want)
+		}
+	}
+	if page.Header().Get("Cache-Control") != "no-store" || len(page.Result().Cookies()) != 0 {
+		t.Fatalf("challenge caching/cookie behavior unexpected: headers=%v cookies=%v", page.Header(), page.Result().Cookies())
+	}
+
+	result := postCapAnswer(p, "https://site-a/private?return=1", ip, site, ua, fields)
+	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/private?return=1" {
+		t.Fatalf("valid Cap answer status=%d location=%q body=%q", result.Code, result.Header().Get("Location"), result.Body.String())
+	}
+	cookies := result.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "cw_clearance" || !cookies[0].HttpOnly || cookies[0].Value == "" {
+		t.Fatalf("CheeseWAF clearance cookie missing or malformed: %+v", cookies)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("siteverify calls=%d, want 1", got)
+	}
+	allowed := httptest.NewRequest(http.MethodGet, "https://site-a/private?return=1", nil)
+	allowed.Host = site
+	allowed.Header.Set("User-Agent", ua)
+	allowed.AddCookie(cookies[0])
+	if decision := p.EvaluateForSite(allowed, ip, site); decision != nil {
+		t.Fatalf("native clearance rejected protected request: %+v", decision)
+	}
+	if replay := postCapAnswer(p, "https://site-a/private?return=1", ip, site, ua, fields); replay.Code != http.StatusForbidden {
+		t.Fatalf("replayed Cap challenge status=%d body=%q", replay.Code, replay.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("replay reached siteverify: calls=%d", got)
+	}
+}
+
+func TestCapBotPostClearanceAllows303GetButNotOtherMethods(t *testing.T) {
+	p, _ := newCapBotPolicy(t, nil, "pow")
+	const ip, site, ua = "203.0.113.88", "site-a", "browser-a"
+	_, fields := capChallengePage(t, p, http.MethodPost, "https://site-a/orders?ignored=1", ip, site, ua)
+	if fields.Method != http.MethodPost {
+		t.Fatalf("challenge did not retain original method: %q", fields.Method)
+	}
+	result := postCapAnswer(p, "https://site-a/orders", ip, site, ua, fields)
+	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/orders" {
+		t.Fatalf("POST redemption status=%d location=%q body=%q", result.Code, result.Header().Get("Location"), result.Body.String())
+	}
+	cookies := result.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("clearance cookie missing: %v", cookies)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		req := httptest.NewRequest(method, "https://site-a/orders", nil)
+		req.Host = site
+		req.Header.Set("User-Agent", ua)
+		req.AddCookie(cookies[0])
+		if !p.hasClearanceForSite(req, ip, site) {
+			t.Errorf("clearance rejected %s at the exact protected path", method)
+		}
+	}
+	for _, tc := range []struct{ method, target string }{
+		{http.MethodPut, "https://site-a/orders"},
+		{http.MethodGet, "https://site-a/other"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.target, nil)
+		req.Host = site
+		req.Header.Set("User-Agent", ua)
+		req.AddCookie(cookies[0])
+		if p.hasClearanceForSite(req, ip, site) {
+			t.Errorf("clearance accepted unrelated request %s %s", tc.method, tc.target)
+		}
+	}
+}
+
+func TestCapBotChallengeBindingRejectsOtherIPUAPathAndReceipt(t *testing.T) {
+	p, calls := newCapBotPolicy(t, nil, "pow")
+	const ip, site, ua = "203.0.113.18", "site-a", "browser-a"
+	cases := []struct {
+		name   string
+		target string
+		ip     string
+		site   string
+		ua     string
+		mutate func(*capChallengeFields)
+	}{
+		{name: "ip", target: "https://site-a/private", ip: "198.51.100.2", site: site, ua: ua},
+		{name: "user agent", target: "https://site-a/private", ip: ip, site: site, ua: "browser-b"},
+		{name: "path", target: "https://site-a/other", ip: ip, site: site, ua: ua},
+		{name: "receipt", target: "https://site-a/private", ip: ip, site: site, ua: ua, mutate: func(f *capChallengeFields) { f.Context += "x" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+			if tc.mutate != nil {
+				tc.mutate(&fields)
+			}
+			bad := postCapAnswer(p, tc.target, tc.ip, tc.site, tc.ua, fields)
+			if bad.Code != http.StatusForbidden || calls.Load() != 0 {
+				t.Fatalf("binding violation was accepted or sent to siteverify: status=%d calls=%d", bad.Code, calls.Load())
+			}
+		})
+	}
+}
+
+func TestCapBotSiteVerifyErrorFailsClosed(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream failure", http.StatusBadGateway)
+	}, "pow")
+	const ip, site, ua = "203.0.113.28", "site-a", "browser-a"
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	result := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	if result.Code != http.StatusServiceUnavailable || len(result.Result().Cookies()) != 0 {
+		t.Fatalf("siteverify error did not fail closed: status=%d cookies=%v body=%q", result.Code, result.Result().Cookies(), result.Body.String())
+	}
+	if strings.Contains(result.Body.String(), "test-cap-secret") || calls.Load() != 1 {
+		t.Fatalf("siteverify failure leaked secret or was not called once: calls=%d body=%q", calls.Load(), result.Body.String())
+	}
+}
+
+func TestCapBotSiteVerifyFalseDoesNotIssueClearance(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}, "pow")
+	const ip, site, ua = "203.0.113.29", "site-a", "browser-a"
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	result := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	if result.Code != http.StatusForbidden || len(result.Result().Cookies()) != 0 || !strings.Contains(result.Body.String(), "<cap-widget") {
+		t.Fatalf("negative siteverify result issued clearance or did not retry challenge: status=%d cookies=%v", result.Code, result.Result().Cookies())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("siteverify calls=%d, want 1", calls.Load())
+	}
+}
+
+func TestCapBotEscalationRejectsPendingCapAnswer(t *testing.T) {
+	p, calls := newCapBotPolicy(t, nil, "pow")
+	const ip, site, ua = "203.0.113.41", "site-a", "browser-a"
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	if decision, err := p.failureTracker.RecordFailure(p.failureKey(ip, site)); err != nil || decision.Level == 0 {
+		t.Fatalf("failed to trigger behavior escalation: decision=%+v err=%v", decision, err)
+	}
+
+	result := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	if result.Code != http.StatusForbidden || !strings.Contains(result.Body.String(), `id="stage"`) || strings.Contains(result.Body.String(), "<cap-widget") {
+		t.Fatalf("escalated challenge did not stay native: status=%d body=%q", result.Code, result.Body.String())
+	}
+	for _, cookie := range result.Result().Cookies() {
+		if cookie.Name == p.cookieName {
+			t.Fatalf("stale Cap answer issued WAF clearance: %+v", cookie)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("stale Cap answer reached siteverify %d times", calls.Load())
+	}
+}
+
+func TestCapBotBehaviorChallengeRemainsNative(t *testing.T) {
+	p, calls := newCapBotPolicy(t, nil, "shape_slider")
+	req := httptest.NewRequest(http.MethodGet, "https://site-a/private", nil)
+	req.Host = "site-a"
+	req.Header.Set("User-Agent", "browser-a")
+	rec := httptest.NewRecorder()
+	p.ServeChallengeForSite(rec, req, "203.0.113.38", "site-a")
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `id="stage"`) || strings.Contains(rec.Body.String(), "<cap-widget") {
+		t.Fatalf("behavior challenge was unexpectedly replaced: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("behavior challenge called Cap siteverify %d times", calls.Load())
+	}
+}
