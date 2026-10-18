@@ -28,7 +28,7 @@ type validateRequestPayload struct {
 }
 
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
-	snapshot := h.monitorSnapshot(r)
+	snapshot := monitor.Collect(h.StartedAt, len(h.currentConfig().Sites), nil, nil)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write(monitor.RenderPrometheus(snapshot))
 }

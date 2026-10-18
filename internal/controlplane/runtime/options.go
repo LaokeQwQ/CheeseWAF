@@ -25,6 +25,7 @@ type Options struct {
 	Listen         string
 	RaftListen     string
 	Mode           nativeraft.StartMode
+	InitialVoters  []nativeraft.Member
 	CAFile         string
 	CertFile       string
 	KeyFile        string

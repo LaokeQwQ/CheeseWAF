@@ -262,6 +262,34 @@ func TestStorageStatsUsesCachedDirectorySizes(t *testing.T) {
 	}
 }
 
+func TestCleanupStorageUsesConfiguredManagedRoots(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	logDir := filepath.Join(root, "logs")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(logDir, "access-old.log")
+	if err := os.WriteFile(old, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Setup.DataDir = dataDir
+	cfg.Logging.Output.File.Path = filepath.Join(logDir, "access.log")
+	cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{
+		ID: "log-cleanup", Type: "cleanup", Target: logDir, Keep: 1, Enabled: true,
+	}}
+	h := New(Options{Config: &cfg})
+	recorder := httptest.NewRecorder()
+	h.CleanupStorage(recorder, httptest.NewRequest(http.MethodPost, "/api/storage/cleanup", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("cleanup endpoint returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 type storageStatsPayload struct {
 	DataSize int64 `json:"data"`
 	LogSize  int64 `json:"logs"`

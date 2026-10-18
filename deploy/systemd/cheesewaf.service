@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=cheesewaf
 Group=cheesewaf
+UMask=0077
 WorkingDirectory=/var/lib/cheesewaf
 Environment=CHEESEWAF_WEB_DIR=/usr/share/cheesewaf/web
 # Optional advertised host used in the one-time setup URL. The bind address
@@ -38,7 +39,7 @@ RestrictSUIDSGID=true
 RestrictNamespaces=true
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-ReadWritePaths=/etc/cheesewaf/cheesewaf.yaml /var/lib/cheesewaf /var/log/cheesewaf
+ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 
 [Install]
 WantedBy=multi-user.target

@@ -45,10 +45,16 @@ function readCSRFCookie(): string {
     return cachedCSRF;
   }
   const parts = document.cookie.split(';');
-  for (const part of parts) {
-    const [name, ...rest] = part.trim().split('=');
-    if (name === csrfCookieName) {
-      return decodeURIComponent(rest.join('=') || '');
+  for (const cookieName of [`__Host-${csrfCookieName}`, csrfCookieName]) {
+    for (const part of parts) {
+      const [name, ...rest] = part.trim().split('=');
+      if (name === cookieName) {
+        try {
+          return decodeURIComponent(rest.join('=') || '');
+        } catch {
+          continue;
+        }
+      }
     }
   }
   return cachedCSRF;
@@ -479,6 +485,7 @@ export async function login(username: string, password: string, totpCode?: strin
   const result = await unwrap<AuthResponse>(
     apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
   );
+  queryClient.clear();
   if (result.csrf) {
     setCSRFToken(result.csrf);
   }
@@ -541,7 +548,7 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
   }
 }
 
-export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
+export async function setupAdmin(username: string, password: string, adminListen = '', adminStrategy = '', profile = '') {
   const result = await unwrap<{
     user: { username: string; role: string };
     setup_complete?: boolean;
@@ -553,6 +560,7 @@ export async function setupAdmin(username: string, password: string, adminListen
       admin_listen: adminListen,
       admin_strategy: adminStrategy,
       admin_public: adminStrategy === 'public_tls',
+      profile,
     }),
   );
   clearSetupToken();
@@ -632,12 +640,12 @@ export function decideReviewItem(id: string, decision: ReviewDecision) {
 
 export async function fetchLogEvent(reference: string) {
   const byTrace = await fetchLogs({ limit: 10, trace_id: reference });
-  const direct = byTrace.items.find((entry) => entry.trace_id === reference || entry.id === reference) ?? byTrace.items[0];
+  const direct = byTrace.items.find((entry) => entry.trace_id === reference || entry.id === reference);
   if (direct) {
     return direct;
   }
   const byID = await fetchLogs({ limit: 1, id: reference });
-  const fallback = byID.items.find((entry) => entry.id === reference || entry.trace_id === reference) ?? byID.items[0];
+  const fallback = byID.items.find((entry) => entry.id === reference || entry.trace_id === reference);
   if (!fallback) {
     throw new APIRequestError('Log event not found', 'LOG_NOT_FOUND', 404);
   }

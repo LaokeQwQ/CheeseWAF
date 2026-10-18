@@ -22,9 +22,17 @@ func testEvent(id string, class EventClass) Event {
 	}
 }
 
+func testSigner() Ed25519Signer {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	return Ed25519Signer{ID: "audit-test-key", PrivateKey: ed25519.NewKeyFromSeed(seed)}
+}
+
 func TestMemoryJournalEnforcesAppendOnlyHashChainAndIdempotentReplay(t *testing.T) {
 	j := NewMemoryJournalWithDurability(true)
-	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control", CheckpointEvery: 0})
+	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control", Signer: testSigner(), CheckpointEvery: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +61,11 @@ func TestMemoryJournalEnforcesAppendOnlyHashChainAndIdempotentReplay(t *testing.
 	if err := j.Append(context.Background(), Commit{Record: bad}); !errors.Is(err, ErrReplayConflict) {
 		t.Fatalf("replay conflict=%v", err)
 	}
-	if err := j.Append(context.Background(), Commit{Record: rows[2]}); err != nil {
+	cp, err := j.Checkpoint(context.Background(), "control", rows[2].Sequence)
+	if err != nil || cp == nil {
+		t.Fatalf("checkpoint=%+v err=%v", cp, err)
+	}
+	if err := j.Append(context.Background(), Commit{Record: rows[2], Checkpoint: cp}); err != nil {
 		t.Fatalf("same commit should be idempotent: %v", err)
 	}
 }
@@ -100,7 +112,7 @@ func TestCheckpointSignatureVerificationAndCorruptionDetection(t *testing.T) {
 
 func TestRuntimeCriticalSynchronousNormalAsyncAndBoundedQueue(t *testing.T) {
 	j := NewMemoryJournalWithDurability(true)
-	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control", QueueCapacity: 1})
+	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control", Signer: testSigner(), QueueCapacity: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +140,7 @@ func TestRuntimeCriticalSynchronousNormalAsyncAndBoundedQueue(t *testing.T) {
 
 func TestRuntimeRejectsCriticalWithoutDurableChannel(t *testing.T) {
 	j := NewMemoryJournal()
-	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control"})
+	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control", Signer: testSigner()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +217,7 @@ func corruptSpoolForTest(s *MemoryEncryptedSpool, index int) error {
 
 func TestConcurrentCriticalAppendsRemainMonotonic(t *testing.T) {
 	j := NewMemoryJournalWithDurability(true)
-	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control"})
+	rt, err := NewRuntime(RuntimeOptions{Journal: j, StreamID: "control", Signer: testSigner()})
 	if err != nil {
 		t.Fatal(err)
 	}

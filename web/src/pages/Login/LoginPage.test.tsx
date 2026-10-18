@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
   fetchLoginOptions: vi.fn(),
   login: vi.fn(),
   verifyLoginCaptcha: vi.fn(),
+  fetchSession: vi.fn(),
+  isAuthenticatedFlag: vi.fn(),
 }));
 
 vi.mock('../../api/client', () => ({
@@ -85,6 +87,8 @@ beforeEach(() => {
   api.fetchLoginOptions.mockReset().mockResolvedValue(options);
   api.login.mockReset();
   api.verifyLoginCaptcha.mockReset();
+  api.isAuthenticatedFlag.mockReset().mockReturnValue(false);
+  api.fetchSession.mockReset().mockRejectedValue(new Error('expired'));
   let mobile = false;
   reducedMotion = false;
   mobileMediaListener = undefined;
@@ -128,6 +132,14 @@ afterEach(() => {
 function renderLogin() {
   return render(<MemoryRouter><LoginPage /></MemoryRouter>);
 }
+
+it('verifies an existing cookie session before navigating away from login', async () => {
+  api.isAuthenticatedFlag.mockReturnValue(true);
+  api.fetchSession.mockResolvedValue({ user: { username: 'admin', role: 'admin' } });
+  renderLogin();
+  await waitFor(() => expect(api.fetchSession).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.queryByRole('textbox', { name: 'login.username' })).toBeNull());
+});
 
 function fillUsername() {
   fireEvent.change(screen.getByRole('textbox', { name: 'login.username' }), { target: { value: 'Cheese' } });

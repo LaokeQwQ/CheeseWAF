@@ -90,6 +90,51 @@ func TestImportSiteCustomRulesRejectsDuplicateRules(t *testing.T) {
 	}
 }
 
+func TestImportSiteCustomRulesMergesExistingRules(t *testing.T) {
+	store, cfgPath, siteID := rulesTestStore(t)
+	site, err := store.GetSite(context.Background(), siteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site.Advanced.CustomRules = []storage.SiteCustomRule{{
+		ID: "keep", Name: "keep", Pattern: "keep-token", Location: "uri", Action: "block", Severity: "low", Enabled: true, Priority: 9,
+	}}
+	if err := store.UpdateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "merge.yaml")
+	body := `custom_rules:
+  - id: append
+    name: append
+    pattern: append-token
+    location: header
+    action: log
+    severity: medium
+    enabled: true
+    priority: 10
+`
+	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := importSiteCustomRules(context.Background(), siteID, file); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.GetSite(context.Background(), siteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Advanced.CustomRules) != 2 || updated.Advanced.CustomRules[0].ID != "keep" || updated.Advanced.CustomRules[1].ID != "append" {
+		t.Fatalf("import must retain and append rules: %+v", updated.Advanced.CustomRules)
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Sites[0].WAF.CustomRules) != 2 {
+		t.Fatalf("merged rules were not persisted to config: %+v", loaded.Sites[0].WAF.CustomRules)
+	}
+}
+
 func TestExportSiteCustomRulesRoundTripJSON(t *testing.T) {
 	store, _, siteID := rulesTestStore(t)
 	site, err := store.GetSite(context.Background(), siteID)

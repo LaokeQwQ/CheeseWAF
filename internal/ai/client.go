@@ -92,6 +92,7 @@ type Client struct {
 	model             string
 	displayModel      string
 	contextWindow     int
+	prompts           []config.AIPromptConfig
 	reasoningEffort   string
 	maxTokens         int
 	allowPrivate      bool
@@ -135,6 +136,7 @@ func NewClient(cfg config.AIConfig, httpClient *http.Client) *Client {
 		model:             cfg.Model,
 		displayModel:      strings.TrimSpace(cfg.DisplayModelName),
 		contextWindow:     cfg.ContextWindow,
+		prompts:           append([]config.AIPromptConfig(nil), cfg.Prompts...),
 		reasoningEffort:   strings.TrimSpace(cfg.ReasoningEffort),
 		maxTokens:         normalizedMaxTokens(cfg.MaxTokens),
 		allowPrivate:      cfg.AllowPrivateAPIBase,
@@ -495,6 +497,11 @@ func (c *Client) CompleteWithUsage(ctx context.Context, messages []Message) (*Co
 	if c.model == "" {
 		return nil, fmt.Errorf("ai model is required")
 	}
+	prepared, budgetErr := c.prepareMessages(ctx, messages, nil)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+	messages = prepared
 	switch c.provider {
 	case "openai":
 		result, err := c.completeOpenAI(ctx, messages)
@@ -516,6 +523,11 @@ func (c *Client) CompleteToolPlan(ctx context.Context, messages []Message, tools
 	if len(tools) == 0 {
 		return nil, fmt.Errorf("tool definitions are required")
 	}
+	prepared, budgetErr := c.prepareMessages(ctx, messages, tools)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+	messages = prepared
 	switch c.provider {
 	case "openai":
 		plan, err := c.completeOpenAIToolPlan(ctx, messages, tools)
@@ -543,6 +555,11 @@ func (c *Client) CompleteWithUsageStream(ctx context.Context, messages []Message
 	if c.model == "" {
 		return nil, fmt.Errorf("ai model is required")
 	}
+	prepared, budgetErr := c.prepareMessages(ctx, messages, nil)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+	messages = prepared
 	switch c.provider {
 	case "openai":
 		result, started, protocol, err := c.completeOpenAIStream(ctx, messages, emit)
@@ -581,6 +598,11 @@ func (c *Client) CompleteToolPlanStream(ctx context.Context, messages []Message,
 	if len(tools) == 0 {
 		return nil, fmt.Errorf("tool definitions are required")
 	}
+	prepared, budgetErr := c.prepareMessages(ctx, messages, tools)
+	if budgetErr != nil {
+		return nil, budgetErr
+	}
+	messages = prepared
 	switch c.provider {
 	case "openai":
 		plan, started, protocol, err := c.completeOpenAIToolPlanStream(ctx, messages, tools, emit)
@@ -763,7 +785,7 @@ func (c *Client) listModelsAt(ctx context.Context, configuredPath string) ([]Mod
 		if resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("ai api returned %s", resp.Status)
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		if err := decodeBoundedProviderJSON(resp.Body, &raw); err != nil {
 			return nil, err
 		}
 		break
@@ -939,7 +961,7 @@ func (c *Client) fetchJSONEndpoint(ctx context.Context, path string, parse func(
 			return nil, fmt.Errorf("ai api returned %s", resp.Status)
 		}
 		var raw any
-		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		if err := decodeBoundedProviderJSON(resp.Body, &raw); err != nil {
 			return nil, err
 		}
 		return parse(raw), nil
@@ -955,6 +977,18 @@ func boundedRetryAfter(raw string) time.Duration {
 		seconds = int(maxAI429RetryDelay / time.Second)
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func decodeBoundedProviderJSON(body io.Reader, target any) error {
+	const limit = 2 << 20
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > limit {
+		return fmt.Errorf("AI provider JSON response exceeds 2 MiB")
+	}
+	return json.Unmarshal(raw, target)
 }
 
 func parseProviderBalance(raw any) any {
@@ -1117,7 +1151,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message) (*Co
 		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
 	var parsed anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := decodeBoundedProviderJSON(resp.Body, &parsed); err != nil {
 		return nil, err
 	}
 	var parts []string
@@ -1187,7 +1221,7 @@ func (c *Client) completeAnthropicToolPlan(ctx context.Context, messages []Messa
 		return nil, fmt.Errorf("ai api returned %s", resp.Status)
 	}
 	var parsed anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := decodeBoundedProviderJSON(resp.Body, &parsed); err != nil {
 		return nil, err
 	}
 	var parts []string
@@ -1254,7 +1288,7 @@ func (c *Client) listAnthropicModels(ctx context.Context) ([]ModelInfo, error) {
 			CreatedAt   string `json:"created_at"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := decodeBoundedProviderJSON(resp.Body, &parsed); err != nil {
 		return nil, err
 	}
 	models := make([]ModelInfo, 0, len(parsed.Data))

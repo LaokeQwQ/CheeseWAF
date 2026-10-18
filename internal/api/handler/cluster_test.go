@@ -6,8 +6,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -904,6 +906,7 @@ func TestClusterJoinEnrollsNodeAndDoesNotLeakToken(t *testing.T) {
 	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
 	cfg.Cluster.Consensus.Provider = "etcd"
 	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	cfg.Cluster.Join.RequireApproval = false
 	cfg.Cluster.Nodes = []config.ClusterNodeConfig{{
 		ID:            "waf-controller",
 		Role:          "waf",
@@ -1108,6 +1111,7 @@ func TestClusterJoinRollsBackEnrollmentWhenConfigSaveFails(t *testing.T) {
 	cfg.Cluster.Interconnect.AdvertiseAddr = "127.0.0.1:9444"
 	cfg.Cluster.Consensus.Provider = "etcd"
 	cfg.Cluster.Consensus.EtcdEndpoints = []string{"https://etcd-a.internal:2379"}
+	cfg.Cluster.Join.RequireApproval = false
 	identitySvc, err := identity.NewMemoryIdentityService(identity.ServiceOptions{
 		Clock:     identity.NewFakeClock(time.Unix(1000, 0)),
 		ClusterID: "cw-test",
@@ -1150,7 +1154,7 @@ func TestClusterRotateNodeCertificateWithCSRDoesNotReturnPrivateKey(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollmentCSR := testNodeCSR(t, "waf-b")
+	enrollmentCSR, enrollmentKey := testNodeCSRWithKey(t, "waf-b")
 	enrollment, err := identitySvc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
 		NodeID:        "waf-b",
 		Role:          "waf",
@@ -1162,9 +1166,11 @@ func TestClusterRotateNodeCertificateWithCSRDoesNotReturnPrivateKey(t *testing.T
 	}
 	clock.Advance(30 * 24 * time.Hour)
 	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterIdentity: identitySvc})
-	rotationCSR := testNodeCSR(t, "waf-b")
+	rotationCSR, _ := testNodeCSRWithKey(t, "waf-b")
+	proof := testNodeRotationProof(t, "waf-b", rotationCSR, enrollmentKey)
+	body := `{"csr":` + strconv.Quote(string(rotationCSR)) + `,"possession_proof":` + strconv.Quote(proof) + `}`
 	req := withURLParam(
-		httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/waf-b/rotate-certificate", strings.NewReader(`{"csr":`+strconv.Quote(string(rotationCSR))+`}`)),
+		approvalHTTPRequest(http.MethodPost, "/api/cluster/nodes/waf-b/rotate-certificate", body, "admin", "admin-session", "admin", "127.0.0.1:1234"),
 		"id",
 		"waf-b",
 	)
@@ -1210,7 +1216,7 @@ func TestClusterRotateNodeCertificateRejectsRevokedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	csr := testNodeCSR(t, "waf-b")
+	csr, nodeKey := testNodeCSRWithKey(t, "waf-b")
 	if _, err := identitySvc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
 		NodeID:        "waf-b",
 		Role:          "waf",
@@ -1223,8 +1229,11 @@ func TestClusterRotateNodeCertificateRejectsRevokedNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterIdentity: identitySvc})
+	rotationCSR, _ := testNodeCSRWithKey(t, "waf-b")
+	proof := testNodeRotationProof(t, "waf-b", rotationCSR, nodeKey)
+	body := `{"csr":` + strconv.Quote(string(rotationCSR)) + `,"possession_proof":` + strconv.Quote(proof) + `}`
 	req := withURLParam(
-		httptest.NewRequest(http.MethodPost, "/api/cluster/nodes/waf-b/rotate-certificate", strings.NewReader(`{"csr":`+strconv.Quote(string(testNodeCSR(t, "waf-b")))+`}`)),
+		approvalHTTPRequest(http.MethodPost, "/api/cluster/nodes/waf-b/rotate-certificate", body, "admin", "admin-session", "admin", "127.0.0.1:1234"),
 		"id",
 		"waf-b",
 	)
@@ -1409,6 +1418,12 @@ func attachClusterPeerCertificate(req *http.Request, cert *x509.Certificate) {
 
 func testNodeCSR(t *testing.T, nodeID string) []byte {
 	t.Helper()
+	csr, _ := testNodeCSRWithKey(t, nodeID)
+	return csr
+}
+
+func testNodeCSRWithKey(t *testing.T, nodeID string) ([]byte, *ecdsa.PrivateKey) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -1419,7 +1434,17 @@ func testNodeCSR(t *testing.T, nodeID string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw}), key
+}
+
+func testNodeRotationProof(t *testing.T, nodeID string, csrPEM []byte, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	digest := sha256.Sum256(identity.NodeRotationProofMessage(nodeID, csrPEM))
+	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func testECDSAPrivateKeyPEM(t *testing.T) string {

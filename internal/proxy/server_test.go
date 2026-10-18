@@ -428,6 +428,7 @@ func TestServerReleasesRuntimeLockDuringWebSocket(t *testing.T) {
 	defer upstream.Close()
 	cfg := config.Default()
 	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.WebSocketEnabled = true
 	cfg.Protection.IP.Whitelist = nil
 	cfg.Protection.IP.Blacklist = nil
 	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
@@ -1458,6 +1459,97 @@ func TestServerBotCCPolicyLevels(t *testing.T) {
 	})
 }
 
+func TestSiteProtectionSwitchesGateGlobalRuntimePolicies(t *testing.T) {
+	newServer := func(t *testing.T, mutate func(*config.Config)) (*Server, *captureSink, func()) {
+		t.Helper()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("ok"))
+		}))
+		cfg := config.Default()
+		cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+		cfg.Protection.IP.Whitelist = nil
+		cfg.Protection.IP.Blacklist = nil
+		if mutate != nil {
+			mutate(&cfg)
+		}
+		sink := &captureSink{}
+		server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+		if err != nil {
+			upstream.Close()
+			t.Fatal(err)
+		}
+		return server, sink, upstream.Close
+	}
+
+	t.Run("bot disabled per site", func(t *testing.T) {
+		server, _, cleanup := newServer(t, func(cfg *config.Config) {
+			cfg.Protection.Policy.BotCC = config.ProtectionLevelSmart
+			cfg.Protection.Bot.Enabled = true
+			cfg.Protection.Bot.JSChallenge = true
+			disabled := false
+			cfg.Sites[0].WAF.BotEnabled = &disabled
+		})
+		defer cleanup()
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil)
+		req.Header.Set("User-Agent", "curl/8.0")
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("site bot disable was ignored, status=%d", recorder.Code)
+		}
+	})
+
+	t.Run("rate limit disabled per site", func(t *testing.T) {
+		server, _, cleanup := newServer(t, func(cfg *config.Config) {
+			cfg.Protection.Policy.BotCC = config.ProtectionLevelStrict
+			cfg.Protection.RateLimit.Enabled = true
+			cfg.Protection.RateLimit.Default = config.RateLimitProfile{Requests: 1, Burst: 0}
+			disabled := false
+			cfg.Sites[0].WAF.RateLimitEnabled = &disabled
+		})
+		defer cleanup()
+		for i := 0; i < 3; i++ {
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("site rate-limit disable was ignored on request %d, status=%d", i+1, recorder.Code)
+			}
+		}
+	})
+
+	t.Run("acl disabled per site", func(t *testing.T) {
+		server, _, cleanup := newServer(t, func(cfg *config.Config) {
+			cfg.Protection.Policy.WebAttack = config.ProtectionLevelOff
+			cfg.Protection.ACL = config.ACLProtectionConfig{Enabled: true, Rules: []config.ACLRuleConfig{{ID: "deny", PathPrefix: "/", Action: "block", Severity: "high", Enabled: true}}}
+			disabled := false
+			cfg.Sites[0].WAF.ACLEnabled = &disabled
+		})
+		defer cleanup()
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/probe", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("site ACL disable was ignored, status=%d", recorder.Code)
+		}
+	})
+
+	t.Run("api security disabled per site", func(t *testing.T) {
+		server, _, cleanup := newServer(t, func(cfg *config.Config) {
+			cfg.APISec.Enabled = true
+			cfg.APISec.Validation.Enabled = true
+			cfg.APISec.Validation.Schemas = []config.APIEndpointSchemaConfig{{ID: "search", Method: http.MethodGet, PathPattern: "^/api/search$", RequiredParams: []string{"q"}, Enabled: true}}
+			cfg.Protection.Policy.APISecurity = config.ProtectionLevelStrict
+			disabled := false
+			cfg.Sites[0].WAF.APISecurityEnabled = &disabled
+		})
+		defer cleanup()
+		recorder := httptest.NewRecorder()
+		server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/api/search", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("site API security disable was ignored, status=%d", recorder.Code)
+		}
+	})
+}
+
 func TestServerAPISecurityPolicyLevels(t *testing.T) {
 	t.Run("smart blocks schema validation finding", func(t *testing.T) {
 		server, sink, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
@@ -1771,6 +1863,69 @@ func TestServerAPISecurityPolicyLevels(t *testing.T) {
 	})
 }
 
+type apiSecurityReadTrackingBody struct {
+	reader *bytes.Reader
+	reads  int
+}
+
+func (b *apiSecurityReadTrackingBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(p)
+}
+
+func (*apiSecurityReadTrackingBody) Close() error { return nil }
+
+func TestServerAPISecurityRejectsUnauthenticatedBodyBeforeRead(t *testing.T) {
+	server, _, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+		cfg.APISec.Auth.Enabled = true
+		cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
+		cfg.APISec.Auth.JWTSharedSecret = "proxy-secret"
+	})
+	defer cleanup()
+
+	body := &apiSecurityReadTrackingBody{reader: bytes.NewReader(bytes.Repeat([]byte("x"), (8<<20)+1))}
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/upload", nil)
+	req.Body = body
+	// Unknown length forces the body reader path if auth is evaluated too late.
+	req.ContentLength = -1
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthenticated request to be rejected before body inspection, code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if body.reads != 0 {
+		t.Fatalf("unauthenticated request body was read %d times before auth rejection", body.reads)
+	}
+}
+
+func TestServerAPISecurityRateLimitRejectsBodyBeforeRead(t *testing.T) {
+	server, _, cleanup := newAPISecurityTestServer(t, config.ProtectionLevelSmart, func(cfg *config.Config) {
+		cfg.APISec.RateLimits = []config.APIEndpointLimitConfig{{
+			ID: "upload-rate", Method: http.MethodPost, PathPattern: "^/api/upload$", Requests: 1, Window: time.Minute, Enabled: true,
+		}}
+	})
+	defer cleanup()
+
+	first := httptest.NewRecorder()
+	server.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "http://localhost/api/upload", nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("initial API request status=%d body=%q", first.Code, first.Body.String())
+	}
+
+	body := &apiSecurityReadTrackingBody{reader: bytes.NewReader(bytes.Repeat([]byte("x"), (8<<20)+1))}
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/upload", nil)
+	req.Body = body
+	req.ContentLength = -1
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected rate-limited request to be rejected before body inspection, code=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if body.reads != 0 {
+		t.Fatalf("rate-limited request body was read %d times before rejection", body.reads)
+	}
+}
+
 func TestServerPhase2Protections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Upstream-Path", r.URL.Path)
@@ -1804,11 +1959,11 @@ func TestServerPhase2Protections(t *testing.T) {
 	rewriteReq := httptest.NewRequest(http.MethodGet, "http://localhost/old/item", nil)
 	rewriteRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rewriteRec, rewriteReq)
-	if rewriteRec.Header().Get("X-Upstream-Path") != "/new/item" {
-		t.Fatalf("rewrite did not reach upstream path: %s", rewriteRec.Header().Get("X-Upstream-Path"))
+	if rewriteRec.Code != http.StatusForbidden || rewriteRec.Header().Get("X-Upstream-Path") != "" {
+		t.Fatalf("sensitive rewritten response was not blocked: status=%d path=%q", rewriteRec.Code, rewriteRec.Header().Get("X-Upstream-Path"))
 	}
-	if rewriteRec.Header().Get("X-CheeseWAF-Response-Finding") == "" {
-		t.Fatal("expected response inspection header")
+	if rewriteRec.Header().Get("X-CheeseWAF-Response-Finding") != "" {
+		t.Fatal("response finding details must not be exposed as client-controlled headers")
 	}
 }
 

@@ -128,6 +128,8 @@ func runServe(ctx context.Context) error {
 	var productionDeps *ProductionDependencies
 	var productionWiring ProductionServeWiring
 	var materializeProductionPolicy bool
+	var assistantApprovals *ai.ApprovalStore
+	var assistantGateApproval *ai.GateApprovalAdapter
 	if production {
 		// Open and fully validate every production dependency before creating the
 		// runtime directory or PID lease. A failed control-plane, Redis, approval,
@@ -143,6 +145,9 @@ func runServe(ctx context.Context) error {
 		}
 		defer productionDeps.Close()
 		store = productionWiring.ManagementStore
+		if roles, ok := store.(interface{ ConfigureRoles(map[string][]string) }); ok {
+			roles.ConfigureRoles(cfg.APISec.Permissions)
+		}
 		verifier, ok := store.(storage.MigrationHandoffVerifier)
 		if !ok {
 			_ = productionDeps.Close()
@@ -155,6 +160,23 @@ func runServe(ctx context.Context) error {
 		materializeProductionPolicy, err = productionStartupPolicyMaterialization(productionWiring.Startup.State, handoff)
 		if err != nil {
 			return err
+		}
+		// Production AI approvals use the same durable Gate and management-backed
+		// credential verifier as the ApprovalHTTP service. Keep one compatibility
+		// store for the handler and adapter so execution cannot switch ledgers.
+		assistantApprovals, err = ai.NewPersistentApprovalStore(filepath.Join(cfg.Setup.RuntimeDir, "ai_approvals.json"))
+		if err != nil {
+			return fmt.Errorf("open production AI approval store: %w", err)
+		}
+		adapterFactory, ok := productionDeps.Approval.(interface {
+			NewAIGateApprovalAdapter(*ai.ApprovalStore) (*ai.GateApprovalAdapter, error)
+		})
+		if !ok {
+			return fmt.Errorf("%w: approval runtime has no AI gate adapter", ErrProductionApprovalUnavailable)
+		}
+		assistantGateApproval, err = adapterFactory.NewAIGateApprovalAdapter(assistantApprovals)
+		if err != nil {
+			return fmt.Errorf("configure production AI approval gate: %w", err)
 		}
 	}
 	if err := repairRuntimeConfig(loadedConfigPath, cfg); err != nil {
@@ -365,6 +387,8 @@ func runServe(ctx context.Context) error {
 		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
 		ManagementTokenCleanupContext:      runtimeCtx,
+		AssistantApprovals:                 assistantApprovals,
+		AssistantGateApproval:              assistantGateApproval,
 		ApprovalHTTP:                       productionWiring.ApprovalHTTP,
 		OTAClient:                          configuredOTAClient(cfg),
 		OTAState:                           configuredOTAState(cfg),
@@ -384,6 +408,13 @@ func runServe(ctx context.Context) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
 		},
 	})
+	// ACME renewal is owned by the production serving runtime. Keeping this
+	// behind the production composition boundary leaves embedded and test
+	// routers side-effect free.
+	if production {
+		stopACMERenewal := apiHandler.StartACMERenewal(runtimeCtx)
+		defer stopACMERenewal()
+	}
 	if productionDeps != nil {
 		machine := productionDeps.Consensus.Machine()
 		applier, materializerErr := NewProtectionPolicyMaterializer(apiHandler, machine, cfg.Setup.RuntimeDir)
@@ -1230,7 +1261,7 @@ func resolveWebDir() string {
 }
 
 func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub) {
-	if cfg == nil || (hub == nil && !cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
 	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
@@ -1249,19 +1280,30 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				var logs []storage.LogEntry
-				if sink == nil {
-					log.Printf("monitor collection: log sink is unavailable")
-				} else if queried, _, err := sink.Query(ctx, storage.LogFilter{Limit: 1000}); err != nil {
-					log.Printf("monitor collection: log sink query failed: %v", err)
-				} else {
-					logs = queried
-				}
 				now := time.Now()
-				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
+				diskUsage := map[string]int64{
 					"data": dirSizes.size(cfg.Setup.DataDir, now),
 					"logs": dirSizes.size(filepath.Dir(cfg.Logging.Output.File.Path), now),
-				})
+				}
+				var snapshot monitor.Snapshot
+				// Prefer the sink's exact Count contract for aggregate counters. This
+				// avoids turning a bounded sample into a misleading full-corpus metric.
+				if requests, blocked, challenges, ok := exactMonitorLogTotals(ctx, sink); ok {
+					snapshot = monitor.Collect(startedAt, len(cfg.Sites), nil, diskUsage)
+					snapshot.Requests = intFromMonitorTotal(requests)
+					snapshot.Blocked = intFromMonitorTotal(blocked)
+					snapshot.Challenges = intFromMonitorTotal(challenges)
+				} else {
+					var logs []storage.LogEntry
+					if sink == nil {
+						log.Printf("monitor collection: log sink is unavailable")
+					} else if queried, _, err := sink.Query(ctx, storage.LogFilter{Limit: 1000}); err != nil {
+						log.Printf("monitor collection: log sink query failed: %v", err)
+					} else {
+						logs = queried
+					}
+					snapshot = monitor.Collect(startedAt, len(cfg.Sites), logs, diskUsage)
+				}
 				if err := writer.Push(ctx, snapshot); err != nil {
 					log.Printf("monitor collection: remote write failed: %v", err)
 				}
@@ -1276,6 +1318,42 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 			}
 		}
 	}()
+}
+
+type monitorLogCounter interface {
+	Count(context.Context, storage.LogFilter) (int64, bool, error)
+}
+
+func exactMonitorLogTotals(ctx context.Context, sink storage.LogSink) (requests, blocked, challenges int64, ok bool) {
+	counter, supported := sink.(monitorLogCounter)
+	if !supported {
+		return 0, 0, 0, false
+	}
+	count := func(filter storage.LogFilter) (int64, bool) {
+		value, available, err := counter.Count(ctx, filter)
+		return value, err == nil && available && value >= 0
+	}
+	if requests, ok = count(storage.LogFilter{}); !ok {
+		return 0, 0, 0, false
+	}
+	if blocked, ok = count(storage.LogFilter{Action: "block"}); !ok {
+		return 0, 0, 0, false
+	}
+	if challenges, ok = count(storage.LogFilter{Action: "challenge"}); !ok {
+		return 0, 0, 0, false
+	}
+	return requests, blocked, challenges, true
+}
+
+func intFromMonitorTotal(value int64) int {
+	if value <= 0 {
+		return 0
+	}
+	maxInt := int64(^uint(0) >> 1)
+	if value > maxInt {
+		return int(maxInt)
+	}
+	return int(value)
 }
 
 func publishMonitorEvents(ctx context.Context, hub *realtime.Hub, snapshot monitor.Snapshot, alerts []monitor.Alert) {
@@ -1411,8 +1489,11 @@ func loadConfig() (*config.Config, string, error) {
 		}
 		return cfg, configPath, nil
 	}
-	if configPath != "" {
-		fmt.Printf("config %s not found, using built-in defaults\n", configPath)
+	if _, err := os.Stat(configPath); err != nil && !os.IsNotExist(err) {
+		return nil, configPath, fmt.Errorf("read config: %w", err)
+	}
+	if configPath != "" && configExplicit {
+		return nil, configPath, fmt.Errorf("explicit config %q does not exist", configPath)
 	}
 	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{
 		DataDir:    dataDir,

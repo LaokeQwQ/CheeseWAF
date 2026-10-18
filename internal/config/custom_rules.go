@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,9 @@ func ParseCustomRules(data []byte) ([]CustomRuleConfig, error) {
 	if len(trimmed) > maxCustomRulesBytes {
 		return nil, fmt.Errorf("custom rules document exceeds %d bytes", maxCustomRulesBytes)
 	}
+	if looksLikeModSecurity(trimmed) {
+		return parseModSecurityRules(trimmed)
+	}
 	if trimmed[0] == '[' || trimmed[0] == '{' {
 		rules, err := parseCustomRulesJSON(trimmed)
 		if err == nil {
@@ -46,6 +50,155 @@ func ParseCustomRules(data []byte) ([]CustomRuleConfig, error) {
 		return nil, fmt.Errorf("parse custom rules: %w", err)
 	}
 	return parseCustomRulesYAML(trimmed)
+}
+
+var modSecurityRulePattern = regexp.MustCompile(`(?m)^\s*SecRule\s+([^\s]+)\s+"@([^\s]+)\s+([^\"]*)"\s+"([^\"]*)"\s*$`)
+
+func looksLikeModSecurity(data []byte) bool {
+	return regexp.MustCompile(`(?m)^\s*SecRule\b`).Match(data)
+}
+
+// parseModSecurityRules intentionally implements a small, explicit subset.
+// Unsupported operators/actions are rejected so an import cannot silently lose
+// detection semantics.
+func parseModSecurityRules(data []byte) ([]CustomRuleConfig, error) {
+	lines := strings.Split(string(data), "\n")
+	var out []CustomRuleConfig
+	for lineNo, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		matches := modSecurityRulePattern.FindStringSubmatch(trimmed)
+		if matches == nil {
+			if strings.HasPrefix(trimmed, "SecRule") {
+				return nil, fmt.Errorf("modsecurity line %d: unsupported SecRule syntax", lineNo+1)
+			}
+			return nil, fmt.Errorf("modsecurity line %d: unsupported directive", lineNo+1)
+		}
+		variable, operator, pattern, actionText := matches[1], strings.ToLower(matches[2]), matches[3], matches[4]
+		location, ok := modSecurityLocation(variable)
+		if !ok {
+			return nil, fmt.Errorf("modsecurity line %d: unsupported variable %q", lineNo+1, variable)
+		}
+		if operator != "rx" && operator != "contains" && operator != "streq" {
+			return nil, fmt.Errorf("modsecurity line %d: unsupported operator %q", lineNo+1, operator)
+		}
+		if operator == "streq" {
+			pattern = regexp.QuoteMeta(pattern)
+		} else if operator == "contains" {
+			pattern = regexp.QuoteMeta(pattern)
+		}
+		rule := CustomRuleConfig{Pattern: pattern, Location: location, Action: "block", Severity: "medium", Enabled: true}
+		for _, action := range strings.Split(actionText, ",") {
+			parts := strings.SplitN(strings.TrimSpace(action), ":", 2)
+			name := strings.ToLower(strings.TrimSpace(parts[0]))
+			value := ""
+			if len(parts) == 2 {
+				value = strings.Trim(strings.TrimSpace(parts[1]), "'\"")
+			}
+			switch name {
+			case "id":
+				rule.ID = value
+			case "msg":
+				rule.Name = value
+			case "severity":
+				rule.Severity = modSecuritySeverity(value)
+			case "deny", "drop", "block":
+				rule.Action = "block"
+			case "log":
+				rule.Action = "log"
+			case "pass", "allow":
+				return nil, fmt.Errorf("modsecurity line %d: pass/allow actions are unsupported for WAF custom rules", lineNo+1)
+			case "phase", "status", "tag", "capture", "nolog":
+				// Metadata/control actions do not change native matching.
+			case "chain":
+				return nil, fmt.Errorf("modsecurity line %d: chain rules are unsupported", lineNo+1)
+			default:
+				return nil, fmt.Errorf("modsecurity line %d: unsupported action %q", lineNo+1, name)
+			}
+		}
+		if rule.Name == "" {
+			rule.Name = rule.ID
+		}
+		if rule.ID == "" {
+			rule.ID = fmt.Sprintf("modsec-%d", lineNo+1)
+		}
+		out = append(out, rule)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("modsecurity document contains no SecRule directives")
+	}
+	return out, nil
+}
+
+func modSecurityLocation(variable string) (string, bool) {
+	variable = strings.ToUpper(strings.TrimSpace(variable))
+	switch {
+	case variable == "REQUEST_URI" || variable == "REQUEST_URL":
+		return "uri", true
+	case variable == "ARGS" || variable == "ARGS_NAMES" || strings.HasPrefix(variable, "ARGS:"):
+		return "query", true
+	case variable == "REQUEST_BODY":
+		return "body", true
+	case variable == "REQUEST_COOKIES" || strings.HasPrefix(variable, "REQUEST_COOKIES:"):
+		return "cookie", true
+	case variable == "REQUEST_HEADERS" || strings.HasPrefix(variable, "REQUEST_HEADERS:"):
+		return "header", true
+	default:
+		return "", false
+	}
+}
+
+func modSecuritySeverity(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "emergency":
+		return "critical"
+	case "1", "alert", "high":
+		return "high"
+	case "2", "error", "medium":
+		return "medium"
+	case "3", "warning", "low":
+		return "low"
+	default:
+		return "medium"
+	}
+}
+
+// MergeCustomRules merges imported rules by ID or location+pattern. Existing
+// order is retained and imported entries replace matching entries.
+func MergeCustomRules(existing, imported []CustomRuleConfig) ([]CustomRuleConfig, error) {
+	base, err := PrepareCustomRules(existing)
+	if err != nil {
+		return nil, err
+	}
+	next, err := PrepareCustomRules(imported)
+	if err != nil {
+		return nil, err
+	}
+	merged := append([]CustomRuleConfig(nil), base...)
+	byID := make(map[string]int, len(merged))
+	byMatch := make(map[string]int, len(merged))
+	for i, rule := range merged {
+		if rule.ID != "" {
+			byID[rule.ID] = i
+		}
+		byMatch[rule.Location+"\n"+rule.Pattern] = i
+	}
+	for _, rule := range next {
+		idx, ok := byID[rule.ID]
+		if !ok {
+			idx, ok = byMatch[rule.Location+"\n"+rule.Pattern]
+		}
+		if ok {
+			merged[idx] = rule
+			continue
+		}
+		byID[rule.ID] = len(merged)
+		byMatch[rule.Location+"\n"+rule.Pattern] = len(merged)
+		merged = append(merged, rule)
+	}
+	return PrepareCustomRules(merged)
 }
 
 func parseCustomRulesJSON(data []byte) ([]CustomRuleConfig, error) {

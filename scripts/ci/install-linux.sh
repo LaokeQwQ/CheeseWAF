@@ -20,6 +20,11 @@ fi
 [[ -n "$template_admin_listen" ]] || die "configs/cheesewaf.yaml has no admin_listen bootstrap value"
 admin_listen="${CHEESEWAF_ADMIN_LISTEN:-$template_admin_listen}"
 admin_port="${admin_listen##*:}"
+admin_public=false
+case "$admin_listen" in 127.0.0.1:*|localhost:*|'[::1]':*) ;; *)
+ [[ "${CHEESEWAF_ADMIN_PUBLIC:-0}" == 1 ]] || die "public admin listener requires CHEESEWAF_ADMIN_PUBLIC=1"
+ admin_public=true ;;
+esac
 validate_install_path() {
   local label="$1"
   local path="$2"
@@ -151,7 +156,8 @@ if [[ -e "${config_dir}/cheesewaf.yaml" ]]; then
   [[ "$existing_entry" == /* && "$existing_entry" != *".."* && "$existing_entry" != *"?"* && "$existing_entry" != *"#"* ]] || die "existing config has an invalid security-entry path"
 fi
 
-install -d -m 0755 "$bin_dir" "$web_dir" "$config_dir" "$data_dir" "$log_dir" "$unit_dir"
+install -d -m 0755 "$bin_dir" "$web_dir" "$unit_dir"
+install -d -m 0700 "$config_dir" "$data_dir" "$log_dir"
 # Re-check final destinations after creation so a pre-existing symlink cannot
 # redirect a privileged write through a selected install root.
 validate_install_path CHEESEWAF_PREFIX "$prefix"
@@ -180,7 +186,7 @@ if [[ -f ./systemd/cheesewaf.service ]]; then
     -e "s#^EnvironmentFile=-/etc/cheesewaf/admin.env$#EnvironmentFile=-${config_dir}/admin.env#" \
     -e "s#^EnvironmentFile=-/etc/cheesewaf/edge-origin.env$#EnvironmentFile=-${config_dir}/edge-origin.env#" \
     -e "s#^ExecStart=.*#ExecStart=${bin_dir}/cheesewaf serve --config ${config_dir}/cheesewaf.yaml --data-dir ${data_dir}#" \
-    -e "s#^ReadWritePaths=.*#ReadWritePaths=${config_dir}/cheesewaf.yaml ${data_dir} ${log_dir}#" \
+    -e "s#^ReadWritePaths=.*#ReadWritePaths=${config_dir} ${data_dir} ${log_dir}#" \
     "${unit_dir}/cheesewaf.service"
 fi
 
@@ -188,10 +194,10 @@ fi
 # listener, TLS, security-entry, site, and policy settings stay untouched.
 if (( fresh_config == 1 )); then
   sed -i -E "s#^([[:space:]]*)admin_listen:.*#\1admin_listen: \"${admin_listen}\"#" "${config_dir}/cheesewaf.yaml"
-  sed -i -E 's#^([[:space:]]*)admin_public:.*#\1admin_public: true#' "${config_dir}/cheesewaf.yaml"
+  sed -i -E "s#^([[:space:]]*)admin_public:.*#\\1admin_public: ${admin_public}#" "${config_dir}/cheesewaf.yaml"
   sed -i -E '/^[[:space:]]*admin_tls:/,/^[[:space:]]*read_timeout:/{s#^([[:space:]]*)enabled:.*#\1enabled: true#}' "${config_dir}/cheesewaf.yaml"
   sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)path:.*#\1path: /'"${entry}"'#}' "${config_dir}/cheesewaf.yaml"
-  sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)enabled:.*#\1enabled: false#}' "${config_dir}/cheesewaf.yaml"
+  sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)enabled:.*#\1enabled: true#}' "${config_dir}/cheesewaf.yaml"
 fi
 
 # Fail closed if a template format change made one of the installer-owned
@@ -201,17 +207,22 @@ installed_admin_listen="$(awk '$1 == "admin_listen:" {gsub(/"/, "", $2); print $
 [[ -n "$installed_admin_listen" ]] || die "config has no server.admin_listen"
 if (( fresh_config == 1 )); then
   [[ "$installed_admin_listen" == "$admin_listen" ]] || die "failed to set server.admin_listen"
-  grep -Eq '^[[:space:]]+admin_public:[[:space:]]*true[[:space:]]*$' "${config_dir}/cheesewaf.yaml" || die "failed to enable public admin mode"
+  grep -Eq "^[[:space:]]+admin_public:[[:space:]]*${admin_public}[[:space:]]*$" "${config_dir}/cheesewaf.yaml" || die "failed to enable public admin mode"
   sed -n '/^[[:space:]]*admin_tls:[[:space:]]*$/,/^[[:space:]]*read_timeout:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*true[[:space:]]*$' || die "failed to enable admin TLS"
 else
   admin_listen="$installed_admin_listen"
   admin_port="${admin_listen##*:}"
+admin_public=false
+case "$admin_listen" in 127.0.0.1:*|localhost:*|'[::1]':*) ;; *)
+ [[ "${CHEESEWAF_ADMIN_PUBLIC:-0}" == 1 ]] || die "public admin listener requires CHEESEWAF_ADMIN_PUBLIC=1"
+ admin_public=true ;;
+esac
 fi
 installed_entry="$(sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | awk '$1 == "path:" {gsub(/"/, "", $2); print $2; exit}')"
 if (( fresh_config == 1 )); then
   [[ "$installed_entry" =~ ^/[A-Za-z0-9]{8,64}$ ]] || die "config has an invalid security-entry path"
   [[ "$installed_entry" == "/${entry}" ]] || die "failed to set security-entry path"
-  sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*false[[:space:]]*$' || die "failed to keep security entry disabled during setup"
+  sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*true[[:space:]]*$' || die "failed to enable security entry"
 else
   [[ "$installed_entry" == /* && "$installed_entry" != *".."* && "$installed_entry" != *"?"* && "$installed_entry" != *"#"* ]] || die "config has an invalid security-entry path"
   entry="${installed_entry#/}"

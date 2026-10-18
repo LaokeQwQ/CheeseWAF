@@ -163,6 +163,9 @@ export default function SiteDetailPage() {
       }
       : current));
   };
+  const updateAdvancedFlag = (key: 'grpc_enabled' | 'websocket_enabled', value: boolean) => {
+    setSite((current) => (current ? { ...current, advanced: { ...current.advanced, [key]: value } } : current));
+  };
   const updateCertificate = (patch: Partial<SiteAdvanced['certificate']>) => updateAdvanced('certificate', patch);
   const updateACME = (patch: Partial<SiteAdvanced['certificate']['acme']>) => {
     setSite((current) => (current
@@ -350,6 +353,25 @@ export default function SiteDetailPage() {
 
             <section className="site-form-section">
               <header className="site-form-section-header">
+                <strong>{t('sites.transportProtocols')}</strong>
+                <span>{t('sites.transportProtocolsHint')}</span>
+              </header>
+              <div className="site-detail-grid">
+                <label className="switch-line">
+                  <span>{t('sites.grpcPassthrough')}</span>
+                  <Switch checked={Boolean(site.advanced.grpc_enabled)} onCheckedChange={(value) => updateAdvancedFlag('grpc_enabled', value)} />
+                </label>
+                <em className="site-field-hint site-field-hint-wide">{t('sites.grpcPassthroughHint')}</em>
+                <label className="switch-line">
+                  <span>{t('sites.websocketPassthrough')}</span>
+                  <Switch checked={Boolean(site.advanced.websocket_enabled)} onCheckedChange={(value) => updateAdvancedFlag('websocket_enabled', value)} />
+                </label>
+                <em className="site-field-hint site-field-hint-wide">{t('sites.websocketPassthroughHint')}</em>
+              </div>
+            </section>
+
+            <section className="site-form-section">
+              <header className="site-form-section-header">
                 <strong>{t('sites.originSettings')}</strong>
                 <span>{t('sites.originSettingsHint')}</span>
               </header>
@@ -439,8 +461,16 @@ export default function SiteDetailPage() {
               )}
               <label className="switch-line">
                 <span>{t('sites.autoRenew')}</span>
-                <Switch checked={site.advanced.certificate.auto_renew} onCheckedChange={(value) => updateAdvanced('certificate', { auto_renew: value })} />
+                <Switch
+                  checked={site.advanced.certificate.auto_renew}
+                  disabled={site.advanced.certificate.mode !== 'acme'}
+                  onCheckedChange={(value) => updateAdvanced('certificate', { auto_renew: value })}
+                  aria-label={t('sites.autoRenew')}
+                />
               </label>
+              {site.advanced.certificate.mode === 'acme' && (
+                <p className="field-hint">{t('sites.autoRenewUnavailable')}</p>
+              )}
               <label className="switch-line">
                 <span>{t('sites.forceHttps')}</span>
                 <Switch checked={site.advanced.certificate.force_https} onCheckedChange={(value) => updateAdvanced('certificate', { force_https: value })} />
@@ -692,7 +722,8 @@ export default function SiteDetailPage() {
                 </label>
                 <label className="switch-line">
                   <span>{t('sites.authEnabled')}</span>
-                  <Switch checked={site.advanced.access_control.auth_enabled} onCheckedChange={(value) => updateAdvanced('access_control', { auth_enabled: value })} />
+                  <Switch checked={false} disabled aria-disabled="true" />
+                  <em>{t('sites.authEnabledHint')}</em>
                 </label>
                 <label className="switch-line">
                   <span>{t('sites.waitingRoom')}</span>
@@ -700,7 +731,8 @@ export default function SiteDetailPage() {
                 </label>
                 <label className="switch-line">
                   <span>{t('sites.dynamicGuard')}</span>
-                  <Switch checked={site.advanced.access_control.dynamic_guard} onCheckedChange={(value) => updateAdvanced('access_control', { dynamic_guard: value })} />
+                  <Switch checked={true} disabled aria-disabled="true" />
+                  <em>{t('sites.dynamicGuardHint')}</em>
                 </label>
                 <label className="wide-field">
                   <span>{t('sites.trustedCidrs')}</span>

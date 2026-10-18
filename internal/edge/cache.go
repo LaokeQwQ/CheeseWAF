@@ -2,10 +2,8 @@ package edge
 
 import (
 	"container/list"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
-	"hash"
+	"hash/maphash"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,12 +30,12 @@ type Cache struct {
 	maxEntries    int
 	maxTotalBytes int64
 	currentBytes  int64
-	items         map[string]*cacheEntry
+	items         map[[16]byte]*cacheEntry
 	lru           *list.List
 }
 
 type cacheEntry struct {
-	key     string
+	key     [16]byte
 	expires time.Time
 	resp    CapturedResponse
 	size    int64
@@ -77,7 +75,7 @@ func NewCache(cfg config.CachePolicyConfig) *Cache {
 		maxBody:       cfg.MaxBodyBytes,
 		maxEntries:    defaultMaxEntries,
 		maxTotalBytes: defaultMaxTotalBytes,
-		items:         map[string]*cacheEntry{},
+		items:         map[[16]byte]*cacheEntry{},
 		lru:           list.New(),
 	}
 }
@@ -135,6 +133,10 @@ func (c *Cache) Store(r *http.Request, resp CapturedResponse) {
 	if !c.cacheableRequest(r) || !c.cacheableResponse(resp) {
 		return
 	}
+	ttl := c.responseTTL(resp.Header, time.Now())
+	if ttl <= 0 {
+		return
+	}
 	key := cacheKey(r)
 	resp.Header = resp.Header.Clone()
 	resp.Header.Set("X-CheeseWAF-Cache", "MISS")
@@ -156,7 +158,7 @@ func (c *Cache) Store(r *http.Request, resp CapturedResponse) {
 	if c.currentBytes+entrySize > c.maxTotalBytes || len(c.items) >= c.maxEntries {
 		return
 	}
-	entry := &cacheEntry{key: key, expires: now.Add(c.ttl), resp: resp, size: entrySize}
+	entry := &cacheEntry{key: key, expires: now.Add(ttl), resp: resp, size: entrySize}
 	entry.element = c.lru.PushFront(entry)
 	c.items[key] = entry
 	c.currentBytes += entrySize
@@ -194,12 +196,15 @@ func (c *Cache) cacheableRequest(r *http.Request) bool {
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
 		return false
 	}
-	if strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-store") {
+	if anyNonEmptyHeaderValue(r.Header, "Range") || anyNonEmptyHeaderValue(r.Header, "If-Range") {
+		return false
+	}
+	if requestForcesRevalidation(r.Header) {
 		return false
 	}
 	// Never share authenticated or cookie-bound responses across clients unless
 	// private mode with an identity-partitioned cache key.
-	if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+	if anyNonEmptyHeaderValue(r.Header, "Authorization") || anyNonEmptyHeaderValue(r.Header, "Cookie") {
 		if c.mode != "private" {
 			return false
 		}
@@ -240,54 +245,151 @@ func (c *Cache) cacheableResponseMetadata(status int, header http.Header, conten
 	if contentLength > c.maxBody {
 		return false
 	}
-	cc := strings.ToLower(header.Get("Cache-Control"))
-	if strings.Contains(cc, "no-store") || strings.Contains(cc, "private") {
-		if c.mode != "private" {
+	if status == http.StatusPartialContent || anyNonEmptyHeaderValue(header, "Content-Range") {
+		return false
+	}
+	for _, directive := range cacheDirectives(header) {
+		switch directive[0] {
+		case "no-store", "no-cache", "must-revalidate":
+			return false
+		case "private":
+			if c.mode != "private" {
+				return false
+			}
+		}
+	}
+	for _, value := range header.Values("Vary") {
+		for _, token := range strings.Split(value, ",") {
+			if token = strings.TrimSpace(token); token != "" && !strings.EqualFold(token, "Accept-Encoding") {
+				return false
+			}
+		}
+	}
+	for _, value := range header.Values("Set-Cookie") {
+		if strings.TrimSpace(value) != "" {
 			return false
 		}
 	}
-	vary := strings.TrimSpace(header.Get("Vary"))
-	if vary != "" && !strings.EqualFold(vary, "Accept-Encoding") {
-		return false
-	}
-	return header.Get("Set-Cookie") == ""
+	return c.responseTTL(header, time.Now()) > 0
 }
 
-func cacheKey(r *http.Request) string {
-	digest := sha256.New()
-	writeCacheKeyPart(digest, r.Method)
-	writeCacheKeyPart(digest, r.Host)
-	writeCacheKeyPart(digest, r.URL.RequestURI())
-	for _, name := range []string{
-		"Authorization",
-		"Cookie",
-		"Origin",
-		"Accept",
-		"Accept-Language",
-		"Accept-Encoding",
-	} {
-		writeCacheKeyPart(digest, name)
-		values := r.Header.Values(name)
-		writeCacheKeyLength(digest, uint64(len(values)))
-		for _, value := range values {
-			writeCacheKeyPart(digest, value)
+func cacheDirectives(header http.Header) [][2]string {
+	var out [][2]string
+	for _, value := range header.Values("Cache-Control") {
+		for _, field := range strings.Split(value, ",") {
+			name, value, _ := strings.Cut(strings.TrimSpace(field), "=")
+			out = append(out, [2]string{strings.ToLower(strings.TrimSpace(name)), strings.Trim(strings.TrimSpace(value), "\"")})
 		}
 	}
-	return hex.EncodeToString(digest.Sum(nil))
+	return out
 }
 
-func writeCacheKeyPart(digest hash.Hash, value string) {
+func requestForcesRevalidation(header http.Header) bool {
+	for _, directive := range cacheDirectives(header) {
+		if directive[0] == "no-store" || directive[0] == "no-cache" || (directive[0] == "max-age" && directive[1] == "0") {
+			return true
+		}
+	}
+	for _, value := range header.Values("Pragma") {
+		if strings.EqualFold(strings.TrimSpace(value), "no-cache") {
+			return true
+		}
+	}
+	return false
+}
+
+func anyNonEmptyHeaderValue(header http.Header, name string) bool {
+	for _, value := range header.Values(name) {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Cache) responseTTL(header http.Header, now time.Time) time.Duration {
+	ttl := c.ttl
+	age := time.Duration(0)
+	if value, err := strconv.ParseInt(header.Get("Age"), 10, 64); err == nil && value > 0 {
+		if value > int64((1<<63-1)/int64(time.Second)) {
+			return 0
+		}
+		age = time.Duration(value) * time.Second
+	}
+	if date, err := http.ParseTime(header.Get("Date")); err == nil && now.Sub(date) > age {
+		age = now.Sub(date)
+	}
+	explicitMaxAge := false
+	for _, directive := range cacheDirectives(header) {
+		if directive[0] != "max-age" && directive[0] != "s-maxage" {
+			continue
+		}
+		explicitMaxAge = true
+		seconds, err := strconv.ParseInt(directive[1], 10, 64)
+		if err != nil || seconds < 0 || seconds > int64((1<<63-1)/int64(time.Second)) {
+			return 0
+		}
+		remaining := time.Duration(seconds)*time.Second - age
+		if remaining < ttl {
+			ttl = remaining
+		}
+	}
+	if !explicitMaxAge && header.Get("Expires") != "" {
+		expiry, err := http.ParseTime(header.Get("Expires"))
+		if err != nil {
+			return 0
+		}
+		if remaining := expiry.Sub(now); remaining < ttl {
+			ttl = remaining
+		}
+	}
+	return ttl
+}
+
+var cacheKeySeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
+
+func cacheKey(r *http.Request) [16]byte {
+	var key [16]byte
+	for n, seed := range cacheKeySeeds {
+		var digest maphash.Hash
+		digest.SetSeed(seed)
+		writeCacheKeyPart(&digest, r.Method)
+		scheme := strings.ToLower(r.URL.Scheme)
+		if scheme == "" {
+			scheme = "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+		}
+		writeCacheKeyPart(&digest, scheme)
+		writeCacheKeyPart(&digest, r.Host)
+		writeCacheKeyPart(&digest, r.RequestURI) // original public target, before rewrite
+		writeCacheKeyPart(&digest, r.URL.RequestURI())
+		for _, name := range []string{"Authorization", "Cookie", "Origin", "Accept", "Accept-Language", "Accept-Encoding"} {
+			writeCacheKeyPart(&digest, name)
+			values := r.Header.Values(name)
+			writeCacheKeyLength(&digest, uint64(len(values)))
+			for _, value := range values {
+				writeCacheKeyPart(&digest, value)
+			}
+		}
+		binary.BigEndian.PutUint64(key[n*8:], digest.Sum64())
+	}
+	return key
+}
+
+func writeCacheKeyPart(digest *maphash.Hash, value string) {
 	writeCacheKeyLength(digest, uint64(len(value)))
-	_, _ = digest.Write([]byte(value))
+	_, _ = digest.WriteString(value)
 }
 
-func writeCacheKeyLength(digest hash.Hash, value uint64) {
+func writeCacheKeyLength(digest *maphash.Hash, value uint64) {
 	var encoded [8]byte
 	binary.BigEndian.PutUint64(encoded[:], value)
 	_, _ = digest.Write(encoded[:])
 }
 
-func cacheEntrySize(key string, resp CapturedResponse) int64 {
+func cacheEntrySize(key [16]byte, resp CapturedResponse) int64 {
 	size := int64(cacheEntryOverhead + len(key) + len(resp.Body))
 	for name, values := range resp.Header {
 		size += int64(len(name))

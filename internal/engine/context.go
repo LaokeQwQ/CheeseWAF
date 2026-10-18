@@ -23,7 +23,30 @@ const defaultRequestBodyLimit = 8 << 20
 // an unbounded goroutine leak.
 const maxInflightBodyReads = 256
 
+// Keep a noisy site from consuming every body-reader worker. The global pool
+// remains the hard process bound; this smaller per-site quota leaves room for
+// other sites to make progress while a single tenant uploads slowly.
+const maxInflightBodyReadsPerSite = 32
+
 var bodyReadSlots = make(chan struct{}, maxInflightBodyReads)
+var bodyReadSiteAdmissions = siteAdmission{
+	maxActive: maxInflightBodyReadsPerSite,
+	maxSites:  1024,
+}
+
+// Body reads are bounded by bytes as well as worker count. Unknown-length
+// requests reserve their configured body ceiling before starting a reader so a
+// set of slow uploads cannot consume unbounded memory while slots remain free.
+const (
+	maxBodyBytesPerSite = 16 << 20
+	maxBodyBytesGlobal  = 256 << 20
+)
+
+var bodyBudget = struct {
+	sync.Mutex
+	global int64
+	bySite map[string]int64
+}{bySite: make(map[string]int64)}
 
 // Cap inflate relative to compressed size to reduce zip-bomb risk.
 const maxDecompressionRatio = 20
@@ -87,6 +110,7 @@ func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes in
 		maxBodyBytes:      maxBodyBytes,
 	}
 	if r != nil && r.URL != nil {
+		reqCtx.NormalizedPath, _ = NormalizeRequestPath(r.URL.Path)
 		reqCtx.DecodedURI = r.URL.RequestURI()
 		if r.ContentLength > maxBodyBytes {
 			return nil, ErrRequestBodyTooLarge
@@ -166,6 +190,7 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	}
 
 	originalBody := c.Request.Body
+	contentLength := c.Request.ContentLength
 	encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
 	done := make(chan struct{})
 	closeOnce := &sync.Once{}
@@ -179,17 +204,74 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	c.DecodedBody = nil
 	c.bodyMu.Unlock()
 
-	select {
-	case bodyReadSlots <- struct{}{}:
-		go c.readBodyWorker(originalBody, done, maxBodyBytes, encoding, closeOnce)
-		return waitBodyRead(ctx, done, originalBody, closeOnce, c)
-	default:
-		// Admission failure did not consume the source, so leave Request.Body and
-		// ContentLength exactly as supplied by the caller.
+	reservation := maxBodyBytes
+	if contentLength >= 0 && contentLength < reservation {
+		reservation = contentLength
+	}
+	if reservation < 1 {
+		reservation = 1
+	}
+	c.bodyMu.Lock()
+	if !reserveBodyBudget(c.SiteID, reservation) {
+		c.bodyMu.Unlock()
 		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
 		closeBodyReadSource(originalBody, closeOnce)
 		return ErrRequestBodyReadOverload
 	}
+	c.bodyReservation = reservation
+	c.bodyReservationHeld = true
+	c.bodyMu.Unlock()
+
+	siteToken, admitted := bodyReadSiteAdmissions.acquire(c.SiteID)
+	if !admitted {
+		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
+		closeBodyReadSource(originalBody, closeOnce)
+		return ErrRequestBodyReadOverload
+	}
+	select {
+	case bodyReadSlots <- struct{}{}:
+		go c.readBodyWorker(originalBody, done, maxBodyBytes, contentLength, encoding, closeOnce, siteToken)
+		return waitBodyRead(ctx, done, originalBody, closeOnce, c)
+	default:
+		// Admission failure did not consume the source, so leave Request.Body and
+		// ContentLength exactly as supplied by the caller.
+		siteToken.release()
+		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
+		closeBodyReadSource(originalBody, closeOnce)
+		return ErrRequestBodyReadOverload
+	}
+}
+
+func reserveBodyBudget(siteID string, amount int64) bool {
+	if amount <= 0 || amount > maxBodyBytesPerSite {
+		return false
+	}
+	bodyBudget.Lock()
+	defer bodyBudget.Unlock()
+	if bodyBudget.global+amount > maxBodyBytesGlobal {
+		return false
+	}
+	if bodyBudget.bySite[siteID]+amount > maxBodyBytesPerSite {
+		return false
+	}
+	bodyBudget.global += amount
+	bodyBudget.bySite[siteID] += amount
+	return true
+}
+
+func (c *RequestContext) releaseBodyBudgetLocked() {
+	if c == nil || !c.bodyReservationHeld {
+		return
+	}
+	bodyBudget.Lock()
+	bodyBudget.global -= c.bodyReservation
+	bodyBudget.bySite[c.SiteID] -= c.bodyReservation
+	if bodyBudget.bySite[c.SiteID] <= 0 {
+		delete(bodyBudget.bySite, c.SiteID)
+	}
+	bodyBudget.Unlock()
+	c.bodyReservation = 0
+	c.bodyReservationHeld = false
 }
 
 func waitBodyRead(ctx context.Context, done chan struct{}, body io.ReadCloser, closeOnce *sync.Once, owner *RequestContext) error {
@@ -246,8 +328,9 @@ func closeBodyReadSource(body io.Closer, closeOnce *sync.Once) {
 	closeOnce.Do(func() { _ = body.Close() })
 }
 
-func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan struct{}, maxBodyBytes int64, encoding string, closeOnce *sync.Once) {
+func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan struct{}, maxBodyBytes, contentLength int64, encoding string, closeOnce *sync.Once, siteToken siteAdmissionToken) {
 	defer func() { <-bodyReadSlots }()
+	defer siteToken.release()
 	defer closeBodyReadSource(originalBody, closeOnce)
 
 	var raw []byte
@@ -258,7 +341,14 @@ func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan st
 				readErr = fmt.Errorf("request body reader panic: %v", recovered)
 			}
 		}()
-		raw, readErr = io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+		if contentLength > 0 && contentLength <= maxBodyBytes {
+			var buffer bytes.Buffer
+			buffer.Grow(int(contentLength) + bytes.MinRead)
+			_, readErr = buffer.ReadFrom(io.LimitReader(originalBody, maxBodyBytes+1))
+			raw = buffer.Bytes()
+		} else {
+			raw, readErr = io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
+		}
 	}()
 	if readErr != nil {
 		var maxErr *http.MaxBytesError
@@ -291,6 +381,7 @@ func (c *RequestContext) finishBodyRead(raw, decoded []byte, readErr error, done
 	// returned while an uncooperative reader was still unwinding; discard the
 	// late result and leave every public request field untouched.
 	if c.bodyLoaded {
+		c.releaseBodyBudgetLocked()
 		close(done)
 		return
 	}
@@ -299,10 +390,11 @@ func (c *RequestContext) finishBodyRead(raw, decoded []byte, readErr error, done
 		// Publish all body state in one critical section only after both transfer
 		// reading and semantic decoding completed. No prefix is ever replayed as a
 		// complete request after an error.
-		c.rawBody = append(c.rawBody[:0], raw...)
-		c.DecodedBody = append(c.DecodedBody[:0], decoded...)
+		// The reader owns these buffers; publish them once as immutable snapshots.
+		c.rawBody = raw
+		c.DecodedBody = decoded
 		if c.Request != nil {
-			bodyCopy := append([]byte(nil), raw...)
+			bodyCopy := raw
 			if len(bodyCopy) == 0 {
 				c.Request.Body = http.NoBody
 				c.Request.GetBody = func() (io.ReadCloser, error) { return http.NoBody, nil }
@@ -317,24 +409,23 @@ func (c *RequestContext) finishBodyRead(raw, decoded []byte, readErr error, done
 	}
 	c.bodyErr = readErr
 	c.bodyLoaded = true
+	c.releaseBodyBudgetLocked()
 	c.bodyReadBody = originalBody
 	c.bodyCloseOnce = closeOnce
 	close(done)
 }
 
-// detectionBodySnapshot returns private copies of the body state for a
-// semantic detector fork. The copies make the exported DecodedBody slice safe
-// even if a third-party detector accidentally mutates its local context after
-// the pipeline has moved on. Callers must not use the returned slices to
-// mutate the parent request.
+// detectionBodySnapshot returns immutable body state for a detector fork.
+// Detectors must never mutate these slices; each request gets an independent
+// replay reader so ParseForm does not consume another detector's input.
 func (c *RequestContext) detectionBodySnapshot() (raw, decoded []byte, loaded, bodyPresent bool, err error) {
 	if c == nil {
 		return nil, nil, false, false, nil
 	}
 	c.bodyMu.Lock()
 	defer c.bodyMu.Unlock()
-	raw = append([]byte(nil), c.rawBody...)
-	decoded = append([]byte(nil), c.DecodedBody...)
+	raw = c.rawBody
+	decoded = c.DecodedBody
 	loaded = c.bodyLoaded
 	if c.Request != nil {
 		bodyPresent = c.Request.Body != nil

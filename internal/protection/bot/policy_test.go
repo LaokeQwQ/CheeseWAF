@@ -379,7 +379,13 @@ func TestCAPTCHAAnswerFailuresLockChallengeToken(t *testing.T) {
 		CookieName:         "cw_clearance",
 		Secret:             "test-secret",
 	})
-	token := "opaque-token"
+	base := httptest.NewRequest(http.MethodGet, "https://example.test/login", nil)
+	base.Header.Set("User-Agent", "curl/8.0")
+	challenge, err := policy.newImageChallenge(base, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("issue challenge: %v", err)
+	}
+	token := challenge.Token
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("cw_image_token="+url.QueryEscape(token)+"&cw_image_answer=bad"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -408,6 +414,10 @@ func TestCAPTCHAAttemptCapacityFailsClosedAndRecordsNewFailure(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodGet, "https://example.test/protected", nil)
 	request.Header.Set("User-Agent", "browser-a")
+	issued, err := policy.newImageChallenge(request, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("issue image challenge: %v", err)
+	}
 	// Keep all seeded entries far in the future so slow Windows CI fill loops
 	// do not let purgeCAPTCHAAttemptsLocked drop capacity before the assertion.
 	now := policy.now().Unix()
@@ -418,12 +428,15 @@ func TestCAPTCHAAttemptCapacityFailsClosedAndRecordsNewFailure(t *testing.T) {
 	}
 	policy.mu.Unlock()
 
-	const token = "new-token"
-	if !policy.captchaLocked(request, "203.0.113.10", "image", token) {
+	const unknownToken = "new-token"
+	if !policy.captchaLocked(request, "203.0.113.10", "image", unknownToken) {
 		t.Fatal("capacity saturation must fail closed for an untracked token")
 	}
-	policy.recordCAPTCHAAnswer(request, "203.0.113.10", "image", token, false)
-	key := policy.captchaAttemptKey(request, "203.0.113.10", "image", token)
+	if policy.captchaLocked(request, "203.0.113.10", "image", issued.Token) {
+		t.Fatal("capacity saturation must preserve admission for an issued challenge")
+	}
+	policy.recordCAPTCHAAnswer(request, "203.0.113.10", "image", issued.Token, false)
+	key := policy.captchaAttemptKey(request, "203.0.113.10", "image", issued.Token)
 	policy.mu.Lock()
 	attempt, ok := policy.attempts[key]
 	length := len(policy.attempts)

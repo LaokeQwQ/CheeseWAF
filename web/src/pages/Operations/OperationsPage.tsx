@@ -33,6 +33,7 @@ import {
   cleanupStorage,
   exportBackup,
   fetchStorageStats,
+  fetchSystemConfig,
   fetchTaskHistory,
   fetchTasks,
   updateTasks,
@@ -66,10 +67,16 @@ export default function OperationsPage() {
   const queryClient = useQueryClient();
   const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks, retry: false });
   const storageQuery = useQuery({ queryKey: ['storage'], queryFn: fetchStorageStats, retry: false });
+  const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const historyQuery = useQuery({ queryKey: ['taskHistory'], queryFn: fetchTaskHistory, retry: false });
   const tasks = tasksQuery.data ?? [];
   const storage = storageQuery.data;
   const history = historyQuery.data ?? [];
+  // The backend advertises this capability explicitly. Keep the action hidden
+  // while capability data is unavailable so the page never exposes a known
+  // 501 endpoint after a transient system-config failure.
+  const backupAvailable = systemQuery.data?.capabilities?.backup?.available === true;
+  const cleanupUnavailable = systemQuery.data?.capabilities?.storage_cleanup?.available === false;
   const taskNames = useMemo(
     () => new Map((tasksQuery.data ?? []).map((task) => [task.id, task.name])),
     [tasksQuery.data],
@@ -192,10 +199,10 @@ export default function OperationsPage() {
           <h1>{t('ops.title')}</h1>
           <p>{t('ops.subtitle')}</p>
         </div>
-        <Button onClick={() => backup.mutate()} loading={backup.isPending}>
+        {backupAvailable && <Button onClick={() => backup.mutate()} loading={backup.isPending}>
           <Archive size={16} />
           {t('ops.backup')}
-        </Button>
+        </Button>}
       </header>
 
       <div className="ops-grid">
@@ -218,7 +225,7 @@ export default function OperationsPage() {
                 </div>
               </div>
               <div className="panel-actions">
-                <Button variant="outline" onClick={() => cleanup.mutate()} loading={cleanup.isPending}>
+                <Button variant="outline" onClick={() => cleanup.mutate()} loading={cleanup.isPending} disabled={cleanupUnavailable}>
                   <RotateCcw size={16} />
                   {t('ops.cleanup')}
                 </Button>

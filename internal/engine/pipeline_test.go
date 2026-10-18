@@ -892,8 +892,8 @@ func TestPipelineStopsStartingPrefiltersAfterContextCancellation(t *testing.T) {
 
 func TestPipelineReusesSharedSemanticWorkers(t *testing.T) {
 	workers := runtime.GOMAXPROCS(0)
-	if workers > 8 {
-		workers = 8
+	if workers > 32 {
+		workers = 32
 	}
 	if workers < 1 {
 		workers = 1

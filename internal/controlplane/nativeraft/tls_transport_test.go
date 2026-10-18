@@ -97,7 +97,7 @@ func TestTLSRaftTransportReplicatesOnlyWithMutualNodeCertificates(t *testing.T) 
 	if err := leader.Prepare(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	follower, err := New(Options{Profile: "production", ClusterID: "cluster-a", NodeID: "node-b", DataDir: followerDir, BindAddress: "127.0.0.1:0", Mode: ModeJoin, TLS: &followerTLS})
+	follower, err := New(Options{Profile: "production", ClusterID: "cluster-a", NodeID: "node-b", DataDir: followerDir, BindAddress: "127.0.0.1:0", Mode: ModeJoin, InitialVoters: []Member{{ID: leader.NodeID(), Address: leader.Address()}}, TLS: &followerTLS})
 	if err != nil {
 		t.Fatalf("New follower: %v", err)
 	}

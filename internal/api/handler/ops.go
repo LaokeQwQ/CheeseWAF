@@ -260,13 +260,24 @@ func (h *Handler) StorageStats(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) CleanupStorage(w http.ResponseWriter, r *http.Request) {
-	task := storageCleanupTask(h.currentConfig(), h.nowUTC())
-	result, err := scheduler.CleanupOldFilesWithResult(scheduler.Task{
-		ID:     task.ID,
-		Name:   task.Name,
-		Type:   task.Type,
-		Target: task.Target,
-		Keep:   task.Keep,
+	cfg := h.currentConfig()
+	if cfg == nil {
+		writeError(w, http.StatusServiceUnavailable, "STORAGE_CLEANUP_UNAVAILABLE", "configuration is unavailable")
+		return
+	}
+	task := storageCleanupTask(cfg, h.nowUTC())
+	logDir := filepath.Dir(cfg.Logging.Output.File.Path)
+	managedRoots := []string{cfg.Setup.DataDir}
+	if strings.TrimSpace(logDir) != "" && logDir != "." {
+		managedRoots = append(managedRoots, logDir)
+	}
+	result, err := scheduler.CleanupOldFilesWithResultContext(r.Context(), scheduler.Task{
+		ID:           task.ID,
+		Name:         task.Name,
+		Type:         task.Type,
+		Target:       task.Target,
+		Keep:         task.Keep,
+		ManagedRoots: managedRoots,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "STORAGE_CLEANUP_ERROR", err.Error())
@@ -402,7 +413,7 @@ func scheduledTaskResponses(tasks []config.ScheduledTaskConfig, now time.Time) [
 			At:        task.At,
 			Target:    task.Target,
 			Channel:   task.Channel,
-			Recipient: task.Recipient,
+			Recipient: "",
 			Period:    task.Period,
 			Format:    task.Format,
 			Keep:      task.Keep,

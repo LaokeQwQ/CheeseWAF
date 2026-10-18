@@ -257,6 +257,25 @@ func validSetupPayload() SetupPayload {
 	}
 }
 
+func TestCompleteSetupAppliesSelectedProfile(t *testing.T) {
+	dataDir := t.TempDir()
+	paths, cfg, store := setupFailureFixture(t, dataDir)
+	payload := validSetupPayload()
+	payload.Profile = ProfileHigh
+	result, err := CompleteSetup(context.Background(), CompleteOptions{
+		Config: cfg, ConfigPath: paths.ConfigFile, Paths: paths, Store: store,
+	}, payload)
+	if err != nil {
+		t.Fatalf("complete setup: %v", err)
+	}
+	if result.Config.Protection.Policy.WebAttack != "high" {
+		t.Fatalf("web attack profile = %q, want high", result.Config.Protection.Policy.WebAttack)
+	}
+	if result.Config.Protection.RateLimit.Default.Requests != ProfileDefaults(ProfileHigh).RateLimitRequests {
+		t.Fatalf("rate limit requests = %d, want %d", result.Config.Protection.RateLimit.Default.Requests, ProfileDefaults(ProfileHigh).RateLimitRequests)
+	}
+}
+
 func assertSetupRolledBack(t *testing.T, paths DefaultPaths, cfg *config.Config, store storage.Store, originalConfig []byte, originalMode os.FileMode) {
 	t.Helper()
 	if !NeedsSetup(paths.DataDir) {

@@ -166,12 +166,13 @@ func TestSecurityReportWritesJSONFileAndWebhookContentType(t *testing.T) {
 	}})
 	reportsDir := filepath.Join(dir, "reports")
 	err := SecurityReport(logPath, dir)(context.Background(), Task{
-		ID:        "security/daily",
-		Type:      "security_report",
-		Channel:   "file",
-		Recipient: reportsDir,
-		Period:    "daily",
-		Format:    "json",
+		ID:           "security/daily",
+		Type:         "security_report",
+		Channel:      "file",
+		Recipient:    reportsDir,
+		ManagedRoots: []string{dir},
+		Period:       "daily",
+		Format:       "json",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +204,81 @@ func TestSecurityReportWritesJSONFileAndWebhookContentType(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSecurityReportFileRejectsOutsideAndSymlinkDirectories(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	logPath := filepath.Join(root, "access.log")
+	writeLogEntries(t, logPath, []storage.LogEntry{{Timestamp: time.Now().UTC(), Action: "block", Category: "sqli"}})
+	for _, tc := range []struct {
+		name string
+		dir  string
+	}{
+		{name: "outside", dir: outside},
+		{name: "symlink", dir: filepath.Join(root, "reports-link")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "symlink" {
+				if err := os.Symlink(outside, tc.dir); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			err := SecurityReport(logPath, root)(context.Background(), Task{
+				ID: "security", Type: "security_report", Channel: "file", Recipient: tc.dir,
+				ManagedRoots: []string{root}, Period: "daily", Format: "json",
+			})
+			if err == nil {
+				t.Fatal("report output outside the real managed directory must fail")
+			}
+			entries, readErr := os.ReadDir(outside)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("report escaped managed root: %v", entries)
+			}
+		})
+	}
+}
+
+func TestSecurityReportRebasesPackagedDataRecipientAgainstAbsoluteRoot(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "access.log")
+	writeLogEntries(t, logPath, []storage.LogEntry{{Timestamp: time.Now().UTC(), Action: "block", Category: "sqli"}})
+	if err := SecurityReport(logPath, dataDir)(context.Background(), Task{
+		ID: "security", Type: "security_report", Channel: "file", Recipient: "./data/reports",
+		ManagedRoots: []string{dataDir}, Period: "daily", Format: "json",
+	}); err != nil {
+		t.Fatalf("packaged data recipient should rebase under absolute data root: %v", err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dataDir, "reports", "security-*.json")); err != nil || len(matches) != 1 {
+		t.Fatalf("expected report under data root, matches=%v err=%v", matches, err)
+	}
+}
+
+func TestSummarizeSecurityLogsStopsAtScanBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	var raw []byte
+	for i := 0; i < reportMaxScanLines+5; i++ {
+		line, _ := json.Marshal(storage.LogEntry{Timestamp: time.Now().UTC(), Action: "block", Category: "sqli"})
+		raw = append(raw, line...)
+		raw = append(raw, '\n')
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := SummarizeSecurityLogs(path, "daily", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !summary.Partial || summary.Total > reportMaxScanLines {
+		t.Fatalf("scan budget not reported: partial=%v total=%d", summary.Partial, summary.Total)
 	}
 }
 

@@ -21,6 +21,30 @@ func TestGuardSyncRecoversPanicAndReturnsErrors(t *testing.T) {
 	}
 }
 
+func TestGuardSiteAdmissionLeavesGlobalCapacityForOtherSites(t *testing.T) {
+	tokens := make([]siteAdmissionToken, 0, maxInflightGuardsPerSite)
+	for i := 0; i < maxInflightGuardsPerSite; i++ {
+		token, admitted := guardSiteAdmissions.acquire("noisy-site")
+		if !admitted {
+			t.Fatalf("same-site guard admission rejected slot %d/%d", i+1, maxInflightGuardsPerSite)
+		}
+		tokens = append(tokens, token)
+	}
+	defer func() {
+		for _, token := range tokens {
+			token.release()
+		}
+	}()
+	if _, admitted := guardSiteAdmissions.acquire("noisy-site"); admitted {
+		t.Fatal("same site exceeded its detector guard quota")
+	}
+	quiet, admitted := guardSiteAdmissions.acquire("quiet-site")
+	if !admitted {
+		t.Fatal("quiet site lost detector guard capacity to noisy site")
+	}
+	quiet.release()
+}
+
 func TestGuardContextReturnsOnCancellationWhileDetectorIgnoresContext(t *testing.T) {
 	baselineSlots := len(guardSlots)
 	started := make(chan struct{})

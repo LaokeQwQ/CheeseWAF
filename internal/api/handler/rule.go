@@ -199,8 +199,15 @@ func (h *Handler) ImportCustomRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "RULES_IMPORT_INVALID", err.Error())
 		return
 	}
+	var mergedRules []config.CustomRuleConfig
 	if err := h.mutateSiteCustomRules(r, siteID, "", func(site *storage.Site) error {
-		site.Advanced.CustomRules = storage.SiteCustomRulesFromConfig(prepared)
+		existing := storage.SiteCustomRulesToConfig(site.Advanced.CustomRules)
+		merged, err := config.MergeCustomRules(existing, prepared)
+		if err != nil {
+			return err
+		}
+		mergedRules = merged
+		site.Advanced.CustomRules = storage.SiteCustomRulesFromConfig(merged)
 		return nil
 	}); err != nil {
 		writeRuleMutationError(w, err)
@@ -208,8 +215,9 @@ func (h *Handler) ImportCustomRules(w http.ResponseWriter, r *http.Request) {
 	}
 	writeData(w, map[string]any{
 		"site_id":      siteID,
-		"custom_rules": prepared,
-		"count":        len(prepared),
+		"custom_rules": mergedRules,
+		"imported":     len(prepared),
+		"count":        len(mergedRules),
 	})
 }
 

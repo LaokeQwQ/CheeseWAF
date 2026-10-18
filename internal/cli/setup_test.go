@@ -405,8 +405,8 @@ func TestSetupStateCommitWritesConfigAndAdmin(t *testing.T) {
 		t.Fatalf("admin user not created: %+v", user)
 	}
 
-	if !strings.Contains(out.String(), "http://127.0.0.1:9443") {
-		t.Fatalf("expected http admin URL, got: %s", out.String())
+	if !strings.Contains(out.String(), "https://127.0.0.1:9443") {
+		t.Fatalf("expected https admin URL, got: %s", out.String())
 	}
 
 	// A second commit must be rejected so the wizard cannot re-initialise.

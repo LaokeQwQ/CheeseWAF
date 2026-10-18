@@ -64,6 +64,10 @@ func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
 			ExpiresAt:  item.ExpiresAt,
 		}
 		index := len(intel.items)
+		if indicator.Type != "ip" {
+			intel.items = append(intel.items, indicator)
+			continue
+		}
 		if strings.Contains(item.Value, "/") {
 			prefix, err := netip.ParsePrefix(strings.TrimSpace(item.Value))
 			if err != nil {

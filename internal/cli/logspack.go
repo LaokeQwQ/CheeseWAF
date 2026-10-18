@@ -120,8 +120,8 @@ func collectPackFiles(cfg *config.Config, runtimeDataDir, cfgPath string) []pack
 		if src == "" || src == "." {
 			return
 		}
-		info, err := os.Stat(src)
-		if err != nil || info.IsDir() {
+		info, err := os.Lstat(src)
+		if err != nil || !info.Mode().IsRegular() {
 			return
 		}
 		key := strings.ToLower(src)
@@ -175,17 +175,14 @@ func collectPackFiles(cfg *config.Config, runtimeDataDir, cfgPath string) []pack
 		add(cfg.APISec.Audit.Path, filepath.Join("audit", filepath.Base(cfg.APISec.Audit.Path)))
 	}
 
-	// Config file (operators often need it; secrets may be present — documented).
-	if strings.TrimSpace(cfgPath) != "" {
-		add(cfgPath, "config/"+filepath.Base(cfgPath))
-	}
+	// Configuration contains credentials and is never included in support bundles.
 
 	_ = runtimeDataDir
 	return out
 }
 
 func writeZipBundle(zipPath string, files []packFile, cfg *config.Config, runtimeDataDir string) (int, error) {
-	f, err := os.Create(zipPath)
+	f, err := os.OpenFile(zipPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return 0, err
 	}
@@ -238,6 +235,13 @@ func writeZipString(zw *zip.Writer, name, body string) error {
 }
 
 func writeZipFile(zw *zip.Writer, src, name string) error {
+	before, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if !before.Mode().IsRegular() {
+		return fmt.Errorf("bundle input must be a regular file")
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -246,6 +250,9 @@ func writeZipFile(zw *zip.Writer, src, name string) error {
 	info, err := in.Stat()
 	if err != nil {
 		return err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(before, info) {
+		return fmt.Errorf("bundle input changed while opening")
 	}
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {

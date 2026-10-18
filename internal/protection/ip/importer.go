@@ -3,10 +3,14 @@ package ip
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/net/idna"
 	"net"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +29,8 @@ type ImportOptions struct {
 }
 
 func ParseThreatIntel(format string, contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, error) {
+	requestedSource := strings.TrimSpace(opts.Source)
+	requestedAction := strings.TrimSpace(opts.Action)
 	if opts.Source == "" {
 		opts.Source = "manual"
 	}
@@ -37,12 +43,20 @@ func ParseThreatIntel(format string, contents []byte, opts ImportOptions) ([]con
 	if !opts.Enabled {
 		opts.Enabled = true
 	}
+	if len(contents) > 16<<20 {
+		return nil, fmt.Errorf("threat intelligence feed exceeds 16 MiB")
+	}
 	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = "plain"
+	}
 	var (
 		items []config.ThreatIntelConfig
 		err   error
 	)
 	switch format {
+	case "plain", "txt", "text", "ip", "cidr", "feed":
+		items, err = parsePlain(contents, opts)
 	case "csv":
 		items, err = parseCSV(contents, opts)
 	case "json", "misp", "threatbook":
@@ -50,10 +64,23 @@ func ParseThreatIntel(format string, contents []byte, opts ImportOptions) ([]con
 	case "stix", "stix2", "stix2.1":
 		items, err = parseSTIX(contents, opts)
 	default:
-		items, err = parsePlain(contents, opts)
+		return nil, fmt.Errorf("unsupported threat intelligence format %q", format)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if len(items) > 100000 {
+		return nil, fmt.Errorf("threat intelligence feed exceeds 100000 indicators")
+	}
+	for idx := range items {
+		if strings.TrimSpace(items[idx].Source) == "" && requestedSource != "" {
+			items[idx].Source = opts.Source
+		}
+		// A caller-supplied action is an upper bound. Feed metadata remains
+		// authoritative when no explicit bound was requested.
+		if requestedAction != "" && actionPriority(items[idx].Action) > actionPriority(opts.Action) {
+			items[idx].Action = opts.Action
+		}
 	}
 	return dedupeThreatIntel(items), nil
 }
@@ -67,21 +94,46 @@ func intelDedupeKey(item config.ThreatIntelConfig) string {
 }
 
 func MergeThreatIntel(existing, imported []config.ThreatIntelConfig) []config.ThreatIntelConfig {
-	merged := append([]config.ThreatIntelConfig(nil), existing...)
+	merged := make([]config.ThreatIntelConfig, 0, len(existing)+len(imported))
+	now := time.Now()
 	seen := map[string]int{}
-	for idx, item := range merged {
-		key := intelDedupeKey(item)
-		if key == "ip::" {
+	for _, item := range existing {
+		if !item.ExpiresAt.IsZero() && !item.ExpiresAt.After(now) {
 			continue
 		}
-		seen[key] = idx
+		canonical, ok := canonicalizeThreatIntel(item)
+		if !ok {
+			continue
+		}
+		key := intelDedupeKey(canonical)
+		if idx, exists := seen[key]; exists {
+			if sourceTrust(canonical.Source) > sourceTrust(merged[idx].Source) {
+				merged[idx] = canonical
+			}
+			continue
+		}
+		seen[key] = len(merged)
+		merged = append(merged, canonical)
 	}
 	for _, item := range imported {
-		key := intelDedupeKey(item)
-		if strings.TrimSpace(item.Value) == "" {
+		if !item.ExpiresAt.IsZero() && !item.ExpiresAt.After(now) {
 			continue
 		}
+		item, ok := canonicalizeThreatIntel(item)
+		if !ok {
+			continue
+		}
+		key := intelDedupeKey(item)
 		if idx, ok := seen[key]; ok {
+			existing := merged[idx]
+			// Untrusted feeds may not replace a trusted indicator. Even a
+			// trusted refresh cannot silently escalate an existing action.
+			if sourceTrust(item.Source) < sourceTrust(existing.Source) {
+				continue
+			}
+			if actionPriority(item.Action) > actionPriority(existing.Action) {
+				item.Action = existing.Action
+			}
 			merged[idx] = item
 			continue
 		}
@@ -125,11 +177,20 @@ func dedupeThreatIntel(items []config.ThreatIntelConfig) []config.ThreatIntelCon
 	out := make([]config.ThreatIntelConfig, 0, len(items))
 	seen := map[string]int{}
 	for _, item := range items {
-		key := intelDedupeKey(item)
-		if strings.TrimSpace(item.Value) == "" {
+		canonical, ok := canonicalizeThreatIntel(item)
+		if !ok {
 			continue
 		}
+		item = canonical
+		key := intelDedupeKey(item)
 		if idx, ok := seen[key]; ok {
+			existing := out[idx]
+			if sourceTrust(item.Source) < sourceTrust(existing.Source) {
+				continue
+			}
+			if actionPriority(item.Action) > actionPriority(existing.Action) {
+				item.Action = existing.Action
+			}
 			out[idx] = item
 			continue
 		}
@@ -137,6 +198,16 @@ func dedupeThreatIntel(items []config.ThreatIntelConfig) []config.ThreatIntelCon
 		out = append(out, item)
 	}
 	return out
+}
+
+func canonicalizeThreatIntel(item config.ThreatIntelConfig) (config.ThreatIntelConfig, bool) {
+	typ, value, ok := CanonicalIndicator(item.Type, item.Value)
+	if !ok {
+		return config.ThreatIntelConfig{}, false
+	}
+	item.Type = typ
+	item.Value = value
+	return item, true
 }
 
 func parsePlain(contents []byte, opts ImportOptions) ([]config.ThreatIntelConfig, error) {
@@ -250,6 +321,12 @@ func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig, dept
 		for _, key := range []string{"value", "ip", "ip_address", "ipAddress", "ip_addr", "ipAddr", "ipAddressV4", "ipAddressV6", "address", "cidr", "indicator", "ioc", "resource"} {
 			if rawValue := stringField(value, key); rawValue != "" {
 				if indicator, ok := indicatorFromValue(rawValue, rowOpts); ok && shouldImportJSONObjectIndicator(value) {
+					if typ := stringField(value, "type"); typ != "" {
+						if t, v, valid := CanonicalIndicator(typ, rawValue); valid {
+							indicator.Type = t
+							indicator.Value = v
+						}
+					}
 					*out = append(*out, indicator)
 				}
 			}
@@ -269,7 +346,7 @@ func walkJSON(raw any, opts ImportOptions, out *[]config.ThreatIntelConfig, dept
 	}
 }
 
-var stixAddrPattern = regexp.MustCompile(`(?i)(ipv4-addr|ipv6-addr):value\s+(?:=|ISSUBSET|ISSUPERSET)\s+'([^']+)'`)
+var stixAddrPattern = regexp.MustCompile(`(?i)(ipv4-addr:value|ipv6-addr:value|domain-name:value|url:value|file:hashes[.'"A-Za-z0-9-]*|autonomous-system:number|network-traffic:extensions[.'"A-Za-z0-9_-]*)\s+(?:=|ISSUBSET|ISSUPERSET)\s+'?([^'\]\s]+)'?`)
 
 func parseSTIXPatterns(raw string, opts ImportOptions) []config.ThreatIntelConfig {
 	var out []config.ThreatIntelConfig
@@ -277,11 +354,54 @@ func parseSTIXPatterns(raw string, opts ImportOptions) []config.ThreatIntelConfi
 		if len(match) < 3 {
 			continue
 		}
-		if indicator, ok := indicatorFromValue(match[2], opts); ok {
+		typ := ""
+		field := strings.ToLower(match[1])
+		switch {
+		case strings.Contains(field, "ipv4-addr"), strings.Contains(field, "ipv6-addr"):
+			typ = "ip"
+		case strings.Contains(field, "domain-name"):
+			typ = "domain"
+		case strings.Contains(field, "url"):
+			typ = "url"
+		case strings.Contains(field, "autonomous-system"):
+			typ = "asn"
+		case strings.Contains(field, "md5"):
+			typ = "md5"
+		case strings.Contains(field, "sha-256"), strings.Contains(field, "sha256"):
+			typ = "sha256"
+		case strings.Contains(field, "ja3"):
+			typ = "ja3"
+		case strings.Contains(field, "ja4"):
+			typ = "ja4"
+		}
+		if indicator, ok := indicatorFromTypedValue(typ, match[2], opts); ok {
 			out = append(out, indicator)
 		}
 	}
 	return out
+}
+
+func indicatorFromTypedValue(typ, value string, opts ImportOptions) (config.ThreatIntelConfig, bool) {
+	if typ == "" {
+		return indicatorFromValue(value, opts)
+	}
+	canonicalType, canonical, ok := CanonicalIndicator(typ, value)
+	if !ok {
+		return config.ThreatIntelConfig{}, false
+	}
+	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(opts.Source+":"+canonicalType+":"+canonical)).String()
+	return config.ThreatIntelConfig{
+		ID:         "intel-" + id,
+		Value:      canonical,
+		Type:       canonicalType,
+		Severity:   normalizeSeverity(opts.Severity),
+		Source:     opts.Source,
+		Labels:     append([]string(nil), opts.Labels...),
+		Action:     normalizeAction(opts.Action),
+		Confidence: normalizeConfidenceValue(opts.Confidence),
+		ExpiresAt:  opts.ExpiresAt,
+		Enabled:    opts.Enabled,
+	}, true
 }
 
 func indicatorFromValue(value string, opts ImportOptions) (config.ThreatIntelConfig, bool) {
@@ -289,18 +409,17 @@ func indicatorFromValue(value string, opts ImportOptions) (config.ThreatIntelCon
 	if value == "" {
 		return config.ThreatIntelConfig{}, false
 	}
-	if strings.Contains(value, "/") {
-		if _, _, err := net.ParseCIDR(value); err != nil {
-			return config.ThreatIntelConfig{}, false
-		}
-	} else if net.ParseIP(value) == nil {
+	typ, canonical, ok := CanonicalIndicator("", value)
+	if !ok {
 		return config.ThreatIntelConfig{}, false
 	}
+	value = canonical
+
 	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(opts.Source+":"+value)).String()
 	return config.ThreatIntelConfig{
 		ID:         "intel-" + id,
 		Value:      value,
-		Type:       "ip",
+		Type:       typ,
 		Severity:   normalizeSeverity(opts.Severity),
 		Source:     opts.Source,
 		Labels:     append([]string(nil), opts.Labels...),
@@ -720,4 +839,149 @@ func normalizeConfidenceValue(confidence float64) float64 {
 		return 1
 	}
 	return confidence
+}
+
+func actionPriority(value string) int {
+	switch normalizeAction(value) {
+	case "block":
+		return 3
+	case "challenge":
+		return 2
+	case "allow":
+		return 4
+	default:
+		return 1
+	}
+}
+func sourceTrust(source string) int {
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "manual" {
+		return 3
+	}
+	if strings.HasPrefix(source, "verified:") {
+		return 2
+	}
+	return 1
+}
+
+// CanonicalIndicator validates the supported IOC matrix. Unsupported values
+// cannot become active indicators merely because a feed labels them trusted.
+func CanonicalIndicator(typ, value string) (string, string, bool) {
+	typ = strings.ToLower(strings.TrimSpace(typ))
+	value = strings.TrimSpace(value)
+	switch typ {
+	case "ipv4-addr", "ipv6-addr", "ip-src", "ip-dst", "cidr":
+		typ = "ip"
+	case "domain-name", "hostname":
+		typ = "domain"
+	case "sha-256", "sha256", "file:hashes.sha-256", "file:hashes.'sha-256'", "file:hashes.sha256", "file:hashes.'sha256'":
+		typ = "sha256"
+	case "md5", "file:hashes.md5", "file:hashes.'md5'":
+		typ = "md5"
+	case "autonomous-system":
+		typ = "asn"
+	}
+	for _, name := range []string{"domain", "url", "sha256", "md5", "asn", "ja3", "ja4"} {
+		if strings.HasPrefix(strings.ToLower(value), name+":") {
+			typ = name
+			value = value[len(name)+1:]
+			break
+		}
+	}
+	if typ == "" {
+		switch {
+		case net.ParseIP(value) != nil:
+			typ = "ip"
+		case strings.Contains(value, "/") && !strings.Contains(value, "://"):
+			typ = "ip"
+		case strings.Contains(value, "://"):
+			typ = "url"
+		case strings.HasPrefix(strings.ToUpper(value), "AS"):
+			typ = "asn"
+		case len(value) == 64:
+			typ = "sha256"
+		case len(value) == 32:
+			typ = "md5"
+		case strings.Contains(value, "."):
+			typ = "domain"
+		default:
+			return "", "", false
+		}
+	}
+	switch typ {
+	case "ip":
+		if ip := net.ParseIP(value); ip != nil {
+			return typ, ip.String(), true
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			return "", "", false
+		}
+		ones, bits := network.Mask.Size()
+		if (bits == 32 && ones < 8) || (bits == 128 && ones < 16) {
+			return "", "", false
+		}
+		// Threat feeds are public-source indicators. Never let an import turn
+		// RFC1918, loopback, or link-local space into a site-wide deny rule.
+		if network.IP.IsPrivate() || network.IP.IsLoopback() || network.IP.IsLinkLocalUnicast() {
+			return "", "", false
+		}
+		return typ, network.String(), true
+	case "domain":
+		domain, err := idna.Lookup.ToASCII(strings.ToLower(strings.TrimSuffix(value, ".")))
+		if err != nil || len(domain) > 253 || !strings.Contains(domain, ".") {
+			return "", "", false
+		}
+		for _, label := range strings.Split(domain, ".") {
+			if len(label) == 0 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+				return "", "", false
+			}
+			for _, c := range label {
+				if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+					return "", "", false
+				}
+			}
+		}
+		return typ, domain, true
+	case "url":
+		u, err := url.Parse(value)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil {
+			return "", "", false
+		}
+		_, host, ok := CanonicalIndicator("domain", u.Hostname())
+		if ip := net.ParseIP(u.Hostname()); ip != nil {
+			host = ip.String()
+			ok = true
+		}
+		if !ok {
+			return "", "", false
+		}
+		if u.Port() != "" {
+			host = net.JoinHostPort(host, u.Port())
+		}
+		u.Host = host
+		u.Fragment = ""
+		return typ, u.String(), true
+	case "sha256", "md5", "ja3":
+		want := 32
+		if typ == "sha256" {
+			want = 64
+		}
+		if len(value) != want {
+			return "", "", false
+		}
+		if _, err := hex.DecodeString(value); err != nil {
+			return "", "", false
+		}
+		return typ, strings.ToLower(value), true
+	case "asn":
+		value = strings.TrimPrefix(strings.ToUpper(value), "AS")
+		n, err := strconv.ParseUint(value, 10, 32)
+		return typ, strconv.FormatUint(n, 10), err == nil && n > 0
+	case "ja4":
+		if regexp.MustCompile(`^[tq][a-z0-9]{9}_[a-f0-9]{12}_[a-f0-9]{12}$`).MatchString(value) {
+			return typ, value, true
+		}
+	}
+	return "", "", false
 }

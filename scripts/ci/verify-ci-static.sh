@@ -320,6 +320,12 @@ grep -Fq 'signing_scope=server' .github/workflows/ci.yml ||
   fail "stable release verification must use the server signing scope"
 grep -Fq 'CHEESEWAF_MASTER_REF=FETCH_HEAD bash scripts/ci/verify-stable-tag.sh' .github/workflows/ci.yml ||
   fail "stable release packaging must bind the tag to protected master"
+grep -Fq 'CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}' .github/workflows/ci.yml ||
+  fail "stable release signing must require a protected tag"
+grep -Fq "startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_P12" .github/workflows/ci.yml ||
+  fail "Windows signing credentials must be limited to protected version tags"
+grep -Fq "startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64" .github/workflows/ci.yml ||
+  fail "macOS signing credentials must be limited to protected version tags"
 grep -Fq 'git fetch --no-tags --depth=1 origin master' .github/workflows/ci.yml ||
   fail "stable release provenance check must fetch protected master"
 grep -Fq 'does not match product version' scripts/ci/package-release.sh ||
@@ -646,8 +652,10 @@ grep -Fq '"127.0.0.1:9443:9443"' deploy/docker/docker-compose.yml ||
 if grep -Fq '"9443:9443"' deploy/docker/docker-compose.yml; then
   fail "Docker admin TLS must not bind to all host interfaces"
 fi
-grep -Fq 'ReadWritePaths=/etc/cheesewaf/cheesewaf.yaml /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
-	fail "systemd must restrict CheeseWAF configuration writes to its config file"
+grep -Fq 'ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
+	fail "systemd must allow atomic writes within the CheeseWAF configuration directory"
+grep -Fq 'UMask=0077' deploy/systemd/cheesewaf.service ||
+	fail "systemd must create CheeseWAF runtime files with private permissions"
 if [[ -e deploy/macos/fix-gatekeeper.command ]]; then
   fail "signed macOS release media must not ship a Gatekeeper quarantine helper"
 fi

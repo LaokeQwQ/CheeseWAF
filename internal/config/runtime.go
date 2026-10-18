@@ -19,7 +19,14 @@ func GenerateSecret() (string, error) {
 
 func IsWeakBotSecret(value string) bool {
 	value = strings.TrimSpace(value)
-	return value == "" || value == BotSecretPlaceholder
+	if len(value) < 32 || value == BotSecretPlaceholder {
+		return true
+	}
+	seen := make(map[rune]bool)
+	for _, r := range value {
+		seen[r] = true
+	}
+	return len(seen) < 8
 }
 
 func EnsureRuntimeSecrets(cfg *Config) (bool, error) {

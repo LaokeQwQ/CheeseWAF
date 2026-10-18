@@ -66,9 +66,20 @@ func systemConfigView(cfg *config.Config) map[string]any {
 		"update":        update,
 		"vulnerability": vulnerability,
 		"capabilities": map[string]any{
-			"ota_updates":         map[string]any{"available": false, "reason": "EXECUTOR_UNAVAILABLE", "message": "OTA remains read-only until CRP/CWEDP activation is wired"},
-			"vulnerability_feeds": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
-			"bot_challenge_redis": map[string]any{"available": false, "reason": "NOT_IMPLEMENTED", "message": "bot challenge state uses the in-process memory backend; storage.redis does not change it"},
+			"acme_auto_renew":         map[string]any{"available": true, "reason": "IN_PROCESS_WORKER", "message": "automatic renewal runs in the serving process and checks certificates on its worker cadence"},
+			"grpc_proxy":              map[string]any{"available": true, "reason": "HTTP2_PASSTHROUGH_ONLY", "mode": "passthrough", "message": "gRPC is forwarded only after explicit site opt-in; request trailers are rejected and response trailers are limited to standard grpc status fields"},
+			"grpc_message_inspection": map[string]any{"available": false, "reason": "PROTOBUF_INSPECTOR_UNAVAILABLE", "message": "gRPC five-byte frames, protobuf fields, grpc-encoding compression, and streaming messages are not inspected"},
+			"backup":                  map[string]any{"available": false, "reason": "RESTORABLE_FORMAT_UNAVAILABLE"},
+			"storage_cleanup":         map[string]any{"available": true},
+			"diagnostic_upload":       map[string]any{"available": false, "reason": "UPLOAD_ADAPTER_UNCONFIGURED"},
+			"kms_recovery":            map[string]any{"available": false, "reason": "KEY_PROVIDER_UNCONFIGURED"},
+			"scoped_api_tokens":       map[string]any{"available": false, "reason": "TOKEN_SERVICE_NOT_COMPOSED"},
+			"audit_signing":           map[string]any{"available": false, "reason": "SIGNER_NOT_CONFIGURED", "message": "critical audit events are rejected when no signer is configured"},
+			"control_plane_redis":     map[string]any{"available": false, "reason": "CONTROL_PLANE_ONLY", "configured": cfg.Storage.Redis.Enabled, "scope": "control_plane"},
+			"request_shared_state":    map[string]any{"available": false, "reason": "NODE_LOCAL_ONLY", "message": "request rate limits and bot challenge state are local to each process; storage.redis does not share them"},
+			"ota_updates":             map[string]any{"available": false, "reason": "EXECUTOR_UNAVAILABLE", "message": "OTA remains read-only until CRP/CWEDP activation is wired"},
+			"vulnerability_feeds":     map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
+			"bot_challenge_redis":     map[string]any{"available": false, "reason": "NOT_IMPLEMENTED", "message": "bot challenge state uses the in-process memory backend; storage.redis does not change it"},
 		},
 		"monitor":    monitorConfigView(cfg.Monitor),
 		"apisec":     apiSecConfigView(cfg.APISec),
@@ -153,6 +164,7 @@ func monitorConfigView(in config.MonitorConfig) config.MonitorConfig {
 	out.Notifiers = append([]config.NotifierConfig(nil), in.Notifiers...)
 	for idx := range out.Notifiers {
 		out.Notifiers[idx].Token = ""
+		out.Notifiers[idx].Endpoint = ""
 		out.Notifiers[idx].Headers = redactStringMap(out.Notifiers[idx].Headers)
 	}
 	return out

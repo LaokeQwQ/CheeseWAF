@@ -102,6 +102,24 @@ func TestPrepareCustomRulesRejectsDuplicateIDOrMatch(t *testing.T) {
 	}
 }
 
+func TestMergeCustomRulesRetainsUnmentionedRules(t *testing.T) {
+	existing := []CustomRuleConfig{
+		{ID: "keep", Name: "keep", Pattern: "keep-token", Location: "uri", Action: "block", Severity: "low", Enabled: true, Priority: 10},
+		{ID: "replace", Name: "old", Pattern: "old-token", Location: "body", Action: "log", Severity: "low", Enabled: true, Priority: 20},
+	}
+	imported := []CustomRuleConfig{
+		{ID: "replace", Name: "new", Pattern: "new-token", Location: "body", Action: "block", Severity: "high", Enabled: true, Priority: 30},
+		{ID: "append", Name: "append", Pattern: "append-token", Location: "header", Action: "challenge", Severity: "medium", Enabled: true, Priority: 40},
+	}
+	merged, err := MergeCustomRules(existing, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 3 || merged[0].ID != "keep" || merged[1].Name != "new" || merged[2].ID != "append" {
+		t.Fatalf("unexpected merged rules: %+v", merged)
+	}
+}
+
 func TestPrepareCustomRulesRejectsTooManyRules(t *testing.T) {
 	t.Parallel()
 	rules := make([]CustomRuleConfig, 257)

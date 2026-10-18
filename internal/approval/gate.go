@@ -571,7 +571,10 @@ func (g *Gate) Confirm(now time.Time, requestID string, c Confirmation) (out Aut
 	if err := validateOpaque(c.SessionID, false); err != nil {
 		return reject(ErrSessionRequired)
 	}
-	if record.Request.SessionID != "" && c.SessionID != record.Request.SessionID {
+	if (record.Request.Risk == RiskHigh || record.Request.Risk == RiskEmergency) && (c.Actor == record.Request.Actor || c.SessionID == record.Request.SessionID) {
+		return reject(ErrInvalidActor)
+	}
+	if record.Request.Risk != RiskHigh && record.Request.Risk != RiskEmergency && c.SessionID != record.Request.SessionID {
 		return reject(ErrSessionChanged)
 	}
 	if c.ConfirmationLanguage == "" {
@@ -717,6 +720,45 @@ func (g *Gate) AdvanceEpoch(epoch uint64) error {
 	return nil
 }
 
+// ConsumeAuthorization atomically fences a bound grant before a single-use
+// operation. A durable-store failure rolls the transition back.
+func (g *Gate) ConsumeAuthorization(now time.Time, requestID, scope, intentDigest string) (err error) {
+	if g == nil {
+		return ErrNotFound
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	record, ok := g.requests[requestID]
+	if !ok {
+		return ErrNotFound
+	}
+	if record.Status != StatusApproved || record.Commit == nil {
+		return ErrNotPending
+	}
+	if record.Request.PolicyEpoch != g.policyEpoch {
+		return ErrEpochChanged
+	}
+	if !now.Before(record.ExpiresAt) {
+		return ErrExpired
+	}
+	if record.Request.Scope != scope || record.Request.IntentDigest != intentDigest {
+		return ErrIntentChanged
+	}
+	if err := ValidateRecordForAdapter(record); err != nil {
+		return err
+	}
+	snap, start := g.snapshot(), len(g.audit)
+	record.Status, record.Commit = StatusRevoked, nil
+	g.requests[requestID] = record
+	g.appendAudit(now, AuditRevoked, requestID, record.Confirmation.Actor, scope, record.Request.PolicyEpoch, record.Confirmation.ConfirmationID, "authorization consumed")
+	if g.persistence != nil {
+		if err = g.persistSince(context.Background(), start, requestID); err != nil {
+			g.restore(snap)
+		}
+	}
+	return err
+}
+
 func (g *Gate) AuditEvents() []AuditEvent {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -845,6 +887,14 @@ func normalizeRequest(r *Request) error {
 	if r == nil {
 		return ErrInvalidRequest
 	}
+	if sensitiveScope(r.Scope) {
+		if r.PreApproved {
+			return ErrInvalidRequest
+		}
+		if r.Risk != RiskEmergency {
+			r.Risk = RiskHigh
+		}
+	}
 	if err := validateOpaque(r.ID, true); err != nil {
 		return ErrInvalidRequest
 	}
@@ -910,7 +960,14 @@ func validateRequest(r Request) error {
 	if r.Risk == RiskEmergency && !r.BreakGlass {
 		return ErrBreakGlassRequired
 	}
+	if sensitiveScope(r.Scope) && (r.PreApproved || (r.Risk != RiskHigh && r.Risk != RiskEmergency)) {
+		return ErrInvalidRequest
+	}
 	return nil
+}
+
+func sensitiveScope(scope string) bool {
+	return strings.HasPrefix(scope, "crp:") || strings.HasPrefix(scope, "cluster:") || strings.HasPrefix(scope, "kms:") || strings.HasPrefix(scope, "token:")
 }
 
 func validateOpaque(value string, required bool) error {
@@ -956,13 +1013,26 @@ func ValidateRecordForAdapter(record Record) error {
 		return ErrInvalidRequest
 	}
 	if record.Commit != nil {
-		if record.Status != StatusApproved || record.Commit.RequestID != record.ID || ValidateIdentifier(record.Commit.ConfirmationID) != nil || ValidateIdentifier(record.Commit.Actor) != nil || record.Commit.Scope != record.Request.Scope || record.Commit.PolicyEpoch != record.Request.PolicyEpoch || record.Commit.IntentDigest != record.Request.IntentDigest || record.Commit.WorkflowDigest != record.Request.WorkflowDigest || record.Commit.SessionID != record.Request.SessionID || record.Commit.Nonce != record.Request.Nonce || !record.Commit.ExpiresAt.Equal(record.ExpiresAt) || record.Commit.IssuedAt.IsZero() || record.Commit.IssuedAt.Before(record.SubmittedAt) || record.Commit.IssuedAt.After(record.ExpiresAt) {
+		commit := record.Commit
+		if commit.Risk != record.Request.Risk || commit.TTL != record.Request.TTL || commit.ConfirmationLanguage != record.Request.ConfirmationLanguage {
+			return ErrInvalidRequest
+		}
+		if !record.Request.PreApproved {
+			confirmation := record.Confirmation
+			if confirmation.ConfirmationID == "" || !confirmation.Local || confirmation.Actor != commit.Actor || confirmation.SessionID != commit.SessionID || (record.Request.requiresThirdConfirmation() && (confirmation.ConfirmationStep != 3 || !confirmation.ThirdConfirmation)) {
+				return ErrInvalidRequest
+			}
+		}
+		if !record.Request.PreApproved && (record.Request.Risk == RiskHigh || record.Request.Risk == RiskEmergency) && (record.Commit.Actor == record.Request.Actor || record.Commit.SessionID == record.Request.SessionID) {
+			return ErrInvalidActor
+		}
+		if record.Status != StatusApproved || record.Commit.RequestID != record.ID || ValidateIdentifier(record.Commit.ConfirmationID) != nil || ValidateIdentifier(record.Commit.Actor) != nil || record.Commit.Scope != record.Request.Scope || record.Commit.PolicyEpoch != record.Request.PolicyEpoch || record.Commit.IntentDigest != record.Request.IntentDigest || record.Commit.WorkflowDigest != record.Request.WorkflowDigest || ValidateIdentifier(record.Commit.SessionID) != nil || record.Commit.Nonce != record.Request.Nonce || !record.Commit.ExpiresAt.Equal(record.ExpiresAt) || record.Commit.IssuedAt.IsZero() || record.Commit.IssuedAt.Before(record.SubmittedAt) || record.Commit.IssuedAt.After(record.ExpiresAt) {
 			return ErrInvalidRequest
 		}
 	}
 	if record.Confirmation.ConfirmationID != "" {
 		confirmation := record.Confirmation
-		if record.Status != StatusPending && record.Status != StatusApproved {
+		if record.Status != StatusPending && record.Status != StatusApproved && record.Status != StatusRevoked && record.Status != StatusExpired {
 			return ErrInvalidRequest
 		}
 		interactive := !record.Request.PreApproved

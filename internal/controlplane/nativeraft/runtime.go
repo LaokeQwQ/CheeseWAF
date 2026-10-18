@@ -42,6 +42,10 @@ type Options struct {
 	Mode        StartMode
 	TLS         *TLSOptions
 	TLSConfig   *TLSOptions
+	// InitialVoters is the allowlist used by a fresh join before Raft has a
+	// persisted configuration. Every inbound RPC certificate and header must
+	// identify one of these voters.
+	InitialVoters []Member
 	// InsecureTestMode is an explicit loopback-only escape hatch for tests.
 	// Production callers must leave it false and provide mutual TLS material.
 	InsecureTestMode bool
@@ -200,6 +204,17 @@ func New(opts Options) (*Runtime, error) {
 		}
 	}
 	bindings := newPeerBindings()
+	if opts.Mode == ModeJoin && !opts.InsecureTestMode && !existing && len(opts.InitialVoters) == 0 {
+		_ = logs.Close()
+		return nil, fmt.Errorf("native-raft join requires at least one initial voter")
+	}
+	for _, voter := range opts.InitialVoters {
+		if !controlplane.ValidIdentity(voter.ID) || !validAddress(voter.Address) {
+			_ = logs.Close()
+			return nil, fmt.Errorf("invalid initial voter")
+		}
+		bindings.bind(voter.Address, voter.ID)
+	}
 	var transport *raft.NetworkTransport
 	if opts.InsecureTestMode {
 		layer, layerErr := newPlainStreamLayer(opts.BindAddress)
@@ -252,11 +267,31 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if configuration := r.raft.GetConfiguration(); configuration.Error() == nil {
 		for _, server := range configuration.Configuration().Servers {
-			bindings.bind(string(server.Address), string(server.ID))
+			if server.Suffrage == raft.Voter {
+				bindings.bind(string(server.Address), string(server.ID))
+			}
 		}
 	}
 	go r.observeLeadership()
+	go r.observeConfiguration()
 	return r, nil
+}
+
+func (r *Runtime) observeConfiguration() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+			future := r.raft.GetConfiguration()
+			if future.Error() != nil || len(future.Configuration().Servers) == 0 {
+				continue
+			}
+			r.bindings.replaceVoters(future.Configuration().Servers)
+		}
+	}
 }
 
 func (r *Runtime) Prepare(ctx context.Context) error {

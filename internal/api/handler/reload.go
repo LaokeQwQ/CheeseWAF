@@ -231,7 +231,15 @@ func (h *Handler) restoreStoredSite(ctx context.Context, site *storage.Site) err
 	}); ok {
 		return restorer.RestoreSite(ctx, site)
 	}
-	return h.Store.UpdateSite(ctx, site)
+	// The regular update path uses UpdatedAt as an optimistic-concurrency
+	// precondition. During rollback the row has already been changed by the
+	// failed replacement, so the snapshot's timestamp is necessarily stale.
+	// Clear it for stores that only expose the generic Store interface; this
+	// makes restoration an unconditional replacement while concrete stores can
+	// still use their lossless RestoreSite implementation above.
+	restored := *site
+	restored.UpdatedAt = time.Time{}
+	return h.Store.UpdateSite(ctx, &restored)
 }
 
 func cloneStoredSites(sites []storage.Site) ([]storage.Site, error) {

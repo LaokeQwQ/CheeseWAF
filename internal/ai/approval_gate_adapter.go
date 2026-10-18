@@ -32,6 +32,8 @@ var (
 	ErrHighRiskCredentialProofInvalid        = errors.New("high-risk AI credential proof is invalid")
 )
 
+const highRiskCredentialProofTTL = time.Minute
+
 // GateApprovalChallenge is the server-created challenge returned before a
 // destructive AI request can be confirmed. WarningStartedAt is authoritative;
 // callers cannot supply an earlier timestamp to bypass the ten-second delay.
@@ -107,10 +109,12 @@ type gateApprovalBinding struct {
 }
 
 type gateApprovalChallengeState struct {
-	challenge    GateApprovalChallenge
-	approver     ApprovalActor
-	scope        string
-	intentDigest string
+	challenge      GateApprovalChallenge
+	approver       ApprovalActor
+	scope          string
+	intentDigest   string
+	proof          GateApprovalCredentialProof
+	proofExpiresAt time.Time
 }
 
 // GateApprovalAdapter is the narrow bridge between the historical AI
@@ -314,8 +318,8 @@ func (a *GateApprovalAdapter) BeginConfirmation(id string, actor ApprovalActor, 
 		Scope:                binding.scope,
 		PolicyEpoch:          a.policyEpoch,
 		TTL:                  ttl,
-		Actor:                actor.Subject,
-		SessionID:            actor.SessionID,
+		Actor:                binding.requester.Subject,
+		SessionID:            binding.requester.SessionID,
 		ConfirmationLanguage: canonicalLanguage,
 		IntentDigest:         binding.intentDigest,
 	}
@@ -425,17 +429,22 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 		a.mu.Unlock()
 		return GateApprovalResult{Approval: request, Challenge: state.challenge}, approval.ErrWarningDelay
 	}
+	proof := state.proof
+	useCachedProof := state.challenge.ConfirmationStep >= 2 && state.proofExpiresAt.After(now) && proof.valid()
 	verifier := a.credentialVerifier
 	a.mu.Unlock()
-	if verifier == nil {
-		return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialVerifierUnavailable
-	}
-	proof, err := verifier(ctx, actor, input)
-	if err != nil {
-		return GateApprovalResult{Approval: request, Challenge: state.challenge}, fmt.Errorf("%w: %v", ErrHighRiskCredentialRejected, err)
-	}
-	if !proof.valid() {
-		return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialProofInvalid
+	if !useCachedProof {
+		if verifier == nil {
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialVerifierUnavailable
+		}
+		verifiedProof, err := verifier(ctx, actor, input)
+		if err != nil {
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, fmt.Errorf("%w: %v", ErrHighRiskCredentialRejected, err)
+		}
+		proof = verifiedProof
+		if !proof.valid() {
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialProofInvalid
+		}
 	}
 	return a.confirmWithProof(id, actor, input, proof)
 }
@@ -513,6 +522,8 @@ func (a *GateApprovalAdapter) confirmWithProof(id string, actor ApprovalActor, i
 	if errors.Is(err, approval.ErrThirdConfirmation) {
 		state.challenge.ConfirmationStep = 2
 		state.challenge.RequiresThirdConfirmation = true
+		state.proof = proof
+		state.proofExpiresAt = now.Add(highRiskCredentialProofTTL)
 		a.challenges[id] = state
 		return GateApprovalResult{Approval: request, Challenge: state.challenge}, err
 	}
@@ -521,6 +532,8 @@ func (a *GateApprovalAdapter) confirmWithProof(id string, actor ApprovalActor, i
 	}
 	state.challenge.ConfirmationStep = 3
 	state.challenge.RequiresThirdConfirmation = false
+	state.proof = GateApprovalCredentialProof{}
+	state.proofExpiresAt = time.Time{}
 	a.challenges[id] = state
 	approved, err := a.store.approveFor(id, state.approver, true)
 	if err != nil {

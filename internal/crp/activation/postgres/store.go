@@ -676,7 +676,7 @@ func validateApproval(record approval.Record, request activation.AuthorizationRe
 		return activation.ErrAuthorizationDenied
 	}
 	claim := request.ApprovalClaim
-	if record.ID != claim.ApprovalID || record.Status != approval.StatusApproved || record.Commit == nil || record.Request.Scope != claim.Scope || record.Request.PolicyEpoch != claim.PolicyEpoch || record.Request.IntentDigest != claim.IntentDigest || record.Request.Nonce != claim.Nonce || record.Request.SessionID != claim.SessionID || record.Request.Actor != claim.Actor || !record.ExpiresAt.Equal(claim.ExpiresAt) {
+	if record.Request.PreApproved || record.Request.Risk != approval.RiskHigh || record.ID != claim.ApprovalID || record.Status != approval.StatusApproved || record.Commit == nil || record.Request.Scope != claim.Scope || record.Request.PolicyEpoch != claim.PolicyEpoch || record.Request.IntentDigest != claim.IntentDigest || record.Request.Nonce != claim.Nonce || record.Commit.SessionID != claim.SessionID || record.Commit.Actor != claim.Actor || !record.ExpiresAt.Equal(claim.ExpiresAt) {
 		return activation.ErrAuthorizationDenied
 	}
 	commit := record.Commit

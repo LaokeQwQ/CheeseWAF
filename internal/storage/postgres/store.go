@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -40,6 +41,7 @@ const (
 type Store struct {
 	db       *sql.DB
 	roleKeys map[string]struct{}
+	roleMu   sync.RWMutex
 }
 
 var _ storage.Store = (*Store)(nil)
@@ -445,6 +447,9 @@ func ensureSiteDefaults(site *storage.Site) {
 	if site.Advanced.Origin.Scheme == "" {
 		site.Advanced.Origin.Scheme = "http"
 	}
+	if !site.Advanced.AccessControl.DynamicGuard {
+		site.Advanced.AccessControl.DynamicGuard = true
+	}
 	if site.Advanced.Origin.ProxyTimeout == "" {
 		site.Advanced.Origin.ProxyTimeout = "30s"
 	}
@@ -508,13 +513,19 @@ func validateRepairIdentity(field, value string) error {
 	return nil
 }
 
-func validateRoleSyntax(role string) error {
-	if role == "" || strings.ContainsAny(role, "*:") || strings.IndexFunc(role, func(r rune) bool {
-		return r < '!' || r > '~' || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
-	}) >= 0 {
-		return errors.New("role must be a configured role name, not a permission expression")
+func validateRoleSyntax(role string) error { return storage.ValidateRoleName(role) }
+
+// ConfigureRoles atomically publishes the exact configured role identities.
+func (s *Store) ConfigureRoles(permissions map[string][]string) {
+	keys := cloneRoleKeys(defaultRoleKeys)
+	for role := range permissions {
+		if storage.ValidateRoleName(role) == nil {
+			keys[role] = struct{}{}
+		}
 	}
-	return nil
+	s.roleMu.Lock()
+	s.roleKeys = keys
+	s.roleMu.Unlock()
 }
 
 func validateRole(role string) error { return validateRoleSyntax(role) }
@@ -528,6 +539,8 @@ func roleAllowed(keys map[string]struct{}, role string) bool {
 }
 
 func (s *Store) validatePersistedRole(role string) error {
+	s.roleMu.RLock()
+	defer s.roleMu.RUnlock()
 	if !roleAllowed(s.roleKeys, role) {
 		return fmt.Errorf("%w: role %q is not configured", ErrInvalidStore, role)
 	}
@@ -614,9 +627,27 @@ func (s *Store) UpdateSite(ctx context.Context, v *storage.Site) error {
 	if v == nil {
 		return errors.New("site is nil")
 	}
-	v.UpdatedAt = time.Now().UTC()
-	_, e := s.exec(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,updated_at=? WHERE id=?`, v.Name, encodeStrings(v.Domains), encodeStrings(v.Upstreams), v.ListenPort, v.LoadBalance, v.EnableSSL, v.CertFile, v.KeyFile, v.WAFEnabled, v.WAFMode, v.ParanoiaLevel, encodeJSON(v.Advanced), v.Enabled, v.UpdatedAt, v.ID)
-	return e
+	expected := v.UpdatedAt
+	next := time.Now().UTC()
+	query := `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,updated_at=? WHERE id=?`
+	args := []any{v.Name, encodeStrings(v.Domains), encodeStrings(v.Upstreams), v.ListenPort, v.LoadBalance, v.EnableSSL, v.CertFile, v.KeyFile, v.WAFEnabled, v.WAFMode, v.ParanoiaLevel, encodeJSON(v.Advanced), v.Enabled, next, v.ID}
+	if !expected.IsZero() {
+		query += ` AND updated_at=?`
+		args = append(args, expected)
+	}
+	result, err := s.exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return storage.ErrSiteConflict
+	}
+	v.UpdatedAt = next
+	return nil
 }
 
 // RestoreSite writes a previously read site snapshot without changing its timestamps.

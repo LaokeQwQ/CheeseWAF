@@ -110,6 +110,18 @@ func TestSystemExposesUnavailableUpdateCapabilitiesAndEffectiveDisabledState(t *
 			t.Fatalf("capability %q = %+v, want unavailable NOT_IMPLEMENTED", capability, got)
 		}
 	}
+	for name, reason := range map[string]string{
+		"diagnostic_upload":    "UPLOAD_ADAPTER_UNCONFIGURED",
+		"kms_recovery":         "KEY_PROVIDER_UNCONFIGURED",
+		"scoped_api_tokens":    "TOKEN_SERVICE_NOT_COMPOSED",
+		"audit_signing":        "SIGNER_NOT_CONFIGURED",
+		"request_shared_state": "NODE_LOCAL_ONLY",
+	} {
+		got := response.Data.Capabilities[name]
+		if got.Available || got.Reason != reason {
+			t.Fatalf("capability %q = %+v, want unavailable %s", name, got, reason)
+		}
+	}
 	otaCapability := response.Data.Capabilities["ota_updates"]
 	if otaCapability.Available || otaCapability.Reason != "EXECUTOR_UNAVAILABLE" {
 		t.Fatalf("OTA capability = %+v, want executor unavailable", otaCapability)
@@ -780,7 +792,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		Env:     map[string]string{"CF_TOKEN": "old-cf-secret"},
 		Enabled: true,
 	}}
-	cfg.Protection.Bot.Secret = "old-strong-bot-secret"
+	cfg.Protection.Bot.Secret = "old-strong-bot-secret-with-sufficient-entropy-1234"
 	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
 		ID:      "otx",
 		Name:    "OTX",
@@ -851,7 +863,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		cfg.Storage.Elasticsearch.APIKey != "old-elastic-api-secret" ||
 		cfg.Storage.Elasticsearch.Headers["Authorization"] != "Bearer old-elastic-header-secret" ||
 		cfg.ACME.DNSProviders[0].Env["CF_TOKEN"] != "old-cf-secret" ||
-		cfg.Protection.Bot.Secret != "old-strong-bot-secret" ||
+		cfg.Protection.Bot.Secret != "old-strong-bot-secret-with-sufficient-entropy-1234" ||
 		cfg.Protection.IP.Providers[0].APIKey != "old-otx-secret" ||
 		cfg.Protection.IP.Providers[0].Headers["X-OTX-API-KEY"] != "old-otx-header-secret" ||
 		cfg.Monitor.Notifiers[0].Token != "old-notify-secret" ||
@@ -868,7 +880,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		"old-postgres-secret",
 		"old-elastic-secret",
 		"old-cf-secret",
-		"old-strong-bot-secret",
+		"old-strong-bot-secret-with-sufficient-entropy-1234",
 		"old-otx-secret",
 		"old-notify-secret",
 		"old-jwt-secret",
@@ -931,14 +943,19 @@ func TestChinaMapBoundaryDisabled(t *testing.T) {
 
 func TestChinaMapBoundaryReturnsValidFeatureCollection(t *testing.T) {
 	cfg := config.Default()
-	boundaryFile := filepath.Join(t.TempDir(), "china-boundary.geojson")
+	cfg.Setup.DataDir = t.TempDir()
+	mapsDir := filepath.Join(cfg.Setup.DataDir, "maps")
+	if err := os.MkdirAll(mapsDir, 0o750); err != nil {
+		t.Fatalf("create maps directory: %v", err)
+	}
+	boundaryFile := filepath.Join(mapsDir, "china-boundary.geojson")
 	if err := os.WriteFile(boundaryFile, []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"coverage"},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}]}`), 0o600); err != nil {
 		t.Fatalf("write boundary fixture: %v", err)
 	}
 	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
 		Enabled:    true,
 		SourceType: "file",
-		Source:     boundaryFile,
+		Source:     "china-boundary.geojson",
 		License:    "licensed test fixture",
 		ReviewID:   "GS-test",
 	}
@@ -957,14 +974,19 @@ func TestChinaMapBoundaryReturnsValidFeatureCollection(t *testing.T) {
 
 func TestChinaMapBoundaryRejectsNonFeatureCollection(t *testing.T) {
 	cfg := config.Default()
-	boundaryFile := filepath.Join(t.TempDir(), "china-boundary.geojson")
+	cfg.Setup.DataDir = t.TempDir()
+	mapsDir := filepath.Join(cfg.Setup.DataDir, "maps")
+	if err := os.MkdirAll(mapsDir, 0o750); err != nil {
+		t.Fatalf("create maps directory: %v", err)
+	}
+	boundaryFile := filepath.Join(mapsDir, "china-boundary.geojson")
 	if err := os.WriteFile(boundaryFile, []byte(`{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}`), 0o600); err != nil {
 		t.Fatalf("write boundary fixture: %v", err)
 	}
 	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
 		Enabled:    true,
 		SourceType: "file",
-		Source:     boundaryFile,
+		Source:     "china-boundary.geojson",
 		License:    "licensed test fixture",
 		ReviewID:   "GS-test",
 	}
@@ -1134,7 +1156,11 @@ func TestChinaMapBoundaryByCodeDisabled(t *testing.T) {
 
 func TestChinaMapBoundaryByCodeLoadsDirectoryCandidate(t *testing.T) {
 	cfg := config.Default()
-	boundaryDir := t.TempDir()
+	cfg.Setup.DataDir = t.TempDir()
+	boundaryDir := filepath.Join(cfg.Setup.DataDir, "maps")
+	if err := os.MkdirAll(boundaryDir, 0o750); err != nil {
+		t.Fatalf("create maps directory: %v", err)
+	}
 	boundaryFile := filepath.Join(boundaryDir, "330100.json")
 	if err := os.WriteFile(boundaryFile, []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"杭州市","adcode":"330100"},"geometry":{"type":"Point","coordinates":[120.2,30.3]}}]}`), 0o600); err != nil {
 		t.Fatalf("write boundary fixture: %v", err)
@@ -1142,7 +1168,7 @@ func TestChinaMapBoundaryByCodeLoadsDirectoryCandidate(t *testing.T) {
 	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
 		Enabled:     true,
 		SourceType:  "file",
-		Source:      boundaryDir,
+		Source:      ".",
 		License:     "licensed test fixture",
 		ReviewID:    "GS-test",
 		Attribution: "unit-test",

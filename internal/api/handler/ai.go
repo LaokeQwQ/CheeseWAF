@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -218,6 +221,17 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		next := candidate.AI
+		if aiProviderChanged(req.APIBase, req.Provider, next.APIBase, next.Provider) && strings.TrimSpace(req.APIKey) == "" {
+			return fmt.Errorf("AI api base/provider change requires an explicit new API key")
+		}
+		for _, pair := range []struct {
+			req *aiModelConfigPayload
+			old config.AIConfig
+		}{{req.Assistant, candidate.AI.AssistantRuntimeConfig()}, {req.Reasoning, candidate.AI.ReasoningRuntimeConfig()}} {
+			if pair.req != nil && aiProviderChanged(pair.req.APIBase, pair.req.Provider, pair.old.APIBase, pair.old.Provider) && strings.TrimSpace(pair.req.APIKey) == "" {
+				return fmt.Errorf("AI model api base/provider change requires an explicit new API key")
+			}
+		}
 		next.Enabled = req.Enabled
 		next.Provider = firstNonEmpty(req.Provider, next.Provider)
 		next.APIBase = firstNonEmpty(req.APIBase, next.APIBase)
@@ -249,7 +263,9 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 			next.SubjectTTL = req.SubjectTTL
 		}
 		next.Async = req.Async
-		next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+		// Private gateway access is an operator-controlled deployment policy.
+		// Request payloads cannot relax it.
+		next.AllowPrivateAPIBase = candidate.AI.AllowPrivateAPIBase
 		if req.ModelListPath != nil {
 			next.ModelListPath = strings.TrimSpace(*req.ModelListPath)
 		}
@@ -293,6 +309,13 @@ func (h *Handler) UpdateAIConfig(w http.ResponseWriter, r *http.Request) {
 			next.SelfLearning = selfLearning
 		}
 		if req.Knowledge != nil {
+			if req.Knowledge.File != "" {
+				path, err := fsguard.SafeConfigPathUnderRoot(req.Knowledge.File, candidate.Setup.DataDir)
+				if err != nil {
+					return fmt.Errorf("AI knowledge.file must be within data_dir: %w", err)
+				}
+				req.Knowledge.File = path
+			}
 			next.Knowledge = *req.Knowledge
 		}
 		if validateErr := validateAIConfigForSave(next); validateErr != nil {
@@ -332,6 +355,10 @@ func (h *Handler) TestAIConnection(w http.ResponseWriter, r *http.Request) {
 		}
 		target = req.Target
 		cfg = h.aiRuntimeConfig(target)
+		if aiProviderChanged(req.APIBase, req.Provider, cfg.APIBase, cfg.Provider) && strings.TrimSpace(req.APIKey) == "" {
+			writeError(w, http.StatusBadRequest, "AI_API_KEY_REQUIRED", "a changed provider or api_base requires an explicit API key")
+			return
+		}
 		cfg.Enabled = true
 		if strings.TrimSpace(req.Provider) != "" {
 			cfg.Provider = strings.TrimSpace(req.Provider)
@@ -345,7 +372,7 @@ func (h *Handler) TestAIConnection(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.Model) != "" {
 			cfg.Model = strings.TrimSpace(req.Model)
 		}
-		cfg.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+
 	} else {
 		cfg = h.aiRuntimeConfig(target)
 	}
@@ -535,6 +562,10 @@ func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Reque
 	}
 	target = req.Target
 	cfg = h.aiRuntimeConfig(target)
+	if aiProviderChanged(req.APIBase, req.Provider, cfg.APIBase, cfg.Provider) && strings.TrimSpace(req.APIKey) == "" {
+		writeError(w, http.StatusBadRequest, "AI_API_KEY_REQUIRED", "a changed provider or api_base requires an explicit API key")
+		return nil
+	}
 	cfg.Enabled = true
 	if strings.TrimSpace(req.Provider) != "" {
 		cfg.Provider = strings.TrimSpace(req.Provider)
@@ -545,7 +576,7 @@ func (h *Handler) aiModelsConfigFromRequest(w http.ResponseWriter, r *http.Reque
 	if strings.TrimSpace(req.APIKey) != "" {
 		cfg.APIKey = strings.TrimSpace(req.APIKey)
 	}
-	cfg.AllowPrivateAPIBase = req.AllowPrivateAPIBase
+
 	if strings.TrimSpace(req.ModelListPath) != "" {
 		cfg.ModelListPath = strings.TrimSpace(req.ModelListPath)
 	}
@@ -1181,11 +1212,12 @@ func newAIStreamContext(parent context.Context) (context.Context, context.Cancel
 
 func allowLongResponseWrite(w http.ResponseWriter) {
 	if controller := http.NewResponseController(w); controller != nil {
-		_ = controller.SetWriteDeadline(time.Time{})
+		_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	}
 }
 
 func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload, emit func(ai.AssistantTraceEvent)) (*ai.AssistantReply, error) {
+	ctx = h.aiApprovalContextFromContext(ctx)
 	if strings.TrimSpace(req.Message) == "" {
 		return nil, fmt.Errorf("message is required")
 	}
@@ -1209,8 +1241,20 @@ func (h *Handler) runAssistantAgent(ctx context.Context, req aiAssistantPayload,
 	var reply *ai.AssistantReply
 	if client == nil {
 		record(ai.AssistantTraceEvent{Type: "local_router", Message: localizedTraceMessage(req.Language, "AI 未配置，使用本地分析。", "AI is not configured; using local analysis.")})
-		entries := h.queryLogsFromContext(ctx, storage.LogFilter{Limit: limit})
-		runtime := map[string]any{"snapshot": h.monitorSnapshotFromContext(ctx)}
+		var entries []storage.LogEntry
+		actor := ai.ApprovalActorFromContext(ctx)
+		claims, _ := ctx.Value(middleware.UserContextKey).(*middleware.Claims)
+		canReadLogs := h.callerHasPermission(claims, "read:logs")
+		// Direct in-process callers may already carry the authenticated actor.
+		if claims == nil {
+			canReadLogs = ai.ActorHasPermission(actor, "read:logs")
+		}
+		snapshot := monitor.Collect(h.StartedAt, len(h.currentConfig().Sites), nil, nil)
+		if canReadLogs {
+			entries = h.queryLogsFromContext(ctx, storage.LogFilter{Limit: limit})
+			snapshot = h.monitorSnapshotFromContext(ctx)
+		}
+		runtime := map[string]any{"snapshot": snapshot}
 		var err error
 		reply, err = ai.AnswerAssistantWithLanguage(ctx, nil, req.Message, entries, runtime, req.Language)
 		if err != nil {
@@ -1673,6 +1717,10 @@ func nonEmpty(value, fallback string) string {
 }
 
 func writeAssistantSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload any) error {
+	controller := http.NewResponseController(w)
+	if err := controller.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		raw, _ = json.Marshal(map[string]any{"message": err.Error()})
@@ -1682,8 +1730,7 @@ func writeAssistantSSE(w http.ResponseWriter, flusher http.Flusher, event string
 	if _, err := io.WriteString(w, frame); err != nil {
 		return err
 	}
-	flusher.Flush()
-	return nil
+	return controller.Flush()
 }
 
 func containsAny(value string, needles ...string) bool {
@@ -1978,8 +2025,8 @@ func mergeAIModelPayload(current config.AIModelConfig, req aiModelConfigPayload)
 	if req.MaxTokens != 0 {
 		next.MaxTokens = req.MaxTokens
 	}
-	next.AllowPrivateAPIBase = req.AllowPrivateAPIBase
-	next.AllowPrivateAPIBaseSet = true
+	next.AllowPrivateAPIBase = current.AllowPrivateAPIBase
+	next.AllowPrivateAPIBaseSet = current.AllowPrivateAPIBaseSet
 	if req.ModelListPath != nil {
 		next.ModelListPath = strings.TrimSpace(*req.ModelListPath)
 	}
@@ -2037,6 +2084,9 @@ func legacyAIModelPayload(cfg config.AIConfig) aiModelConfigPayload {
 }
 
 func validateAIConfigForSave(cfg config.AIConfig) error {
+	if err := config.ValidateAIPromptRegistry(cfg); err != nil {
+		return err
+	}
 	if cfg.Enabled {
 		if err := validateRuntimeAIConfig("assistant", cfg.AssistantRuntimeConfig()); err != nil {
 			return err
@@ -2123,4 +2173,8 @@ func normalizeAITarget(target string) string {
 	default:
 		return "assistant"
 	}
+}
+
+func aiProviderChanged(base, provider, oldBase, oldProvider string) bool {
+	return strings.TrimSpace(base) != "" && strings.TrimRight(strings.TrimSpace(base), "/") != strings.TrimRight(strings.TrimSpace(oldBase), "/") || strings.TrimSpace(provider) != "" && !strings.EqualFold(strings.TrimSpace(provider), strings.TrimSpace(oldProvider))
 }

@@ -28,6 +28,8 @@ const (
 	reportExactIPLimit        = 4096
 	reportHLLPrecision        = 10
 	reportRecentRiskLimit     = 10
+	reportMaxScanBytes        = 64 << 20
+	reportMaxScanLines        = 500_000
 )
 
 var reportHTTPClient = netguard.NewHTTPClient(netguard.HTTPClientOptions{
@@ -56,6 +58,7 @@ type ReportSummary struct {
 	TopURIs        map[string]int `json:"top_uris"`
 	TopDetectors   map[string]int `json:"top_detectors"`
 	RecentHighRisk []ReportEvent  `json:"recent_high_risk"`
+	Partial        bool           `json:"partial,omitempty"`
 }
 
 type ReportEvent struct {
@@ -291,7 +294,11 @@ func SecurityReport(logPath, dataDir string) TaskFunc {
 		case "webhook":
 			return postReport(ctx, task.Recipient, task.Format, report)
 		default:
-			return writeReport(task.Recipient, task.ID, task.Format, report)
+			recipient, err := validateReportDir(task.Recipient, task.ManagedRoots, dataDir)
+			if err != nil {
+				return err
+			}
+			return writeReport(recipient, task.ID, task.Format, report)
 		}
 	}
 }
@@ -341,7 +348,15 @@ func SummarizeSecurityLogsContext(ctx context.Context, logPath, period string, n
 	topIPs := newBoundedCounter(reportTopKCapacity)
 	topURIs := newBoundedCounter(reportTopKCapacity)
 	topDetectors := newBoundedCounter(reportTopKCapacity)
+	var scannedBytes int64
+	var scannedLines int
 	for scanner.Scan() {
+		scannedLines++
+		scannedBytes += int64(len(scanner.Bytes())) + 1
+		if scannedLines > reportMaxScanLines || scannedBytes > reportMaxScanBytes {
+			summary.Partial = true
+			break
+		}
 		if ctx.Err() != nil {
 			return summary, ctx.Err()
 		}
@@ -511,8 +526,102 @@ func writeReport(dir, taskID, format string, report []byte) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("security report directory must be a non-symlink directory")
+	}
 	name := fmt.Sprintf("%s-%s%s", safeReportID(taskID), time.Now().UTC().Format("20060102-150405"), reportExtension(format))
-	return os.WriteFile(filepath.Join(dir, name), report, 0o640)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("open security report directory: %w", err)
+	}
+	defer root.Close()
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(report); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func validateReportDir(target string, roots []string, fallbackRoot string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("security report directory is required")
+	}
+	if len(roots) == 0 && strings.TrimSpace(fallbackRoot) != "" {
+		roots = []string{fallbackRoot}
+	}
+	if len(roots) == 0 {
+		return "", fmt.Errorf("security report managed roots are not configured")
+	}
+	cleanTarget := filepath.Clean(strings.TrimSpace(target))
+	if !filepath.IsAbs(cleanTarget) {
+		// Relative paths in the UI use the packaged ./data or ./logs prefix.
+		// Rebase those labels against the actual runtime roots before checking
+		// containment; otherwise an absolute --data-dir makes a valid recipient
+		// look like an external path.
+		for _, root := range roots {
+			root = strings.TrimSpace(root)
+			if root == "" || root == "." {
+				continue
+			}
+			base := filepath.Base(filepath.Clean(root))
+			if cleanTarget == base {
+				cleanTarget = root
+				break
+			}
+			prefix := base + string(filepath.Separator)
+			if strings.HasPrefix(cleanTarget, prefix) {
+				cleanTarget = filepath.Join(root, strings.TrimPrefix(cleanTarget, prefix))
+				break
+			}
+		}
+	}
+	targetAbs, err := filepath.Abs(cleanTarget)
+	if err != nil {
+		return "", fmt.Errorf("resolve security report directory: %w", err)
+	}
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		rootAbs, err := filepath.Abs(filepath.Clean(root))
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rootAbs, targetAbs)
+		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+			if err := rejectSymlinkPath(targetAbs, rootAbs); err != nil {
+				return "", err
+			}
+			return targetAbs, nil
+		}
+	}
+	return "", fmt.Errorf("security report directory %q is outside CheeseWAF managed directories", target)
+}
+
+func rejectSymlinkPath(target, root string) error {
+	current := target
+	for {
+		info, err := os.Lstat(current)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("security report directory contains symlink: %s", current)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if current == root || current == filepath.Dir(current) {
+			return nil
+		}
+		current = filepath.Dir(current)
+	}
 }
 
 func postReport(ctx context.Context, endpoint, format string, report []byte) error {

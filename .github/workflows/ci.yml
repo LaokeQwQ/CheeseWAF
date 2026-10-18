@@ -477,6 +477,9 @@ jobs:
 
   release-artifacts:
     name: release-artifacts
+    # Only protected version tags need the release-signing environment. Branch
+    # artifacts are intentionally unsigned and must not wait for its approval.
+    environment: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && 'release-signing' || '' }}
     if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
     runs-on: ubuntu-latest
     needs:
@@ -514,6 +517,7 @@ jobs:
         env:
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
           CHEESEWAF_TAG_COMMIT: ${{ github.sha }}
+          CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           git fetch --no-tags --depth=1 origin master
           CHEESEWAF_MASTER_REF=FETCH_HEAD bash scripts/ci/verify-stable-tag.sh
@@ -528,8 +532,8 @@ jobs:
           CHEESEWAF_COMMIT: ${{ github.sha }}
           CHEESEWAF_RELEASE_PROFILE: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && 'server' || 'full' }}"
           # Desktop signing credentials are only consulted by full-profile tag builds.
-          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_P12 || '' }}"
-          WINDOWS_CERT_PASSWORD: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_PASSWORD || '' }}"
+          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_P12 || '' }}"
+          WINDOWS_CERT_PASSWORD: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_PASSWORD || '' }}"
         run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
       - name: Verify branch release artifacts
         shell: bash
@@ -537,7 +541,7 @@ jobs:
           CHEESEWAF_EVENT_NAME: ${{ github.event_name }}
           CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
-          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_P12 || '' }}"
+          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_P12 || '' }}"
         run: |
           signing_mode=warn
           signing_scope=all
@@ -557,6 +561,9 @@ jobs:
 
   package-macos-dmg:
     name: package-macos-dmg
+    # Match release-artifacts: branch DMGs use ad-hoc signing and need no
+    # protected release-signing environment approval.
+    environment: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && 'release-signing' || '' }}
     if: "(github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))) && !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v'))"
     runs-on: macos-latest
     needs:
@@ -574,22 +581,22 @@ jobs:
         shell: bash
         env:
           # Branch artifacts stay available without signing credentials. Only tag-triggered packaging can resolve them.
-          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
-          MACOS_P12_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_PASSWORD || '' }}
-          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
-          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64 || '' }}
+          MACOS_P12_PASSWORD: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_PASSWORD || '' }}
+          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_CODESIGN_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_ISSUER || '' }}
         run: bash scripts/ci/package-macos-dmg.sh release
       - name: Verify macOS disk images
         shell: bash
         env:
           CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
-          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
-          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
-          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64 || '' }}
+          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_CODESIGN_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_ISSUER || '' }}
         run: |
           signing_mode=1
           if [[ "$CHEESEWAF_REF_TYPE" != "tag" ]]; then signing_mode=warn; fi

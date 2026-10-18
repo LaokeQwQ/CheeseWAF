@@ -63,10 +63,10 @@ CheeseWAF 的思路是：**用自研 AST 语法树做毫秒级即时拦截，大
 | 对比维度 | 传统正则 WAF (如 ModSecurity) | 同步大模型 WAF | 重型容器全家桶 (如雷池) | 商业云 WAF (如 Cloudflare) | CheeseWAF |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **检测技术** | 正则字符串匹配 | 每次请求同步调用大模型 | 正则 + 统计/语义分析 | 规则库 + 威胁情报 | **AST 语法分析 + 异步大模型值守 (ALAP)** |
-| **请求额外延迟** | 1～10 ms | **500～2000 ms**（极高） | 2～15 ms | 取决于云节点网络 | **< 1 ms**（毫秒级阻断，0 模型等待） |
+| **请求额外延迟** | 1～10 ms | **500～2000 ms**（极高） | 2～15 ms | 取决于云节点网络 | **通常为亚毫秒级**（取决于基准条件，不等待模型） |
 | **Token / API 成本** | 无 | 极高（全量请求计费） | 无 | 按流量计费 | **低（仅异步复核存疑样本）** |
-| **抗混淆与误报** | 易被编码绕过，误报多 | 存在模型幻觉 | 规则复杂，依赖持续更新 | 依赖厂商情报更新 | **解析语法树，防混淆，误报率 < 0.8%** |
-| **资源与部署成本** | 需配置编译 Nginx 模块 | 依赖外部 API | 需 5～10 个容器，内存 1～2 GB+ | 商业订阅计费 | **单二进制/单容器，内置 SQLite，内存几十 MB 起** |
+| **抗混淆与误报** | 易被编码绕过，误报多 | 存在模型幻觉 | 规则复杂，依赖持续更新 | 依赖厂商情报更新 | **解析语法树，降低签名式绕过；误报率随语料和档位变化** |
+| **资源与部署成本** | 需配置编译 Nginx 模块 | 依赖外部 API | 需 5～10 个容器，内存 1～2 GB+ | 商业订阅计费 | **Go 二进制加静态 Web 资源（或单容器），内置 SQLite，外部存储可选** |
 | **现有架构侵入性** | 绑定特定 Web 服务 | 强制修改反代路径 | 通常需替换主网关 | 修改域名 DNS 接入 | **既能独立反代，也可通过 Sidecar 旁挂现有网关** |
 | **数据与隐私合规** | 本地运行 | 业务流量全文发往外部 API | 本地运行 | 流量经过第三方公网节点 | **流量留在本地；大模型仅复核存疑样本，支持内网私有模型** |
 | **网络隔离支持** | 支持离线 | 无法离线（依赖外部模型） | 部分支持 | 不支持（依赖云服务） | **支持完全离线运行与 CRP 离线签名验签** |
@@ -160,7 +160,7 @@ flowchart TB
 | 平面 | 默认监听地址 | 说明 |
 | :--- | :--- | :--- |
 | **数据平面** | 由配置决定（示例：`http://127.0.0.1:8080`） | 接收 Web 业务流量并执行安全检测与反向代理 |
-| **管理平面** | 由配置决定（安装器 profile 绑定 `0.0.0.0:9443`，并单独广告可访问主机） | 承载 Web 控制台、REST API 与初始化向导；请以安装器输出或 `server.admin_listen` 为准 |
+| **管理平面** | 由配置决定（安装器默认绑定 `127.0.0.1:9443`，公开监听需显式 opt-in） | 承载 Web 控制台、REST API 与初始化向导；请以安装器输出或 `server.admin_listen` 为准 |
 | **集群平面** | `https://127.0.0.1:9444` | `cluster.enabled: true` 时启用的可选 TLS/mTLS 节点互联，负责健康检查与节点拓扑发现 |
 
 ---
@@ -297,7 +297,9 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-安装器默认将管理口绑定到 `0.0.0.0:9443`，并在输出中同时给出公网和内网地址。初始化 URL 只在短时间内有效，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
+systemd 沙箱允许在 `/etc/cheesewaf` 目录内原子替换配置，目录必须对 `cheesewaf` 服务账号可写。安装后请完成 setup、保存一次系统配置并重启服务，确认配置在沙箱下仍能保存。
+
+安装器会用同一 release 中的 `SHA256SUMS` 校验压缩包。这只能检测传输损坏，不能独立证明 release 未被发布账号替换。需要 provenance 校验时，请安装固定版本的 `cosign` 并设置 `CHEESEWAF_VERIFY_SIGNATURE=1`；安装器会先验证 GitHub Actions 为 `SHA256SUMS` 生成的 keyless 签名 bundle，再执行 release 中的安装代码。安装器默认将管理口绑定到 `127.0.0.1:9443`。只有明确设置 `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` 时才公开监听；远程访问建议使用反向代理或 SSH 隧道。初始化 URL 和 Token 有效期均为 10 分钟，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
 
 ```bash
 # 查看包含准入 Token 的完整初始化链接：
@@ -355,6 +357,7 @@ volumes:
 ```bash
 docker compose up -d
 docker compose logs -f cheesewaf
+docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url
 ```
 
 #### 步骤 3：访问初始化页面
@@ -398,7 +401,7 @@ docker compose logs -f cheesewaf
 1. 填写业务域名（如 `demo.example.com`）。
 2. 填写上游源站真实地址与端口（如 `192.168.1.100:8080`）。
 3. 选择防护等级（通用业务推荐等级 3）。
-4. 保存配置后立即热重载生效，无需重启进程。
+4. 保存配置。站点、边缘、保护、API 安全、拦截页和时间同步会热更新；监听地址、管理端 TLS、业务 TLS、存储、日志、调度器和 ACME 运行参数需要重启服务。系统 API 会返回 `restart_required` 及受影响的配置段。
 
 ### 3. 配置大模型接入（ALAP）
 
@@ -500,13 +503,32 @@ cheesewaf crp stage \
 
 ## 配置说明
 
+### 能力边界
+
+| 能力 | 当前行为 |
+| :--- | :--- |
+| ACME 签发 | `acme.enabled` 开启后可通过站点证书向导手动签发，并写入审计。 |
+| ACME 自动续期 | 由进程内每小时 worker 提供。它扫描启用 ACME 的站点，在证书到期前 30 天续期，校验 SAN 和私钥权限，保存状态并重新加载站点；失败会写入站点状态和通知。 |
+| OTA 更新 | 只能读取候选版本，没有安装二进制的 updater worker。 |
+| 漏洞情报 feed | 配置为兼容性保留，但当前没有 feed worker。 |
+| 诊断包上传 | serving 组合未暴露该能力，因为没有配置可信的外部上传适配器。 |
+| KMS 恢复 | serving 组合未暴露该能力，因为没有配置外部密钥提供方。 |
+| Scoped 管理 Token | 独立的 token-service 包尚未接入 serving 管理 API。 |
+| 审计篡改证据签名 | 未配置 signer 时关键事件会 fail-closed；serving 组合当前没有配置 signer。 |
+| 请求共享状态 | `storage.redis` 仅用于控制面协调。限流和 Bot 挑战状态仍按进程隔离，Redis challenge 模式不可用。 |
+| gRPC / gRPC-Web | 仅在站点显式开启后做 HTTP/2 透传，不解析 5 字节消息帧、protobuf 或 `grpc-encoding`；请求 trailer 直接拒绝，响应只保留 `grpc-status`、`grpc-message`、`grpc-status-details-bin`，其他 trailer 清理并记录名称。 |
+
+控制台的 capabilities 响应会展示这些边界，不会把未接线的 worker 当作可用功能。
+
+WebSocket、gRPC 和其他流式端点的升级后消息不进入语义 WAF。它们是有边界的连接透传能力，不应理解为协议级消息防护；需要 protobuf/帧级检测时，应在上游部署对应的协议网关。
+
 首次启动时，程序将在数据目录生成 `data/config/cheesewaf.yaml`（模板参考 [configs/cheesewaf.yaml](configs/cheesewaf.yaml)）。主要配置结构如下：
 
 ```yaml
 server:
   listen: "127.0.0.1:8080"       # 数据平面监听地址
-  admin_listen: "0.0.0.0:9443"   # 安装器默认的公网管理监听地址
-  admin_public: true
+  admin_listen: "127.0.0.1:9443" # 私有管理监听；公开监听需显式配置
+  admin_public: false
   admin_tls:
     enabled: true
   # 完成初始化后由安装器写入随机安全入口
@@ -637,7 +659,7 @@ make corpus-governance
 make security-corpus
 ```
 
-CI 自动化验证要求正式快照包含至少 250 条良性请求与 10,000 条攻击样本，且必须达到**误报率 FPR < 0.8%**、**召回率 TPR ≥ 99%** 的基线指标，方可允许合入。
+仓库 CI 当前使用至少 250 条良性请求和 10,000 条攻击样本，并以**误报率 FPR < 0.8%**、**召回率 TPR ≥ 99%**作为内部基线。这是 CI 语料门槛，不是生产环境保证；实际结果会随流量、站点策略和检测档位变化。
 
 ---
 

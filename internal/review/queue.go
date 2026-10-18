@@ -193,6 +193,14 @@ func (q *Queue) maybeAutoAgree(ctx context.Context, item *storage.ReviewItem, an
 	if !q.AutoAgree(item.SiteID) || !HighConfidence(analysis.Risk, analysis.AIUsed) {
 		return
 	}
+	// A hostile log field must never be able to steer the model into an
+	// automatic block. The AI path skips model calls when it detects
+	// instruction-like text; this second guard covers injected analysis
+	// objects from alternate/custom analyzers.
+	if analysis.PromptInjectionSuspected {
+		log.Printf("review auto-agree skipped prompt-injection-suspected item id=%s", item.ID)
+		return
+	}
 	latest, err := q.Store.GetReviewItem(ctx, item.ID)
 	if err != nil || latest == nil || latest.Status != "pending" {
 		return
@@ -240,9 +248,11 @@ func formatVerdict(analysis *ai.AttackAnalysis) string {
 		return ""
 	}
 	payload, err := json.Marshal(map[string]any{
-		"risk":    strings.TrimSpace(analysis.Risk),
-		"summary": strings.TrimSpace(analysis.Summary),
-		"ai_used": analysis.AIUsed,
+		"risk":                       strings.TrimSpace(analysis.Risk),
+		"summary":                    strings.TrimSpace(analysis.Summary),
+		"ai_used":                    analysis.AIUsed,
+		"prompt_injection_suspected": analysis.PromptInjectionSuspected,
+		"prompt_injection_signals":   analysis.PromptInjectionSignals,
 	})
 	if err != nil {
 		return strings.TrimSpace(analysis.Summary)

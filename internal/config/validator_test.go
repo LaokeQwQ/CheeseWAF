@@ -9,6 +9,33 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 )
 
+func TestValidateThreatIntelIndicatorTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		item ThreatIntelConfig
+		good bool
+	}{
+		{"domain", ThreatIntelConfig{Type: "domain", Value: "evil.example"}, true},
+		{"url", ThreatIntelConfig{Type: "url", Value: "https://evil.example/path"}, true},
+		{"sha256", ThreatIntelConfig{Type: "sha256", Value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}, true},
+		{"asn", ThreatIntelConfig{Type: "asn", Value: "AS64500"}, true},
+		{"ja3", ThreatIntelConfig{Type: "ja3", Value: "0123456789abcdef0123456789abcdef"}, true},
+		{"ja4", ThreatIntelConfig{Type: "ja4", Value: "t13d1516h2_8daaf6152771_0273b62f6f95"}, true},
+		{"wide cidr", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0/0"}, false},
+		{"private cidr", ThreatIntelConfig{Type: "ip", Value: "10.0.0.0/8"}, false},
+		{"private ip", ThreatIntelConfig{Type: "ip", Value: "10.0.0.1"}, false},
+		{"unknown type", ThreatIntelConfig{Type: "opaque", Value: "evil.example"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateThreatIntelIndicator(tc.item)
+			if (err == nil) != tc.good {
+				t.Fatalf("validateThreatIntelIndicator(%+v) = %v, want valid=%v", tc.item, err, tc.good)
+			}
+		})
+	}
+}
+
 func TestValidatorUpstreamWeightLimits(t *testing.T) {
 	tests := []struct {
 		name    string

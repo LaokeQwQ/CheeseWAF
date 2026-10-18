@@ -33,6 +33,17 @@ func markdownProseRequest(t *testing.T, body string) *engine.RequestContext {
 	return reqCtx
 }
 
+func rawMarkdownDocumentRequest(t *testing.T, body string) *engine.RequestContext {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "http://x/api/documents", strings.NewReader(body))
+	req.Header.Set("Content-Type", "text/markdown")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reqCtx
+}
+
 // TestMarkdownProseIsNotAnAttack pins the false-positive mechanism found by the
 // mined security-prose probe (24.8% FP over 2000 samples). Each case is ordinary
 // markdown with no executable primitive; every one must pass.
@@ -87,7 +98,7 @@ func TestMarkdownProseIsNotAnAttack(t *testing.T) {
 	analyzer := NewAnalyzer("block", 2)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reqCtx := markdownProseRequest(t, tc.body)
+			reqCtx := rawMarkdownDocumentRequest(t, tc.body)
 			got, err := analyzer.Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
@@ -125,7 +136,7 @@ func TestRealAttacksStillBlockedInProseField(t *testing.T) {
 	analyzer := NewAnalyzer("block", 2)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reqCtx := markdownProseRequest(t, tc.body)
+			reqCtx := rawMarkdownDocumentRequest(t, tc.body)
 			got, err := analyzer.Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)

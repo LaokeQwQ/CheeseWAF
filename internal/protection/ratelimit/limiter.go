@@ -190,7 +190,12 @@ func (l *Limiter) evictOldestLocked(sh *limiterShard, now time.Time) {
 	var oldestKey string
 	var oldest time.Time
 	first := true
+	budget := evictionBudget
 	for key, b := range sh.keys {
+		if budget <= 0 {
+			break
+		}
+		budget--
 		if first || b.lastAccess.Before(oldest) {
 			oldest = b.lastAccess
 			oldestKey = key

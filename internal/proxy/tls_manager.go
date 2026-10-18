@@ -86,11 +86,7 @@ func (s *SiteCertificateStore) Update(cfg *config.Config) error {
 				copyCert := *cert
 				next[normalized] = &copyCert
 				nextMin[normalized] = siteMin
-				if strings.HasPrefix(normalized, "*.") {
-					apex := strings.TrimPrefix(normalized, "*.")
-					next[apex] = &copyCert
-					nextMin[apex] = siteMin
-				}
+
 			}
 			if defaultCert == nil {
 				copyCert := *cert
@@ -124,19 +120,23 @@ func (s *SiteCertificateStore) TLSConfig(cfg config.TLSConfig) *tls.Config {
 		GetCertificate: s.GetCertificate,
 		NextProtos:     []string{"h2", "http/1.1"},
 	}
-	base.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		siteMin := s.minTLSForSNI("")
-		if hello != nil {
-			siteMin = s.minTLSForSNI(hello.ServerName)
-		}
-		if siteMin == 0 {
-			siteMin = listenerMin
-		}
-		cloned := base.Clone()
-		cloned.MinVersion = siteMin
-		cloned.GetConfigForClient = nil
-		return cloned, nil
+	configs := map[uint16]*tls.Config{}
+	for _, minimum := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		variant := base.Clone()
+		variant.MinVersion = minimum
+		configs[minimum] = variant
 	}
+	base.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		minimum := listenerMin
+		if hello != nil {
+			minimum = s.minTLSForSNI(hello.ServerName)
+		}
+		if selected := configs[minimum]; selected != nil {
+			return selected, nil
+		}
+		return configs[listenerMin], nil
+	}
+
 	return base
 }
 
@@ -170,11 +170,12 @@ func (s *SiteCertificateStore) minTLSForSNI(serverName string) uint16 {
 		if v, ok := s.minTLSByDomain[name]; ok && v != 0 {
 			return v
 		}
-		for domain, v := range s.minTLSByDomain {
-			if strings.HasPrefix(domain, "*.") && strings.HasSuffix(name, strings.TrimPrefix(domain, "*")) && v != 0 {
+		if dot := strings.IndexByte(name, '.'); dot > 0 {
+			if v := s.minTLSByDomain["*"+name[dot:]]; v != 0 {
 				return v
 			}
 		}
+
 	}
 	return s.defaultMinTLS
 }
@@ -202,11 +203,12 @@ func (s *SiteCertificateStore) GetCertificate(hello *tls.ClientHelloInfo) (*tls.
 		if cert := s.byDomain[name]; cert != nil {
 			return cert, nil
 		}
-		for domain, cert := range s.byDomain {
-			if strings.HasPrefix(domain, "*.") && strings.HasSuffix(name, strings.TrimPrefix(domain, "*")) {
+		if dot := strings.IndexByte(name, '.'); dot > 0 {
+			if cert := s.byDomain["*"+name[dot:]]; cert != nil {
 				return cert, nil
 			}
 		}
+
 	}
 	if s.defaultCert != nil {
 		return s.defaultCert, nil

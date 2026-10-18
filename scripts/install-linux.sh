@@ -48,6 +48,7 @@ version="${tag#v}"
 asset="cheesewaf-${arch}-linux-${version}.tar.gz"
 asset_url="https://github.com/${repo}/releases/download/${tag}/${asset}"
 sum_url="https://github.com/${repo}/releases/download/${tag}/SHA256SUMS"
+sum_bundle_url="https://github.com/${repo}/releases/download/${tag}/SHA256SUMS.bundle"
 
 tmp_dir="$(mktemp -d -t cheesewaf-install.XXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -56,6 +57,21 @@ curl --proto '=https' --proto-redir '=https' -fsSL --retry 3 --connect-timeout 1
 checksum_lines="$(cd "$tmp_dir" && awk -v name="$asset" '$2 == name || $2 == "*"name {print}' SHA256SUMS)"
 [[ "$(printf '%s\n' "$checksum_lines" | awk 'NF {count++} END {print count + 0}')" == "1" ]] || die "SHA256SUMS must contain exactly one entry for ${asset}"
 (cd "$tmp_dir" && printf '%s\n' "$checksum_lines" | sha256sum -c -) || die "checksum verification failed for ${asset}"
+
+# SHA256SUMS is published beside the archive, so it protects transport
+# integrity only. Operators that require release provenance can install the
+# pinned cosign package separately and opt into verification of the keyless
+# GitHub Actions bundle. The identity is fixed to this repository's release
+# workflow and a version tag; an unsigned or unrelated release is rejected.
+if [[ "${CHEESEWAF_VERIFY_SIGNATURE:-0}" == "1" ]]; then
+  command -v cosign >/dev/null 2>&1 || die "cosign is required when CHEESEWAF_VERIFY_SIGNATURE=1"
+  curl --proto '=https' --proto-redir '=https' -fsSL --retry 3 --connect-timeout 10 -o "${tmp_dir}/SHA256SUMS.bundle" "$sum_bundle_url" || die "unable to download SHA256SUMS signature bundle"
+  cosign verify-blob \
+    --bundle "${tmp_dir}/SHA256SUMS.bundle" \
+    --certificate-identity-regexp "https://github\\.com/${repo}/\\.github/workflows/ci\\.yml@refs/tags/v[0-9].*" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "${tmp_dir}/SHA256SUMS" >/dev/null || die "SHA256SUMS signature verification failed"
+fi
 
 package_prefix="cheesewaf-${arch}-linux-"
 while IFS= read -r member; do

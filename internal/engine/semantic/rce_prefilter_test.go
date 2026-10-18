@@ -532,7 +532,7 @@ func TestMarkdownTableDoesNotSuppressCommandPayloads(t *testing.T) {
 
 func TestMarkdownTableCommandHeuristicKeepsDescriptionsClean(t *testing.T) {
 	body := "| Tool | Usage |\n| --- | --- |\n| grep | grep pattern |\n| id | print the current uid |"
-	got, err := NewAnalyzer("block", 2).Detect(context.Background(), markdownProseRequest(t, body))
+	got, err := NewAnalyzer("block", 2).Detect(context.Background(), rawMarkdownDocumentRequest(t, body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +541,7 @@ func TestMarkdownTableCommandHeuristicKeepsDescriptionsClean(t *testing.T) {
 	}
 
 	body = "| Tool | Usage |\n| --- | --- |\n| grep | run grep pattern |"
-	got, err = NewAnalyzer("block", 2).Detect(context.Background(), markdownProseRequest(t, body))
+	got, err = NewAnalyzer("block", 2).Detect(context.Background(), rawMarkdownDocumentRequest(t, body))
 	if err != nil {
 		t.Fatal(err)
 	}

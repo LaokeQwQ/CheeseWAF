@@ -2,6 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -88,6 +92,14 @@ func runClusterCertRotate(cmd *cobra.Command, opts clusterCertRotateOptions) err
 	if err != nil {
 		return err
 	}
+	currentKeyPEM, err := os.ReadFile(filepath.Clean(cfg.Cluster.Interconnect.KeyFile))
+	if err != nil {
+		return fmt.Errorf("read current cluster private key: %w", err)
+	}
+	possessionProof, err := clusterCertificateRotationProof(cfg.Cluster.NodeID, localIdentity.CSRPEM, currentKeyPEM)
+	if err != nil {
+		return err
+	}
 	client, err := clusterJoinHTTPClient(clusterJoinOptions{
 		CAFile:             opts.CAFile,
 		InsecureSkipVerify: opts.InsecureSkipVerify,
@@ -95,7 +107,7 @@ func runClusterCertRotate(cmd *cobra.Command, opts clusterCertRotateOptions) err
 	if err != nil {
 		return err
 	}
-	result, err := requestClusterCertRotate(client, controllerURL, apiToken, cfg.Cluster.NodeID, string(localIdentity.CSRPEM))
+	result, err := requestClusterCertRotate(client, controllerURL, apiToken, cfg.Cluster.NodeID, string(localIdentity.CSRPEM), possessionProof)
 	if err != nil {
 		return err
 	}
@@ -194,12 +206,15 @@ func readTokenFile(path string) (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
-func requestClusterCertRotate(client *http.Client, controllerURL string, apiToken string, nodeID string, csr string) (clusterCertRotateResponse, error) {
+func requestClusterCertRotate(client *http.Client, controllerURL string, apiToken string, nodeID string, csr string, possessionProof string) (clusterCertRotateResponse, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
 		return clusterCertRotateResponse{}, fmt.Errorf("cluster node id is required")
 	}
-	body, err := json.Marshal(map[string]string{"csr": csr})
+	if strings.TrimSpace(possessionProof) == "" {
+		return clusterCertRotateResponse{}, fmt.Errorf("node private-key possession proof is required")
+	}
+	body, err := json.Marshal(map[string]string{"csr": csr, "possession_proof": possessionProof})
 	if err != nil {
 		return clusterCertRotateResponse{}, err
 	}
@@ -239,6 +254,19 @@ func requestClusterCertRotate(client *http.Client, controllerURL string, apiToke
 		return clusterCertRotateResponse{}, fmt.Errorf("cluster certificate rotation response unexpectedly included private key material")
 	}
 	return result, nil
+}
+
+func clusterCertificateRotationProof(nodeID string, csrPEM, keyPEM []byte) (string, error) {
+	key, err := parseClusterECPrivateKeyPEM(keyPEM)
+	if err != nil {
+		return "", fmt.Errorf("load current cluster private key for rotation proof: %w", err)
+	}
+	digest := sha256.Sum256(identity.NodeRotationProofMessage(nodeID, csrPEM))
+	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		return "", fmt.Errorf("sign cluster certificate rotation proof: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 func backupClusterCertFiles(paths clusterJoinPaths) ([]clusterJoinFileBackup, error) {

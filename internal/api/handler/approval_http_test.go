@@ -77,6 +77,9 @@ func approvalHTTPRequest(method, target, body, subject, session, role, remote st
 	request := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = remote
+	if approvalHTTPRemoteIsLoopback(remote) {
+		request = request.WithContext(WithLocalApprovalTransport(request.Context()))
+	}
 	claims := &middleware.Claims{Subject: subject, ID: session, Username: subject, Role: role}
 	return request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, claims))
 }
@@ -91,7 +94,7 @@ func submitApprovalHTTP(t *testing.T, f approvalHTTPFixture, id string) approval
 	t.Helper()
 	body := "{\"id\":\"" + id + "\",\"risk\":\"high\",\"scope\":\"site:primary\",\"policy_epoch\":7,\"ttl\":\"1m\",\"confirmation_language\":\"en-US\"}"
 	recorder := httptest.NewRecorder()
-	req := approvalHTTPRequest(http.MethodPost, "/api/approvals", body, "operator", "session-operator", "admin", "127.0.0.1:1234")
+	req := approvalHTTPRequest(http.MethodPost, "/api/approvals", body, "requester", "session-requester", "admin", "127.0.0.1:1234")
 	f.handler.SubmitApproval(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("submit code=%d body=%s", recorder.Code, recorder.Body.String())

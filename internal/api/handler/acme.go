@@ -42,6 +42,8 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
+	h.siteMutationMu.Lock()
+	defer h.siteMutationMu.Unlock()
 	if h.currentConfig() != nil && !h.currentConfig().ACME.Enabled {
 		writeError(w, http.StatusServiceUnavailable, "ACME_DISABLED", "acme automation is disabled")
 		return
@@ -100,6 +102,18 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.notifyACMEIssue(r, site, result, err)
 		writeErrorWithData(w, http.StatusBadRequest, "ACME_ISSUE_FAILED", err.Error(), map[string]any{
+			"result": result,
+			"events": result.Events,
+		})
+		return
+	}
+	requireInstalledFiles := false
+	if _, ok := issuer.(*acme.ACMESHIssuer); ok {
+		requireInstalledFiles = true
+	}
+	if _, err := validateACMECertificateFiles(result.CertFile, result.KeyFile, site.Domains, h.nowUTC(), requireInstalledFiles); err != nil {
+		h.notifyACMEIssue(r, site, result, err)
+		writeErrorWithData(w, http.StatusBadRequest, "ACME_CERT_INVALID", err.Error(), map[string]any{
 			"result": result,
 			"events": result.Events,
 		})
@@ -302,12 +316,7 @@ type trustedACMERuntime struct {
 
 func (h *Handler) trustedSiteACMERuntime(site *storage.Site) trustedACMERuntime {
 	cfg := config.Default()
-	if h != nil && h.Config != nil {
-		// Config is the compatibility view kept in sync by publishConfig and is
-		// also the field used by package-level callers to override test/runtime
-		// ACME paths before issuing a certificate.
-		cfg = *h.Config
-	} else if h != nil && h.currentConfig() != nil {
+	if h != nil && h.currentConfig() != nil {
 		cfg = *h.currentConfig()
 	}
 	acmeCfg := cfg.ACME

@@ -2,6 +2,8 @@ package rules
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -66,6 +68,127 @@ func TestEngineSeparatesURIAndQueryLocations(t *testing.T) {
 	}
 	if result == nil || result.DetectorID != "rules.custom.query" || result.Action != engine.ActionChallenge {
 		t.Fatalf("query-only input must match the query rule: %+v", result)
+	}
+}
+
+func TestEngineURIRulesUseCanonicalRequestPath(t *testing.T) {
+	compiled, err := FromConfig([]config.CustomRuleConfig{{
+		ID: "admin", Name: "Admin", Pattern: `^/admin`, Location: "uri", Action: "block", Severity: "high", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://example.test/public/../admin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(compiled).Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Action != engine.ActionBlock {
+		t.Fatalf("canonical URI rule did not match path traversal form: %+v (normalized=%q)", result, reqCtx.NormalizedPath)
+	}
+}
+
+func TestEngineMatchesEncodedApplicationViews(t *testing.T) {
+	cases := []struct {
+		name     string
+		location string
+		setup    func(*http.Request)
+	}{
+		{name: "query", location: "query", setup: func(r *http.Request) { r.URL.RawQuery = "q=%2575nion%2520select" }},
+		{name: "body form", location: "body", setup: func(r *http.Request) {
+			r.Method = http.MethodPost
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}},
+		{name: "cookie", location: "cookie", setup: func(r *http.Request) { r.Header.Set("Cookie", "q=%75nion%20select") }},
+		{name: "header", location: "header", setup: func(r *http.Request) { r.Header.Set("X-Probe", "%75nion%20select") }},
+		{name: "header HTML entity", location: "header", setup: func(r *http.Request) { r.Header.Set("X-Probe", "&#x75;nion&#32;select") }},
+		{name: "cookie double encoding", location: "cookie", setup: func(r *http.Request) { r.Header.Set("Cookie", "q=%2575nion%2520select") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compiled, err := FromConfig([]config.CustomRuleConfig{{
+				ID: tc.name, Name: tc.name, Pattern: `(?i)union\s+select`, Location: tc.location, Action: "block", Severity: "high", Enabled: true,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body io.Reader
+			if tc.location == "body" {
+				body = strings.NewReader("q=%2575nion%2520select")
+			}
+			req, err := http.NewRequest(http.MethodGet, "http://example.test/search", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(req)
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := New(compiled).Detect(context.Background(), reqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result == nil || !result.Detected {
+				t.Fatalf("encoded application value was not matched: %+v", result)
+			}
+		})
+	}
+}
+
+func TestEngineMatchesCustomRuleAfterLegacyBodyCutoff(t *testing.T) {
+	const needle = "LATE_BODY_RULE_MATCH"
+	body := strings.Repeat("x", engine.MaxDecodedBytes+128) + needle
+	compiled, err := FromConfig([]config.CustomRuleConfig{{
+		ID: "late", Name: "Late body match", Pattern: needle, Location: "body", Action: "block", Severity: "high", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx, err := engine.NewRequestContextWithLimits(req, "default", nil, int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(compiled).Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Action != engine.ActionBlock {
+		t.Fatalf("custom body rule missed value after old 2MiB cutoff: %+v", result)
+	}
+}
+
+func TestEngineMarksMalformedJSONRuleViewIncomplete(t *testing.T) {
+	compiled, err := FromConfig([]config.CustomRuleConfig{{
+		ID: "miss", Name: "never matches", Pattern: `NEVER_MATCH`, Location: "body", Action: "block", Severity: "high", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://example.test/json", strings.NewReader(`{"value":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(compiled).Detect(context.Background(), reqCtx)
+	var incomplete interface{ AnalysisIncomplete() bool }
+	if !errors.As(err, &incomplete) || !incomplete.AnalysisIncomplete() {
+		t.Fatalf("error=%v, want typed incomplete inspection", err)
 	}
 }
 

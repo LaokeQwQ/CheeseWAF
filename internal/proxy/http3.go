@@ -30,7 +30,7 @@ func (s *Server) TLSServer(altSvc string) (*http.Server, error) {
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: s.config.Server.ReadTimeout,
 		ReadTimeout:       s.config.Server.ReadTimeout,
-		WriteTimeout:      s.config.Server.WriteTimeout,
+		WriteTimeout:      0, // Response writes may stream; upstream/header deadlines remain bounded.
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes(s.config),
 	}, nil
@@ -54,8 +54,12 @@ func (s *Server) HTTP3Server() (*http3.Server, string, error) {
 		Handler:   withQUICReplayGuard(s.Handler()),
 		TLSConfig: http3.ConfigureTLSConfig(tlsConfig),
 		QUICConfig: &quic.Config{
-			Allow0RTT:      s.config.Server.HTTP3.ZeroRTT,
-			MaxIdleTimeout: s.config.Server.IdleTimeout,
+			Allow0RTT:          s.config.Server.HTTP3.ZeroRTT,
+			MaxIdleTimeout:     s.config.Server.IdleTimeout,
+			MaxIncomingStreams: 128, MaxIncomingUniStreams: 16,
+			InitialStreamReceiveWindow: 512 << 10, MaxStreamReceiveWindow: 4 << 20,
+			InitialConnectionReceiveWindow: 1 << 20, MaxConnectionReceiveWindow: 16 << 20,
+			KeepAlivePeriod: 15 * time.Second,
 		},
 		IdleTimeout:    s.config.Server.IdleTimeout,
 		MaxHeaderBytes: maxHeaderBytes(s.config),
@@ -72,7 +76,7 @@ func HTTP3ListenAddr(cfg config.ServerConfig) string {
 	if cfg.ListenTLS != "" {
 		return cfg.ListenTLS
 	}
-	return ":443"
+	return "127.0.0.1:443"
 }
 
 func HTTP3AltSvcValue(addr string) (string, error) {
@@ -123,7 +127,7 @@ func maxHeaderBytes(cfg *config.Config) int {
 			continue
 		}
 		configured := site.WAF.Performance.MaxHeaderBytes
-		if configured > 0 && configured < limit {
+		if configured > limit {
 			limit = configured
 		}
 	}

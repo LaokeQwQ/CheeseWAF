@@ -20,7 +20,7 @@ func TestHTTP3ListenAddrFallbacks(t *testing.T) {
 	if got := HTTP3ListenAddr(config.ServerConfig{ListenTLS: "127.0.0.1:9443"}); got != "127.0.0.1:9443" {
 		t.Fatalf("expected TLS addr fallback, got %q", got)
 	}
-	if got := HTTP3ListenAddr(config.ServerConfig{}); got != ":443" {
+	if got := HTTP3ListenAddr(config.ServerConfig{}); got != "127.0.0.1:443" {
 		t.Fatalf("expected default HTTPS addr, got %q", got)
 	}
 }
@@ -86,7 +86,7 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	if h3.QUICConfig == nil || !h3.QUICConfig.Allow0RTT {
 		t.Fatal("expected 0-RTT to be enabled")
 	}
-	if h3.MaxHeaderBytes != 2048 {
+	if h3.MaxHeaderBytes != http.DefaultMaxHeaderBytes {
 		t.Fatalf("unexpected max header bytes %d", h3.MaxHeaderBytes)
 	}
 	if h3.ConnContext == nil {
@@ -94,7 +94,7 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	}
 }
 
-func TestMaxHeaderBytesUsesSmallestEnabledSiteLimit(t *testing.T) {
+func TestMaxHeaderBytesUsesLargestSiteLimitToAvoidCrossSiteRejection(t *testing.T) {
 	cfg := config.Default()
 	t.Logf("default enabled=%v max=%d sites=%d", cfg.Sites[0].Enabled, cfg.Sites[0].WAF.Performance.MaxHeaderBytes, len(cfg.Sites))
 	cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 8192
@@ -102,12 +102,12 @@ func TestMaxHeaderBytesUsesSmallestEnabledSiteLimit(t *testing.T) {
 		Enabled: true,
 		WAF:     config.WAFConfig{Performance: config.PerformanceTuningConfig{MaxHeaderBytes: 2048}},
 	})
-	if got := maxHeaderBytes(&cfg); got != 2048 {
-		t.Fatalf("maxHeaderBytes=%d, want 2048", got)
+	if got := maxHeaderBytes(&cfg); got != 1048576 {
+		t.Fatalf("maxHeaderBytes=%d, want max configured limit", got)
 	}
 	cfg.Sites[1].Enabled = false
-	if got := maxHeaderBytes(&cfg); got != 8192 {
-		t.Fatalf("disabled site limit affected maxHeaderBytes=%d, want 8192", got)
+	if got := maxHeaderBytes(&cfg); got != 1048576 {
+		t.Fatalf("disabled site limit affected maxHeaderBytes=%d", got)
 	}
 }
 

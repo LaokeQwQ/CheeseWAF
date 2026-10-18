@@ -34,6 +34,9 @@ const (
 	maxInflightRegexMatches = 64
 	// maxInflightGuards bounds detector Guard workers on timeout paths.
 	maxInflightGuards = 128
+	// Keep a site from monopolizing detector guard workers. A blank or
+	// unregistered site falls back to the global guard semaphore only.
+	maxInflightGuardsPerSite = 16
 )
 
 // ErrDetectionOverload reports that Guard could not start detector work
@@ -54,6 +57,28 @@ var regexMatchSlots = make(chan struct{}, maxInflightRegexMatches)
 
 // guardSlots bounds concurrent Guard workers the same way.
 var guardSlots = make(chan struct{}, maxInflightGuards)
+
+var guardSiteAdmissions = siteAdmission{
+	maxActive: maxInflightGuardsPerSite,
+	maxSites:  1024,
+}
+
+type requestSiteContextKey struct{}
+
+func withRequestSite(ctx context.Context, siteID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, requestSiteContextKey{}, siteID)
+}
+
+func requestSiteFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	siteID, _ := ctx.Value(requestSiteContextKey{}).(string)
+	return siteID
+}
 
 // BoundedRegex wraps a regexp.Regexp with timeout protection for ReDoS.
 type BoundedRegex struct{ re *regexp.Regexp }
@@ -84,10 +109,11 @@ func CompileSafe(pattern string) (*BoundedRegex, error) {
 	return &BoundedRegex{re: re}, nil
 }
 
-// MatchString performs bounded matching with ReDoS protection via deadline.
+// MatchString performs a complete RE2 match. Go's regexp engine has linear
+// complexity; callers choosing the explicit deadline API must use Status and
+// handle its error instead of silently treating an incomplete match as false.
 func (b *BoundedRegex) MatchString(s string) bool {
-	matched, _ := b.MatchStringStatus(s)
-	return matched
+	return b != nil && b.re != nil && b.re.MatchString(s)
 }
 
 // MatchStringStatus performs the complete match without truncating the
@@ -123,8 +149,7 @@ func (b *BoundedRegex) MatchStringStatus(s string) (bool, error) {
 
 // Match performs bounded matching on a byte slice with ReDoS protection.
 func (b *BoundedRegex) Match(b2 []byte) bool {
-	matched, _ := b.MatchStatus(b2)
-	return matched
+	return b != nil && b.re != nil && b.re.Match(b2)
 }
 
 // MatchStatus is the byte-slice counterpart of MatchStringStatus.
@@ -211,11 +236,17 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return zero, ctxErr
 	}
+	siteToken, admitted := guardSiteAdmissions.acquire(requestSiteFromContext(ctx))
+	if !admitted {
+		return zero, ErrDetectionOverload
+	}
 	select {
 	case guardSlots <- struct{}{}:
 	default:
+		siteToken.release()
 		return zero, ErrDetectionOverload
 	}
+	defer siteToken.release()
 	done := make(chan struct {
 		res T
 		err error
@@ -264,21 +295,21 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 		}
 	}()
 
-	timer := time.NewTimer(2 * time.Second)
-	defer func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-	}()
+	// Pipeline invocations already share one deadline timer. Allocate the
+	// compatibility hard-stop timer only when the caller has no shorter budget.
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Second {
+		timer = time.NewTimer(2 * time.Second)
+		timeout = timer.C
+		defer timer.Stop()
+	}
 	select {
 	case r := <-done:
 		return r.res, r.err
 	case <-ctx.Done():
 		return zero, ctx.Err()
-	case <-timer.C:
+	case <-timeout:
 		return zero, fmt.Errorf("detection deadline exceeded (2s)")
 	}
 }

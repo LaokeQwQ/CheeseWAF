@@ -17,7 +17,7 @@ func TestSQLiteNotificationsAreUserScopedAndCounted(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, user := range []User{{ID: "user-a", Username: "user-a", PasswordHash: "hash"}, {ID: "user-b", Username: "user-b", PasswordHash: "hash"}} {
+	for _, user := range []User{{ID: "user-a", Username: "user-a", PasswordHash: "hash", Role: "admin"}, {ID: "user-b", Username: "user-b", PasswordHash: "hash", Role: "admin"}} {
 		user := user
 		if err := store.CreateUser(ctx, &user); err != nil {
 			t.Fatal(err)
@@ -66,7 +66,7 @@ func TestSQLiteNotificationsPaginationOrderingAndMutations(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	user := User{ID: "user-a", Username: "user-a", PasswordHash: "hash"}
+	user := User{ID: "user-a", Username: "user-a", PasswordHash: "hash", Role: "admin"}
 	if err := store.CreateUser(ctx, &user); err != nil {
 		t.Fatal(err)
 	}
