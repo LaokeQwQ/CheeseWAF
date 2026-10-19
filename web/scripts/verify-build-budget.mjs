@@ -27,7 +27,10 @@ const cssAssets = readdirSync(path.join(distDir, 'assets')).filter((file) => fil
 const jsAssets = readdirSync(path.join(distDir, 'assets')).filter((file) => file.endsWith('.js'));
 const productionFileCount = scanProductionTree(distDir);
 const jsChunkLimit = 500 * 1024;
-const lazyDependencyLimit = 1024 * 1024;
+// MapLibre's published browser bundle is intentionally monolithic. Keep a
+// small headroom over its current minified size so routine lockfile updates do
+// not fail the build while still rejecting an accidental multi-megabyte chunk.
+const lazyDependencyLimit = 1152 * 1024;
 const unexpectedOversizedChunks = jsAssets.filter((file) => {
   const bytes = statSync(path.join(distDir, 'assets', file)).size;
   return bytes > jsChunkLimit && !/^vendor-maplibre-/.test(file);
@@ -40,7 +43,7 @@ const oversizedMapLibreChunks = jsAssets.filter((file) => {
   return /^vendor-maplibre-/.test(file) && bytes > lazyDependencyLimit;
 });
 if (oversizedMapLibreChunks.length > 0) {
-  throw new Error(`The lazy MapLibre chunk exceeds the 1 MiB dependency budget: ${oversizedMapLibreChunks.join(', ')}`);
+  throw new Error(`The lazy MapLibre chunk exceeds the 1.125 MiB dependency budget: ${oversizedMapLibreChunks.join(', ')}`);
 }
 const themeAssets = cssAssets.filter((file) => /^(light|dark|black-gold|blue-white|pink-white|miku-green)-/.test(file));
 const normalizeAssetPath = (value) => value.replace(/\\/g, '/').replace(/^\//, '');
