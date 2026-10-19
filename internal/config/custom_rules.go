@@ -127,9 +127,6 @@ func parseModSecurityRules(data []byte) ([]CustomRuleConfig, error) {
 		if rule.Name == "" {
 			rule.Name = rule.ID
 		}
-		if rule.ID == "" {
-			rule.ID = fmt.Sprintf("modsec-%d", lineNo+1)
-		}
 		out = append(out, rule)
 	}
 	if len(out) == 0 {
@@ -207,6 +204,12 @@ func MergeCustomRules(existing, imported []CustomRuleConfig) ([]CustomRuleConfig
 		}
 		if ok {
 			old := merged[idx]
+			// An ID-less import matched by location and pattern is an update to
+			// the existing rule. Preserve its identity so audit/event references
+			// remain stable across re-imports.
+			if rule.ID == "" {
+				rule.ID = old.ID
+			}
 			if old.ID != "" && byID[old.ID] == idx {
 				delete(byID, old.ID)
 			}

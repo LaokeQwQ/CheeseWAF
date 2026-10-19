@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
@@ -560,68 +561,11 @@ func validateReportDir(target string, roots []string, fallbackRoot string) (stri
 	if len(roots) == 0 {
 		return "", fmt.Errorf("security report managed roots are not configured")
 	}
-	cleanTarget := filepath.Clean(strings.TrimSpace(target))
-	if !filepath.IsAbs(cleanTarget) {
-		// Relative paths in the UI use the packaged ./data or ./logs prefix.
-		// Rebase those labels against the actual runtime roots before checking
-		// containment; otherwise an absolute --data-dir makes a valid recipient
-		// look like an external path.
-		for _, root := range roots {
-			root = strings.TrimSpace(root)
-			if root == "" || root == "." {
-				continue
-			}
-			base := filepath.Base(filepath.Clean(root))
-			if cleanTarget == base {
-				cleanTarget = root
-				break
-			}
-			prefix := base + string(filepath.Separator)
-			if strings.HasPrefix(cleanTarget, prefix) {
-				cleanTarget = filepath.Join(root, strings.TrimPrefix(cleanTarget, prefix))
-				break
-			}
-		}
-	}
-	targetAbs, err := filepath.Abs(cleanTarget)
+	targetAbs, err := config.ResolveManagedSchedulerPath(target, roots...)
 	if err != nil {
-		return "", fmt.Errorf("resolve security report directory: %w", err)
+		return "", fmt.Errorf("security report directory %q is outside CheeseWAF managed directories or unsafe: %w", target, err)
 	}
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		rootAbs, err := filepath.Abs(filepath.Clean(root))
-		if err != nil {
-			continue
-		}
-		rel, err := filepath.Rel(rootAbs, targetAbs)
-		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
-			if err := rejectSymlinkPath(targetAbs, rootAbs); err != nil {
-				return "", err
-			}
-			return targetAbs, nil
-		}
-	}
-	return "", fmt.Errorf("security report directory %q is outside CheeseWAF managed directories", target)
-}
-
-func rejectSymlinkPath(target, root string) error {
-	current := target
-	for {
-		info, err := os.Lstat(current)
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("security report directory contains symlink: %s", current)
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		if current == root || current == filepath.Dir(current) {
-			return nil
-		}
-		current = filepath.Dir(current)
-	}
+	return targetAbs, nil
 }
 
 func postReport(ctx context.Context, endpoint, format string, report []byte) error {

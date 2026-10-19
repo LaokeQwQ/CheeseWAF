@@ -189,6 +189,29 @@ func TestParseModSecurityPreservesBlockingActionAndStrictStringEquals(t *testing
 	if rules[0].Pattern != `\A/admin\z` {
 		t.Fatalf("streq pattern = %q, want anchored literal", rules[0].Pattern)
 	}
+	if err := ValidateCustomRule(rules[0]); err != nil {
+		t.Fatalf("anchored streq pattern must remain a valid native rule: %v", err)
+	}
+}
+
+func TestParseModSecurityKeepsDenyWhenLogAlsoPresent(t *testing.T) {
+	rules, err := ParseCustomRules([]byte(`SecRule REQUEST_URI "@contains /admin" "id:one,deny,log"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != "block" {
+		t.Fatalf("deny and log must retain blocking action: %+v", rules)
+	}
+}
+
+func TestParseModSecurityLeavesMissingIDForMergeIdentity(t *testing.T) {
+	rules, err := ParseCustomRules([]byte(`SecRule REQUEST_URI "@contains /admin" "deny"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].ID != "" {
+		t.Fatalf("line-number IDs must not be treated as user identities: %+v", rules)
+	}
 }
 
 func TestParseModSecurityARGSUsesCombinedArgumentLocation(t *testing.T) {
@@ -259,5 +282,73 @@ func TestMergeCustomRulesRefreshesReplacementIndexes(t *testing.T) {
 	}
 	if len(merged) != 3 || merged[0].Pattern != "three" || merged[2].ID != "new" {
 		t.Fatalf("replacement index was stale: %+v", merged)
+	}
+}
+
+func TestMergeCustomRulesPreservesIDForPatternReplacement(t *testing.T) {
+	existing := []CustomRuleConfig{{
+		ID: "stable-rule", Name: "old", Pattern: "probe", Location: "uri", Action: "block", Severity: "medium", Enabled: true,
+	}}
+	imported := []CustomRuleConfig{{
+		Name: "renamed", Pattern: "probe", Location: "uri", Action: "log", Severity: "high", Enabled: true,
+	}}
+	merged, err := MergeCustomRules(existing, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 1 || merged[0].ID != "stable-rule" || merged[0].Name != "renamed" || merged[0].Action != "log" {
+		t.Fatalf("pattern replacement must preserve existing identity: %+v", merged)
+	}
+}
+
+func TestMergeCustomRulesRemovesReplacedIDIndex(t *testing.T) {
+	existing := []CustomRuleConfig{{ID: "old", Pattern: "probe", Enabled: true}}
+	imported := []CustomRuleConfig{
+		{ID: "new", Pattern: "probe", Action: "log", Enabled: true},
+		{ID: "old", Pattern: "other", Enabled: true},
+	}
+	merged, err := MergeCustomRules(existing, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 2 || merged[0].ID != "new" || merged[0].Pattern != "probe" || merged[1].ID != "old" || merged[1].Pattern != "other" {
+		t.Fatalf("replaced ID must no longer target the old index: %+v", merged)
+	}
+}
+
+func TestMergeCustomRulesChecksFinalCountAfterReplacement(t *testing.T) {
+	existing := make([]CustomRuleConfig, maxCustomRulesCount)
+	for index := range existing {
+		existing[index] = CustomRuleConfig{ID: fmt.Sprintf("r-%d", index), Pattern: fmt.Sprintf("p-%d", index), Enabled: true}
+	}
+	merged, err := MergeCustomRules(existing, []CustomRuleConfig{{Pattern: "p-0", Action: "log", Enabled: true}})
+	if err != nil || len(merged) != maxCustomRulesCount || merged[0].ID != "r-0" || merged[0].Action != "log" {
+		t.Fatalf("replacement at count limit must succeed: rules=%d err=%v", len(merged), err)
+	}
+	merged, err = MergeCustomRules(existing, []CustomRuleConfig{{Pattern: "new", Enabled: true}})
+	if err == nil || !strings.Contains(err.Error(), "too many") || merged != nil {
+		t.Fatalf("append beyond count limit must return no rules: rules=%d err=%v", len(merged), err)
+	}
+	if existing[0].Action != "" {
+		t.Fatal("merge must not mutate its input")
+	}
+}
+
+func TestPrepareCustomRulesReplacementAssignsIDsAndAcceptsEmptySet(t *testing.T) {
+	rules, err := PrepareCustomRules([]CustomRuleConfig{
+		{ID: "same-name", Pattern: "old", Enabled: true},
+		{Name: "Same Name", Pattern: "new", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 || rules[1].ID != "same-name-2" {
+		t.Fatalf("complete replacement must generate unique IDs: %+v", rules)
+	}
+	for _, input := range [][]CustomRuleConfig{nil, {}} {
+		rules, err := PrepareCustomRules(input)
+		if err != nil || len(rules) != 0 {
+			t.Fatalf("empty replacement must clear the rule set: %+v, %v", rules, err)
+		}
 	}
 }

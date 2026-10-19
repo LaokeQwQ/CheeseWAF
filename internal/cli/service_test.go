@@ -654,6 +654,17 @@ func TestAdminHandlerSecurityEntryGatesConsole(t *testing.T) {
 
 func TestAdminHandlerAllowsFirstInstallPathsBeforeSecurityEntry(t *testing.T) {
 	webDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(webDir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"assets/setup.js": "console.log('setup')", "assets/setup.css": "body{display:block}",
+		"cheesewaf-logo.png": "logo", "favicon.ico": "icon",
+	} {
+		if err := os.WriteFile(filepath.Join(webDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
@@ -683,6 +694,26 @@ func TestAdminHandlerAllowsFirstInstallPathsBeforeSecurityEntry(t *testing.T) {
 			t.Fatalf("first-install API path %s was not passed through: path=%q status=%d body=%s", path, apiPath, recorder.Code, recorder.Body.String())
 		}
 	}
+	for _, path := range []string{"/assets/setup.js", "/assets/setup.css", "/cheesewaf-logo.png", "/favicon.ico"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("first-install static asset %s %s returned %d", method, path, recorder.Code)
+			}
+		}
+	}
+	for _, path := range []string{"/", "/login", "/api/sites"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		want := http.StatusTeapot
+		if strings.HasPrefix(path, "/api/") {
+			want = http.StatusForbidden
+		}
+		if recorder.Code != want {
+			t.Fatalf("unrelated first-install path %s bypassed entry gate: got %d, want %d", path, recorder.Code, want)
+		}
+	}
 	if err := setup.MarkComplete(cfg.Setup.DataDir); err != nil {
 		t.Fatalf("mark setup complete: %v", err)
 	}
@@ -690,6 +721,13 @@ func TestAdminHandlerAllowsFirstInstallPathsBeforeSecurityEntry(t *testing.T) {
 	handler.ServeHTTP(postSetup, httptest.NewRequest(http.MethodGet, "/", nil))
 	if postSetup.Code != http.StatusTeapot {
 		t.Fatalf("post-setup console path bypassed security entry, got %d: %s", postSetup.Code, postSetup.Body.String())
+	}
+	for _, path := range []string{"/assets/setup.js", "/assets/setup.css", "/cheesewaf-logo.png", "/favicon.ico"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusTeapot {
+			t.Fatalf("post-setup static asset %s bypassed entry gate: %d", path, recorder.Code)
+		}
 	}
 }
 

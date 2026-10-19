@@ -106,7 +106,7 @@ func TestReviewJSONStreamStopsAtDepthBudget(t *testing.T) {
 	if err == nil || !status.omitted || status.reason != jsonDepthLimitIncompleteReason {
 		t.Fatalf("deep JSON did not stop with depth omission: status=%+v err=%v", status, err)
 	}
-	if consumed := decoder.InputOffset(); consumed > maxJSONDepth+1 {
+	if consumed := decoder.InputOffset(); consumed > maxJSONTokenDepth {
 		t.Fatalf("depth budget still consumed %d bytes instead of stopping at the nesting bound", consumed)
 	}
 }

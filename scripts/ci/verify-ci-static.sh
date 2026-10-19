@@ -15,23 +15,44 @@ fail() {
 # Every desktop signing secret reference must be guarded by the complete
 # protected version-tag predicate. Checking only for one guarded occurrence
 # would allow a second, unscoped reference to leak the secret to branch jobs.
+signing_secrets=(
+  WINDOWS_CERT_P12 WINDOWS_CERT_PASSWORD
+  MACOS_P12_BASE64 MACOS_P12_PASSWORD MACOS_CODESIGN_IDENTITY
+  APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER
+)
+
 check_protected_tag_secret_scope() {
-  local workflow="$1" secret="$2" matches=0 line_number line reference_count line
+  local workflow="$1" secret="$2" matches=0 line_number line
+  local guarded_expression reference_pattern
+  guarded_expression="[$]\{\{[[:space:]]*github\.ref_type[[:space:]]*==[[:space:]]*'tag'[[:space:]]*&&[[:space:]]*startsWith\(github\.ref_name,[[:space:]]*'v'\)[[:space:]]*&&[[:space:]]*github\.ref_protected[[:space:]]*&&[[:space:]]*secrets\.${secret}[[:space:]]*\|\|[[:space:]]*''[[:space:]]*\}\}"
+  reference_pattern="secrets[[:space:]]*(\.[[:space:]]*${secret}([^A-Za-z0-9_]|$)|\[[[:space:]]*['\"]${secret}['\"])"
 
   while IFS=: read -r line_number line; do
     [[ -n "$line_number" ]] || continue
     matches=1
-    reference_count="$(printf '%s\n' "$line" | grep -oF "secrets.${secret}" | wc -l | tr -d '[:space:]')"
-    if [[ "$reference_count" != "1" ]] ||
-      ! printf '%s\n' "$line" | grep -Eq "github\.ref_type[[:space:]]*==[[:space:]]*'tag'.*startsWith\\(github\.ref_name,[[:space:]]*'v'\\).*github\.ref_protected.*secrets\.${secret}"; then
+    if ! printf '%s\n' "$line" | grep -Eq "^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*:[[:space:]]*(\"${guarded_expression}\"|'${guarded_expression}'|${guarded_expression})[[:space:]]*(#.*)?$"; then
       fail "${workflow}:${line_number}: secrets.${secret} must be guarded by a protected version-tag predicate"
     fi
-  done < <(grep -nF "secrets.${secret}" "$workflow" || true)
+  done < <(grep -niE "$reference_pattern" "$workflow" || true)
 
   if ((matches == 0)); then
     fail "${workflow} does not reference secrets.${secret}"
   fi
 }
+
+check_all_signing_secret_scopes() {
+  local workflow="$1" secret
+  for secret in "${signing_secrets[@]}"; do
+    check_protected_tag_secret_scope "$workflow" "$secret"
+  done
+}
+
+if [[ "${1:-}" == "--check-signing-secret-scopes" ]]; then
+  [[ $# -eq 2 ]] || fail "usage: $0 --check-signing-secret-scopes WORKFLOW"
+  [[ -r "$2" ]] || fail "workflow is not readable: $2"
+  check_all_signing_secret_scopes "$2"
+  exit 0
+fi
 
 if [[ "${1:-}" == "--check-protected-tag-secret-scope" ]]; then
   [[ $# -eq 3 ]] || fail "usage: $0 --check-protected-tag-secret-scope WORKFLOW SECRET"
@@ -663,22 +684,7 @@ grep -Fq 'sign_blob "$product_sbom"' scripts/ci/publish-prerelease.sh ||
 # inputs may only resolve for a tag-triggered package.
 grep -Fq -- "- 'Alpha-*'" .github/workflows/ci.yml ||
   fail "GitHub CI must trigger tagged release packaging for signed artifacts"
-for signing_secret in \
-  WINDOWS_CERT_P12 \
-  WINDOWS_CERT_PASSWORD \
-  MACOS_P12_BASE64 \
-  MACOS_P12_PASSWORD \
-  MACOS_CODESIGN_IDENTITY \
-  APPLE_API_KEY \
-  APPLE_API_KEY_ID \
-  APPLE_API_ISSUER; do
-  grep -Eq "github\.ref_type == 'tag'.*secrets\.${signing_secret}" .github/workflows/ci.yml ||
-    fail "${signing_secret} must only be resolved for tag-triggered signing"
-done
-# The two certificate blobs are especially sensitive: validate every
-# occurrence, not merely the presence of one correctly guarded reference.
-check_protected_tag_secret_scope .github/workflows/ci.yml WINDOWS_CERT_P12
-check_protected_tag_secret_scope .github/workflows/ci.yml MACOS_P12_BASE64
+check_all_signing_secret_scopes .github/workflows/ci.yml
 grep -Fq "github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'" .github/workflows/ci.yml ||
   fail "ordinary branch release artifacts must remain enabled"
 grep -Fq 'Upload branch release artifacts' .github/workflows/ci.yml ||
@@ -846,5 +852,7 @@ run_regression_test verify-stable-tag bash scripts/ci/verify-stable-tag_test.sh
 run_regression_test publish-prerelease bash scripts/ci/publish-prerelease_test.sh
 run_regression_test verify-release bash scripts/ci/verify-release_test.sh
 run_regression_test package-macos-dmg-lifecycle bash scripts/ci/package-macos-dmg_lifecycle_test.sh
+run_regression_test signing-secret-scopes bash scripts/ci/verify-ci-static_signing_scope_test.sh
+run_regression_test linux-installer-lifecycle bash scripts/ci/install-linux_test.sh
 
 echo "CI static regression checks passed."

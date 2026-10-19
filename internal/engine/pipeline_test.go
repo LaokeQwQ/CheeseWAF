@@ -592,13 +592,13 @@ func TestPipelineDeferredBodyReadHonorsParentCancellation(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("pipeline did not return after parent cancellation")
 	}
-	if !body.closed.Load() {
-		t.Fatal("parent cancellation did not signal cancellation to deferred body reader")
-	}
 	select {
 	case <-body.finished:
 	case <-time.After(time.Second):
 		t.Fatal("deferred body reader did not unwind after cancellation")
+	}
+	if !body.closed.Load() {
+		t.Fatal("parent cancellation did not signal cancellation to deferred body reader")
 	}
 	if req.Body != originalBody || req.ContentLength != -1 || req.GetBody != nil {
 		t.Fatalf("canceled read changed request replay state: body_changed=%v length=%d get_body=%v", req.Body != originalBody, req.ContentLength, req.GetBody != nil)
@@ -688,7 +688,7 @@ func TestEnsureBodyCancellationCannotLateWriteRequestOrPartialSnapshot(t *testin
 	release := make(chan struct{})
 	secondRead := make(chan struct{}, 1)
 	body := &partialBlockingBody{
-		prefix: []byte("partial"), release: release, secondRead: secondRead,
+		prefix: []byte("partial"), release: release, secondRead: secondRead, closeSignaled: make(chan struct{}),
 	}
 	req := httptest.NewRequest(http.MethodPost, "http://example.test/cancel-partial", body)
 	req.ContentLength = -1
@@ -714,7 +714,9 @@ func TestEnsureBodyCancellationCannotLateWriteRequestOrPartialSnapshot(t *testin
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("EnsureBodyContext did not return after cancellation")
 	}
-	if !body.closed.Load() {
+	select {
+	case <-body.closeSignaled:
+	case <-time.After(time.Second):
 		t.Fatal("cancellation did not signal the live reader")
 	}
 
@@ -1234,11 +1236,12 @@ func (r *partialErrorBody) Read(p []byte) (int, error) {
 func (*partialErrorBody) Close() error { return nil }
 
 type partialBlockingBody struct {
-	prefix     []byte
-	release    <-chan struct{}
-	secondRead chan<- struct{}
-	emitted    bool
-	closed     atomic.Bool
+	prefix        []byte
+	release       <-chan struct{}
+	secondRead    chan<- struct{}
+	closeSignaled chan struct{}
+	emitted       bool
+	closed        atomic.Bool
 }
 
 type closeCountingBody struct {
@@ -1269,6 +1272,9 @@ func (r *partialBlockingBody) Read(p []byte) (int, error) {
 
 func (r *partialBlockingBody) Close() error {
 	r.closed.Store(true)
+	if r.closeSignaled != nil {
+		close(r.closeSignaled)
+	}
 	return nil
 }
 

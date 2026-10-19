@@ -3,6 +3,7 @@ package semantic
 import (
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
@@ -60,31 +61,46 @@ func sstiArithmeticStandalone(text string) bool {
 // scheme but no path, resource, or filter chain; it must not become an LFI hit.
 func lfiWrapperPathShape(lower string) bool {
 	for _, prefix := range []string{"php://", "zip://", "phar://", "expect://", "file://"} {
-		idx := strings.Index(lower, prefix)
-		if idx < 0 {
-			continue
-		}
-		rest := strings.TrimSpace(lower[idx+len(prefix):])
-		if rest == "" {
-			continue
-		}
-		switch prefix {
-		case "php://":
-			if strings.HasPrefix(rest, "filter/") && (strings.Contains(rest, "resource=") || strings.Contains(rest, "convert.")) {
-				return true
+		for offset := 0; offset < len(lower); {
+			idx := strings.Index(lower[offset:], prefix)
+			if idx < 0 {
+				break
 			}
-			for _, stream := range []string{"input", "stdin", "memory", "temp", "fd/"} {
-				if strings.HasPrefix(rest, stream) {
+			offset += idx + len(prefix)
+			rest := lower[offset:]
+			if end := strings.IndexFunc(rest, func(r rune) bool {
+				return r <= ' ' || unicode.IsSpace(r) || strings.ContainsRune(`"'<>[]{}(),;`, r)
+			}); end >= 0 {
+				rest = rest[:end]
+			}
+			if rest == "" {
+				continue
+			}
+			switch prefix {
+			case "php://":
+				if strings.HasPrefix(rest, "filter/") && (strings.Contains(rest, "resource=") || strings.Contains(rest, "convert.")) {
 					return true
 				}
-			}
-		case "expect://":
-			return !strings.HasPrefix(rest, "in ") && !strings.HasPrefix(rest, "is ")
-		case "file://":
-			return strings.Contains(rest, "/") || strings.Contains(rest, "\\")
-		default:
-			if strings.Contains(rest, "/") {
-				return true
+				for _, stream := range []string{"input", "stdin", "memory", "temp"} {
+					if rest == stream || strings.HasPrefix(rest, stream+"/") {
+						return true
+					}
+				}
+				if strings.HasPrefix(rest, "fd/") {
+					return true
+				}
+			case "expect://":
+				if rest != "in" && rest != "is" {
+					return true
+				}
+			case "file://":
+				if strings.ContainsAny(rest, "/\\") {
+					return true
+				}
+			default:
+				if strings.Contains(rest, "/") {
+					return true
+				}
 			}
 		}
 	}

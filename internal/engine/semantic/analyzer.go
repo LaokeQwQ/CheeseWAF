@@ -837,6 +837,7 @@ const (
 	maxDecodeVariants      = 8
 	maxJSONNodes           = 200
 	maxJSONDepth           = 8
+	maxJSONTokenDepth      = 64 // includes skipped subtrees in the streaming decoder
 	maxJSONTreeDecodeBytes = 256 << 10
 	// maxMultipartInputs caps how many inspection inputs one multipart body can
 	// contribute, bounding the parse work an attacker-controlled upload can
@@ -1880,10 +1881,16 @@ func flattenJSONInputsWithStatus(source, prefix string, raw []byte, inputs *[]In
 			return status
 		}
 	}
-	// An observed depth limit is already an incomplete result. Replaying the
-	// same subtree through a decoder would spend work on bytes we cannot inspect
-	// and could erase the depth reason when the document is also malformed.
+	// Restore sibling coverage after a deep subtree while preserving the original
+	// depth reason, even if the decoder later finds malformed JSON. Tree replay
+	// is size-bounded; the streaming replay also bounds skipped nesting.
 	if status.reason == jsonDepthLimitIncompleteReason {
+		*inputs = (*inputs)[:mark]
+		if len(raw) > maxJSONTreeDecodeBytes {
+			status.merge(flattenJSONInputsStream(source, prefix, raw, inputs))
+		} else {
+			status.merge(flattenJSONInputsDecode(source, prefix, raw, inputs))
+		}
 		return status
 	}
 	// A declined fast walk is replayed from the original document; discard any
@@ -2003,7 +2010,7 @@ func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, co
 		if collector.status != nil {
 			collector.status.mark(jsonDepthLimitIncompleteReason)
 		}
-		return errors.New("json nesting exceeds semantic depth budget")
+		return discardJSONValue(decoder, depth)
 	}
 	if collector.nodes >= maxJSONNodes {
 		if collector.status != nil {
@@ -2074,7 +2081,7 @@ func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, co
 	}
 }
 
-func discardJSONValue(decoder *json.Decoder) error {
+func discardJSONValue(decoder *json.Decoder, depth int) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -2088,6 +2095,11 @@ func discardJSONValue(decoder *json.Decoder) error {
 	}
 	level := 1
 	for level > 0 {
+		// Decoder.Token has its own growing nesting stack. Iteration alone is
+		// insufficient to bound memory when discarding attacker-controlled JSON.
+		if depth+level >= maxJSONTokenDepth {
+			return errors.New("json nesting exceeds token budget")
+		}
 		token, err = decoder.Token()
 		if err != nil {
 			return err
@@ -4289,7 +4301,7 @@ func sqlMultipartWordPressLockContext(candidate semanticCandidate) bool {
 // fingerprint there is transport noise, not a query. Explicit SQL grammar is
 // evaluated before this fallback and remains blockable.
 func sqlJSONTrailingCommentContext(candidate semanticCandidate) bool {
-	if candidate.input.Source != "body.raw" {
+	if candidate.input.Source != "body.raw" && candidate.input.Source != "body.json.raw" {
 		return false
 	}
 	trimmed := strings.TrimSpace(candidate.text)
@@ -5140,6 +5152,20 @@ func xpathInjectionShape(text string) (step string, ok bool) {
 }
 
 func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
+	if candidate.input.Source == "body.json.raw" {
+		// Whole JSON cannot use Name=body to recover operator paths, and a map
+		// decode would collapse the duplicate values this source protects. Keep
+		// every occurrence in the bounded streaming sample instead.
+		var inputs []InputPoint
+		flattenJSONInputsStream("body.json", "", []byte(candidate.text), &inputs)
+		for _, input := range inputs {
+			if result, ok := analyzeNoSQL(semanticCandidate{input: input, text: input.Raw}); ok {
+				result.Source = candidate.input.Source
+				return result, true
+			}
+		}
+		return Hit{}, false
+	}
 	text := strings.TrimSpace(candidate.text)
 	lowerText := normalize(text)
 	name := strings.ToLower(candidate.input.Name)
@@ -8185,7 +8211,7 @@ func xxePayloadContext(candidate semanticCandidate, lower string) bool {
 	}
 	source := candidate.input.Source
 	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
-	if source == "body.raw" {
+	if source == "body.raw" || source == "body.json.raw" {
 		return true
 	}
 	if xxeDocumentationField(name) {
@@ -8536,7 +8562,7 @@ func nosqlStructuredSource(source string) bool {
 	// for every header on every request. A WAF cannot treat headers as second
 	// class: they are attacker-controlled input like any other.
 	switch source {
-	case "query", "body.form", "body.json", "body.raw", "cookie", "header":
+	case "query", "body.form", "body.json", "body.json.raw", "body.raw", "cookie", "header":
 		return true
 	default:
 		return false

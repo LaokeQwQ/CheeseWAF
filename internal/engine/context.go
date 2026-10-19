@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
@@ -35,29 +37,39 @@ var bodyReadSiteAdmissions = siteAdmission{
 }
 
 // Body snapshots are bounded by bytes as well as worker count. Readers reserve
-// fixed-size chunks before allocating/reading them, so a large configured body
-// ceiling does not reserve its full size for a small request. The per-site
+// capacity before growing their buffers, so a large configured body ceiling
+// does not reserve its full size for a small request. The per-site
 // ceiling is an admission limit independent of max_body_bytes.
+// These reservations cover current buffers and published snapshots; temporary
+// old/new allocation overlap during growth or compaction remains GC-managed.
 const (
 	maxBodyBytesPerSite = 64 << 20
 	maxBodyBytesGlobal  = 256 << 20
 	bodyReadChunkBytes  = 32 << 10
+	bodyReadIdleTimeout = 10 * time.Second
 )
 
 var bodyBudget = struct {
 	sync.Mutex
-	global int64
-	bySite map[string]int64
-}{bySite: make(map[string]int64)}
+	global      int64
+	bySite      map[string]int64
+	changed     chan struct{}
+	reclaimDone chan struct{}
+	nextReclaim time.Time
+}{bySite: make(map[string]int64), changed: make(chan struct{})}
 
 // Cap inflate relative to compressed size to reduce zip-bomb risk.
 const maxDecompressionRatio = 20
 
 var ErrRequestBodyTooLarge = errors.New("request body exceeds configured limit")
 
-// ErrRequestBodyReadOverload means all bounded body-reader workers are busy.
+// ErrRequestBodyReadOverload means bounded reader or body-byte capacity is full.
 // It is an incomplete-inspection condition and must never be treated as clean.
 var ErrRequestBodyReadOverload = errors.New("request body inspection overloaded")
+
+// ErrRequestBodyReadTimeout means an upload stopped making progress. Upload
+// time is bounded separately from the detector CPU budget.
+var ErrRequestBodyReadTimeout = errors.New("request body read idle timeout")
 
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
 	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit, true, nil)
@@ -126,8 +138,8 @@ func newRequestContext(r *http.Request, siteID, clientIP string, maxBodyBytes in
 	return reqCtx, nil
 }
 
-// EnsureBody reads and rewinds the request body at most once. It preserves the
-// historical blocking API for callers that do not have a request context.
+// EnsureBody reads and rewinds the request body at most once. Callers without
+// a request context still receive the independent upload idle bound.
 func (c *RequestContext) EnsureBody() error {
 	return c.EnsureBodyContext(context.Background())
 }
@@ -198,6 +210,8 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	c.bodyReadDone = done
 	c.bodyReadBody = originalBody
 	c.bodyCloseOnce = closeOnce
+	c.bodyReadProgress = time.Now()
+	c.bodyReadAbort = make(chan struct{})
 	// A manually assembled context may contain stale semantic bytes while its
 	// live transport body has not been materialized. Do not let a failed attempt
 	// expose those bytes as the result of this read.
@@ -245,47 +259,97 @@ func reserveBodyBudget(siteID string, amount int64) bool {
 }
 
 func (c *RequestContext) reserveBodyBudget(amount int64) bool {
-	if c == nil || !reserveBodyBudget(c.SiteID, amount) {
+	if c == nil {
 		return false
 	}
 	c.bodyMu.Lock()
-	c.bodyReservation += amount
-	c.bodyReservationHeld = true
+	aborted := c.bodyLoaded
 	c.bodyMu.Unlock()
-	return true
-}
-
-func (c *RequestContext) releaseBodyBudget(amount int64) {
-	if c == nil || amount <= 0 {
-		return
+	if aborted || (!reserveBodyBudget(c.SiteID, amount) && !reclaimBodyBudget(c.SiteID, amount)) {
+		return false
 	}
 	c.bodyMu.Lock()
 	defer c.bodyMu.Unlock()
-	if amount > c.bodyReservation {
-		amount = c.bodyReservation
+	if c.bodyLoaded {
+		releaseRetainedBodyBudget(bodyBudgetRelease{c.SiteID, amount})
+		return false
 	}
+	c.bodyReservation += amount
+	c.bodyReservationHeld = true
+	return true
+}
+
+// Reaching the admission ceiling can stop the allocations that would otherwise
+// trigger GC. Coalesce and rate-limit pressure collections, then allow pending
+// cleanups a short interval to return capacity. Live snapshots remain charged;
+// normal admissions never collect or wait here.
+func reclaimBodyBudget(siteID string, amount int64) bool {
 	bodyBudget.Lock()
-	bodyBudget.global -= amount
-	bodyBudget.bySite[c.SiteID] -= amount
-	if bodyBudget.bySite[c.SiteID] <= 0 {
-		delete(bodyBudget.bySite, c.SiteID)
+	done := bodyBudget.reclaimDone
+	if done == nil && !time.Now().Before(bodyBudget.nextReclaim) {
+		done = make(chan struct{})
+		bodyBudget.reclaimDone = done
+		bodyBudget.nextReclaim = time.Now().Add(100 * time.Millisecond)
+		go func(done chan struct{}) {
+			runtime.GC()
+			bodyBudget.Lock()
+			bodyBudget.reclaimDone = nil
+			close(done)
+			bodyBudget.Unlock()
+		}(done)
 	}
 	bodyBudget.Unlock()
-	c.bodyReservation -= amount
-	c.bodyReservationHeld = c.bodyReservation > 0
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		bodyBudget.Lock()
+		changed := bodyBudget.changed
+		bodyBudget.Unlock()
+		if reserveBodyBudget(siteID, amount) {
+			return true
+		}
+		select {
+		case <-changed:
+		case <-done:
+			done = nil
+		case <-timer.C:
+			return false
+		}
+	}
+}
+
+type bodyBudgetRelease struct {
+	siteID string
+	bytes  int64
+}
+
+func releaseRetainedBodyBudget(reservation bodyBudgetRelease) {
+	bodyBudget.Lock()
+	bodyBudget.global -= reservation.bytes
+	bodyBudget.bySite[reservation.siteID] -= reservation.bytes
+	if bodyBudget.bySite[reservation.siteID] <= 0 {
+		delete(bodyBudget.bySite, reservation.siteID)
+	}
+	close(bodyBudget.changed)
+	bodyBudget.changed = make(chan struct{})
+	bodyBudget.Unlock()
+}
+
+// Attach accounting to the backing allocation itself: slices in detector forks,
+// GetBody closures and replay readers all keep it alive, including after a
+// detector times out. The cleanup argument must never reference the buffer.
+func retainBodyBudget(siteID string, body []byte) {
+	if cap(body) > 0 {
+		runtime.AddCleanup(&body[:cap(body)][0], releaseRetainedBodyBudget, bodyBudgetRelease{siteID, int64(cap(body))})
+		runtime.KeepAlive(body)
+	}
 }
 
 func (c *RequestContext) releaseBodyBudgetLocked() {
 	if c == nil || !c.bodyReservationHeld {
 		return
 	}
-	bodyBudget.Lock()
-	bodyBudget.global -= c.bodyReservation
-	bodyBudget.bySite[c.SiteID] -= c.bodyReservation
-	if bodyBudget.bySite[c.SiteID] <= 0 {
-		delete(bodyBudget.bySite, c.SiteID)
-	}
-	bodyBudget.Unlock()
+	releaseRetainedBodyBudget(bodyBudgetRelease{c.SiteID, c.bodyReservation})
 	c.bodyReservation = 0
 	c.bodyReservationHeld = false
 }
@@ -294,46 +358,71 @@ func waitBodyRead(ctx context.Context, done chan struct{}, body io.ReadCloser, c
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	select {
-	case <-done:
-		if owner == nil {
-			return nil
-		}
-		owner.bodyMu.Lock()
-		err := owner.bodyErr
-		owner.bodyMu.Unlock()
-		return err
-	case <-ctx.Done():
-		ctxErr := ctx.Err()
-		if owner == nil {
-			closeBodyReadSource(body, closeOnce)
-			return ctxErr
-		}
-
-		// Cancellation abandons the shared attempt before signaling Close. The
-		// reader worker observes bodyLoaded and must discard every byte it may
-		// return later, so it cannot race a forwarding path by rewriting Request.
-		owner.bodyMu.Lock()
-		if owner.bodyLoaded {
+	owner.bodyMu.Lock()
+	idleTimeout := owner.bodyReadIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = bodyReadIdleTimeout
+	}
+	abort := owner.bodyReadAbort
+	owner.bodyMu.Unlock()
+	timer := time.NewTimer(idleTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-done:
+			owner.bodyMu.Lock()
 			err := owner.bodyErr
 			owner.bodyMu.Unlock()
 			return err
-		}
-		if owner.bodyReadDone != done {
+		case <-abort:
+			owner.bodyMu.Lock()
 			err := owner.bodyErr
 			owner.bodyMu.Unlock()
-			if err != nil {
-				return err
+			return err
+		case <-timer.C:
+			owner.bodyMu.Lock()
+			remaining := idleTimeout - time.Since(owner.bodyReadProgress)
+			owner.bodyMu.Unlock()
+			if remaining > 0 {
+				timer.Reset(remaining)
+				continue
 			}
-			return ctxErr
+			return owner.abortBodyRead(ErrRequestBodyReadTimeout, done, body, closeOnce)
+		case <-ctx.Done():
+			return owner.abortBodyRead(ctx.Err(), done, body, closeOnce)
 		}
-		owner.bodyErr = ctxErr
-		owner.bodyLoaded = true
-		owner.bodyMu.Unlock()
+	}
+}
 
-		closeBodyReadSource(body, closeOnce)
+func (owner *RequestContext) abortBodyRead(ctxErr error, done chan struct{}, body io.ReadCloser, closeOnce *sync.Once) error {
+	// Cancellation abandons the shared attempt before signaling Close. The
+	// reader worker observes bodyLoaded and must discard every byte it may
+	// return later, so it cannot race a forwarding path by rewriting Request.
+	owner.bodyMu.Lock()
+	if owner.bodyLoaded {
+		err := owner.bodyErr
+		owner.bodyMu.Unlock()
+		return err
+	}
+	if owner.bodyReadDone != done {
+		err := owner.bodyErr
+		owner.bodyMu.Unlock()
+		if err != nil {
+			return err
+		}
 		return ctxErr
 	}
+	owner.bodyErr = ctxErr
+	owner.bodyLoaded = true
+	close(owner.bodyReadAbort)
+	owner.bodyMu.Unlock()
+
+	// An arbitrary ReadCloser can also block in Close. The read slot remains
+	// held until the worker and its deferred Close both finish, bounding these
+	// close goroutines without blocking cancellation or the idle timeout. Only
+	// the caller that makes this attempt terminal can start a closer.
+	go closeBodyReadSource(body, closeOnce)
+	return ctxErr
 }
 
 func closeBodyReadSource(body io.Closer, closeOnce *sync.Once) {
@@ -373,58 +462,91 @@ func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan st
 	if readErr == nil {
 		decoded = raw
 		if encoding != "" && encoding != "identity" {
-			decoded, readErr = decodeHTTPContentEncoding(raw, encoding, maxBodyBytes)
+			decoded, readErr = c.decodeHTTPContentEncoding(raw, encoding, maxBodyBytes)
 		}
 	}
 	c.finishBodyRead(raw, decoded, readErr, done, originalBody, closeOnce)
 }
 
 func (c *RequestContext) readBodyWithBudget(body io.Reader, maxBodyBytes int64) ([]byte, error) {
-	var buffer bytes.Buffer
-	var chunk [bodyReadChunkBytes]byte
+	var buffer []byte
 	for {
-		if int64(buffer.Len()) >= maxBodyBytes {
+		c.bodyMu.Lock()
+		aborted := c.bodyErr
+		c.bodyMu.Unlock()
+		if aborted != nil {
+			return nil, aborted
+		}
+		if int64(len(buffer)) >= maxBodyBytes {
 			var probe [1]byte
 			n, err := body.Read(probe[:])
 			if n > 0 {
 				return nil, ErrRequestBodyTooLarge
 			}
 			if errors.Is(err, io.EOF) {
-				return buffer.Bytes(), nil
+				return c.compactBodyBuffer(buffer), nil
 			}
 			if err != nil {
 				return nil, err
 			}
-			return buffer.Bytes(), io.ErrNoProgress
+			return buffer, io.ErrNoProgress
 		}
-		reserve := int64(len(chunk))
-		if remaining := maxBodyBytes - int64(buffer.Len()); reserve > remaining {
-			reserve = remaining
+		if len(buffer) == cap(buffer) {
+			capacity := max(bodyReadChunkBytes, 2*cap(buffer))
+			if int64(capacity) > maxBodyBytes {
+				capacity = int(maxBodyBytes)
+			}
+			// Avoid tiny allocator batching, for which runtime cleanup is not
+			// guaranteed even after the snapshot becomes unreachable.
+			capacity = max(capacity, 32)
+			if !c.reserveBodyBudget(int64(capacity - cap(buffer))) {
+				return nil, ErrRequestBodyReadOverload
+			}
+			grown := make([]byte, len(buffer), capacity)
+			copy(grown, buffer)
+			buffer = grown
 		}
-		if reserve <= 0 {
-			return buffer.Bytes(), nil
-		}
-		if !c.reserveBodyBudget(reserve) {
-			return nil, ErrRequestBodyReadOverload
-		}
-		readBuffer := chunk[:int(reserve)]
+		end := min(int64(cap(buffer)), maxBodyBytes)
+		readBuffer := buffer[len(buffer):int(end)]
 		n, err := body.Read(readBuffer)
-		if unused := reserve - int64(n); unused > 0 {
-			c.releaseBodyBudget(unused)
-		}
 		if n > 0 {
-			_, _ = buffer.Write(readBuffer[:n])
+			buffer = buffer[:len(buffer)+n]
+			c.bodyMu.Lock()
+			c.bodyReadProgress = time.Now()
+			c.bodyMu.Unlock()
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return buffer.Bytes(), nil
+				return c.compactBodyBuffer(buffer), nil
 			}
 			return nil, err
 		}
 		if n == 0 {
-			return buffer.Bytes(), io.ErrNoProgress
+			return buffer, io.ErrNoProgress
 		}
 	}
+}
+
+func (c *RequestContext) compactBodyBuffer(buffer []byte) []byte {
+	capacity := max(len(buffer), 32)
+	if len(buffer) == 0 {
+		capacity = 0
+	}
+	if capacity >= cap(buffer) {
+		return buffer
+	}
+	var compact []byte
+	if capacity > 0 {
+		compact = make([]byte, len(buffer), capacity)
+		copy(compact, buffer)
+	}
+	unused := int64(cap(buffer) - capacity)
+	c.bodyMu.Lock()
+	c.bodyReservation -= unused
+	c.bodyReservationHeld = c.bodyReservation > 0
+	releaseRetainedBodyBudget(bodyBudgetRelease{c.SiteID, unused})
+	c.bodyMu.Unlock()
+	return compact
 }
 
 func (c *RequestContext) finishBodyRead(raw, decoded []byte, readErr error, done chan struct{}, originalBody io.ReadCloser, closeOnce *sync.Once) {
@@ -444,6 +566,18 @@ func (c *RequestContext) finishBodyRead(raw, decoded []byte, readErr error, done
 	}
 
 	if readErr == nil {
+		if len(raw) == 0 {
+			// Empty bodies publish no allocation or replay closure.
+			c.releaseBodyBudgetLocked()
+			raw, decoded = nil, nil
+		} else {
+			retainBodyBudget(c.SiteID, raw)
+			if cap(decoded) > 0 && &decoded[:cap(decoded)][0] != &raw[0] {
+				retainBodyBudget(c.SiteID, decoded)
+			}
+			c.bodyReservation = 0
+			c.bodyReservationHeld = false
+		}
 		// Publish all body state in one critical section only after both transfer
 		// reading and semantic decoding completed. No prefix is ever replayed as a
 		// complete request after an error.
@@ -506,7 +640,7 @@ func (c *RequestContext) bodyState() (loaded bool, err error, body io.ReadCloser
 	return c.bodyLoaded, c.bodyErr, body, true
 }
 
-func decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]byte, error) {
+func (c *RequestContext) decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]byte, error) {
 	if strings.Contains(encoding, ",") {
 		return nil, errors.New("unsupported multi-layer content-encoding")
 	}
@@ -520,7 +654,9 @@ func decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]b
 		defer gr.Close()
 		reader = gr
 	case "deflate":
-		reader = flate.NewReader(bytes.NewReader(raw))
+		fr := flate.NewReader(bytes.NewReader(raw))
+		defer fr.Close()
+		reader = fr
 	case "br", "zstd":
 		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
 	default:
@@ -530,14 +666,7 @@ func decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]b
 	if ratioCap := int64(len(raw)) * maxDecompressionRatio; ratioCap > 0 && ratioCap < limit {
 		limit = ratioCap
 	}
-	plain, err := io.ReadAll(io.LimitReader(reader, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(plain)) > limit {
-		return nil, ErrRequestBodyTooLarge
-	}
-	return plain, nil
+	return c.readBodyWithBudget(reader, limit)
 }
 
 type replayBody struct {

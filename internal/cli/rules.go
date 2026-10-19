@@ -30,7 +30,7 @@ var rulesCmd = &cobra.Command{
 
 var rulesImportCmd = &cobra.Command{
 	Use:   "import",
-	Short: "从 YAML 或 JSON 文件替换站点 custom_rules",
+	Short: "从 YAML、JSON 或 ModSecurity 文件合并站点 custom_rules",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		count, err := importSiteCustomRules(cmd.Context(), rulesImportSite, rulesImportFile)
@@ -86,7 +86,7 @@ var rulesExampleCmd = &cobra.Command{
 
 func init() {
 	rulesImportCmd.Flags().StringVar(&rulesImportSite, "site", "", "Site ID")
-	rulesImportCmd.Flags().StringVar(&rulesImportFile, "file", "", "YAML or JSON rules file")
+	rulesImportCmd.Flags().StringVar(&rulesImportFile, "file", "", "YAML, JSON, or ModSecurity rules file")
 	_ = rulesImportCmd.MarkFlagRequired("site")
 	_ = rulesImportCmd.MarkFlagRequired("file")
 	rulesExportCmd.Flags().StringVar(&rulesExportSite, "site", "", "Site ID")
@@ -117,8 +117,7 @@ func importSiteCustomRules(ctx context.Context, siteID, filePath string) (int, e
 	if err != nil {
 		return 0, err
 	}
-	prepared, err := config.PrepareCustomRules(parsed)
-	if err != nil {
+	if _, err := config.PrepareCustomRules(parsed); err != nil {
 		return 0, err
 	}
 	store, err := openRulesManagementStore(ctx)
@@ -137,7 +136,8 @@ func importSiteCustomRules(ctx context.Context, siteID, filePath string) (int, e
 		return 0, fmt.Errorf("site %s not found", siteID)
 	}
 	existing := storage.SiteCustomRulesToConfig(site.Advanced.CustomRules)
-	merged, err := config.MergeCustomRules(existing, prepared)
+	// Keep omitted IDs absent until merge resolves existing identities.
+	merged, err := config.MergeCustomRules(existing, parsed)
 	if err != nil {
 		return 0, err
 	}
@@ -156,7 +156,7 @@ func importSiteCustomRules(ctx context.Context, siteID, filePath string) (int, e
 	if err := notifyLoadedServiceHangup(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "imported rules but hangup notify failed: %v\n", err)
 	}
-	return len(prepared), nil
+	return len(parsed), nil
 }
 
 func exportSiteCustomRules(ctx context.Context, siteID, format string) ([]byte, error) {

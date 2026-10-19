@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // Action represents the action to take when a detection matches.
@@ -83,6 +84,9 @@ type RequestContext struct {
 	bodyCloseOnce       *sync.Once
 	bodyReservation     int64
 	bodyReservationHeld bool
+	bodyReadProgress    time.Time
+	bodyReadIdleTimeout time.Duration
+	bodyReadAbort       chan struct{}
 }
 
 // Detector is the core interface for all WAF detection modules.

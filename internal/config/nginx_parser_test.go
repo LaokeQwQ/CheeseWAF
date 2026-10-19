@@ -1,10 +1,47 @@
 package config
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestParseNginxRejectsUnsupportedServerNamesBeforeSaving(t *testing.T) {
+	for _, domain := range []string{"*", "example.test:8080", "bad_host.example", "~^www\\.example\\.test$"} {
+		for _, inline := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/inline=%v", domain, inline), func(t *testing.T) {
+				separator := "\n"
+				if inline {
+					separator = " "
+				}
+				input := fmt.Sprintf("server {%sserver_name valid.example %s;%sproxy_pass http://127.0.0.1:9000;%s}", separator, domain, separator, separator)
+				sites, err := ParseNginxServerBlock([]byte(input))
+				if err == nil || sites != nil || !strings.Contains(err.Error(), "unsupported nginx server_name") {
+					t.Fatalf("unsupported name must fail import before returning sites: sites=%v err=%v", sites, err)
+				}
+			})
+		}
+	}
+}
+
+func TestParseNginxNormalizesSupportedServerNames(t *testing.T) {
+	sites, err := ParseNginxServerBlock([]byte("server { server_name EXAMPLE.test. *.BÜCHER.example [2001:db8::1]; proxy_pass http://127.0.0.1:9000; }"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Sites = sites
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("successfully imported server names must pass site validation: %v", err)
+	}
+	want := []string{"example.test", "*.xn--bcher-kva.example", "2001:db8::1"}
+	for i, domain := range want {
+		if cfg.Sites[0].Domains[i] != domain {
+			t.Fatalf("domain %d = %q, want %q", i, cfg.Sites[0].Domains[i], domain)
+		}
+	}
+}
 
 func TestParseNginxServerBlock(t *testing.T) {
 	sites, err := ParseNginxServerBlock([]byte(`

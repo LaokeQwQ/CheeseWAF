@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -128,9 +130,23 @@ func TestWebSocketPassHostUsesPublicHost(t *testing.T) {
 }
 
 func TestWebSocketPreservesUpstreamCookieAndSubprotocol(t *testing.T) {
+	upstreamHandshake := make(chan struct {
+		cookie      string
+		subprotocol string
+		header      http.Header
+	}, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHandshake <- struct {
+			cookie      string
+			subprotocol string
+			header      http.Header
+		}{cookie: r.Header.Get("Cookie"), subprotocol: r.Header.Get("Sec-WebSocket-Protocol"), header: r.Header.Clone()}
 		w.Header().Add("Set-Cookie", "session=issued; Path=/; HttpOnly")
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		w.Header().Set("X-Upstream-Handshake", "accepted")
+		w.Header().Set("X-Origin-Hop", "origin-connection-only")
+		w.Header().Set("Keep-Alive", "timeout=5")
+		w.Header().Set("Proxy-Authenticate", "Basic realm=origin-proxy")
+		conn, err := websocket.Accept(webSocketHopResponseWriter{w}, r, &websocket.AcceptOptions{
 			Subprotocols:    []string{"chat.v2"},
 			CompressionMode: websocket.CompressionDisabled,
 		})
@@ -157,6 +173,20 @@ func TestWebSocketPreservesUpstreamCookieAndSubprotocol(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	conn, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(frontend.URL, "http"), &websocket.DialOptions{
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			// Dial owns Connection, so add client connection options immediately
+			// before writing the real HTTP upgrade request.
+			r.Header.Add("Connection", "X-Client-Hop, X-Forwarded-For")
+			return http.DefaultTransport.RoundTrip(r)
+		})},
+		HTTPHeader: http.Header{
+			"Cookie":               {"session=client"},
+			"X-Client-Application": {"retained"},
+			"X-Client-Hop":         {"client-connection-only"},
+			"Keep-Alive":           {"timeout=5"},
+			"Proxy-Connection":     {"keep-alive"},
+			"Proxy-Authorization":  {"Basic client-proxy-credentials"},
+		},
 		Subprotocols: []string{"chat.v1", "chat.v2"},
 	})
 	if err != nil {
@@ -169,11 +199,101 @@ func TestWebSocketPreservesUpstreamCookieAndSubprotocol(t *testing.T) {
 	if response == nil || response.Header.Get("Set-Cookie") != "session=issued; Path=/; HttpOnly" {
 		t.Fatalf("upgrade Set-Cookie = %v, want upstream session cookie", response)
 	}
+	if got := response.Header.Get("X-Upstream-Handshake"); got != "accepted" {
+		t.Fatalf("upgrade handshake header = %q, want upstream value", got)
+	}
+	for _, name := range []string{"X-Origin-Hop", "Keep-Alive", "Proxy-Authenticate"} {
+		if got := response.Header.Get(name); got != "" {
+			t.Errorf("upstream connection-scoped response header %s was forwarded: %q", name, got)
+		}
+	}
+	select {
+	case handshake := <-upstreamHandshake:
+		if handshake.cookie != "session=client" {
+			t.Fatalf("upstream Cookie = %q, want client session cookie", handshake.cookie)
+		}
+		if handshake.subprotocol != "chat.v1,chat.v2" {
+			t.Fatalf("upstream subprotocol offer = %q, want chat.v1,chat.v2", handshake.subprotocol)
+		}
+		for _, name := range []string{"X-Client-Hop", "Keep-Alive", "Proxy-Connection", "Proxy-Authorization"} {
+			if got := handshake.header.Get(name); got != "" {
+				t.Errorf("client connection-scoped request header %s was forwarded: %q", name, got)
+			}
+		}
+		if got := handshake.header.Get("X-Client-Application"); got != "retained" {
+			t.Errorf("upstream application request header = %q, want retained", got)
+		}
+		if got := handshake.header.Get("X-Forwarded-For"); got != "127.0.0.1" {
+			t.Errorf("rebuilt X-Forwarded-For = %q, want client peer identity", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("upstream did not observe the handshake headers")
+	}
 	if err := conn.Write(ctx, websocket.MessageText, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if typ, payload, err := conn.Read(ctx); err != nil || typ != websocket.MessageText || string(payload) != "hello" {
 		t.Fatalf("websocket echo = (%v, %q, %v), want text hello", typ, payload, err)
+	}
+}
+
+type webSocketHopResponseWriter struct{ http.ResponseWriter }
+
+func (w webSocketHopResponseWriter) WriteHeader(status int) {
+	if status == http.StatusSwitchingProtocols {
+		// Accept generates Connection before WriteHeader. Add an origin-only
+		// connection option to the actual 101 response sent over the socket.
+		w.Header().Add("Connection", "X-Origin-Hop")
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w webSocketHopResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.ResponseWriter.(http.Hijacker).Hijack()
+}
+
+func TestWebSocketOrdinaryResponseStripsHopHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Connection", "keep-alive, X-Origin-Hop")
+		w.Header().Set("X-Origin-Hop", "origin-connection-only")
+		w.Header().Set("Keep-Alive", "timeout=5")
+		w.Header().Set("Proxy-Authenticate", "Basic realm=origin-proxy")
+		w.Header().Set("X-Upstream-Response", "retained")
+		w.Header().Add("Set-Cookie", "session=issued; HttpOnly")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, "authentication required")
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "http://public.example.test/socket", nil)
+	response := httptest.NewRecorder()
+	inspected := false
+	err := proxyWebSocket(ctx, response, request, target, 1024, "", "", false, "", nil, func(upstreamResponse *http.Response) error {
+		inspected = true
+		if got := upstreamResponse.Header.Get("X-Origin-Hop"); got != "origin-connection-only" {
+			t.Errorf("inspection lost original upstream headers: %q", got)
+		}
+		return nil
+	})
+	var ordinary *webSocketOrdinaryResponse
+	if !errors.As(err, &ordinary) || ordinary.status != http.StatusUnauthorized {
+		t.Fatalf("ordinary upstream response error = %v, want unauthorized response", err)
+	}
+	if !inspected || response.Code != http.StatusUnauthorized || response.Body.String() != "authentication required" {
+		t.Fatalf("ordinary upstream response changed: inspected=%v code=%d body=%q", inspected, response.Code, response.Body.String())
+	}
+	for _, name := range []string{"Connection", "X-Origin-Hop", "Keep-Alive", "Proxy-Authenticate"} {
+		if got := response.Header().Get(name); got != "" {
+			t.Errorf("ordinary connection-scoped response header %s was forwarded: %q", name, got)
+		}
+	}
+	if got := response.Header().Get("X-Upstream-Response"); got != "retained" {
+		t.Errorf("ordinary application response header = %q, want retained", got)
+	}
+	if got := response.Header().Get("Set-Cookie"); got != "session=issued; HttpOnly" {
+		t.Errorf("ordinary Set-Cookie = %q, want issued session cookie", got)
 	}
 }
 
@@ -186,6 +306,30 @@ func TestWebSocketOriginSchemeOverridesUpstreamScheme(t *testing.T) {
 	}
 	if got.Scheme != "wss" || got.Host != "origin.example.test" || got.Path != "/base/rewritten" || got.RawQuery != "x=1" {
 		t.Fatalf("websocket upstream URL = %s, want wss://origin.example.test/base/rewritten?x=1", got)
+	}
+}
+
+func TestWebSocketPreservesSecureOriginWithoutOverride(t *testing.T) {
+	target, _ := url.Parse("https://origin.example.test/base")
+	request, _ := url.Parse("/socket?token=abc")
+	got, err := webSocketUpstreamURL(target, request, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Scheme != "wss" || got.Path != "/base/socket" || got.RawQuery != "token=abc" {
+		t.Fatalf("secure websocket upstream URL = %s, want wss://origin.example.test/base/socket?token=abc", got)
+	}
+}
+
+func TestWebSocketUpstreamURLPreservesEscapedPathAndQuery(t *testing.T) {
+	target, _ := url.Parse("http://origin.example.test/base%2Froot?origin=1")
+	request, _ := url.Parse("/socket%2Fid?token=abc&token=def")
+	got, err := webSocketUpstreamURL(target, request, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "ws://origin.example.test/base%2Froot/socket%2Fid?origin=1&token=abc&token=def" {
+		t.Fatalf("websocket upstream URL = %s, want encoded path and merged query", got)
 	}
 }
 

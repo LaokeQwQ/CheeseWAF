@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"regexp/syntax"
@@ -1117,6 +1118,17 @@ func validateCAPTCHAAssets(cfg CAPTCHAAssetsConfig) error {
 }
 
 func validateManagedSchedulerPath(target string, roots ...string) error {
+	_, err := ResolveManagedSchedulerPath(target, roots...)
+	return err
+}
+
+// ResolveManagedSchedulerPath applies the same root-relative path rules during
+// configuration validation and scheduler execution. Missing output directories
+// are allowed, but existing symlinks under a managed root are rejected.
+func ResolveManagedSchedulerPath(target string, roots ...string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("managed scheduler path is required")
+	}
 	cleanTarget := filepath.Clean(strings.TrimSpace(target))
 	if !filepath.IsAbs(cleanTarget) {
 		// Prefer a configured relative path that already resolves under one of
@@ -1181,10 +1193,11 @@ func validateManagedSchedulerPath(target string, roots ...string) error {
 	}
 	targetAbs, err := filepath.Abs(cleanTarget)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, root := range roots {
-		if strings.TrimSpace(root) == "" {
+		root = strings.TrimSpace(root)
+		if root == "" || root == "." {
 			continue
 		}
 		rootAbs, err := filepath.Abs(filepath.Clean(root))
@@ -1193,10 +1206,26 @@ func validateManagedSchedulerPath(target string, roots ...string) error {
 		}
 		rel, err := filepath.Rel(rootAbs, targetAbs)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil
+			if rel != "." {
+				if _, err := fsguard.RelUnderRoot(rootAbs, targetAbs); err != nil {
+					return "", fmt.Errorf("must be inside the configured data or log directory: %w", err)
+				}
+			}
+			for current := targetAbs; ; current = filepath.Dir(current) {
+				info, err := os.Lstat(current)
+				if err == nil && info.Mode()&os.ModeSymlink != 0 {
+					return "", fmt.Errorf("managed scheduler path contains symlink: %s", current)
+				}
+				if err != nil && !os.IsNotExist(err) {
+					return "", err
+				}
+				if current == rootAbs {
+					return targetAbs, nil
+				}
+			}
 		}
 	}
-	return fmt.Errorf("must be inside the configured data or log directory")
+	return "", fmt.Errorf("must be inside the configured data or log directory")
 }
 
 func validateDedicatedManagedPath(target, root string) error {
@@ -2168,10 +2197,13 @@ func validateThreatIntelIndicator(indicator ThreatIntelConfig) error {
 				return err
 			}
 			ones, bits := network.Mask.Size()
-			if (bits == 32 && ones < 8) || (bits == 128 && ones < 16) {
+			if bits == 128 && parsed.To4() != nil {
+				ones, bits = ones-96, 32
+			}
+			if ones < 0 || (bits == 32 && ones < 8) || (bits == 128 && ones < 16) {
 				return fmt.Errorf("CIDR prefix is too broad")
 			}
-			if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() {
+			if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
 				return fmt.Errorf("private or local CIDR is not allowed")
 			}
 			return nil
@@ -2180,7 +2212,7 @@ func validateThreatIntelIndicator(indicator ThreatIntelConfig) error {
 		if parsed == nil {
 			return fmt.Errorf("not an IP or CIDR")
 		}
-		if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() {
+		if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
 			return fmt.Errorf("private or local IP is not allowed")
 		}
 		return nil

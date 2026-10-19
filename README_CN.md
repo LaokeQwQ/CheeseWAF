@@ -273,7 +273,7 @@ fi
 sudo install -d -o root -g cheesewaf -m 01770 /etc/cheesewaf
 # 仅在运行时配置不存在时初始化一次；之后只编辑运行时副本，
 # 不要修改版本库中的 configs/cheesewaf.yaml 模板。
-if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
+if ! sudo test -e /etc/cheesewaf/cheesewaf.yaml; then
   sudo install -o cheesewaf -g cheesewaf -m 0600 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
 fi
 sudo chown cheesewaf:cheesewaf /etc/cheesewaf/cheesewaf.yaml

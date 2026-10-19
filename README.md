@@ -269,7 +269,7 @@ sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/lo
 sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 # Initialize the runtime copy only when it does not already exist; edit this
 # runtime file afterwards, never the tracked configs/cheesewaf.yaml template.
-if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
+if ! sudo test -e /etc/cheesewaf/cheesewaf.yaml; then
   sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
 fi
 sudo groupadd --system cheesewaf 2>/dev/null || true

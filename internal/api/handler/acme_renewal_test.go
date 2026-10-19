@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
 func TestValidateACMECertificateFilesRestrictsKeyAndChecksSAN(t *testing.T) {
@@ -59,7 +60,7 @@ func TestValidateACMECertificateFilesRejectsSymlink(t *testing.T) {
 
 func TestRenewACMEOnceRenewsDueSiteAndPersistsStatus(t *testing.T) {
 	h, store, site := newSiteTestHandler(t)
-	h.Config.ACME.Enabled = true
+	h.Config.ACME.Enabled = false
 	h.Config.ACME.CertDir = t.TempDir()
 	certDir := filepath.Join(h.Config.ACME.CertDir, "example.test")
 	if err := os.MkdirAll(certDir, 0o750); err != nil {
@@ -79,6 +80,20 @@ func TestRenewACMEOnceRenewsDueSiteAndPersistsStatus(t *testing.T) {
 	}
 	issuer := &renewingACMEIssuer{}
 	h.ACMEIssuer = issuer
+	if err := h.RenewACMEOnce(context.Background()); err != nil {
+		t.Fatalf("disabled renewal scan failed: %v", err)
+	}
+	if issuer.calls != 0 {
+		t.Fatal("disabled ACME must not issue certificates")
+	}
+	next, err := config.Clone(h.currentConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.ACME.Enabled = true
+	if err := h.publishConfig(next); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.RenewACMEOnce(context.Background()); err != nil {
 		t.Fatalf("renewal failed: %v", err)
 	}

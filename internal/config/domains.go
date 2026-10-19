@@ -2,15 +2,22 @@ package config
 
 import (
 	"fmt"
-	"golang.org/x/net/idna"
 	"net"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 func normalizeSiteDomain(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
-	if ip := net.ParseIP(strings.Trim(value, "[]")); ip != nil {
+	if ip := net.ParseIP(value); ip != nil {
 		return ip.String(), nil
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		if ip := net.ParseIP(value[1 : len(value)-1]); ip != nil {
+			return ip.String(), nil
+		}
+		return "", fmt.Errorf("invalid bracketed IP address")
 	}
 	prefix := ""
 	if strings.HasPrefix(value, "*.") {

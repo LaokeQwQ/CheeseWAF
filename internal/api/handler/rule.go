@@ -194,17 +194,17 @@ func (h *Handler) ImportCustomRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "RULES_IMPORT_INVALID", err.Error())
 		return
 	}
-	prepared, err := config.PrepareCustomRules(parsed)
-	if err != nil {
+	if _, err := config.PrepareCustomRules(parsed); err != nil {
 		writeError(w, http.StatusBadRequest, "RULES_IMPORT_INVALID", err.Error())
 		return
 	}
 	var mergedRules []config.CustomRuleConfig
 	if err := h.mutateSiteCustomRules(r, siteID, "", func(site *storage.Site) error {
 		existing := storage.SiteCustomRulesToConfig(site.Advanced.CustomRules)
-		merged, err := config.MergeCustomRules(existing, prepared)
+		// Keep omitted IDs absent until merge resolves existing identities.
+		merged, err := config.MergeCustomRules(existing, parsed)
 		if err != nil {
-			return err
+			return fmt.Errorf("custom rules import invalid: %w", err)
 		}
 		mergedRules = merged
 		site.Advanced.CustomRules = storage.SiteCustomRulesFromConfig(merged)
@@ -216,7 +216,7 @@ func (h *Handler) ImportCustomRules(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{
 		"site_id":      siteID,
 		"custom_rules": mergedRules,
-		"imported":     len(prepared),
+		"imported":     len(parsed),
 		"count":        len(mergedRules),
 	})
 }

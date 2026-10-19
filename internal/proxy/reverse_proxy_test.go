@@ -178,3 +178,17 @@ func TestNewReverseProxyForSiteAppliesOriginSchemeAndHostPolicy(t *testing.T) {
 		t.Fatalf("pass_host policy = scheme %q host %q", gotScheme, gotHost)
 	}
 }
+
+func TestNewReverseProxyForSitePreservesSecureOriginWithoutOverride(t *testing.T) {
+	target, _ := url.Parse("https://origin.internal:8443/base")
+	proxy := NewReverseProxyForSite(target, time.Second, "203.0.113.42", "", false, "")
+	var gotScheme string
+	proxy.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotScheme = r.URL.Scheme
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(http.NoBody), Request: r}, nil
+	})
+	proxy.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://public.example.test/path", nil))
+	if gotScheme != "https" {
+		t.Fatalf("secure origin scheme = %q, want https", gotScheme)
+	}
+}

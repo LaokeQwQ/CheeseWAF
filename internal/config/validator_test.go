@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,12 @@ func TestValidateThreatIntelIndicatorTypes(t *testing.T) {
 		{"ja3", ThreatIntelConfig{Type: "ja3", Value: "0123456789abcdef0123456789abcdef"}, true},
 		{"ja4", ThreatIntelConfig{Type: "ja4", Value: "t13d1516h2_8daaf6152771_0273b62f6f95"}, true},
 		{"wide cidr", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0/0"}, false},
+		{"mapped wide cidr", ThreatIntelConfig{Type: "ip", Value: "::ffff:0.0.0.0/96"}, false},
+		{"mapped short prefix", ThreatIntelConfig{Type: "ip", Value: "::ffff:1.2.3.4/95"}, false},
+		{"mapped public cidr", ThreatIntelConfig{Type: "ip", Value: "::ffff:8.8.8.0/120"}, true},
+		{"unspecified cidr", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0/8"}, false},
+		{"unspecified ip", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0"}, false},
+		{"unspecified ipv6", ThreatIntelConfig{Type: "ip", Value: "::"}, false},
 		{"private cidr", ThreatIntelConfig{Type: "ip", Value: "10.0.0.0/8"}, false},
 		{"private ip", ThreatIntelConfig{Type: "ip", Value: "10.0.0.1"}, false},
 		{"unknown type", ThreatIntelConfig{Type: "opaque", Value: "evil.example"}, false},
@@ -33,6 +41,60 @@ func TestValidateThreatIntelIndicatorTypes(t *testing.T) {
 				t.Fatalf("validateThreatIntelIndicator(%+v) = %v, want valid=%v", tc.item, err, tc.good)
 			}
 		})
+	}
+}
+
+func TestResolveManagedSchedulerPath(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	dataDir := filepath.Join(base, "data")
+	logDir := filepath.Join(base, "logs")
+	for _, root := range []string{dataDir, logDir} {
+		if err := os.MkdirAll(root, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		target string
+		want   string
+	}{
+		{"./reports", filepath.Join(dataDir, "reports")},
+		{"./data/reports", filepath.Join(dataDir, "reports")},
+		{"./logs/reports", filepath.Join(logDir, "reports")},
+		{"./logs", logDir},
+		{filepath.Join(dataDir, "reports"), filepath.Join(dataDir, "reports")},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			got, err := ResolveManagedSchedulerPath(tc.target, "", ".", dataDir, logDir)
+			if err != nil || got != tc.want {
+				t.Fatalf("ResolveManagedSchedulerPath(%q) = %q, %v; want %q", tc.target, got, err, tc.want)
+			}
+		})
+	}
+	outside := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		link string
+		dest string
+	}{
+		{"outside link", "escape", outside},
+		{"inside link", "alias", logDir},
+		{"dangling link", "dangling", filepath.Join(outside, "missing")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			link := filepath.Join(dataDir, tc.link)
+			if err := os.Symlink(tc.dest, link); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			if _, err := ResolveManagedSchedulerPath(filepath.Join(link, "reports"), dataDir, logDir); err == nil {
+				t.Fatal("scheduler path through a symlink must be rejected")
+			}
+		})
+	}
+	for _, target := range []string{"", "../reports", outside} {
+		if _, err := ResolveManagedSchedulerPath(target, dataDir, logDir); err == nil {
+			t.Fatalf("unsafe scheduler path %q was accepted", target)
+		}
 	}
 }
 

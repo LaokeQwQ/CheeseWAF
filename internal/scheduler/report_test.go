@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -259,6 +260,45 @@ func TestSecurityReportRebasesPackagedDataRecipientAgainstAbsoluteRoot(t *testin
 	}
 	if matches, err := filepath.Glob(filepath.Join(dataDir, "reports", "security-*.json")); err != nil || len(matches) != 1 {
 		t.Fatalf("expected report under data root, matches=%v err=%v", matches, err)
+	}
+}
+
+func TestSecurityReportUsesValidatedRelativeRecipient(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	dataDir := filepath.Join(base, "data")
+	logDir := filepath.Join(base, "logs")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(logDir, "access.log")
+	writeLogEntries(t, logPath, []storage.LogEntry{{Timestamp: time.Now().UTC(), Action: "block", Category: "sqli"}})
+	for _, tc := range []struct{ recipient, want string }{
+		{"./reports", filepath.Join(dataDir, "reports")},
+		{"./data/packaged", filepath.Join(dataDir, "packaged")},
+		{"./logs/reports", filepath.Join(logDir, "reports")},
+	} {
+		t.Run(tc.recipient, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Setup.DataDir = dataDir
+			cfg.Logging.Output.File.Path = logPath
+			cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{ID: "security", Type: "security_report", Channel: "file", Recipient: tc.recipient, Enabled: true}}
+			if err := config.Validate(&cfg); err != nil {
+				t.Fatalf("relative recipient must pass configuration validation: %v", err)
+			}
+			if err := SecurityReport(logPath, dataDir)(context.Background(), Task{
+				ID: "security", Type: "security_report", Channel: "file", Recipient: tc.recipient,
+				ManagedRoots: []string{dataDir, logDir}, Period: "daily", Format: "json",
+			}); err != nil {
+				t.Fatalf("validated relative recipient must execute: %v", err)
+			}
+			if matches, err := filepath.Glob(filepath.Join(tc.want, "security-*.json")); err != nil || len(matches) != 1 {
+				t.Fatalf("expected report in validated directory, matches=%v err=%v", matches, err)
+			}
+		})
 	}
 }
 

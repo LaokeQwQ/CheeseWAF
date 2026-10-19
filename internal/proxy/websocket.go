@@ -75,10 +75,19 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 		return err
 	}
 	header := r.Header.Clone()
+	stripWebSocketHopHeaders(header)
 	for _, name := range stripClientForwardHeaders {
 		deleteHeaderAliases(header, name)
 	}
-	header.Del("Sec-WebSocket-Extensions")
+	// websocket.Dial writes these headers from DialOptions. Remove client
+	// supplied values first so duplicate or stale handshake fields cannot be
+	// forwarded to the origin.
+	for _, name := range []string{
+		"Sec-WebSocket-Key", "Sec-WebSocket-Version",
+		"Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions", "Sec-WebSocket-Accept",
+	} {
+		deleteHeaderAliases(header, name)
+	}
 	if r.Host != "" {
 		header.Set("X-Forwarded-Host", r.Host)
 	}
@@ -111,7 +120,9 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 					return inspectErr
 				}
 			}
-			for name, values := range response.Header {
+			responseHeader := response.Header.Clone()
+			stripWebSocketHopHeaders(responseHeader)
+			for name, values := range responseHeader {
 				for _, value := range values {
 					w.Header().Add(name, value)
 				}
@@ -127,8 +138,17 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 	}
 	defer upstreamConn.CloseNow()
 	if response != nil {
-		for _, value := range response.Header.Values("Set-Cookie") {
-			w.Header().Add("Set-Cookie", value)
+		responseHeader := response.Header.Clone()
+		stripWebSocketHopHeaders(responseHeader)
+		for name, values := range responseHeader {
+			// Accept owns the protocol response fields. Preserve other origin
+			// handshake metadata, including Set-Cookie and application headers.
+			if isWebSocketHandshakeHeader(name) {
+				continue
+			}
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
 		}
 	}
 	selectedSubprotocol := upstreamConn.Subprotocol()
@@ -194,6 +214,42 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 	}
 }
 
+func stripWebSocketHopHeaders(header http.Header) {
+	hopHeaders := map[string]bool{
+		"connection": true, "proxy-connection": true, "keep-alive": true,
+		"proxy-authenticate": true, "proxy-authorization": true,
+		"te": true, "trailer": true, "transfer-encoding": true, "upgrade": true,
+	}
+	// Connection options belong to one transport leg. Remove their fields
+	// before Dial or Accept replaces Connection for the next handshake.
+	for name, values := range header {
+		if !strings.EqualFold(name, "Connection") {
+			continue
+		}
+		for _, value := range values {
+			for _, option := range strings.Split(value, ",") {
+				if option = strings.TrimSpace(option); option != "" {
+					hopHeaders[strings.ToLower(strings.ReplaceAll(option, "_", "-"))] = true
+				}
+			}
+		}
+	}
+	for name := range header {
+		if hopHeaders[strings.ToLower(strings.ReplaceAll(name, "_", "-"))] {
+			delete(header, name)
+		}
+	}
+}
+
+func isWebSocketHandshakeHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "connection", "upgrade", "sec-websocket-accept", "sec-websocket-protocol", "sec-websocket-extensions":
+		return true
+	default:
+		return false
+	}
+}
+
 func webSocketSubprotocols(header http.Header) []string {
 	var subprotocols []string
 	for _, value := range header.Values("Sec-WebSocket-Protocol") {
@@ -249,20 +305,24 @@ func joinUpstreamPath(target, request *url.URL) (path, rawPath string) {
 	if requestPath == "" {
 		requestPath = "/"
 	}
-	if strings.HasSuffix(basePath, "/") && strings.HasPrefix(requestPath, "/") {
-		path = target.Path + request.Path[1:]
-		rawPath = basePath + requestPath[1:]
-	} else if strings.HasSuffix(basePath, "/") || strings.HasPrefix(requestPath, "/") {
-		path = target.Path + request.Path
-		rawPath = basePath + requestPath
-	} else {
-		path = target.Path + "/" + request.Path
-		rawPath = basePath + "/" + requestPath
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
 	}
-	if rawPath == path {
+	if !strings.HasPrefix(requestPath, "/") {
+		requestPath = "/" + requestPath
+	}
+	joined := strings.TrimSuffix(basePath, "/") + "/" + strings.TrimPrefix(requestPath, "/")
+	if joined == "" {
+		joined = "/"
+	}
+	path, _ = url.PathUnescape(joined)
+	if path == "" {
+		path = "/"
+	}
+	if joined == path {
 		return path, ""
 	}
-	return path, rawPath
+	return path, joined
 }
 
 func joinUpstreamQuery(targetQuery, requestQuery string) string {

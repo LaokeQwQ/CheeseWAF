@@ -135,6 +135,58 @@ func TestImportSiteCustomRulesMergesExistingRules(t *testing.T) {
 	}
 }
 
+func TestImportSiteCustomRulesPreservesMissingIDMergeSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"json", `{"custom_rules":[{"name":"renamed","pattern":"probe","location":"request_uri","action":"log","enabled":true},{"name":"keep","pattern":"new-token","location":"request_uri","action":"block","enabled":true}]}`},
+		{"yaml", "custom_rules:\n  - name: renamed\n    pattern: probe\n    location: request_uri\n    action: log\n    enabled: true\n  - name: keep\n    pattern: new-token\n    location: request_uri\n    action: block\n    enabled: true\n"},
+		{"modsecurity", "SecRule REQUEST_URI \"@contains probe\" \"msg:'renamed',log\"\nSecRule REQUEST_URI \"@contains new-token\" \"msg:'keep',deny\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cfgPath, siteID := rulesTestStore(t)
+			site, err := store.GetSite(t.Context(), siteID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			site.Advanced.CustomRules = []storage.SiteCustomRule{
+				{ID: "keep", Name: "keep", Pattern: "keep-token", Location: "request_uri", Action: "block", Severity: "low", Enabled: true},
+				{ID: "stable", Name: "old", Pattern: "probe", Location: "request_uri", Action: "block", Severity: "low", Enabled: true},
+			}
+			if err := store.UpdateSite(t.Context(), site); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(t.TempDir(), "import.rules")
+			if err := os.WriteFile(file, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				count, err := importSiteCustomRules(t.Context(), siteID, file)
+				if err != nil {
+					t.Fatalf("attempt %d: %v", attempt, err)
+				}
+				if count != 2 {
+					t.Fatalf("import count = %d, want input count 2", count)
+				}
+				updated, err := store.GetSite(t.Context(), siteID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				loaded, err := config.Load(cfgPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, rules := range [][]config.CustomRuleConfig{loaded.Sites[0].WAF.CustomRules, storage.SiteCustomRulesToConfig(updated.Advanced.CustomRules)} {
+					if len(rules) != 3 || rules[0].ID != "keep" || rules[0].Pattern != "keep-token" || rules[1].ID != "stable" || rules[1].Name != "renamed" || rules[1].Action != "log" || rules[2].ID != "keep-2" || rules[2].Pattern != "new-token" {
+						t.Fatalf("missing IDs must preserve matched identities and append unrelated rules: %+v", rules)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestExportSiteCustomRulesRoundTripJSON(t *testing.T) {
 	store, _, siteID := rulesTestStore(t)
 	site, err := store.GetSite(context.Background(), siteID)

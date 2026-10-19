@@ -426,13 +426,11 @@ func runServe(ctx context.Context) error {
 			return nil
 		},
 	})
-	// ACME renewal is owned by the production serving runtime. Keeping this
-	// behind the production composition boundary leaves embedded and test
-	// routers side-effect free.
-	if production || cfg.ACME.Enabled {
-		stopACMERenewal := apiHandler.StartACMERenewal(runtimeCtx)
-		defer stopACMERenewal()
-	}
+	// The serving runtime owns renewal even if ACME is enabled later through
+	// settings. Each scan reads the live configuration and skips disabled ACME.
+	// Constructing an embedded router alone still starts no background worker.
+	stopACMERenewal := apiHandler.StartACMERenewal(runtimeCtx)
+	defer stopACMERenewal()
 	if productionDeps != nil {
 		machine := productionDeps.Consensus.Machine()
 		applier, materializerErr := NewProtectionPolicyMaterializer(apiHandler, machine, cfg.Setup.RuntimeDir)
@@ -1028,6 +1026,10 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 	// cannot lock the wizard behind the very gate it is meant to configure.
 	// No other API or UI route is included in this allowlist.
 	if isFirstInstallPath(r.URL.Path) {
+		return true
+	}
+	if cfg != nil && setup.NeedsSetup(cfg.Setup.DataDir) &&
+		(r.Method == http.MethodGet || r.Method == http.MethodHead) && isAdminStaticAssetPath(r.URL.Path) {
 		return true
 	}
 	login := config.Default().Console.Login
