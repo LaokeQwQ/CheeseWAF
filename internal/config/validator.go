@@ -303,10 +303,12 @@ func Validate(cfg *Config) error {
 		if site.WAF.Performance.MaxBodyBytes < 0 {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)
 		}
-		// Cap to avoid configuration-induced OOM (1 GiB hard ceiling).
-		const maxBodyCeiling int64 = 1 << 30
+		// Align the accepted setting with the engine's per-site in-flight body
+		// budget. Larger values could be saved successfully but overload every
+		// body that actually approaches the configured limit.
+		const maxBodyCeiling int64 = 64 << 20
 		if site.WAF.Performance.MaxBodyBytes > maxBodyCeiling {
-			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 1GiB ceiling", site.Name)
+			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 64MiB inspection ceiling", site.Name)
 		}
 		if err := validateResponseInspection(site.Name, site.WAF.Response); err != nil {
 			return err
@@ -799,6 +801,9 @@ func ValidateStorageProfile(cfg *Config) error {
 		if strings.TrimSpace(raft.DataDir) == "" || strings.TrimSpace(raft.Listen) == "" || strings.TrimSpace(raft.Mode) == "" {
 			return fmt.Errorf("%w: cluster.consensus.native_raft data_dir, listen and explicit mode are required", ErrProductionStorageUnavailable)
 		}
+		if err := validateNativeRaftVoters(raft.InitialVoters); err != nil {
+			return fmt.Errorf("%w: %v", ErrProductionStorageUnavailable, err)
+		}
 		if !cfg.Storage.Redis.Enabled || strings.TrimSpace(cfg.Storage.Redis.Address) == "" {
 			return fmt.Errorf("%w: Redis must be enabled with storage.redis.address for storage.profile=production", ErrProductionStorageUnavailable)
 		}
@@ -812,6 +817,35 @@ func ValidateStorageProfile(cfg *Config) error {
 	default:
 		return fmt.Errorf("storage.profile must be temporary or production (got %q)", cfg.Storage.Profile)
 	}
+}
+
+func validateNativeRaftVoters(voters []NativeRaftVoter) error {
+	ids := make(map[string]struct{}, len(voters))
+	addresses := make(map[string]struct{}, len(voters))
+	for _, voter := range voters {
+		if !controlplaneIdentity(strings.TrimSpace(voter.ID)) || strings.TrimSpace(voter.ID) != voter.ID {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains an invalid id")
+		}
+		host, rawPort, err := net.SplitHostPort(voter.Address)
+		port, portErr := strconv.Atoi(rawPort)
+		if err != nil || host == "" || strings.TrimSpace(voter.Address) != voter.Address || portErr != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains an invalid address")
+		}
+		for _, r := range host {
+			if unicode.IsSpace(r) || unicode.IsControl(r) || r == '/' || r == '\\' {
+				return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains an invalid address")
+			}
+		}
+		if _, exists := ids[voter.ID]; exists {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains duplicate ids")
+		}
+		if _, exists := addresses[voter.Address]; exists {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains duplicate addresses")
+		}
+		ids[voter.ID] = struct{}{}
+		addresses[voter.Address] = struct{}{}
+	}
+	return nil
 }
 
 func controlplaneIdentity(value string) bool {
@@ -1626,9 +1660,9 @@ func ValidateCustomRule(rule CustomRuleConfig) error {
 		return fmt.Errorf("pattern compiled program exceeds %d instructions", maxCustomRuleProgramInsts)
 	}
 	switch strings.ToLower(strings.TrimSpace(rule.Location)) {
-	case "uri", "query", "header", "body", "cookie":
+	case "uri", "request_uri", "query", "args", "header", "body", "cookie":
 	default:
-		return fmt.Errorf("location must be uri, query, header, body, or cookie")
+		return fmt.Errorf("location must be uri, request_uri, query, args, header, body, or cookie")
 	}
 	switch strings.ToLower(strings.TrimSpace(rule.Action)) {
 	case "block", "log", "challenge":

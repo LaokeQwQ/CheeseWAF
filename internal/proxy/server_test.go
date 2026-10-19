@@ -1967,6 +1967,40 @@ func TestServerPhase2Protections(t *testing.T) {
 	}
 }
 
+func TestServerDoesNotBlockHarmlessResponseWhenInspectionIsIncomplete(t *testing.T) {
+	const body = "harmless response larger than the inspection limit"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Sites[0].WAF.Mode = "block"
+	cfg.Sites[0].WAF.Response.Enabled = true
+	cfg.Sites[0].WAF.Response.MaxBodyBytes = 8
+	cfg.Sites[0].WAF.Response.SensitivePatterns = []string{"known-secret"}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != body {
+		t.Fatalf("incomplete inspection blocked or truncated harmless response: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if len(sink.entries) != 1 || sink.entries[0].DetectorID != "response.inspector" || sink.entries[0].Action != "log" {
+		t.Fatalf("incomplete inspection should be logged without blocking: %+v", sink.entries)
+	}
+}
+
 func TestServerBlocksTamperedUpstreamResponseInline(t *testing.T) {
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

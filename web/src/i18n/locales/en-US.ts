@@ -2257,6 +2257,7 @@ const enUS = {
     advancedHint: 'The admin listener and access strategy keep their defaults ({{listen}} · {{strategy}}) and are not part of the first-run wizard. Change them under System Settings after install.',
     adminListen: 'Admin listener',
     adminStrategy: 'Admin access strategy',
+    strategyPublicTLS: 'Public / managed TLS policy',
     strategyLocal: 'Local / existing TLS policy',
     notAvailable: 'Unavailable',
     createFirstSite: 'Create your first site',

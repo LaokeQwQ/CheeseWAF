@@ -177,3 +177,56 @@ func TestCustomRuleFilenameSanitizesHeaderAndPathSyntax(t *testing.T) {
 		t.Fatalf("unsafe custom rule filename: %q", got)
 	}
 }
+
+func TestParseModSecurityPreservesBlockingActionAndStrictStringEquals(t *testing.T) {
+	rules, err := ParseCustomRules([]byte(`SecRule REQUEST_URI "@streq /admin" "id:one,log,deny"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Action != "block" || rules[0].Location != "request_uri" {
+		t.Fatalf("unexpected imported rule: %+v", rules)
+	}
+	if rules[0].Pattern != `\A/admin\z` {
+		t.Fatalf("streq pattern = %q, want anchored literal", rules[0].Pattern)
+	}
+}
+
+func TestParseModSecurityARGSUsesCombinedArgumentLocation(t *testing.T) {
+	rules, err := ParseCustomRules([]byte(`SecRule ARGS "@contains probe" "id:args,deny"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Location != "args" {
+		t.Fatalf("ARGS must preserve query and form argument semantics, got %+v", rules)
+	}
+	if err := ValidateCustomRule(rules[0]); err != nil {
+		t.Fatalf("imported ARGS rule should pass configuration validation: %v", err)
+	}
+}
+
+func TestParseModSecurityRejectsFieldSelectors(t *testing.T) {
+	for _, variable := range []string{"ARGS:name", "REQUEST_HEADERS:Host", "REQUEST_COOKIES:session"} {
+		_, err := ParseCustomRules([]byte(fmt.Sprintf(`SecRule %s "@contains probe" "id:test,deny"`, variable)))
+		if err == nil || !strings.Contains(err.Error(), "unsupported variable") {
+			t.Fatalf("%s should be rejected, got %v", variable, err)
+		}
+	}
+}
+
+func TestMergeCustomRulesRefreshesReplacementIndexes(t *testing.T) {
+	existing := []CustomRuleConfig{
+		{ID: "first", Name: "first", Pattern: "one", Location: "uri", Action: "block", Enabled: true},
+		{ID: "second", Name: "second", Pattern: "two", Location: "uri", Action: "block", Enabled: true},
+	}
+	imported := []CustomRuleConfig{
+		{ID: "first", Name: "renamed", Pattern: "three", Location: "body", Action: "block", Enabled: true},
+		{ID: "new", Name: "new", Pattern: "one", Location: "uri", Action: "log", Enabled: true},
+	}
+	merged, err := MergeCustomRules(existing, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 3 || merged[0].Pattern != "three" || merged[2].ID != "new" {
+		t.Fatalf("replacement index was stale: %+v", merged)
+	}
+}

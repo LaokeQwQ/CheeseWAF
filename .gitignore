@@ -126,6 +126,8 @@ cheesewaf-*-deploy.tar.gz
 !docs/open-corpus-catalog.md
 !docs/architecture/
 !docs/architecture/**/*.md
+# Internal handoff notes are local coordination artifacts, not public docs.
+docs/**/*handoff*.md
 !docs/acceptance-matrix.md
 *.private.md
 *.local.md

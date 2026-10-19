@@ -85,11 +85,12 @@ func parseModSecurityRules(data []byte) ([]CustomRuleConfig, error) {
 			return nil, fmt.Errorf("modsecurity line %d: unsupported operator %q", lineNo+1, operator)
 		}
 		if operator == "streq" {
-			pattern = regexp.QuoteMeta(pattern)
+			pattern = `\A` + regexp.QuoteMeta(pattern) + `\z`
 		} else if operator == "contains" {
 			pattern = regexp.QuoteMeta(pattern)
 		}
 		rule := CustomRuleConfig{Pattern: pattern, Location: location, Action: "block", Severity: "medium", Enabled: true}
+		blockAction, logAction := false, false
 		for _, action := range strings.Split(actionText, ",") {
 			parts := strings.SplitN(strings.TrimSpace(action), ":", 2)
 			name := strings.ToLower(strings.TrimSpace(parts[0]))
@@ -105,9 +106,9 @@ func parseModSecurityRules(data []byte) ([]CustomRuleConfig, error) {
 			case "severity":
 				rule.Severity = modSecuritySeverity(value)
 			case "deny", "drop", "block":
-				rule.Action = "block"
+				blockAction = true
 			case "log":
-				rule.Action = "log"
+				logAction = true
 			case "pass", "allow":
 				return nil, fmt.Errorf("modsecurity line %d: pass/allow actions are unsupported for WAF custom rules", lineNo+1)
 			case "phase", "status", "tag", "capture", "nolog":
@@ -117,6 +118,11 @@ func parseModSecurityRules(data []byte) ([]CustomRuleConfig, error) {
 			default:
 				return nil, fmt.Errorf("modsecurity line %d: unsupported action %q", lineNo+1, name)
 			}
+		}
+		if blockAction {
+			rule.Action = "block"
+		} else if logAction {
+			rule.Action = "log"
 		}
 		if rule.Name == "" {
 			rule.Name = rule.ID
@@ -136,15 +142,21 @@ func modSecurityLocation(variable string) (string, bool) {
 	variable = strings.ToUpper(strings.TrimSpace(variable))
 	switch {
 	case variable == "REQUEST_URI" || variable == "REQUEST_URL":
-		return "uri", true
-	case variable == "ARGS" || variable == "ARGS_NAMES" || strings.HasPrefix(variable, "ARGS:"):
-		return "query", true
+		return "request_uri", true
+	case variable == "ARGS":
+		return "args", true
+	case variable == "ARGS_NAMES" || strings.HasPrefix(variable, "ARGS:"):
+		return "", false
 	case variable == "REQUEST_BODY":
 		return "body", true
-	case variable == "REQUEST_COOKIES" || strings.HasPrefix(variable, "REQUEST_COOKIES:"):
+	case variable == "REQUEST_COOKIES":
 		return "cookie", true
-	case variable == "REQUEST_HEADERS" || strings.HasPrefix(variable, "REQUEST_HEADERS:"):
+	case strings.HasPrefix(variable, "REQUEST_COOKIES:"):
+		return "", false
+	case variable == "REQUEST_HEADERS":
 		return "header", true
+	case strings.HasPrefix(variable, "REQUEST_HEADERS:"):
+		return "", false
 	default:
 		return "", false
 	}
@@ -191,7 +203,19 @@ func MergeCustomRules(existing, imported []CustomRuleConfig) ([]CustomRuleConfig
 			idx, ok = byMatch[rule.Location+"\n"+rule.Pattern]
 		}
 		if ok {
+			old := merged[idx]
+			if old.ID != "" && byID[old.ID] == idx {
+				delete(byID, old.ID)
+			}
+			oldMatch := old.Location + "\n" + old.Pattern
+			if byMatch[oldMatch] == idx {
+				delete(byMatch, oldMatch)
+			}
 			merged[idx] = rule
+			if rule.ID != "" {
+				byID[rule.ID] = idx
+			}
+			byMatch[rule.Location+"\n"+rule.Pattern] = idx
 			continue
 		}
 		byID[rule.ID] = len(merged)

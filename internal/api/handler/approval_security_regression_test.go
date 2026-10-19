@@ -41,6 +41,16 @@ func TestApprovalLocalityCannotBeProvedByLoopbackPeer(t *testing.T) {
 	}
 }
 
+func TestApprovalLocalityRejectsForwardedLoopbackProxy(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/api/approvals/x/confirmation", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	r = r.WithContext(WithLocalApprovalTransport(r.Context()))
+	r.Header.Set("X-Forwarded-For", "198.51.100.10")
+	if approvalHTTPRequestIsLocal(r) {
+		t.Fatal("forwarded request from loopback reverse proxy was accepted as local control transport")
+	}
+}
+
 func TestApprovalHTTPThirdClickReusesBoundCredentialProof(t *testing.T) {
 	f := newApprovalHTTPFixture(t, true)
 	calls := 0
@@ -69,11 +79,15 @@ func TestApprovalHTTPThirdClickReusesBoundCredentialProof(t *testing.T) {
 func TestApprovalHTTPSelfApprovalRejected(t *testing.T) {
 	f := newApprovalHTTPFixture(t, true)
 	record := submitApprovalHTTP(t, f, "self-approval")
-	r := approvalHTTPRequest(http.MethodPost, "/api/approvals/"+record.ID+"/confirmation/start", `{}`, "requester", "session-requester", "admin", "127.0.0.1:1234")
-	w := httptest.NewRecorder()
-	f.handler.StartApprovalConfirmation(w, withApprovalRouteID(r, record.ID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("self approval status=%d body=%s", w.Code, w.Body.String())
+	for _, session := range []string{"session-requester", "requester-new-session"} {
+		t.Run(session, func(t *testing.T) {
+			r := approvalHTTPRequest(http.MethodPost, "/api/approvals/"+record.ID+"/confirmation/start", `{}`, "requester", session, "admin", "127.0.0.1:1234")
+			w := httptest.NewRecorder()
+			f.handler.StartApprovalConfirmation(w, withApprovalRouteID(r, record.ID))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("self approval status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

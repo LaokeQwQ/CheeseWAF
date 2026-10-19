@@ -13,7 +13,22 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
-const monitorDiskUsageCacheTTL = 10 * time.Second
+const (
+	monitorDiskUsageCacheTTL = 10 * time.Second
+	// Prometheus scrapes must remain bounded even when a remote log sink is
+	// slow. The snapshot helper still returns the best available data when the
+	// deadline expires.
+	monitorCollectionTimeout = 2 * time.Second
+)
+
+var prometheusMetricCategories = map[string]struct{}{
+	"apisec": {}, "bot": {}, "custom_rule": {}, "detection_budget": {},
+	"ip_access": {}, "lfi": {}, "log4shell": {}, "nosqli": {},
+	"proxy_error": {}, "ratelimit": {}, "rce": {}, "request_too_large": {},
+	"response": {}, "shellshock": {}, "sqli": {}, "ssrf": {}, "ssti": {},
+	"tamper": {}, "threat_intel": {}, "waiting_room": {}, "webshell": {},
+	"xss": {}, "xxe": {},
+}
 
 type logCounter interface {
 	Count(context.Context, storage.LogFilter) (int64, bool, error)
@@ -28,9 +43,37 @@ type validateRequestPayload struct {
 }
 
 func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
-	snapshot := monitor.Collect(h.StartedAt, len(h.currentConfig().Sites), nil, nil)
+	ctx, cancel := context.WithTimeout(r.Context(), monitorCollectionTimeout)
+	defer cancel()
+	snapshot := h.monitorSnapshotFromContext(ctx)
+	boundPrometheusDimensions(&snapshot)
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write(monitor.RenderPrometheus(snapshot))
+}
+
+func boundPrometheusDimensions(snapshot *monitor.Snapshot) {
+	if snapshot == nil {
+		return
+	}
+	if snapshot.StatusCodes != nil {
+		for code := range snapshot.StatusCodes {
+			if code < 100 || code > 599 {
+				delete(snapshot.StatusCodes, code)
+			}
+		}
+	}
+	if len(snapshot.Categories) == 0 {
+		return
+	}
+	bounded := make(map[string]int, len(prometheusMetricCategories)+1)
+	for category, count := range snapshot.Categories {
+		if _, known := prometheusMetricCategories[category]; known {
+			bounded[category] += count
+			continue
+		}
+		bounded["other"] += count
+	}
+	snapshot.Categories = bounded
 }
 
 func (h *Handler) MonitorSummary(w http.ResponseWriter, r *http.Request) {

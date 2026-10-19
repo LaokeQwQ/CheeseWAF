@@ -3,7 +3,10 @@ package rules
 import (
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -27,6 +30,8 @@ func (v *requestViews) match(rule Rule, reqCtx *engine.RequestContext) string {
 	}
 	r := reqCtx.Request
 	switch rule.Location {
+	case "request_uri":
+		return r.URL.RequestURI()
 	case "query":
 		return r.URL.RawQuery
 	case "body":
@@ -88,8 +93,14 @@ func (v *requestViews) variants(rule Rule, reqCtx *engine.RequestContext) []stri
 	if cached, ok := v.decoded[cacheKey]; ok {
 		return cached
 	}
-	raw := v.match(rule, reqCtx)
-	out := []string{raw}
+	rawValues := []string{v.match(rule, reqCtx)}
+	if rule.Location == "args" {
+		rawValues = v.argumentValues(reqCtx)
+	}
+	out := make([]string, 0, len(rawValues)*2)
+	for _, raw := range rawValues {
+		out = append(out, raw)
+	}
 	defer func() {
 		if v.decoded == nil {
 			v.decoded = make(map[string][]string)
@@ -99,10 +110,16 @@ func (v *requestViews) variants(rule Rule, reqCtx *engine.RequestContext) []stri
 	if rule.Location == "method" {
 		return out
 	}
-	decoded := decoder.DecodeWithDepthPreserveControls(raw, decoder.MaxDecodeDepth).Text
-	if decoded != raw {
-		out = append(out, decoded)
+	for _, raw := range rawValues {
+		decoded := decoder.DecodeWithDepthPreserveControls(raw, decoder.MaxDecodeDepth).Text
+		if decoded != raw {
+			out = append(out, decoded)
+		}
 	}
+	if rule.Location == "args" {
+		return out
+	}
+	raw := rawValues[0]
 	if rule.Location == "body" && reqCtx != nil && reqCtx.Request != nil && strings.Contains(strings.ToLower(reqCtx.Request.Header.Get("Content-Type")), "json") {
 		// JSON string escapes need their own application view. Decoder recursion is
 		// capped by encoding/json; iterative tokenization avoids constructing a tree.
@@ -133,6 +150,44 @@ func (v *requestViews) variants(rule Rule, reqCtx *engine.RequestContext) []stri
 		}
 	}
 	return out
+}
+
+// argumentValues mirrors ModSecurity ARGS: each query or URL-encoded form
+// argument value is inspected independently; argument names are not included.
+func (v *requestViews) argumentValues(reqCtx *engine.RequestContext) []string {
+	if reqCtx == nil || reqCtx.Request == nil {
+		return nil
+	}
+	r := reqCtx.Request
+	values := make([]string, 0)
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		v.err = ruleInputIncompleteError{}
+	}
+	queryKeys := make([]string, 0, len(query))
+	for key := range query {
+		queryKeys = append(queryKeys, key)
+	}
+	sort.Strings(queryKeys)
+	for _, key := range queryKeys {
+		values = append(values, query[key]...)
+	}
+	mediaType, _, mediaTypeErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaTypeErr == nil && strings.EqualFold(mediaType, "application/x-www-form-urlencoded") {
+		form, err := url.ParseQuery(string(reqCtx.DecodedBody))
+		if err != nil {
+			v.err = ruleInputIncompleteError{}
+		}
+		formKeys := make([]string, 0, len(form))
+		for key := range form {
+			formKeys = append(formKeys, key)
+		}
+		sort.Strings(formKeys)
+		for _, key := range formKeys {
+			values = append(values, form[key]...)
+		}
+	}
+	return values
 }
 
 type ruleInputIncompleteError struct{}

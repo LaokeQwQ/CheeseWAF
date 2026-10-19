@@ -245,12 +245,17 @@ func (w *acmeRenewalWorker) renew(ctx context.Context, site *storage.Site, domai
 	current.Advanced.Certificate.ACME.LastIssuedAt = result.IssuedAt
 	current.Advanced.Certificate.ACME.ExpiresAt = result.RenewAfter
 	if err := w.handler.Store.UpdateSite(ctx, current); err != nil {
-		return restore(err)
+		recoveryErr := w.handler.recoverACMEDeployment(newACMERequest(ctx), previous, snapshot, false)
+		if recoveryErr != nil {
+			return fmt.Errorf("ACME_ROLLBACK_FAILED: site storage failed: %v; rollback failed: %v", err, recoveryErr)
+		}
+		return err
 	}
 	if err := w.handler.syncSites(newACMERequest(ctx)); err != nil {
-		_ = w.handler.Store.UpdateSite(ctx, previous)
-		_ = snapshot.restore()
-		_ = w.handler.syncSites(newACMERequest(ctx))
+		recoveryErr := w.handler.recoverACMEDeployment(newACMERequest(ctx), previous, snapshot, true)
+		if recoveryErr != nil {
+			return fmt.Errorf("ACME_ROLLBACK_FAILED: site reload failed: %v; rollback failed: %v", err, recoveryErr)
+		}
 		return err
 	}
 	w.handler.notifyACMEIssue(newACMERequest(ctx), current, result, nil)

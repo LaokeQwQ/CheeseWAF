@@ -2257,6 +2257,7 @@ const zhCN = {
     advancedHint: '管理端监听地址与访问策略使用默认值（{{listen}} · {{strategy}}），不在首次初始化向导中配置。安装完成后可到「系统设置」修改。',
     adminListen: '管理端监听',
     adminStrategy: '管理端访问策略',
+    strategyPublicTLS: '公网 / 托管 TLS 策略',
     strategyLocal: '本地 / 保留现有 TLS 策略',
     notAvailable: '暂无',
     createFirstSite: '创建第一个站点',

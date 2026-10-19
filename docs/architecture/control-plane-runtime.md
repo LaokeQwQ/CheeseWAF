@@ -12,6 +12,11 @@
 - 明确的 `bootstrap` 或 `join` 模式；
 - native-raft 数据目录。
 
+fresh TLS `join` 还需要至少一个可信 seed voter。独立进程通过重复的
+`--initial-voter node-id=host:port` 指定，地址必须是 native-raft peer 地址。已有
+Raft membership 的数据目录重启时可不再提供该参数；新节点不提供 seed voter 会在
+Raft 状态检查后 fail-closed，不会自行 bootstrap。
+
 启动顺序固定为：PG 迁移和健康检查、读取 durable snapshot、Raft 迁移和健康检查、比较两份 snapshot、建立 fencing、再次确认 leader/epoch 没有变化，最后才进入 ready。任何一步失败都会冻结写入，并保留 last-known-good。DSN、密码和后端原始错误不会写入状态响应。
 
 双方都为空时必须走受保护的 `InitialStateRequest`，携带管理员确认对象；没有确认
@@ -49,7 +54,8 @@ cheesewaf-control --help
 cheesewaf-control --profile production --cluster-id cluster-a \
   --data-dir /var/lib/cheesewaf/control \
   --listen 127.0.0.1:9450 --raft-listen 127.0.0.1:9451 \
-  --mode join --postgres-dsn '<由受保护服务配置提供>'
+  --mode join --initial-voter node-a=10.0.0.10:9451 \
+  --postgres-dsn '<由受保护服务配置提供>'
 ```
 
 生产环境不要把 DSN 写入 shell 历史或公开日志。建议由 systemd credential、受保护环境文件或外部密钥管理器提供。

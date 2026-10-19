@@ -84,6 +84,49 @@ func TestValidateProductionStorageRequiresRedisInstanceID(t *testing.T) {
 	}
 }
 
+func TestValidateProductionStorageValidatesNativeRaftInitialVoters(t *testing.T) {
+	newProductionConfig := func() Config {
+		cfg := Default()
+		cfg.Storage.Profile = StorageProfileProduction
+		cfg.Storage.ManagementPostgreSQL.DSN = "postgres://management.example.invalid/management"
+		cfg.Storage.ControlPostgreSQL.DSN = "postgres://control.example.invalid/control"
+		cfg.Cluster.ClusterID = "cluster-a"
+		cfg.Cluster.Consensus.NativeRaft.Mode = "join"
+		cfg.Storage.Redis.Enabled = true
+		cfg.Storage.Redis.Address = "127.0.0.1:6379"
+		cfg.Storage.Redis.InstanceID = "redis-a"
+		return cfg
+	}
+
+	cfg := newProductionConfig()
+	cfg.Cluster.Consensus.NativeRaft.InitialVoters = []NativeRaftVoter{{ID: "node-a", Address: "raft-a.example:9451"}}
+	if err := ValidateStorageProfile(&cfg); err != nil {
+		t.Fatalf("valid initial voter rejected: %v", err)
+	}
+
+	for _, voter := range []NativeRaftVoter{
+		{ID: "node-a", Address: ""},
+		{ID: " node-a", Address: "raft-a.example:9451"},
+		{ID: "node-a", Address: "raft-a.example:0"},
+		{ID: "node-a", Address: "raft a.example:9451"},
+	} {
+		invalid := newProductionConfig()
+		invalid.Cluster.Consensus.NativeRaft.InitialVoters = []NativeRaftVoter{voter}
+		if err := ValidateStorageProfile(&invalid); !errors.Is(err, ErrProductionStorageUnavailable) {
+			t.Fatalf("invalid voter %+v error=%v, want production-unavailable rejection", voter, err)
+		}
+	}
+
+	duplicate := newProductionConfig()
+	duplicate.Cluster.Consensus.NativeRaft.InitialVoters = []NativeRaftVoter{
+		{ID: "node-a", Address: "raft-a.example:9451"},
+		{ID: "node-a", Address: "raft-b.example:9451"},
+	}
+	if err := ValidateStorageProfile(&duplicate); !errors.Is(err, ErrProductionStorageUnavailable) {
+		t.Fatalf("duplicate voter id error=%v, want production-unavailable rejection", err)
+	}
+}
+
 func TestValidateProductionStorageRejectsDirtyRedisInstanceID(t *testing.T) {
 	for _, instanceID := range []string{"node a", " node-a", "node-a ", "node-\u200b"} {
 		cfg := Default()

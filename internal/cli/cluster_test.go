@@ -529,9 +529,6 @@ func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
 	if err := os.WriteFile(cfg.Cluster.Interconnect.CAFile, []byte("old-ca"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg.Cluster.Interconnect.CertFile, []byte("old-cert"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	enrollmentCSR, enrollmentKey := testNodeCSRForCLIRotateWithKey(t, "waf-b")
 	enrollmentKeyDER, err := x509.MarshalECPrivateKey(enrollmentKey)
 	if err != nil {
@@ -549,12 +546,16 @@ func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
 		NodeID:        "waf-b",
 		Role:          "waf",
 		ClusterID:     "cw-test",
 		AdvertiseAddr: "127.0.0.1:9444",
-	}, enrollmentCSR); err != nil {
+	}, enrollmentCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Cluster.Interconnect.CertFile, enrollment.Bundle.CertPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1,6 +1,9 @@
 package engine
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestSemanticSiteAdmissionLeavesQueueCapacityForOtherSites(t *testing.T) {
 	tokens := make([]siteAdmissionToken, 0, maxSemanticJobsPerSite)
@@ -24,4 +27,27 @@ func TestSemanticSiteAdmissionLeavesQueueCapacityForOtherSites(t *testing.T) {
 		t.Fatal("quiet site lost semantic queue capacity to noisy site")
 	}
 	quiet.release()
+}
+
+func TestCanceledSemanticSubmissionReleasesSitePermitForRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	jobs := make(chan semanticJob)
+	for i := 0; i < maxSemanticJobsPerSite; i++ {
+		token, admitted := semanticSiteAdmissions.acquire("cancel-retry-site")
+		if !admitted {
+			t.Fatalf("site permit leaked before canceled submission %d", i)
+		}
+		submitted, overloaded := enqueueSemanticJob(ctx, jobs, semanticJob{admission: token})
+		if submitted || overloaded {
+			t.Fatalf("canceled submission result submitted=%v overloaded=%v", submitted, overloaded)
+		}
+	}
+	for range maxSemanticJobsPerSite {
+		token, admitted := semanticSiteAdmissions.acquire("cancel-retry-site")
+		if !admitted {
+			t.Fatal("canceled submissions leaked semantic site permits")
+		}
+		token.release()
+	}
 }

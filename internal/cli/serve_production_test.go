@@ -130,6 +130,7 @@ func TestProductionStartupOptionsFromConfigCarriesNativeRaftTLS(t *testing.T) {
 	cfg.Cluster.Consensus.NativeRaft.DataDir = filepath.Join(t.TempDir(), "raft")
 	cfg.Cluster.Consensus.NativeRaft.Listen = "127.0.0.1:9451"
 	cfg.Cluster.Consensus.NativeRaft.Mode = "bootstrap"
+	cfg.Cluster.Consensus.NativeRaft.InitialVoters = []config.NativeRaftVoter{{ID: "seed-a", Address: "raft-a.example:9451"}}
 	cfg.Cluster.Interconnect.CAFile = "/run/cheesewaf/cluster/ca.pem"
 	cfg.Cluster.Interconnect.CertFile = "/run/cheesewaf/cluster/node.crt"
 	cfg.Cluster.Interconnect.KeyFile = "/run/cheesewaf/cluster/node.key"
@@ -146,6 +147,9 @@ func TestProductionStartupOptionsFromConfigCarriesNativeRaftTLS(t *testing.T) {
 		opts.NativeRaft.TLS.CertFile != cfg.Cluster.Interconnect.CertFile ||
 		opts.NativeRaft.TLS.KeyFile != cfg.Cluster.Interconnect.KeyFile {
 		t.Fatalf("native-raft TLS=%+v, want interconnect material", opts.NativeRaft.TLS)
+	}
+	if !reflect.DeepEqual(opts.NativeRaft.InitialVoters, []nativeraft.Member{{ID: "seed-a", Address: "raft-a.example:9451"}}) {
+		t.Fatalf("native-raft initial voters=%+v, want config seed voter", opts.NativeRaft.InitialVoters)
 	}
 }
 

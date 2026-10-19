@@ -241,6 +241,9 @@ func TestApplySetupProfile(t *testing.T) {
 }
 
 func TestResolveSetupPathsFollowsDataDir(t *testing.T) {
+	originalExplicit := configExplicit
+	configExplicit = false
+	defer func() { configExplicit = originalExplicit }()
 	cmd := &cobra.Command{Use: "setup"}
 	cmd.Flags().StringVar(&configPath, "config", "./data/config/cheesewaf.yaml", "")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "./data", "")
@@ -266,6 +269,20 @@ func TestResolveSetupPathsFollowsDataDir(t *testing.T) {
 	}
 	if _, file = resolveSetupPaths(cmd); file != "/etc/cheesewaf.yaml" {
 		t.Fatalf("explicit --config must win, got %q", file)
+	}
+}
+
+func TestResolveSetupPathsUsesEnvironmentConfig(t *testing.T) {
+	originalConfig, originalData, originalExplicit := configPath, dataDir, configExplicit
+	t.Cleanup(func() { configPath, dataDir, configExplicit = originalConfig, originalData, originalExplicit })
+	configPath = "/etc/cheesewaf/from-env.yaml"
+	dataDir = "/srv/cheesewaf"
+	configExplicit = true
+	cmd := &cobra.Command{Use: "setup"}
+	cmd.Flags().String("config", configPath, "")
+	cmd.Flags().String("data-dir", dataDir, "")
+	if _, got := resolveSetupPaths(cmd); got != configPath {
+		t.Fatalf("environment config path = %q, want %q", got, configPath)
 	}
 }
 

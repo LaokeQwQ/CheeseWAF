@@ -10,6 +10,11 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 prompt_read() {
   if [[ -r /dev/tty ]]; then read -r "$@" </dev/tty; else read -r "$@"; fi
 }
+has_interactive_terminal() {
+  [[ -t 0 ]] && return 0
+  [[ -r /dev/tty && -w /dev/tty ]] || return 1
+  { : </dev/tty; } 2>/dev/null
+}
 [[ "$(uname -s)" == "Linux" ]] || die "this installer supports Linux only"
 [[ "$(id -u)" -eq 0 ]] || die "run as root: curl ... | sudo bash"
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid CHEESEWAF_REPO"
@@ -17,7 +22,7 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 
-if [[ -z "$lang" && ( -t 0 || -r /dev/tty ) ]]; then
+if [[ -z "$lang" ]] && has_interactive_terminal; then
   printf 'Language / 语言 [1=English, 2=简体中文] (1): '
   prompt_read choice
   [[ "$choice" == "2" ]] && lang="zh-CN" || lang="en"

@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,7 +98,20 @@ func runClusterCertRotate(cmd *cobra.Command, opts clusterCertRotateOptions) err
 	if err != nil {
 		return fmt.Errorf("read current cluster private key: %w", err)
 	}
-	possessionProof, err := clusterCertificateRotationProof(cfg.Cluster.NodeID, localIdentity.CSRPEM, currentKeyPEM)
+	currentCertPEM, err := os.ReadFile(filepath.Clean(cfg.Cluster.Interconnect.CertFile))
+	if err != nil {
+		return fmt.Errorf("read current cluster certificate: %w", err)
+	}
+	certBlock, _ := pem.Decode(currentCertPEM)
+	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
+		return fmt.Errorf("parse current cluster certificate: certificate PEM is invalid")
+	}
+	currentCert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil || currentCert.SerialNumber == nil {
+		return fmt.Errorf("parse current cluster certificate: certificate serial is unavailable")
+	}
+	currentSerial := currentCert.SerialNumber.String()
+	possessionProof, err := clusterCertificateRotationProof(cfg.Cluster.NodeID, currentSerial, localIdentity.CSRPEM, currentKeyPEM)
 	if err != nil {
 		return err
 	}
@@ -256,12 +271,12 @@ func requestClusterCertRotate(client *http.Client, controllerURL string, apiToke
 	return result, nil
 }
 
-func clusterCertificateRotationProof(nodeID string, csrPEM, keyPEM []byte) (string, error) {
+func clusterCertificateRotationProof(nodeID, currentSerial string, csrPEM, keyPEM []byte) (string, error) {
 	key, err := parseClusterECPrivateKeyPEM(keyPEM)
 	if err != nil {
 		return "", fmt.Errorf("load current cluster private key for rotation proof: %w", err)
 	}
-	digest := sha256.Sum256(identity.NodeRotationProofMessage(nodeID, csrPEM))
+	digest := sha256.Sum256(identity.NodeRotationProofMessage(nodeID, currentSerial, csrPEM))
 	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
 	if err != nil {
 		return "", fmt.Errorf("sign cluster certificate rotation proof: %w", err)

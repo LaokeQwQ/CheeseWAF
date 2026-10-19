@@ -188,9 +188,19 @@ type ConsensusConfig struct {
 // used by the production serve startup unit. The mode is intentionally not
 // inferred: bootstrap and join have different safety properties.
 type NativeRaftConfig struct {
-	DataDir string `yaml:"data_dir" json:"data_dir"`
-	Listen  string `yaml:"listen" json:"listen"`
-	Mode    string `yaml:"mode" json:"mode"`
+	DataDir       string            `yaml:"data_dir" json:"data_dir"`
+	Listen        string            `yaml:"listen" json:"listen"`
+	Mode          string            `yaml:"mode" json:"mode"`
+	InitialVoters []NativeRaftVoter `yaml:"initial_voters" json:"initial_voters"`
+}
+
+// NativeRaftVoter identifies a trusted seed voter for a fresh TLS join. The
+// address is the native-raft peer address, not the WAF interconnect address.
+// It is intentionally explicit so an operator cannot accidentally widen the
+// trust boundary by deriving voters from an unrelated node inventory.
+type NativeRaftVoter struct {
+	ID      string `yaml:"id" json:"id"`
+	Address string `yaml:"address" json:"address"`
 }
 
 type JoinConfig struct {

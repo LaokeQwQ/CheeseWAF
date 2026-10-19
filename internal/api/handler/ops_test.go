@@ -103,6 +103,32 @@ func TestUpdateTasksAcceptsDayDurationFromListResponse(t *testing.T) {
 	}
 }
 
+func TestUpdateTasksPreservesOmittedReportRecipientButAllowsExplicitClear(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{
+		ID: "security-report", Name: "Security report", Type: "security_report",
+		Frequency: "daily", At: "09:30", Channel: "webhook",
+		Recipient: "https://hooks.example.test/report", Enabled: true,
+	}}
+	handler := New(Options{Config: &cfg})
+	update := func(body string) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		handler.UpdateTasks(recorder, httptest.NewRequest(http.MethodPut, "/api/scheduler/tasks", strings.NewReader(body)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("update tasks failed, code=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	update(`[{"id":"security-report","name":"Security report","type":"security_report","frequency":"daily","at":"09:30","channel":"webhook","enabled":true}]`)
+	if got := cfg.Scheduler.Tasks[0].Recipient; got != "https://hooks.example.test/report" {
+		t.Fatalf("omitted report recipient = %q, want preserved destination", got)
+	}
+	update(`[{"id":"security-report","name":"Security report","type":"security_report","frequency":"daily","at":"09:30","channel":"file","recipient":"","enabled":true}]`)
+	if got := cfg.Scheduler.Tasks[0].Recipient; got != "./data/reports" {
+		t.Fatalf("explicitly cleared report recipient should normalize to local default, got %q", got)
+	}
+}
+
 func TestUpdateTasksRejectsUnsafeWebhookEvenWithoutConfigPath(t *testing.T) {
 	cfg := config.Default()
 	cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{

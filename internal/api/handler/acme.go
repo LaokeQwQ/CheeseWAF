@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -190,7 +191,7 @@ func (h *Handler) recoverACMEDeployment(r *http.Request, previous *storage.Site,
 		recoveryErrors = append(recoveryErrors, fmt.Errorf("restore certificate files: %w", err))
 	}
 	if restoreStore {
-		if err := h.Store.UpdateSite(r.Context(), previous); err != nil {
+		if err := restoreACMESiteRecord(r.Context(), h.Store, previous); err != nil {
 			recoveryErrors = append(recoveryErrors, fmt.Errorf("restore site record: %w", err))
 		}
 	}
@@ -203,6 +204,30 @@ func (h *Handler) recoverACMEDeployment(r *http.Request, previous *storage.Site,
 		return fmt.Errorf("%v", recoveryErrors)
 	}
 	return nil
+}
+
+func restoreACMESiteRecord(ctx context.Context, store storage.SiteStore, previous *storage.Site) error {
+	if restorer, ok := store.(interface {
+		RestoreSite(context.Context, *storage.Site) error
+	}); ok {
+		return restorer.RestoreSite(ctx, previous)
+	}
+
+	// Keep compatibility with SiteStore implementations that do not yet expose
+	// RestoreSite while still honoring their UpdatedAt compare-and-swap.
+	current, err := store.GetSite(ctx, previous.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return fmt.Errorf("site %q no longer exists", previous.ID)
+	}
+	restored, err := cloneSite(previous)
+	if err != nil {
+		return err
+	}
+	restored.UpdatedAt = current.UpdatedAt
+	return store.UpdateSite(ctx, restored)
 }
 
 type acmeFileSnapshot struct {

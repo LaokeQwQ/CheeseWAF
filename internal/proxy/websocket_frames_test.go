@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"nhooyr.io/websocket"
 )
@@ -26,6 +28,155 @@ func (reviewFramePipeline) Detect(_ context.Context, ctx *engine.RequestContext)
 		return &engine.DetectionResult{Detected: true, Category: "sqli", Action: engine.ActionBlock, Severity: engine.SeverityCritical, Confidence: 1, Message: "attack"}, nil
 	}
 	return nil, nil
+}
+
+type reviewActionLogPipeline struct{}
+
+func (reviewActionLogPipeline) Detect(_ context.Context, ctx *engine.RequestContext) (*engine.DetectionResult, error) {
+	if err := ctx.EnsureBody(); err != nil {
+		return nil, err
+	}
+	if bytes.Contains(ctx.DecodedBody, []byte("LOG_ONLY")) {
+		return &engine.DetectionResult{Detected: true, Category: "custom_rule", Action: engine.ActionLog, Severity: engine.SeverityHigh, Confidence: 1, Message: "log only"}, nil
+	}
+	return nil, nil
+}
+
+func TestWebSocketPassesRewrittenURIAndAppliesSiteIdentityPolicy(t *testing.T) {
+	type observed struct {
+		path, query, host, xff, realIP, forwardedHost, forwardedProto string
+	}
+	got := make(chan observed, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- observed{r.URL.Path, r.URL.RawQuery, r.Host, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP"), r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto")}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		_, payload, err := conn.Read(r.Context())
+		if err == nil {
+			_ = conn.Write(r.Context(), websocket.MessageText, payload)
+		}
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL + "/base?origin=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := reviewProxyConfig(target.String())
+	cfg.Sites[0].WAF.WebSocketEnabled = true
+	cfg.Sites[0].WAF.Rewrite = []config.RewriteRuleConfig{{ID: "ws-route", Enabled: true, Pattern: "^/public$", Replacement: "/private?rewritten=1"}}
+	cfg.Sites[0].OriginScheme = "http"
+	cfg.Sites[0].PassHost = new(bool)
+	cfg.Sites[0].HostHeader = "origin.example.test"
+	cfg.Sites[0].WAF.AccessControl.TrustedCIDRs = []string{"127.0.0.1/32"}
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	frontend := httptest.NewServer(server.Handler())
+	defer frontend.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	header := http.Header{"X-Forwarded-For": {"198.51.100.42"}, "X-Real-IP": {"198.51.100.99"}}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(frontend.URL, "http")+"/public?client=2", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if err := conn.Write(ctx, websocket.MessageText, []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := conn.Read(ctx); err != nil || string(payload) != "ok" {
+		t.Fatalf("websocket echo failed: payload=%q err=%v", payload, err)
+	}
+	select {
+	case request := <-got:
+		if request.path != "/base/private" || request.query != "origin=1&rewritten=1" {
+			t.Errorf("upstream URI = %s?%s, want /base/private?origin=1&rewritten=1", request.path, request.query)
+		}
+		if request.host != "origin.example.test" {
+			t.Errorf("upstream Host = %q, want configured override", request.host)
+		}
+		if request.xff != "198.51.100.42" || request.realIP != "198.51.100.42" {
+			t.Errorf("forwarded identity = xff %q real-ip %q", request.xff, request.realIP)
+		}
+		if request.forwardedHost != "localhost" && !strings.HasPrefix(request.forwardedHost, "127.0.0.1:") {
+			t.Errorf("X-Forwarded-Host = %q, want original public host", request.forwardedHost)
+		}
+		if request.forwardedProto != "http" {
+			t.Errorf("X-Forwarded-Proto = %q, want http", request.forwardedProto)
+		}
+	case <-ctx.Done():
+		t.Fatal("upstream did not receive the WebSocket handshake")
+	}
+}
+
+func TestWebSocketPassHostUsesPublicHost(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "http://public.example.test/", nil)
+	if got := webSocketHost(r, "origin.example.test", true, ""); got != "public.example.test" {
+		t.Fatalf("pass_host Host = %q, want public host", got)
+	}
+	if got := webSocketHost(r, "origin.example.test", false, ""); got != "origin.example.test" {
+		t.Fatalf("non-pass_host Host = %q, want origin host", got)
+	}
+	if got := webSocketHost(r, "origin.example.test", true, "configured.example.test"); got != "configured.example.test" {
+		t.Fatalf("configured Host = %q, want override", got)
+	}
+}
+
+func TestWebSocketOriginSchemeOverridesUpstreamScheme(t *testing.T) {
+	target, _ := url.Parse("http://origin.example.test/base")
+	request, _ := url.Parse("/rewritten?x=1")
+	got, err := webSocketUpstreamURL(target, request, "https")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Scheme != "wss" || got.Host != "origin.example.test" || got.Path != "/base/rewritten" || got.RawQuery != "x=1" {
+		t.Fatalf("websocket upstream URL = %s, want wss://origin.example.test/base/rewritten?x=1", got)
+	}
+}
+
+func TestWebSocketActionLogDetectionDoesNotDisconnectMessage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		typ, payload, err := conn.Read(r.Context())
+		if err == nil {
+			_ = conn.Write(r.Context(), typ, append([]byte("echo:"), payload...))
+		}
+	}))
+	defer upstream.Close()
+	cfg := reviewProxyConfig(upstream.URL)
+	cfg.Sites[0].WAF.WebSocketEnabled = true
+	cfg.Sites[0].WAF.Enabled = true
+	cfg.Sites[0].WAF.Mode = "block"
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	server.pipeline = reviewActionLogPipeline{}
+	frontend := httptest.NewServer(server.Handler())
+	defer frontend.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(frontend.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if err := conn.Write(ctx, websocket.MessageText, []byte("LOG_ONLY")); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := conn.Read(ctx); err != nil || string(payload) != "echo:LOG_ONLY" {
+		t.Fatalf("ActionLog message did not pass through: payload=%q err=%v", payload, err)
+	}
 }
 
 func TestReviewWebSocketMessageInspectedBeforeOrigin(t *testing.T) {

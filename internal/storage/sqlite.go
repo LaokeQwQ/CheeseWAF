@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -39,24 +40,13 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("create sqlite dir: %w", err)
 		}
-		for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
-			info, err := os.Lstat(candidate)
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-				return nil, fmt.Errorf("sqlite file %q must be a regular private file (0600)", candidate)
-			}
+		if err := secureSQLiteFile(path, runtime.GOOS != "windows"); err != nil {
+			return nil, fmt.Errorf("secure sqlite database: %w", err)
 		}
-		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
-		if err != nil {
-			return nil, err
-		}
-		if err := f.Close(); err != nil {
-			return nil, err
+		for _, candidate := range []string{path + "-wal", path + "-shm"} {
+			if err := secureExistingSQLiteArtifact(candidate, runtime.GOOS != "windows"); err != nil {
+				return nil, fmt.Errorf("secure sqlite sidecar: %w", err)
+			}
 		}
 	}
 	db, err := sql.Open("sqlite", path)
@@ -69,6 +59,78 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 	return &SQLiteStore{db: db}, nil
+}
+
+func secureSQLiteFile(path string, enforcePOSIXMode bool) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		f, createErr := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(createErr) {
+			return secureSQLiteFile(path, enforcePOSIXMode)
+		}
+		if createErr != nil {
+			return createErr
+		}
+		return f.Close()
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", path)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return fmt.Errorf("%q changed while opening", path)
+	}
+	if enforcePOSIXMode && opened.Mode().Perm()&0o077 != 0 {
+		if err := f.Chmod(0o600); err != nil {
+			return fmt.Errorf("repair permissions on %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func secureExistingSQLiteArtifact(path string, enforcePOSIXMode bool) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", path)
+	}
+	if !enforcePOSIXMode || info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return fmt.Errorf("%q changed while opening", path)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return fmt.Errorf("repair permissions on %q: %w", path, err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error {

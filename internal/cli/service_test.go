@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
@@ -31,6 +33,42 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
+
+func TestLocalAdminConnContextRequiresLoopbackListenerAndPeer(t *testing.T) {
+	ctx := context.Background()
+	loopback := localAdminConnContext("127.0.0.1:9443")
+	if loopback == nil {
+		t.Fatal("loopback admin listener did not enable local transport context")
+	}
+	marked := loopback(ctx, fakeAddrConn{remote: "127.0.0.1:1234"})
+	if !handler.IsLocalApprovalTransport(marked) {
+		t.Fatal("loopback peer was not marked local")
+	}
+	public := localAdminConnContext("0.0.0.0:9443")
+	if public != nil {
+		t.Fatal("wildcard listener must not enable local transport context")
+	}
+	remote := loopback(ctx, fakeAddrConn{remote: "10.0.0.2:1234"})
+	if handler.IsLocalApprovalTransport(remote) {
+		t.Fatal("non-loopback peer was marked local")
+	}
+}
+
+type fakeAddrConn struct{ remote string }
+
+func (c fakeAddrConn) Read([]byte) (int, error)         { return 0, nil }
+func (c fakeAddrConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c fakeAddrConn) Close() error                     { return nil }
+func (c fakeAddrConn) LocalAddr() net.Addr              { return testNetAddr("127.0.0.1:9443") }
+func (c fakeAddrConn) RemoteAddr() net.Addr             { return testNetAddr(c.remote) }
+func (c fakeAddrConn) SetDeadline(time.Time) error      { return nil }
+func (c fakeAddrConn) SetReadDeadline(time.Time) error  { return nil }
+func (c fakeAddrConn) SetWriteDeadline(time.Time) error { return nil }
+
+type testNetAddr string
+
+func (a testNetAddr) Network() string { return "tcp" }
+func (a testNetAddr) String() string  { return string(a) }
 
 func TestValidateStartupUsersRejectsHistoricalNonCanonicalUsername(t *testing.T) {
 	ctx := context.Background()

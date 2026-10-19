@@ -44,6 +44,12 @@ func WithLocalApprovalTransport(ctx context.Context) context.Context {
 	return context.WithValue(ctx, localApprovalTransportKey{}, true)
 }
 
+// IsLocalApprovalTransport reports whether the trusted server listener marked
+// the connection as local control transport.
+func IsLocalApprovalTransport(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(localApprovalTransportKey{}) == true
+}
+
 // ApprovalCredentialProof is an opaque result produced by a trusted
 // credential verifier. Confirmation booleans are derived only from this proof
 // and are never accepted from an HTTP payload.
@@ -923,7 +929,7 @@ func isApprovalInvalidInput(err error) bool {
 // Only the dedicated local listener can establish transport locality. A TCP
 // loopback peer may be an unmarked reverse proxy and does not prove locality.
 func approvalHTTPRequestIsLocal(r *http.Request) bool {
-	if r == nil || r.Context().Value(localApprovalTransportKey{}) != true {
+	if r == nil || !IsLocalApprovalTransport(r.Context()) {
 		return false
 	}
 	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host", "X-Forwarded-Proto"} {

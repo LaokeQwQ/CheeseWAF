@@ -44,6 +44,7 @@ type Options struct {
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	OnConfigChanged                     func(*config.Config) error
 	ACMEIssuer                          acme.Issuer
 	AuthState                           *handler.AuthState
 	AssistantApprovals                  *ai.ApprovalStore
@@ -147,6 +148,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnConfigChanged:                     opts.OnConfigChanged,
 		CAPTCHAAssets:                       opts.CAPTCHAAssets,
 		Clock:                               clock,
 		TimeSync:                            opts.TimeSync,

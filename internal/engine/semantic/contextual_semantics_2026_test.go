@@ -53,6 +53,7 @@ func TestContextualSemantics2026(t *testing.T) {
 		{"spel-at-selector", `@{T(java.lang.ProcessBuilder).start()}`, true},
 		{"velocity-split-chain", `#set($c=$x.getClass())#set($rt=$c.forName("java.lang.Runtime"))#set($m=$rt.getMethod("getRuntime"))#set($r=$m.invoke(null))$r.exec("id")`, true},
 		{"velocity-dotclass", `#set($x="")$x.class.forName("java.lang.Runtime").getMethod("getRuntime").invoke(null).exec("id")`, true},
+		{"velocity-exploit-quoted-in-security-article-still-detected", `Security advisory example: #set($x="")$x.getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null).exec("id")`, true},
 		{"ognl-context-runtime-remains-quarantined", `#context['x']=@java.lang.Runtime@getRuntime(); #context['x'].exec("id")`, false},
 		// Generic Java reflection/process expressions have no template syntax;
 		// keep them outside this narrow SSTI increment until a parser-backed rule

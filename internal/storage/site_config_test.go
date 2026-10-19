@@ -119,6 +119,25 @@ func TestSiteConfigRoundTripPreservesOriginSettings(t *testing.T) {
 	}
 }
 
+func TestSiteFromConfigInfersOriginSchemeFromUpstream(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		address string
+		want    string
+	}{
+		{name: "https URL", address: "https://origin.example.test:8443", want: "https"},
+		{name: "secure websocket URL", address: "wss://origin.example.test:8443", want: "https"},
+		{name: "unqualified host", address: "origin.example.test:8080", want: "http"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := SiteFromConfig(config.SiteConfig{Upstreams: []config.UpstreamConfig{{Address: test.address}}})
+			if got.Advanced.Origin.Scheme != test.want {
+				t.Fatalf("inferred origin scheme = %q, want %q", got.Advanced.Origin.Scheme, test.want)
+			}
+		})
+	}
+}
+
 func TestSiteConfigRoundTripPreservesACMECertificate(t *testing.T) {
 	issuedAt := time.Date(2026, 6, 17, 12, 30, 0, 0, time.UTC)
 	original := config.SiteConfig{

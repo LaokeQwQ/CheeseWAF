@@ -1,29 +1,79 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestBodyReadRejectsReservationBeyondSiteBudget(t *testing.T) {
+func TestBodyReadSmallBodyWithLargeConfiguredCeiling(t *testing.T) {
 	body := &budgetProbeBody{Reader: strings.NewReader("small")}
 	req := httptest.NewRequest(http.MethodPost, "/upload", body)
-	req.ContentLength = -1
 	reqCtx, err := NewRequestContextDeferredBody(req, "budget-oversize", nil, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := reqCtx.EnsureBody(); err != nil {
+		t.Fatalf("small body with large configured ceiling was rejected: %v", err)
+	}
+	if body.reads == 0 {
+		t.Fatal("small request body was not read")
+	}
+}
+
+func TestBodyReadSupportsConfiguredLimitsAboveSiteBudgetFloor(t *testing.T) {
+	const bodySize = 17 << 20
+	bodyData := strings.Repeat("x", bodySize)
+	for _, tc := range []struct {
+		name       string
+		contentLen int64
+	}{
+		{name: "known-length", contentLen: bodySize},
+		{name: "chunked", contentLen: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader(bodyData))
+			req.ContentLength = tc.contentLen
+			reqCtx, err := NewRequestContextDeferredBody(req, "body-32m-"+tc.name, nil, 32<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := reqCtx.EnsureBody(); err != nil {
+				t.Fatalf("body below configured/site limit was rejected: %v", err)
+			}
+			if got := len(reqCtx.DecodedBody); got != bodySize {
+				t.Fatalf("read body length=%d, want %d", got, bodySize)
+			}
+		})
+	}
+}
+
+func TestBodyReadRejectsWhenActualBodyExceedsSiteBudget(t *testing.T) {
+	const siteID = "body-budget-full"
+	if !reserveBodyBudget(siteID, maxBodyBytesPerSite) {
+		t.Fatal("failed to occupy site body budget")
+	}
+	t.Cleanup(func() {
+		bodyBudget.Lock()
+		reserved := bodyBudget.bySite[siteID]
+		bodyBudget.global -= reserved
+		delete(bodyBudget.bySite, siteID)
+		bodyBudget.Unlock()
+	})
+	body := &budgetProbeBody{Reader: strings.NewReader("small")}
+	req := httptest.NewRequest(http.MethodPost, "/upload", body)
+	reqCtx, err := NewRequestContextDeferredBody(req, siteID, nil, 32<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := reqCtx.EnsureBody(); !errors.Is(err, ErrRequestBodyReadOverload) {
-		t.Fatalf("oversized reservation error=%v, want body overload", err)
+		t.Fatalf("full site quota error=%v, want body overload", err)
 	}
 	if body.reads != 0 {
-		t.Fatalf("admission failure consumed body %d times", body.reads)
+		t.Fatalf("quota rejection consumed body %d times", body.reads)
 	}
 }
 
@@ -53,54 +103,37 @@ func TestBodyReadSiteAdmissionLeavesGlobalCapacityForOtherSites(t *testing.T) {
 
 func TestBodyReadSiteBudgetLeavesOtherSiteCapacity(t *testing.T) {
 	const perRequest = (8 << 20) - 1
-	var held []*budgetHeldBody
-	for range 3 {
-		body := &budgetHeldBody{started: make(chan struct{}), release: make(chan struct{})}
-		held = append(held, body)
-		t.Cleanup(func() { body.Close() })
+	const noisySite = "budget-noisy"
+	var reserved int64
+	for reserveBodyBudget(noisySite, perRequest) {
+		reserved += perRequest
 	}
-	done := make([]chan error, len(held))
-	for i, body := range held {
-		req := httptest.NewRequest(http.MethodPost, "/upload", body)
-		req.ContentLength = -1
-		reqCtx, err := NewRequestContextDeferredBody(req, "budget-noisy", nil, perRequest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		done[i] = make(chan error, 1)
-		go func(i int) { done[i] <- reqCtx.EnsureBodyContext(context.Background()) }(i)
-		if i < 2 {
-			select {
-			case <-body.started:
-			case <-time.After(time.Second):
-				t.Fatal("body read did not start")
-			}
-		}
+	t.Cleanup(func() {
+		bodyBudget.Lock()
+		bodyBudget.global -= reserved
+		delete(bodyBudget.bySite, noisySite)
+		bodyBudget.Unlock()
+	})
+	if reserved < maxBodyBytesPerSite-perRequest {
+		t.Fatalf("noisy site reserved only %d bytes of %d-byte quota", reserved, maxBodyBytesPerSite)
 	}
-	select {
-	case err := <-done[2]:
-		if !errors.Is(err, ErrRequestBodyReadOverload) {
-			t.Fatalf("third same-site request error=%v, want overload", err)
-		}
-	case <-held[2].started:
+	if remainder := maxBodyBytesPerSite - reserved; remainder > 0 && !reserveBodyBudget(noisySite, remainder) {
+		t.Fatalf("failed to fill remaining site budget: %d bytes", remainder)
+	} else {
+		reserved += remainder
+	}
+	if reserveBodyBudget(noisySite, 1) {
 		t.Fatal("same site exceeded its body byte budget")
-	case <-time.After(time.Second):
-		t.Fatal("same-site admission did not finish promptly")
 	}
-	req := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("ok"))
-	other, err := NewRequestContextDeferredBody(req, "budget-quiet", nil, perRequest)
-	if err != nil {
-		t.Fatal(err)
+	if !reserveBodyBudget("budget-quiet", perRequest) {
+		t.Fatal("other site lost its body byte capacity")
 	}
-	if err := other.EnsureBody(); err != nil {
-		t.Fatalf("other site lost its body capacity: %v", err)
-	}
-	for i := range 2 {
-		held[i].Close()
-		if err := <-done[i]; err != nil {
-			t.Fatal(err)
-		}
-	}
+	t.Cleanup(func() {
+		bodyBudget.Lock()
+		bodyBudget.global -= perRequest
+		delete(bodyBudget.bySite, "budget-quiet")
+		bodyBudget.Unlock()
+	})
 }
 
 type budgetProbeBody struct {
@@ -114,27 +147,3 @@ func (b *budgetProbeBody) Read(p []byte) (int, error) {
 }
 
 func (*budgetProbeBody) Close() error { return nil }
-
-type budgetHeldBody struct {
-	started chan struct{}
-	release chan struct{}
-}
-
-func (b *budgetHeldBody) Read([]byte) (int, error) {
-	select {
-	case <-b.started:
-	default:
-		close(b.started)
-	}
-	<-b.release
-	return 0, io.EOF
-}
-
-func (b *budgetHeldBody) Close() error {
-	select {
-	case <-b.release:
-	default:
-		close(b.release)
-	}
-	return nil
-}

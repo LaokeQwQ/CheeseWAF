@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
@@ -374,6 +375,12 @@ func runServe(ctx context.Context) error {
 		}
 		fmt.Printf("The one-time setup URL is stored in the protected runtime file: %s (receipt %s)\n", filepath.Join(cfg.Setup.DataDir, setup.URLFileName), receipt)
 	}
+	gateConfig := &atomic.Pointer[config.Config]{}
+	initialGateConfig, err := config.Clone(cfg)
+	if err != nil {
+		return fmt.Errorf("prepare admin entrance configuration: %w", err)
+	}
+	gateConfig.Store(initialGateConfig)
 	adminRouter, apiHandler := api.NewRouterWithAPI(api.Options{
 		Config:                             cfg,
 		IsolateConfig:                      true,
@@ -407,11 +414,22 @@ func runServe(ctx context.Context) error {
 		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
 		},
+		OnConfigChanged: func(next *config.Config) error {
+			if next == nil {
+				return fmt.Errorf("completed setup configuration is nil")
+			}
+			updated, cloneErr := config.Clone(next)
+			if cloneErr != nil {
+				return cloneErr
+			}
+			gateConfig.Store(updated)
+			return nil
+		},
 	})
 	// ACME renewal is owned by the production serving runtime. Keeping this
 	// behind the production composition boundary leaves embedded and test
 	// routers side-effect free.
-	if production {
+	if production || cfg.ACME.Enabled {
 		stopACMERenewal := apiHandler.StartACMERenewal(runtimeCtx)
 		defer stopACMERenewal()
 	}
@@ -435,7 +453,7 @@ func runServe(ctx context.Context) error {
 			}
 		}
 	}
-	adminHandler, err := edgeOriginProtectedAdminHandler(cfg, adminRouter, authSecret, clock)
+	adminHandler, err := edgeOriginProtectedAdminHandlerWithConfigSource(cfg, adminRouter, authSecret, clock, gateConfig.Load)
 	if err != nil {
 		return err
 	}
@@ -449,6 +467,10 @@ func runServe(ctx context.Context) error {
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		MaxHeaderBytes:    1 << 20,
 	}
+	// The approval transport may mark requests local only when the admin
+	// listener itself is bound to a literal loopback address. Public or
+	// wildcard listeners must never inherit local-control privileges.
+	admin.ConnContext = localAdminConnContext(cfg.Server.AdminListen)
 	interconnect, err := newClusterInterconnectServer(cfg, adminRouter, clusterIdentityService)
 	if err != nil {
 		return err
@@ -560,6 +582,27 @@ func runServe(ctx context.Context) error {
 	return serveErr
 }
 
+func adminListenerIsLoopback(address string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func localAdminConnContext(address string) func(context.Context, net.Conn) context.Context {
+	if !adminListenerIsLoopback(address) {
+		return nil
+	}
+	return func(ctx context.Context, conn net.Conn) context.Context {
+		if conn == nil || !adminListenerIsLoopback(conn.RemoteAddr().String()) {
+			return ctx
+		}
+		return handler.WithLocalApprovalTransport(ctx)
+	}
+}
+
 // The first migration commit anchors the exact production config and is not
 // a protection-policy mutation. It must match the independently checked
 // handoff and ledger before the router can be served. Subsequent typed policy
@@ -632,7 +675,11 @@ const (
 )
 
 func edgeOriginProtectedAdminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) (http.Handler, error) {
-	handler := adminHandlerWithClock(cfg, apiHandler, authSecret, clock)
+	return edgeOriginProtectedAdminHandlerWithConfigSource(cfg, apiHandler, authSecret, clock, nil)
+}
+
+func edgeOriginProtectedAdminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock, configSource func() *config.Config) (http.Handler, error) {
+	handler := adminHandlerWithConfigSource(cfg, apiHandler, authSecret, clock, configSource)
 	hmacSecret := os.Getenv(edgeOriginHMACEnv)
 	accessID := os.Getenv(cloudflareAccessIDEnv)
 	accessSecret := os.Getenv(cloudflareAccessSecretEnv)
@@ -797,8 +844,15 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string
 }
 
 func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) http.Handler {
+	return adminHandlerWithConfigSource(cfg, apiHandler, authSecret, clock, func() *config.Config { return cfg })
+}
+
+func adminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock, configSource func() *config.Config) http.Handler {
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
+	}
+	if configSource == nil {
+		configSource = func() *config.Config { return cfg }
 	}
 	var panicAuditor *middleware.Auditor
 	if cfg != nil && cfg.APISec.Audit.Enabled {
@@ -810,7 +864,7 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 	uiFS, _ := resolveAdminUIFS()
 	if uiFS == nil {
 		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
-		return adminSecurityHeaders(withRecovery(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock)))
+		return adminSecurityHeaders(withRecovery(adminEntranceGateWithConfigSource(cfg, authSecret, apiHandler, clock, configSource)))
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -819,7 +873,11 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
+		gateCfg := configSource()
+		if gateCfg == nil {
+			gateCfg = cfg
+		}
+		if !allowAdminEntranceAt(gateCfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
 			return
 		}
 		if r.URL.Path == metricsPath && !metricsPublic {
@@ -913,8 +971,15 @@ func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler)
 }
 
 func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http.Handler, clock timekeeper.Clock) http.Handler {
+	return adminEntranceGateWithConfigSource(cfg, authSecret, next, clock, func() *config.Config { return cfg })
+}
+
+func adminEntranceGateWithConfigSource(cfg *config.Config, authSecret string, next http.Handler, clock timekeeper.Clock, configSource func() *config.Config) http.Handler {
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
+	}
+	if configSource == nil {
+		configSource = func() *config.Config { return cfg }
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -923,7 +988,11 @@ func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
+		gateCfg := configSource()
+		if gateCfg == nil {
+			gateCfg = cfg
+		}
+		if !allowAdminEntranceAt(gateCfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
 			return
 		}
 		next.ServeHTTP(w, r)

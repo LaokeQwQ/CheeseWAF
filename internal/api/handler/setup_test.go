@@ -56,6 +56,12 @@ func TestSetupAPIUsesSharedCompletionPath(t *testing.T) {
 		Store:       store,
 		SetupToken:  "local-setup-secret",
 		SetupDrafts: drafts,
+		OnConfigChanged: func(next *config.Config) error {
+			if next == nil || !next.Console.Login.SecurityEntry.Enabled {
+				t.Fatalf("completed setup config was not published with enabled security entry: %#v", next)
+			}
+			return nil
+		},
 	})
 
 	body := `{"username":"admin","password":"Correct-Horse-9x!","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}`

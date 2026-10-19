@@ -44,6 +44,11 @@ validate_install_path() {
 prompt_read() {
   if [[ -r /dev/tty ]]; then read -r "$@" </dev/tty; else read -r "$@"; fi
 }
+has_interactive_terminal() {
+  [[ -t 0 ]] && return 0
+  [[ -r /dev/tty && -w /dev/tty ]] || return 1
+  { : </dev/tty; } 2>/dev/null
+}
 
 [[ "$(uname -s)" == "Linux" ]] || die "install-linux.sh is for Linux hosts"
 [[ "$(id -u)" -eq 0 ]] || die "run as root (sudo ./install-linux.sh)"
@@ -52,7 +57,7 @@ prompt_read() {
 command -v awk >/dev/null 2>&1 || die "awk is required"
 command -v od >/dev/null 2>&1 || die "od is required"
 lang="${CHEESEWAF_LANG:-}"
-if [[ -z "$lang" && ( -t 0 || -r /dev/tty ) ]]; then
+if [[ -z "$lang" ]] && has_interactive_terminal; then
   printf 'Language / 语言 [1=English, 2=简体中文] (1): '
   prompt_read choice
   [[ "$choice" == "2" ]] && lang="zh-CN" || lang="en"
@@ -99,7 +104,7 @@ msg() {
   fi
 }
 
-if [[ -z "$install_root" && ( -t 0 || -r /dev/tty ) ]]; then
+if [[ -z "$install_root" ]] && has_interactive_terminal; then
   msg install_root_prompt
   prompt_read selected_install_root
   install_root="${selected_install_root:-}"
@@ -138,7 +143,7 @@ if [[ -z "$entry" ]]; then
     done
   done
 fi
-if [[ ( -t 0 || -r /dev/tty ) && -z "${CHEESEWAF_SECURITY_ENTRY:-}" ]]; then
+if has_interactive_terminal && [[ -z "${CHEESEWAF_SECURITY_ENTRY:-}" ]]; then
   msg entry_prompt
   prompt_read custom_entry
   [[ -n "$custom_entry" ]] && entry="$custom_entry"
@@ -265,7 +270,26 @@ elif [[ ! "$public_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
 fi
 public_url_host="$public_host"
 [[ "$public_url_host" == *:* ]] && public_url_host="[${public_url_host}]"
-printf 'CHEESEWAF_ADMIN_PUBLIC_HOST=%s\n' "$public_host" >"${config_dir}/admin.env"
+# The service account owns the runtime directory for normal config updates.
+# Never let a service-created symlink turn this privileged receipt write into
+# an arbitrary-file overwrite: create the file outside that directory and
+# atomically rename it over the destination (rename replaces a symlink).
+# Keep the temporary and final file on the same filesystem so rename is
+# atomic. The configuration directory is root-owned and group-readable by the
+# service, so an older service process cannot replace the temporary file.
+service_group="cheesewaf"
+if ! getent group "$service_group" >/dev/null 2>&1; then
+  groupadd --system "$service_group"
+fi
+chown root:"$service_group" "$config_dir"
+chmod 0750 "$config_dir"
+admin_env_tmp="$(mktemp "${config_dir}/.admin.env.XXXXXX")"
+trap 'rm -f "$admin_env_tmp"' EXIT
+printf 'CHEESEWAF_ADMIN_PUBLIC_HOST=%s\n' "$public_host" >"$admin_env_tmp"
+chmod 0640 "$admin_env_tmp"
+chown root:root "$admin_env_tmp"
+mv -f -- "$admin_env_tmp" "${config_dir}/admin.env"
+admin_env_tmp=""
 chmod 0640 "${config_dir}/admin.env"
 
 if id cheesewaf >/dev/null 2>&1; then
@@ -275,7 +299,9 @@ if id cheesewaf >/dev/null 2>&1; then
 else
   useradd --system --home "$data_dir" --shell /usr/sbin/nologin cheesewaf
 fi
-chown -R cheesewaf:cheesewaf "$config_dir" "$data_dir" "$log_dir"
+chown -R root:"$service_group" "$config_dir"
+chown -R cheesewaf:cheesewaf "$data_dir" "$log_dir"
+chmod 0750 "$config_dir"
 
 if command -v systemctl >/dev/null 2>&1 && [[ -f "${unit_dir}/cheesewaf.service" && "${CHEESEWAF_NO_START:-0}" != "1" ]]; then
   systemctl daemon-reload
@@ -302,6 +328,15 @@ msg firewall
 
 setup_url_file="${data_dir}/setup.url"
 setup_url=""
+setup_wait_seconds="${CHEESEWAF_SETUP_URL_WAIT_SECONDS:-15}"
+[[ "$setup_wait_seconds" =~ ^[0-9]+$ ]] || die "CHEESEWAF_SETUP_URL_WAIT_SECONDS must be a non-negative integer"
+if [[ ! -r "$setup_url_file" && "$service_state" == "active" ]]; then
+  setup_wait_deadline=$((SECONDS + setup_wait_seconds))
+  while (( SECONDS <= setup_wait_deadline )); do
+    [[ -r "$setup_url_file" ]] && break
+    sleep 1
+  done
+fi
 if [[ -r "$setup_url_file" ]]; then
   setup_url="$(sed -n 's/^url=//p' "$setup_url_file" | head -n 1)"
 fi

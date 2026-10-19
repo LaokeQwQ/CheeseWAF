@@ -63,8 +63,8 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not enforce go vet"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh coverage' "$workflow" ||
     fail "${workflow} does not enforce Go coverage"
-  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.3 vitest@5.0.3' "$workflow" ||
-    fail "${workflow} does not pin matching Vitest and coverage provider versions"
+  grep -Fq 'npm ci --ignore-scripts' "$workflow" ||
+    fail "${workflow} must install the lockfile-pinned web dependencies"
   grep -Fq 'npm test -- --coverage' "$workflow" ||
     fail "${workflow} does not execute project tests with coverage"
   grep -Fq 'test -s coverage/coverage-summary.json' "$workflow" ||
@@ -693,6 +693,21 @@ grep -A18 -F 'name: Verify branch release artifacts' .github/workflows/ci.yml | 
   fail "stable versioned release artifacts must retain server-only signing scope"
 grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
   fail "GitHub macOS release verification must use the macOS signing scope"
+grep -Fq "&& !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v'))" .github/workflows/ci.yml ||
+  fail "macOS DMG packaging must stay out of server-only versioned releases"
+grep -A8 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}' ||
+  fail "macOS signing verification must receive protected-ref metadata"
+grep -A8 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'CHEESEWAF_REF_NAME: ${{ github.ref_name }}' ||
+  fail "macOS signing verification must receive the exact ref name"
+grep -A24 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq '"$CHEESEWAF_REF_NAME" == v*' ||
+  fail "macOS signing must be strict only for protected version tags"
+grep -A24 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'signing_mode=warn' ||
+  fail "Alpha and branch DMG verification must remain advisory"
+grep -A24 -F 'name: Build macOS disk images' .github/workflows/ci.yml | grep -Fq "startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64" ||
+  fail "macOS signing credentials must be limited to protected version tags"
+if grep -A24 -F 'name: Build macOS disk images' .github/workflows/ci.yml | grep -E 'secrets\.(MACOS_P12_BASE64|MACOS_P12_PASSWORD|MACOS_CODESIGN_IDENTITY|APPLE_API_KEY|APPLE_API_KEY_ID|APPLE_API_ISSUER)' | grep -v "startsWith(github.ref_name, 'v') && github.ref_protected" >/dev/null; then
+  fail "macOS credentials must not be exposed to Alpha or branch builds"
+fi
 if grep -Fq 'secrets.WINDOWS_CERT' .forgejo/workflows/ci.yml; then
   fail "Forgejo branch and manual builds must not receive Windows signing secrets"
 fi

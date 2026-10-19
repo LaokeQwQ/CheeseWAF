@@ -34,12 +34,14 @@ var bodyReadSiteAdmissions = siteAdmission{
 	maxSites:  1024,
 }
 
-// Body reads are bounded by bytes as well as worker count. Unknown-length
-// requests reserve their configured body ceiling before starting a reader so a
-// set of slow uploads cannot consume unbounded memory while slots remain free.
+// Body snapshots are bounded by bytes as well as worker count. Readers reserve
+// fixed-size chunks before allocating/reading them, so a large configured body
+// ceiling does not reserve its full size for a small request. The per-site
+// ceiling is an admission limit independent of max_body_bytes.
 const (
-	maxBodyBytesPerSite = 16 << 20
+	maxBodyBytesPerSite = 64 << 20
 	maxBodyBytesGlobal  = 256 << 20
+	bodyReadChunkBytes  = 32 << 10
 )
 
 var bodyBudget = struct {
@@ -190,7 +192,6 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	}
 
 	originalBody := c.Request.Body
-	contentLength := c.Request.ContentLength
 	encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
 	done := make(chan struct{})
 	closeOnce := &sync.Once{}
@@ -204,24 +205,6 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	c.DecodedBody = nil
 	c.bodyMu.Unlock()
 
-	reservation := maxBodyBytes
-	if contentLength >= 0 && contentLength < reservation {
-		reservation = contentLength
-	}
-	if reservation < 1 {
-		reservation = 1
-	}
-	c.bodyMu.Lock()
-	if !reserveBodyBudget(c.SiteID, reservation) {
-		c.bodyMu.Unlock()
-		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
-		closeBodyReadSource(originalBody, closeOnce)
-		return ErrRequestBodyReadOverload
-	}
-	c.bodyReservation = reservation
-	c.bodyReservationHeld = true
-	c.bodyMu.Unlock()
-
 	siteToken, admitted := bodyReadSiteAdmissions.acquire(c.SiteID)
 	if !admitted {
 		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
@@ -230,7 +213,7 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	}
 	select {
 	case bodyReadSlots <- struct{}{}:
-		go c.readBodyWorker(originalBody, done, maxBodyBytes, contentLength, encoding, closeOnce, siteToken)
+		go c.readBodyWorker(originalBody, done, maxBodyBytes, encoding, closeOnce, siteToken)
 		return waitBodyRead(ctx, done, originalBody, closeOnce, c)
 	default:
 		// Admission failure did not consume the source, so leave Request.Body and
@@ -257,6 +240,37 @@ func reserveBodyBudget(siteID string, amount int64) bool {
 	bodyBudget.global += amount
 	bodyBudget.bySite[siteID] += amount
 	return true
+}
+
+func (c *RequestContext) reserveBodyBudget(amount int64) bool {
+	if c == nil || !reserveBodyBudget(c.SiteID, amount) {
+		return false
+	}
+	c.bodyMu.Lock()
+	c.bodyReservation += amount
+	c.bodyReservationHeld = true
+	c.bodyMu.Unlock()
+	return true
+}
+
+func (c *RequestContext) releaseBodyBudget(amount int64) {
+	if c == nil || amount <= 0 {
+		return
+	}
+	c.bodyMu.Lock()
+	defer c.bodyMu.Unlock()
+	if amount > c.bodyReservation {
+		amount = c.bodyReservation
+	}
+	bodyBudget.Lock()
+	bodyBudget.global -= amount
+	bodyBudget.bySite[c.SiteID] -= amount
+	if bodyBudget.bySite[c.SiteID] <= 0 {
+		delete(bodyBudget.bySite, c.SiteID)
+	}
+	bodyBudget.Unlock()
+	c.bodyReservation -= amount
+	c.bodyReservationHeld = c.bodyReservation > 0
 }
 
 func (c *RequestContext) releaseBodyBudgetLocked() {
@@ -328,7 +342,7 @@ func closeBodyReadSource(body io.Closer, closeOnce *sync.Once) {
 	closeOnce.Do(func() { _ = body.Close() })
 }
 
-func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan struct{}, maxBodyBytes, contentLength int64, encoding string, closeOnce *sync.Once, siteToken siteAdmissionToken) {
+func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan struct{}, maxBodyBytes int64, encoding string, closeOnce *sync.Once, siteToken siteAdmissionToken) {
 	defer func() { <-bodyReadSlots }()
 	defer siteToken.release()
 	defer closeBodyReadSource(originalBody, closeOnce)
@@ -341,14 +355,7 @@ func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan st
 				readErr = fmt.Errorf("request body reader panic: %v", recovered)
 			}
 		}()
-		if contentLength > 0 && contentLength <= maxBodyBytes {
-			var buffer bytes.Buffer
-			buffer.Grow(int(contentLength) + bytes.MinRead)
-			_, readErr = buffer.ReadFrom(io.LimitReader(originalBody, maxBodyBytes+1))
-			raw = buffer.Bytes()
-		} else {
-			raw, readErr = io.ReadAll(io.LimitReader(originalBody, maxBodyBytes+1))
-		}
+		raw, readErr = c.readBodyWithBudget(originalBody, maxBodyBytes)
 	}()
 	if readErr != nil {
 		var maxErr *http.MaxBytesError
@@ -368,6 +375,54 @@ func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan st
 		}
 	}
 	c.finishBodyRead(raw, decoded, readErr, done, originalBody, closeOnce)
+}
+
+func (c *RequestContext) readBodyWithBudget(body io.Reader, maxBodyBytes int64) ([]byte, error) {
+	var buffer bytes.Buffer
+	var chunk [bodyReadChunkBytes]byte
+	for {
+		if int64(buffer.Len()) >= maxBodyBytes {
+			var probe [1]byte
+			n, err := body.Read(probe[:])
+			if n > 0 {
+				return nil, ErrRequestBodyTooLarge
+			}
+			if errors.Is(err, io.EOF) {
+				return buffer.Bytes(), nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			return buffer.Bytes(), io.ErrNoProgress
+		}
+		reserve := int64(len(chunk))
+		if remaining := maxBodyBytes - int64(buffer.Len()); reserve > remaining {
+			reserve = remaining
+		}
+		if reserve <= 0 {
+			return buffer.Bytes(), nil
+		}
+		if !c.reserveBodyBudget(reserve) {
+			return nil, ErrRequestBodyReadOverload
+		}
+		readBuffer := chunk[:int(reserve)]
+		n, err := body.Read(readBuffer)
+		if unused := reserve - int64(n); unused > 0 {
+			c.releaseBodyBudget(unused)
+		}
+		if n > 0 {
+			_, _ = buffer.Write(readBuffer[:n])
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return buffer.Bytes(), nil
+			}
+			return nil, err
+		}
+		if n == 0 {
+			return buffer.Bytes(), io.ErrNoProgress
+		}
+	}
 }
 
 func (c *RequestContext) finishBodyRead(raw, decoded []byte, readErr error, done chan struct{}, originalBody io.ReadCloser, closeOnce *sync.Once) {

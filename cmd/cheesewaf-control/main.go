@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,8 @@ func run(parent context.Context, args []string, out, errOut io.Writer) error {
 	caFile := flags.String("ca-file", "", "native-raft CA certificate file")
 	certFile := flags.String("cert-file", "", "native-raft node certificate file")
 	keyFile := flags.String("key-file", "", "native-raft node private key file")
+	var initialVoters stringListFlag
+	flags.Var(&initialVoters, "initial-voter", "trusted native-raft seed voter in node-id=host:port form; repeat for each voter")
 	postgresDSN := flags.String("postgres-dsn", "", "PostgreSQL management DSN (never printed)")
 	timeout := flags.Duration("timeout", 15*time.Second, "startup timeout")
 	if err := flags.Parse(args); err != nil {
@@ -52,7 +55,11 @@ func run(parent context.Context, args []string, out, errOut io.Writer) error {
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments")
 	}
-	opts := controlruntime.Options{Profile: *profile, ClusterID: *clusterID, NodeID: *nodeID, DataDir: *dataDir, Listen: *listen, RaftListen: *raftListen, Mode: nativeraft.StartMode(*mode), CAFile: *caFile, CertFile: *certFile, KeyFile: *keyFile, PostgreSQLDSN: *postgresDSN, Timeout: *timeout}
+	voters, err := parseInitialVoters(initialVoters)
+	if err != nil {
+		return err
+	}
+	opts := controlruntime.Options{Profile: *profile, ClusterID: *clusterID, NodeID: *nodeID, DataDir: *dataDir, Listen: *listen, RaftListen: *raftListen, Mode: nativeraft.StartMode(*mode), InitialVoters: voters, CAFile: *caFile, CertFile: *certFile, KeyFile: *keyFile, PostgreSQLDSN: *postgresDSN, Timeout: *timeout}
 	if err := controlruntime.ValidateOptions(opts); err != nil {
 		return err
 	}
@@ -71,4 +78,31 @@ func run(parent context.Context, args []string, out, errOut io.Writer) error {
 		return err
 	}
 	return nil
+}
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string { return strings.Join(*values, ",") }
+
+func (values *stringListFlag) Set(value string) error {
+	*values = append(*values, value)
+	return nil
+}
+
+func parseInitialVoters(raw []string) ([]nativeraft.Member, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	voters := make([]nativeraft.Member, 0, len(raw))
+	for _, value := range raw {
+		voter, err := nativeraft.ParseInitialVoter(value)
+		if err != nil {
+			return nil, err
+		}
+		voters = append(voters, voter)
+	}
+	if err := nativeraft.ValidateInitialVoters(voters); err != nil {
+		return nil, err
+	}
+	return voters, nil
 }

@@ -96,12 +96,12 @@ type NodeRegistration struct {
 
 // NodeRotationProofMessage is the domain-separated payload a node signs with
 // its currently installed certificate private key before requesting rotation.
-func NodeRotationProofMessage(nodeID string, csrPEM []byte) []byte {
+func NodeRotationProofMessage(nodeID, currentSerial string, csrPEM []byte) []byte {
 	// The HTTP handler trims the JSON string and PEM clients commonly include a
 	// trailing newline. Canonicalizing here keeps proof verification stable
 	// across transport whitespace without changing the CSR contents.
 	h := sha256.Sum256(bytes.TrimSpace(csrPEM))
-	return []byte("CheeseWAF node certificate rotation v1\n" + strings.TrimSpace(nodeID) + "\n" + hex.EncodeToString(h[:]))
+	return []byte("CheeseWAF node certificate rotation v1\n" + strings.TrimSpace(nodeID) + "\n" + strings.TrimSpace(currentSerial) + "\n" + hex.EncodeToString(h[:]))
 }
 
 func mustEncodeNodePublicKey(publicKey any) string {
@@ -135,7 +135,7 @@ func verifyNodeRotationProof(node *NodeRegistration, csrPEM, proof []byte) error
 	if err != nil {
 		return fmt.Errorf("stored node certificate public key is invalid: %w", err)
 	}
-	message := NodeRotationProofMessage(node.NodeID, csrPEM)
+	message := NodeRotationProofMessage(node.NodeID, node.CertificateSerial, csrPEM)
 	digest := sha256.Sum256(message)
 	switch key := publicKey.(type) {
 	case *ecdsa.PublicKey:

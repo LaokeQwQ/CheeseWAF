@@ -48,7 +48,7 @@ type scheduledTaskPayload struct {
 	At        string           `json:"at"`
 	Target    string           `json:"target"`
 	Channel   string           `json:"channel"`
-	Recipient string           `json:"recipient"`
+	Recipient *string          `json:"recipient"`
 	Period    string           `json:"period"`
 	Format    string           `json:"format"`
 	Keep      int              `json:"keep"`
@@ -72,8 +72,18 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := make([]config.ScheduledTaskConfig, 0, len(payload))
+	existing := map[string]string{}
+	if current := h.currentConfig(); current != nil {
+		for _, task := range current.Scheduler.Tasks {
+			existing[task.ID] = task.Recipient
+		}
+	}
 	for _, item := range payload {
-		req = append(req, item.config())
+		task := item.config()
+		if item.Recipient == nil {
+			task.Recipient = existing[task.ID]
+		}
+		req = append(req, task)
 	}
 	now := h.nowUTC()
 	for index := range req {
@@ -150,13 +160,20 @@ func (payload scheduledTaskPayload) config() config.ScheduledTaskConfig {
 		At:        payload.At,
 		Target:    payload.Target,
 		Channel:   payload.Channel,
-		Recipient: payload.Recipient,
+		Recipient: stringValue(payload.Recipient),
 		Period:    payload.Period,
 		Format:    payload.Format,
 		Keep:      payload.Keep,
 		Enabled:   payload.Enabled,
 		CreatedAt: payload.CreatedAt,
 	}
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (d *flexibleDuration) UnmarshalJSON(raw []byte) error {

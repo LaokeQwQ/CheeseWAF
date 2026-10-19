@@ -151,6 +151,23 @@ func TestValidatorDecodeDepthBounds(t *testing.T) {
 	}
 }
 
+func TestValidatorBodyInspectionLimitMatchesEngineAdmission(t *testing.T) {
+	t.Run("64 MiB boundary accepted", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Performance.MaxBodyBytes = 64 << 20
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("configured engine admission boundary rejected: %v", err)
+		}
+	})
+	t.Run("above boundary rejected", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Performance.MaxBodyBytes = (64 << 20) + 1
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "64MiB inspection ceiling") {
+			t.Fatalf("error=%v, want explicit 64 MiB inspection ceiling", err)
+		}
+	})
+}
+
 func TestValidatorRejectsAmbiguousACLAndIPEntries(t *testing.T) {
 	tests := []struct {
 		name    string

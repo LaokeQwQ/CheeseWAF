@@ -91,6 +91,40 @@ func TestRenewACMEOnceRenewsDueSiteAndPersistsStatus(t *testing.T) {
 	}
 }
 
+func TestRecoverACMEDeploymentRestoresSiteAfterSuccessfulUpdate(t *testing.T) {
+	h, store, previous := newSiteTestHandler(t)
+	ctx := context.Background()
+	current, err := store.GetSite(ctx, previous.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.EnableSSL = true
+	current.CertFile = "/tmp/new-fullchain.cer"
+	current.KeyFile = "/tmp/new-site.key"
+	current.Advanced.Certificate.Mode = "acme"
+	if err := store.UpdateSite(ctx, current); err != nil {
+		t.Fatalf("persist candidate site: %v", err)
+	}
+	if current.UpdatedAt.Equal(previous.UpdatedAt) {
+		t.Fatal("candidate update did not advance UpdatedAt, test cannot exercise stale CAS rollback")
+	}
+
+	if err := h.recoverACMEDeployment(newACMERequest(ctx), &previous, acmeCertificateSnapshot{}, true); err != nil {
+		t.Fatalf("recover deployment: %v", err)
+	}
+
+	got, err := store.GetSite(ctx, previous.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EnableSSL != previous.EnableSSL || got.CertFile != previous.CertFile || got.KeyFile != previous.KeyFile || got.Advanced.Certificate.Mode != previous.Advanced.Certificate.Mode {
+		t.Fatalf("site was not restored to its previous state: got=%+v want=%+v", got, previous)
+	}
+	if !got.UpdatedAt.Equal(previous.UpdatedAt) {
+		t.Fatalf("restored UpdatedAt=%s, want previous timestamp %s", got.UpdatedAt, previous.UpdatedAt)
+	}
+}
+
 type renewingACMEIssuer struct{ calls int }
 
 func (i *renewingACMEIssuer) Providers() []acme.DNSProvider { return nil }

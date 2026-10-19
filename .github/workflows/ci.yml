@@ -267,9 +267,6 @@ jobs:
       - name: Run build gate script tests
         working-directory: web
         run: npm run test:scripts
-      - name: Install pinned coverage provider
-        working-directory: web
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.3 vitest@5.0.3
       - name: Run dashboard tests with coverage
         working-directory: web
         run: npm test -- --coverage
@@ -592,14 +589,18 @@ jobs:
         shell: bash
         env:
           CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
+          CHEESEWAF_REF_NAME: ${{ github.ref_name }}
+          CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}
           MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64 || '' }}
           MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_CODESIGN_IDENTITY || '' }}
           APPLE_API_KEY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY || '' }}
           APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_ISSUER || '' }}
         run: |
-          signing_mode=1
-          if [[ "$CHEESEWAF_REF_TYPE" != "tag" ]]; then signing_mode=warn; fi
+          signing_mode=warn
+          if [[ "$CHEESEWAF_REF_TYPE" == "tag" && "$CHEESEWAF_REF_NAME" == v* && "$CHEESEWAF_REF_PROTECTED" == "true" ]]; then
+            signing_mode=1
+          fi
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=macos \
             bash scripts/ci/verify-release.sh release
       - name: Upload macOS disk images

@@ -586,6 +586,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// provenance so request-aware semantic optimizations may safely compare
 	// same-origin references without trusting an arbitrary Host header.
 	reqCtx.HostValidated = true
+	reqCtx.Metadata["detection_budget"] = site.WAF.SemanticPolicy.DetectionBudget
 	reqCtx.Metadata["original_uri"] = publicRequest.URL.RequestURI()
 	reqCtx.Metadata["upstream_uri"] = r.URL.RequestURI()
 	reqCtx.Metadata["normalized_path"] = requestPath
@@ -865,7 +866,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		release := s.lb.Track(target)
 		unlockRuntime()
-		proxyErr := proxyWebSocket(r.Context(), w, r, target, site.WAF.Performance.MaxBodyBytes, func(fromClient bool, typ byte, payload []byte) error {
+		proxyErr := proxyWebSocket(r.Context(), w, r, target, site.WAF.Performance.MaxBodyBytes, reqCtx.ClientIP, site.OriginScheme, sitePassHost(site), site.HostHeader, func(fromClient bool, typ byte, payload []byte) error {
 			return s.inspectWebSocketMessage(r, site, reqCtx, fromClient, typ, payload)
 		}, func(resp *http.Response) error {
 			return inspectUpstreamResponse(site, siteRT, publicRequest, reqCtx, resp)
@@ -1122,7 +1123,11 @@ func recordResponseFinding(reqCtx *engine.RequestContext, finding *response.Find
 	reqCtx.Metadata["response_finding"] = finding
 
 	action := engine.ActionLog
-	if strings.EqualFold(strings.TrimSpace(wafMode), "block") {
+	// Incomplete inspection is a coverage signal, not evidence that the body
+	// contains sensitive data. Keep it visible in logs without turning an
+	// oversized or otherwise uninspectable harmless response into a 403.
+	incomplete := finding.DetectorID == "response.inspector" && finding.Message == "response inspection incomplete"
+	if !incomplete && strings.EqualFold(strings.TrimSpace(wafMode), "block") {
 		action = engine.ActionBlock
 	}
 	result := &engine.DetectionResult{
@@ -1486,7 +1491,12 @@ func (s *Server) inspectWebSocketMessage(r *http.Request, site config.SiteConfig
 	if err != nil {
 		return err
 	}
-	if result != nil && result.Detected && strings.EqualFold(site.WAF.Mode, "block") {
+	if result == nil || !result.Detected || !strings.EqualFold(site.WAF.Mode, "block") {
+		return nil
+	}
+	policy := config.EffectiveProtectionPolicy(s.protectionPolicy, site.WAF.ProtectionPolicy)
+	decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, ctx.Results, site.WAF.ParanoiaLevel)
+	if decision.Action == engine.ActionBlock.String() || decision.Action == engine.ActionChallenge.String() {
 		return fmt.Errorf("WebSocket message rejected: %s", result.Message)
 	}
 	return nil

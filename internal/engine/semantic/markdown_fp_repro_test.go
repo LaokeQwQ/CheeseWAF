@@ -44,9 +44,9 @@ func rawMarkdownDocumentRequest(t *testing.T, body string) *engine.RequestContex
 	return reqCtx
 }
 
-// TestMarkdownProseIsNotAnAttack pins the false-positive mechanism found by the
-// mined security-prose probe (24.8% FP over 2000 samples). Each case is ordinary
-// markdown with no executable primitive; every one must pass.
+// TestMarkdownProseIsNotAnAttack pins selected false-positive mechanisms found
+// by earlier mined security-prose probes. Its small cases are not the current
+// 2,000-row probe rate; each is ordinary Markdown with no executable primitive.
 //
 // The two dominant triggers being pinned:
 //   - sqlComment matches "--", "#", "/*" and only requires the bare word

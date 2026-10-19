@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -13,7 +15,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 	}
 	originScheme := site.OriginScheme
 	if originScheme == "" {
-		originScheme = "http"
+		originScheme = originSchemeFromUpstreams(upstreams)
 	}
 	passHost := true
 	if site.PassHost != nil {
@@ -124,6 +126,22 @@ func SiteFromConfig(site config.SiteConfig) Site {
 			CustomRules:      siteCustomRulesFromConfig(site.WAF.CustomRules),
 		},
 	}
+}
+
+func originSchemeFromUpstreams(upstreams []string) string {
+	for _, address := range upstreams {
+		parsed, err := url.Parse(strings.TrimSpace(address))
+		if err != nil {
+			continue
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "https", "wss":
+			return "https"
+		case "http", "ws":
+			return "http"
+		}
+	}
+	return "http"
 }
 
 func SiteToConfig(site Site) config.SiteConfig {

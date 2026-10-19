@@ -801,12 +801,13 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		Enabled: true,
 	}}
 	cfg.Monitor.Notifiers = []config.NotifierConfig{{
-		ID:      "webhook",
-		Name:    "Webhook",
-		Type:    "webhook",
-		Token:   "old-notify-secret",
-		Headers: map[string]string{"Authorization": "Bearer old-notify-header-secret"},
-		Enabled: true,
+		ID:       "webhook",
+		Name:     "Webhook",
+		Type:     "webhook",
+		Endpoint: "https://notify.example.test/hook",
+		Token:    "old-notify-secret",
+		Headers:  map[string]string{"Authorization": "Bearer old-notify-header-secret"},
+		Enabled:  true,
 	}}
 	cfg.APISec.Auth.JWTSharedSecret = "old-jwt-secret"
 	cfg.APISec.Auth.JWTPublicKeyPEM = "old-public-key-pem"
@@ -835,6 +836,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 	nextMonitor := cfg.Monitor
 	nextMonitor.Notifiers = append([]config.NotifierConfig(nil), cfg.Monitor.Notifiers...)
 	nextMonitor.Notifiers[0].Token = ""
+	nextMonitor.Notifiers[0].Endpoint = ""
 	nextMonitor.Notifiers[0].Headers = map[string]string{"Authorization": ""}
 	nextAPISec := cfg.APISec
 	nextAPISec.Auth.JWTSharedSecret = ""
@@ -867,6 +869,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		cfg.Protection.IP.Providers[0].APIKey != "old-otx-secret" ||
 		cfg.Protection.IP.Providers[0].Headers["X-OTX-API-KEY"] != "old-otx-header-secret" ||
 		cfg.Monitor.Notifiers[0].Token != "old-notify-secret" ||
+		cfg.Monitor.Notifiers[0].Endpoint != "https://notify.example.test/hook" ||
 		cfg.Monitor.Notifiers[0].Headers["Authorization"] != "Bearer old-notify-header-secret" ||
 		cfg.APISec.Auth.JWTSharedSecret != "old-jwt-secret" ||
 		cfg.APISec.Auth.JWTPublicKeyPEM != "old-public-key-pem" ||

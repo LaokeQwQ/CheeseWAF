@@ -70,6 +70,9 @@ cluster:
             data_dir: "./data/cluster/native-raft"
             listen: 127.0.0.1:9451
             mode: bootstrap
+            # Seed voters are trusted only while a fresh node has no persisted Raft membership.
+            # Use native-raft peer addresses, not cluster interconnect addresses.
+            initial_voters: []
     join:
         require_approval: true
         token_ttl: 15m0s

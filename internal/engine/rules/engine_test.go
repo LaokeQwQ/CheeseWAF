@@ -71,6 +71,40 @@ func TestEngineSeparatesURIAndQueryLocations(t *testing.T) {
 	}
 }
 
+func TestEngineARGSRuleMatchesQueryAndURLEncodedFormValues(t *testing.T) {
+	compiled, err := FromConfig([]config.CustomRuleConfig{{
+		ID: "args", Name: "ARGS", Pattern: `(?i)union\s+select`, Location: "args", Action: "block", Severity: "high", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		url  string
+		body string
+	}{
+		{name: "query", url: "/search?q=union+select"},
+		{name: "form", url: "/search", body: "q=union+select"},
+		{name: "query and form", url: "/search?q=safe", body: "q=union+select"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, tc.url, strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			reqCtx, err := engine.NewRequestContext(req, "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := New(compiled).Detect(context.Background(), reqCtx)
+			if err != nil || result == nil || result.Action != engine.ActionBlock {
+				t.Fatalf("ARGS should match argument value: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestEngineURIRulesUseCanonicalRequestPath(t *testing.T) {
 	compiled, err := FromConfig([]config.CustomRuleConfig{{
 		ID: "admin", Name: "Admin", Pattern: `^/admin`, Location: "uri", Action: "block", Severity: "high", Enabled: true,
@@ -92,6 +126,27 @@ func TestEngineURIRulesUseCanonicalRequestPath(t *testing.T) {
 	}
 	if result == nil || !result.Detected || result.Action != engine.ActionBlock {
 		t.Fatalf("canonical URI rule did not match path traversal form: %+v (normalized=%q)", result, reqCtx.NormalizedPath)
+	}
+}
+
+func TestEngineRequestURIRulesIncludeQuery(t *testing.T) {
+	compiled, err := FromConfig([]config.CustomRuleConfig{{
+		ID: "target", Name: "target", Pattern: `\A/search\?debug=true\z`, Location: "request_uri", Action: "block", Severity: "high", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "/search?debug=true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(compiled).Detect(context.Background(), reqCtx)
+	if err != nil || result == nil || result.Action != engine.ActionBlock {
+		t.Fatalf("request URI rule did not match full request target: result=%+v err=%v", result, err)
 	}
 }
 

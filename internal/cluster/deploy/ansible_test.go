@@ -89,6 +89,11 @@ func TestAnsiblePackageRequiresEtcdForMultiNodeConfiguration(t *testing.T) {
 			t.Fatalf("generated tasks hardcode deployment value %q", hardcoded)
 		}
 	}
+	createUnitDirAt := strings.Index(tasks, "- name: Create CheeseWAF systemd unit directory")
+	stageUnitAt := strings.Index(tasks, "dest: \"{{ cheesewaf_unit_dir }}/.cheesewaf.service.new\"")
+	if createUnitDirAt < 0 || stageUnitAt < 0 || createUnitDirAt > stageUnitAt {
+		t.Fatalf("custom systemd unit directory must be created before staging the service unit: create=%d stage=%d", createUnitDirAt, stageUnitAt)
+	}
 }
 
 func TestGenerateAnsiblePackageRejectsInvalidInputs(t *testing.T) {

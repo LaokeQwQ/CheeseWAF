@@ -291,7 +291,7 @@ func resolveSetupPaths(cmd *cobra.Command) (string, string) {
 		directory = setup.DefaultDataDir
 	}
 	file := strings.TrimSpace(configPath)
-	if file == "" || !cmd.Flags().Changed("config") {
+	if file == "" || (!cmd.Flags().Changed("config") && !configExplicit) {
 		file = setup.DefaultConfigPath(directory)
 	}
 	return directory, file

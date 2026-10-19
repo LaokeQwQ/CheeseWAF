@@ -156,6 +156,9 @@ type Handler struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	// OnConfigChanged publishes a completed setup/config snapshot to the
+	// serving composition root. Setup changes the entrance gate itself.
+	OnConfigChanged func(*config.Config) error
 }
 
 type captchaAssetRuntime struct {
@@ -395,6 +398,7 @@ type Options struct {
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	OnConfigChanged                     func(*config.Config) error
 	CAPTCHAAssets                       captchaassets.Store
 	Clock                               timekeeper.Clock
 	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
@@ -508,6 +512,7 @@ func New(opts Options) *Handler {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnConfigChanged:                     opts.OnConfigChanged,
 	}
 	if opts.ConfigSnapshot != nil {
 		h.configCurrent.Store(opts.ConfigSnapshot)
@@ -1671,6 +1676,12 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		if err := h.publishConfig(result.Config); err != nil {
 			writeError(w, http.StatusInternalServerError, "CONFIG_PUBLISH_ERROR", err.Error())
 			return
+		}
+		if h.OnConfigChanged != nil {
+			if err := h.OnConfigChanged(result.Config); err != nil {
+				writeError(w, http.StatusInternalServerError, "CONFIG_RUNTIME_SYNC_ERROR", err.Error())
+				return
+			}
 		}
 	}
 	if draftID := setupSessionID(r); draftID != "" {

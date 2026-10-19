@@ -335,6 +335,9 @@ func preserveNotifierSecrets(current, next []config.NotifierConfig) []config.Not
 	}
 	for idx := range next {
 		if existing, ok := byID[next[idx].ID]; ok {
+			if next[idx].Endpoint == "" {
+				next[idx].Endpoint = existing.Endpoint
+			}
 			if next[idx].Token == "" {
 				next[idx].Token = existing.Token
 			}

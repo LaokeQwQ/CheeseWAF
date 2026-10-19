@@ -245,6 +245,56 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 	})
 }
 
+func TestPipelineUsesRequestDetectionBudgetWithBounds(t *testing.T) {
+	pipeline := NewPipeline()
+	tests := []struct {
+		name  string
+		value any
+		want  time.Duration
+	}{
+		{name: "duration", value: 25 * time.Millisecond, want: 25 * time.Millisecond},
+		{name: "duration string", value: "40ms", want: 40 * time.Millisecond},
+		{name: "invalid string", value: "not-a-duration", want: 100 * time.Millisecond},
+		{name: "negative", value: -time.Second, want: 100 * time.Millisecond},
+		{name: "over maximum", value: 10 * time.Second, want: 5 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &RequestContext{Metadata: map[string]any{"detection_budget": tc.value}}
+			if got := pipeline.detectionBudget(reqCtx); got != tc.want {
+				t.Fatalf("detection budget=%s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPipelineRequestDetectionBudgetControlsDeadline(t *testing.T) {
+	slow := &countingDetector{
+		id: "budget-observer", priority: 10,
+		fn: func(ctx context.Context, _ *RequestContext) (*DetectionResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	const budget = 20 * time.Millisecond
+	reqCtx := &RequestContext{Metadata: map[string]any{
+		"detection_budget":        budget,
+		"budget_exhausted_policy": "closed",
+	}}
+	started := time.Now()
+	result, err := NewPipeline(slow).Detect(context.Background(), reqCtx)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed < budget/2 || elapsed >= 100*time.Millisecond {
+		t.Fatalf("configured deadline elapsed %s, expected near %s and below default 100ms", elapsed, budget)
+	}
+	if result == nil || result.Category != "detection_budget" || result.Action != ActionChallenge {
+		t.Fatalf("configured deadline did not apply closed fail-mode: %#v", result)
+	}
+}
+
 func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {
 	var started atomic.Int32
 	slow := &countingDetector{

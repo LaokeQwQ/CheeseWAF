@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/bot"
 	"nhooyr.io/websocket"
 )
 
@@ -65,35 +66,39 @@ func webSocketOriginAllowed(r *http.Request, https bool) bool {
 // them before they are released to the other side. The websocket package
 // validates masking, fragmentation, control frames, and close payloads while
 // SetReadLimit bounds the message allocation.
-func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, target *url.URL, limit int64, inspect func(bool, byte, []byte) error, inspectResponse func(*http.Response) error) error {
+func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, target *url.URL, limit int64, clientIP, originScheme string, passHost bool, hostHeader string, inspect func(bool, byte, []byte) error, inspectResponse func(*http.Response) error) error {
 	if target == nil {
 		return fmt.Errorf("nil WebSocket upstream")
 	}
-	upstream := *target
-	switch strings.ToLower(upstream.Scheme) {
-	case "http":
-		upstream.Scheme = "ws"
-	case "https":
-		upstream.Scheme = "wss"
-	case "ws", "wss":
-	default:
-		return fmt.Errorf("unsupported WebSocket upstream scheme %q", upstream.Scheme)
+	upstream, err := webSocketUpstreamURL(target, r.URL, originScheme)
+	if err != nil {
+		return err
 	}
 	header := r.Header.Clone()
 	for _, name := range stripClientForwardHeaders {
 		deleteHeaderAliases(header, name)
 	}
 	header.Del("Sec-WebSocket-Extensions")
-	header.Set("X-Forwarded-Host", r.Host)
-	header.Set("X-Forwarded-Proto", "http")
-	header.Set("X-Forwarded-Port", "80")
-	if r.TLS != nil {
-		header.Set("X-Forwarded-Proto", "https")
-		header.Set("X-Forwarded-Port", "443")
+	if r.Host != "" {
+		header.Set("X-Forwarded-Host", r.Host)
 	}
+	forwardedProto, forwardedPort := "http", "80"
+	if requestIsHTTPS(r, bot.TrustedCIDRsFromContext(r.Context())) {
+		forwardedProto, forwardedPort = "https", "443"
+	}
+	header.Set("X-Forwarded-Proto", forwardedProto)
+	header.Set("X-Forwarded-Port", forwardedPort)
+	if clientIP = normalizedClientIP(clientIP); clientIP == "" {
+		clientIP = peerIP(r.RemoteAddr)
+	}
+	if clientIP != "" {
+		header.Set("X-Forwarded-For", clientIP)
+		header.Set("X-Real-IP", clientIP)
+	}
+	upstreamHost := webSocketHost(r, upstream.Host, passHost, hostHeader)
 	upstreamConn, response, err := websocket.Dial(ctx, upstream.String(), &websocket.DialOptions{
 		HTTPHeader:      header,
-		Host:            target.Host,
+		Host:            upstreamHost,
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
@@ -174,4 +179,73 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func webSocketUpstreamURL(target, request *url.URL, originScheme string) (*url.URL, error) {
+	if target == nil {
+		return nil, fmt.Errorf("nil WebSocket upstream")
+	}
+	upstream := *target
+	if scheme := strings.ToLower(strings.TrimSpace(originScheme)); scheme == "http" || scheme == "https" {
+		upstream.Scheme = scheme
+	}
+	switch strings.ToLower(upstream.Scheme) {
+	case "http":
+		upstream.Scheme = "ws"
+	case "https":
+		upstream.Scheme = "wss"
+	case "ws", "wss":
+	default:
+		return nil, fmt.Errorf("unsupported WebSocket upstream scheme %q", upstream.Scheme)
+	}
+	if request != nil {
+		upstream.Path, upstream.RawPath = joinUpstreamPath(target, request)
+		upstream.RawQuery = joinUpstreamQuery(target.RawQuery, request.RawQuery)
+		upstream.ForceQuery = target.ForceQuery || request.ForceQuery
+	}
+	return &upstream, nil
+}
+
+func webSocketHost(r *http.Request, originHost string, passHost bool, configuredHost string) string {
+	if configuredHost = strings.TrimSpace(configuredHost); configuredHost != "" {
+		return configuredHost
+	}
+	if passHost && r != nil && strings.TrimSpace(r.Host) != "" {
+		return r.Host
+	}
+	return originHost
+}
+
+func joinUpstreamPath(target, request *url.URL) (path, rawPath string) {
+	basePath, requestPath := target.EscapedPath(), request.EscapedPath()
+	if basePath == "" {
+		basePath = "/"
+	}
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if strings.HasSuffix(basePath, "/") && strings.HasPrefix(requestPath, "/") {
+		path = target.Path + request.Path[1:]
+		rawPath = basePath + requestPath[1:]
+	} else if strings.HasSuffix(basePath, "/") || strings.HasPrefix(requestPath, "/") {
+		path = target.Path + request.Path
+		rawPath = basePath + requestPath
+	} else {
+		path = target.Path + "/" + request.Path
+		rawPath = basePath + "/" + requestPath
+	}
+	if rawPath == path {
+		return path, ""
+	}
+	return path, rawPath
+}
+
+func joinUpstreamQuery(targetQuery, requestQuery string) string {
+	if targetQuery == "" {
+		return requestQuery
+	}
+	if requestQuery == "" {
+		return targetQuery
+	}
+	return targetQuery + "&" + requestQuery
 }

@@ -150,6 +150,21 @@ func semanticJobs() chan semanticJob {
 	return sharedSemanticWorkers.jobs
 }
 
+// enqueueSemanticJob keeps site permits scoped to queued-or-running work and
+// releases them on both cancellation and global queue saturation.
+func enqueueSemanticJob(ctx context.Context, jobs chan semanticJob, job semanticJob) (submitted, overloaded bool) {
+	select {
+	case jobs <- job:
+		return true, false
+	case <-ctx.Done():
+		job.admission.release()
+		return false, false
+	default:
+		job.admission.release()
+		return false, true
+	}
+}
+
 // detectionBudgetHook is atomically replaceable because service hot reloads
 // can rebuild a pipeline while requests are recording exhausted budgets.
 var detectionBudgetHook atomic.Pointer[detectionBudgetExhaustedHook]
@@ -371,16 +386,15 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				continue
 			}
 			job := semanticJob{ctx: ctx, detector: detector, reqCtx: reqCtx, index: i, done: done, enqueued: time.Now(), admission: siteToken}
-			select {
-			case jobs <- job:
+			enqueued, overloaded := enqueueSemanticJob(ctx, jobs, job)
+			if enqueued {
 				submitted++
-			case <-ctx.Done():
+			} else if ctx.Err() != nil {
 				outs[i] = semanticJobOut{index: i, err: ctx.Err()}
-			default:
+			} else if overloaded {
 				// Do not consume a healthy request's entire CPU deadline merely
 				// waiting for admission to a saturated process-wide queue.
 				semanticQueueOverloads.Add(1)
-				siteToken.release()
 				outs[i] = semanticJobOut{index: i, err: ErrDetectionOverload}
 			}
 		}

@@ -1167,7 +1167,7 @@ func TestClusterRotateNodeCertificateWithCSRDoesNotReturnPrivateKey(t *testing.T
 	clock.Advance(30 * 24 * time.Hour)
 	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterIdentity: identitySvc})
 	rotationCSR, _ := testNodeCSRWithKey(t, "waf-b")
-	proof := testNodeRotationProof(t, "waf-b", rotationCSR, enrollmentKey)
+	proof := testNodeRotationProof(t, "waf-b", enrollment.Node.CertificateSerial, rotationCSR, enrollmentKey)
 	body := `{"csr":` + strconv.Quote(string(rotationCSR)) + `,"possession_proof":` + strconv.Quote(proof) + `}`
 	req := withURLParam(
 		approvalHTTPRequest(http.MethodPost, "/api/cluster/nodes/waf-b/rotate-certificate", body, "admin", "admin-session", "admin", "127.0.0.1:1234"),
@@ -1217,12 +1217,13 @@ func TestClusterRotateNodeCertificateRejectsRevokedNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	csr, nodeKey := testNodeCSRWithKey(t, "waf-b")
-	if _, err := identitySvc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
+	enrollment, err := identitySvc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
 		NodeID:        "waf-b",
 		Role:          "waf",
 		ClusterID:     "cw-test",
 		AdvertiseAddr: "10.0.0.2:9444",
-	}, csr); err != nil {
+	}, csr)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := identitySvc.RevokeNode("waf-b", "compromised"); err != nil {
@@ -1230,7 +1231,7 @@ func TestClusterRotateNodeCertificateRejectsRevokedNode(t *testing.T) {
 	}
 	h := New(Options{Config: ptrClusterConfig(config.Default()), ClusterIdentity: identitySvc})
 	rotationCSR, _ := testNodeCSRWithKey(t, "waf-b")
-	proof := testNodeRotationProof(t, "waf-b", rotationCSR, nodeKey)
+	proof := testNodeRotationProof(t, "waf-b", enrollment.Node.CertificateSerial, rotationCSR, nodeKey)
 	body := `{"csr":` + strconv.Quote(string(rotationCSR)) + `,"possession_proof":` + strconv.Quote(proof) + `}`
 	req := withURLParam(
 		approvalHTTPRequest(http.MethodPost, "/api/cluster/nodes/waf-b/rotate-certificate", body, "admin", "admin-session", "admin", "127.0.0.1:1234"),
@@ -1437,9 +1438,9 @@ func testNodeCSRWithKey(t *testing.T, nodeID string) ([]byte, *ecdsa.PrivateKey)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw}), key
 }
 
-func testNodeRotationProof(t *testing.T, nodeID string, csrPEM []byte, key *ecdsa.PrivateKey) string {
+func testNodeRotationProof(t *testing.T, nodeID, currentSerial string, csrPEM []byte, key *ecdsa.PrivateKey) string {
 	t.Helper()
-	digest := sha256.Sum256(identity.NodeRotationProofMessage(nodeID, csrPEM))
+	digest := sha256.Sum256(identity.NodeRotationProofMessage(nodeID, currentSerial, csrPEM))
 	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
 	if err != nil {
 		t.Fatal(err)
