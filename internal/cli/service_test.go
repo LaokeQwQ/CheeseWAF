@@ -652,6 +652,47 @@ func TestAdminHandlerSecurityEntryGatesConsole(t *testing.T) {
 	}
 }
 
+func TestAdminHandlerAllowsFirstInstallPathsBeforeSecurityEntry(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Setup.DataDir = t.TempDir()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_test"
+	var apiPath string
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}), "security-entry-secret")
+
+	for _, path := range []string{"/", "/setup", "/api/setup/status", "/api/setup", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if path == "/" || path == "/setup" {
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("first-install console path %s returned %d: %s", path, recorder.Code, recorder.Body.String())
+			}
+			continue
+		}
+		if apiPath != path || recorder.Code != http.StatusNoContent {
+			t.Fatalf("first-install API path %s was not passed through: path=%q status=%d body=%s", path, apiPath, recorder.Code, recorder.Body.String())
+		}
+	}
+	if err := setup.MarkComplete(cfg.Setup.DataDir); err != nil {
+		t.Fatalf("mark setup complete: %v", err)
+	}
+	postSetup := httptest.NewRecorder()
+	handler.ServeHTTP(postSetup, httptest.NewRequest(http.MethodGet, "/", nil))
+	if postSetup.Code != http.StatusTeapot {
+		t.Fatalf("post-setup console path bypassed security entry, got %d: %s", postSetup.Code, postSetup.Body.String())
+	}
+}
+
 func TestAdminHandlerSecurityEntryReadsUpdatedConfig(t *testing.T) {
 	webDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {

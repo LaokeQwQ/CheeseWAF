@@ -37,20 +37,6 @@ func (a *siteAdmission) init() {
 // global semaphore applies. A non-empty token means a site-local permit must
 // be released exactly once.
 func (a *siteAdmission) acquire(siteID string) (siteAdmissionToken, bool) {
-	return a.acquireWithGlobalCapacity(siteID, false)
-}
-
-// acquireWithGlobalCapacity admits a site-local permit while optionally
-// relaxing the configured per-site ceiling when this is the only active site
-// and the caller still has process-wide capacity. This keeps the per-site
-// limit as a fairness boundary when sites compete, without turning it into an
-// arbitrary hard ceiling for a single site on an otherwise idle process.
-//
-// The caller must provide a snapshot of global capacity. It is intentionally
-// advisory: the process-wide semaphore remains the authoritative bound and
-// callers must still release their token if global admission subsequently
-// fails.
-func (a *siteAdmission) acquireWithGlobalCapacity(siteID string, globalCapacityAvailable bool) (siteAdmissionToken, bool) {
 	siteID = strings.TrimSpace(siteID)
 	if siteID == "" {
 		return siteAdmissionToken{}, true
@@ -62,7 +48,7 @@ func (a *siteAdmission) acquireWithGlobalCapacity(siteID string, globalCapacityA
 	if !exists && a.maxSites > 0 && len(a.bySite) >= a.maxSites {
 		return siteAdmissionToken{}, true
 	}
-	if a.maxActive > 0 && active >= a.maxActive && (!globalCapacityAvailable || len(a.bySite) > 1) {
+	if a.maxActive > 0 && active >= a.maxActive {
 		return siteAdmissionToken{}, false
 	}
 	a.bySite[siteID] = active + 1

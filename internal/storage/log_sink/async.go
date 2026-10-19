@@ -450,11 +450,6 @@ func (w *asyncLogWriter) takeWriteBatch(first asyncLogOperation) []asyncLogOpera
 	if w.batchSize <= 1 {
 		return batch
 	}
-	// Allow a short coalescing window so a burst of independent Write calls
-	// becomes one backend request even when the worker wakes after the first
-	// enqueue. The bound keeps tail latency predictable while avoiding the
-	// per-entry HTTP request pattern this writer is intended to replace.
-	time.Sleep(time.Millisecond)
 
 	w.mu.Lock()
 	for len(batch) < w.batchSize && w.queueHead < len(w.operations) {

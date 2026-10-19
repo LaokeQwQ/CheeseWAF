@@ -430,6 +430,9 @@ func saveClusterJoinPendingIdentity(nodeID, approvalID string, identity clusterJ
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	if err := protectAuthSecretFile(tmpName); err != nil {
+		return fmt.Errorf("protect pending join identity: %w", err)
+	}
 	return os.Rename(tmpName, path)
 }
 

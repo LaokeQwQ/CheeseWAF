@@ -205,10 +205,9 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	c.DecodedBody = nil
 	c.bodyMu.Unlock()
 
-	// The site limit is a fairness boundary, not an arbitrary hard ceiling. A
-	// lone site may use available process-wide body readers; once another site
-	// is active, its configured quota applies again.
-	siteToken, admitted := bodyReadSiteAdmissions.acquireWithGlobalCapacity(c.SiteID, len(bodyReadSlots) < cap(bodyReadSlots))
+	// Enforce the per-site fairness quota before acquiring the process-wide
+	// reader slot. The global semaphore remains the independent hard bound.
+	siteToken, admitted := bodyReadSiteAdmissions.acquire(c.SiteID)
 	if !admitted {
 		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
 		closeBodyReadSource(originalBody, closeOnce)

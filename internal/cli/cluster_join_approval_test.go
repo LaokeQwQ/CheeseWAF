@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -49,7 +50,7 @@ func TestPendingClusterJoinIdentityRoundTripIsBoundToApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("pending identity mode=%#o, want 0600", info.Mode().Perm())
 	}
 	got, err := loadClusterJoinPendingIdentity(clusterJoinOptions{NodeID: "waf-b", ApprovalID: "cluster-operation-0123456789abcdef0123456789abcdef"})

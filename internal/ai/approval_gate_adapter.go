@@ -32,6 +32,7 @@ var (
 	ErrHighRiskCredentialProofInvalid        = errors.New("high-risk AI credential proof is invalid")
 	ErrHighRiskCredentialLocked              = errors.New("high-risk AI credential challenge is locked after repeated failures")
 	ErrHighRiskCredentialBusy                = errors.New("high-risk AI credential verification is already in progress")
+	ErrHighRiskCredentialBudgetCapacity      = errors.New("high-risk AI credential budget capacity is exhausted")
 )
 
 const highRiskCredentialProofTTL = time.Minute
@@ -39,6 +40,10 @@ const highRiskCredentialProofTTL = time.Minute
 const (
 	highRiskCredentialMaxFailures = 5
 	highRiskCredentialLockWindow  = 5 * time.Minute
+	// Credential budgets are keyed by authenticated subject and session. Keep
+	// the map bounded so a caller cannot grow process memory by rotating
+	// session IDs faster than the lock window expires.
+	highRiskCredentialBudgetMaxEntries = 1024
 )
 
 // GateApprovalChallenge is the server-created challenge returned before a
@@ -130,6 +135,7 @@ type gateCredentialBudget struct {
 	failures  int
 	verifying bool
 	expiresAt time.Time
+	lastSeen  time.Time
 }
 
 // GateApprovalAdapter is the narrow bridge between the historical AI
@@ -217,6 +223,18 @@ func (a *GateApprovalAdapter) nowUTC() time.Time {
 		now = a.now
 	}
 	return now().UTC()
+}
+
+// pruneCredentialBudgetsLocked removes expired, inactive session budgets.
+// It must be called while a.mu is held. A budget remains until its lock
+// window expires, including after a successful verification, so it cannot be
+// used to bypass the per-session failure budget by immediately retrying.
+func (a *GateApprovalAdapter) pruneCredentialBudgetsLocked(now time.Time) {
+	for key, budget := range a.credentialBudgets {
+		if !budget.verifying && !budget.expiresAt.After(now) {
+			delete(a.credentialBudgets, key)
+		}
+	}
 }
 
 // CreateFor creates a pending destructive AI request whose requester identity
@@ -382,6 +400,9 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 		ctx = context.Background()
 	}
 	a.mu.Lock()
+	// Prune on every confirmation attempt, including attempts for unknown
+	// challenges, so idle subject/session entries do not accumulate forever.
+	a.pruneCredentialBudgetsLocked(a.nowUTC())
 	state, ok := a.challenges[id]
 	if !ok {
 		a.mu.Unlock()
@@ -451,10 +472,17 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 	verifier := a.credentialVerifier
 	budgetKey := actor.Subject + ":" + actor.SessionID
 	if !useCachedProof {
-		budget := a.credentialBudgets[budgetKey]
-		if !budget.verifying && !budget.expiresAt.After(now) {
+		budget, exists := a.credentialBudgets[budgetKey]
+		if !exists {
+			if len(a.credentialBudgets) >= highRiskCredentialBudgetMaxEntries {
+				a.mu.Unlock()
+				return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialBudgetCapacity
+			}
+			budget = gateCredentialBudget{expiresAt: now.Add(highRiskCredentialLockWindow)}
+		} else if !budget.verifying && !budget.expiresAt.After(now) {
 			budget = gateCredentialBudget{expiresAt: now.Add(highRiskCredentialLockWindow)}
 		}
+		budget.lastSeen = now
 		if state.failures >= highRiskCredentialMaxFailures || budget.failures >= highRiskCredentialMaxFailures {
 			a.mu.Unlock()
 			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialLocked
@@ -480,6 +508,7 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 		state.verifying = false
 		budget := a.credentialBudgets[budgetKey]
 		budget.verifying = false
+		budget.lastSeen = a.nowUTC()
 		if err != nil {
 			state.failures++
 			budget.failures++

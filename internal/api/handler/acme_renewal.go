@@ -305,12 +305,11 @@ func validateACMECertificateFiles(certPath, keyPath string, domains []string, no
 	if !certInfo.Mode().IsRegular() || !keyInfo.Mode().IsRegular() {
 		return time.Time{}, errors.New("certificate and private key must be regular files")
 	}
-	if err := os.Chmod(keyPath, 0o600); err != nil {
+	if err := protectACMEPrivateKey(keyPath); err != nil {
 		return time.Time{}, fmt.Errorf("restrict private key permissions: %w", err)
 	}
-	keyInfo, err := os.Lstat(keyPath)
-	if err != nil || keyInfo.Mode().Perm()&0o077 != 0 {
-		return time.Time{}, errors.New("private key permissions must be owner-only")
+	if err := validateACMEPrivateKeyPermissions(keyPath, nil); err != nil {
+		return time.Time{}, err
 	}
 	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {

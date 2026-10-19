@@ -101,15 +101,18 @@ func TestBodyReadSiteAdmissionLeavesGlobalCapacityForOtherSites(t *testing.T) {
 	quiet.release()
 }
 
-func TestBodyReadSiteAdmissionUsesIdleGlobalCapacityForLoneSite(t *testing.T) {
+func TestBodyReadSiteAdmissionCapsLoneSiteAtFairQuota(t *testing.T) {
 	admission := siteAdmission{maxActive: maxInflightBodyReadsPerSite, maxSites: 8}
-	tokens := make([]siteAdmissionToken, 0, maxInflightBodyReadsPerSite+1)
-	for i := 0; i < maxInflightBodyReadsPerSite+1; i++ {
-		token, admitted := admission.acquireWithGlobalCapacity("lone-site", true)
+	tokens := make([]siteAdmissionToken, 0, maxInflightBodyReadsPerSite)
+	for i := 0; i < maxInflightBodyReadsPerSite; i++ {
+		token, admitted := admission.acquire("lone-site")
 		if !admitted {
-			t.Fatalf("lone site was rejected at idle global capacity slot %d", i+1)
+			t.Fatalf("lone site was rejected at fair quota slot %d/%d", i+1, maxInflightBodyReadsPerSite)
 		}
 		tokens = append(tokens, token)
+	}
+	if _, admitted := admission.acquire("lone-site"); admitted {
+		t.Fatal("lone site bypassed its fair body-reader quota while global capacity was idle")
 	}
 	for _, token := range tokens {
 		token.release()
@@ -120,13 +123,13 @@ func TestBodyReadSiteAdmissionRestoresFairQuotaWhenSitesCompete(t *testing.T) {
 	admission := siteAdmission{maxActive: maxInflightBodyReadsPerSite, maxSites: 8}
 	tokens := make([]siteAdmissionToken, 0, maxInflightBodyReadsPerSite)
 	for i := 0; i < maxInflightBodyReadsPerSite; i++ {
-		token, admitted := admission.acquireWithGlobalCapacity("noisy-site", true)
+		token, admitted := admission.acquire("noisy-site")
 		if !admitted {
 			t.Fatalf("noisy site admission rejected slot %d/%d", i+1, maxInflightBodyReadsPerSite)
 		}
 		tokens = append(tokens, token)
 	}
-	quiet, admitted := admission.acquireWithGlobalCapacity("quiet-site", true)
+	quiet, admitted := admission.acquire("quiet-site")
 	if !admitted {
 		t.Fatal("quiet site was rejected while global capacity remained")
 	}
@@ -136,7 +139,7 @@ func TestBodyReadSiteAdmissionRestoresFairQuotaWhenSitesCompete(t *testing.T) {
 			token.release()
 		}
 	}()
-	if _, admitted := admission.acquireWithGlobalCapacity("noisy-site", true); admitted {
+	if _, admitted := admission.acquire("noisy-site"); admitted {
 		t.Fatal("noisy site exceeded its fairness quota while another site was active")
 	}
 }

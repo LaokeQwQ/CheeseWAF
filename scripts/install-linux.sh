@@ -38,7 +38,7 @@ esac
 
 api_url="https://api.github.com/repos/${repo}/releases/latest"
 if [[ "$release_ref" != "latest" ]]; then
-  [[ "$release_ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "CHEESEWAF_RELEASE must be a semver tag such as v0.4.2 or v0.4.2-beta"
+  [[ "$release_ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "CHEESEWAF_RELEASE must be a semver tag such as v0.4.5 or v0.4.5-beta"
   release_tag="$release_ref"
   [[ "$release_tag" == v* ]] || release_tag="v${release_tag}"
   api_url="https://api.github.com/repos/${repo}/releases/tags/${release_tag}"

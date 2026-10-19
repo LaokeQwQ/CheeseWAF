@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -30,12 +31,14 @@ func TestValidateACMECertificateFilesRestrictsKeyAndChecksSAN(t *testing.T) {
 	if expires.IsZero() {
 		t.Fatal("expected certificate expiry")
 	}
-	info, err := os.Stat(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("private key mode = %o, want 600", got)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(keyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("private key mode = %o, want 600", got)
+		}
 	}
 	if _, err := validateACMECertificateFiles(certPath, keyPath, []string{"other.test"}, time.Now(), true); err == nil {
 		t.Fatal("certificate with an unrelated SAN was accepted")

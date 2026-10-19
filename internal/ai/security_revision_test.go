@@ -24,7 +24,7 @@ func TestRevisionKnowledgeCacheRefreshesReplacedFile(t *testing.T) {
 	if err := os.WriteFile(replacement, []byte(`[{"id":"b","title":"beta","content":"second"}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(replacement, path); err != nil {
+	if err := replaceFileAtomic(replacement, path); err != nil {
 		t.Fatal(err)
 	}
 	second := CachedKnowledgeBase(cfg)

@@ -317,6 +317,11 @@ func writeACMEFileAtomically(path string, data []byte, mode os.FileMode) error {
 	if err := replaceACMEFileAtomic(tempPath, path); err != nil {
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
 	}
+	if filepath.Base(path) == "site.key" {
+		if err := protectACMEPrivateKey(path); err != nil {
+			return fmt.Errorf("protect restored private key: %w", err)
+		}
+	}
 	return nil
 }
 
