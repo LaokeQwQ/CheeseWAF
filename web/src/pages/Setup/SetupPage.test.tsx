@@ -306,7 +306,7 @@ describe('SetupPage', () => {
     render(<SetupPage />);
     await waitFor(() => expect(useAppStore.getState().language).toBe('zh-CN'));
 
-    const englishCard = screen.getByText('setup.languageEn').closest('.setup-card-radio');
+    const englishCard = (await screen.findByText('setup.languageEn')).closest('.setup-card-radio');
     expect(englishCard).toBeTruthy();
     fireEvent.click(englishCard!);
     await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
