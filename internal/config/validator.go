@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"regexp/syntax"
@@ -1206,23 +1205,10 @@ func ResolveManagedSchedulerPath(target string, roots ...string) (string, error)
 		}
 		rel, err := filepath.Rel(rootAbs, targetAbs)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			if rel != "." {
-				if _, err := fsguard.RelUnderRoot(rootAbs, targetAbs); err != nil {
-					return "", fmt.Errorf("must be inside the configured data or log directory: %w", err)
-				}
+			if err := fsguard.ValidateDirectoryUnderRoot(rootAbs, targetAbs); err != nil {
+				return "", fmt.Errorf("managed scheduler path is invalid: %w", err)
 			}
-			for current := targetAbs; ; current = filepath.Dir(current) {
-				info, err := os.Lstat(current)
-				if err == nil && info.Mode()&os.ModeSymlink != 0 {
-					return "", fmt.Errorf("managed scheduler path contains symlink: %s", current)
-				}
-				if err != nil && !os.IsNotExist(err) {
-					return "", err
-				}
-				if current == rootAbs {
-					return targetAbs, nil
-				}
-			}
+			return targetAbs, nil
 		}
 	}
 	return "", fmt.Errorf("must be inside the configured data or log directory")

@@ -98,6 +98,26 @@ func TestResolveManagedSchedulerPath(t *testing.T) {
 	}
 }
 
+func TestResolveManagedSchedulerPathBeforeFreshInstall(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "fresh", "install", "data")
+	for _, target := range []string{root, "./reports", "./data/reports"} {
+		got, err := ResolveManagedSchedulerPath(target, root)
+		if err != nil {
+			t.Fatalf("fresh install directory %q must validate: %v", target, err)
+		}
+		want := filepath.Join(root, "reports")
+		if target == root {
+			want = root
+		}
+		if got != want {
+			t.Fatalf("resolved %q as %q, want %q", target, got, want)
+		}
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("validation must not create the installation directory: %v", err)
+	}
+}
+
 func TestValidatorUpstreamWeightLimits(t *testing.T) {
 	tests := []struct {
 		name    string
