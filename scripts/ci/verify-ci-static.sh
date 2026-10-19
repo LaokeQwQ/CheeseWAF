@@ -12,6 +12,34 @@ fail() {
   exit 1
 }
 
+# Every desktop signing secret reference must be guarded by the complete
+# protected version-tag predicate. Checking only for one guarded occurrence
+# would allow a second, unscoped reference to leak the secret to branch jobs.
+check_protected_tag_secret_scope() {
+  local workflow="$1" secret="$2" matches=0 line_number line reference_count line
+
+  while IFS=: read -r line_number line; do
+    [[ -n "$line_number" ]] || continue
+    matches=1
+    reference_count="$(printf '%s\n' "$line" | grep -oF "secrets.${secret}" | wc -l | tr -d '[:space:]')"
+    if [[ "$reference_count" != "1" ]] ||
+      ! printf '%s\n' "$line" | grep -Eq "github\.ref_type[[:space:]]*==[[:space:]]*'tag'.*startsWith\\(github\.ref_name,[[:space:]]*'v'\\).*github\.ref_protected.*secrets\.${secret}"; then
+      fail "${workflow}:${line_number}: secrets.${secret} must be guarded by a protected version-tag predicate"
+    fi
+  done < <(grep -nF "secrets.${secret}" "$workflow" || true)
+
+  if ((matches == 0)); then
+    fail "${workflow} does not reference secrets.${secret}"
+  fi
+}
+
+if [[ "${1:-}" == "--check-protected-tag-secret-scope" ]]; then
+  [[ $# -eq 3 ]] || fail "usage: $0 --check-protected-tag-secret-scope WORKFLOW SECRET"
+  [[ -r "$2" ]] || fail "workflow is not readable: $2"
+  check_protected_tag_secret_scope "$2" "$3"
+  exit 0
+fi
+
 run_regression_test() {
   local name="$1"
   shift
@@ -384,6 +412,10 @@ grep -Fq 'install-linux.sh' scripts/ci/package-release.sh ||
   fail "Linux channel packages must ship install-linux.sh"
 grep -Fq 'dst: install-linux.sh' .goreleaser.yaml ||
   fail "GoReleaser archive must include install-linux.sh"
+grep -Fq 'chmod 0770 "$config_dir"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must leave the config directory writable by the service group for atomic saves"
+grep -Fq 'chmod 0660 "${config_dir}/cheesewaf.yaml"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must make the runtime config writable by the service group"
 grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
   fail "Ansible unit must start cheesewaf serve"
 grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
@@ -641,6 +673,10 @@ for signing_secret in \
   grep -Eq "github\.ref_type == 'tag'.*secrets\.${signing_secret}" .github/workflows/ci.yml ||
     fail "${signing_secret} must only be resolved for tag-triggered signing"
 done
+# The two certificate blobs are especially sensitive: validate every
+# occurrence, not merely the presence of one correctly guarded reference.
+check_protected_tag_secret_scope .github/workflows/ci.yml WINDOWS_CERT_P12
+check_protected_tag_secret_scope .github/workflows/ci.yml MACOS_P12_BASE64
 grep -Fq "github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'" .github/workflows/ci.yml ||
   fail "ordinary branch release artifacts must remain enabled"
 grep -Fq 'Upload branch release artifacts' .github/workflows/ci.yml ||
@@ -703,11 +739,7 @@ grep -A24 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -F
   fail "macOS signing must be strict only for protected version tags"
 grep -A24 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'signing_mode=warn' ||
   fail "Alpha and branch DMG verification must remain advisory"
-grep -A24 -F 'name: Build macOS disk images' .github/workflows/ci.yml | grep -Fq "startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64" ||
-  fail "macOS signing credentials must be limited to protected version tags"
-if grep -A24 -F 'name: Build macOS disk images' .github/workflows/ci.yml | grep -E 'secrets\.(MACOS_P12_BASE64|MACOS_P12_PASSWORD|MACOS_CODESIGN_IDENTITY|APPLE_API_KEY|APPLE_API_KEY_ID|APPLE_API_ISSUER)' | grep -v "startsWith(github.ref_name, 'v') && github.ref_protected" >/dev/null; then
-  fail "macOS credentials must not be exposed to Alpha or branch builds"
-fi
+check_protected_tag_secret_scope .github/workflows/ci.yml MACOS_P12_BASE64
 if grep -Fq 'secrets.WINDOWS_CERT' .forgejo/workflows/ci.yml; then
   fail "Forgejo branch and manual builds must not receive Windows signing secrets"
 fi
