@@ -204,6 +204,9 @@ func Validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("ai.provider must be openai, openai-responses, openai-chat, or anthropic")
 	}
+	if err := ValidateAIPromptRegistry(cfg.AI); err != nil {
+		return fmt.Errorf("ai prompt registry: %w", err)
+	}
 	if err := validateAILimits(cfg.AI); err != nil {
 		return err
 	}

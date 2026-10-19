@@ -204,6 +204,37 @@ func TestParseModSecurityARGSUsesCombinedArgumentLocation(t *testing.T) {
 	}
 }
 
+func TestParseModSecurityMapsNumericSeverity(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{"0", "critical"}, {"1", "critical"}, {"2", "critical"},
+		{"3", "high"}, {"4", "medium"}, {"5", "low"}, {"6", "low"},
+	}
+	for _, tc := range tests {
+		rules, err := ParseCustomRules([]byte(fmt.Sprintf(`SecRule REQUEST_URI "@contains probe" "id:test,severity:%s,deny"`, tc.value)))
+		if err != nil {
+			t.Fatalf("severity %s: %v", tc.value, err)
+		}
+		if got := rules[0].Severity; got != tc.want {
+			t.Errorf("severity %s mapped to %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestMergeCustomRulesDoesNotUseDerivedIDsForReplacement(t *testing.T) {
+	existing := []CustomRuleConfig{{Name: "same-name", Pattern: "old", Location: "uri", Action: "block", Enabled: true}}
+	imported := []CustomRuleConfig{{ID: "same-name", Name: "new", Pattern: "new", Location: "body", Action: "block", Enabled: true}}
+	merged, err := MergeCustomRules(existing, imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("imported explicit ID must not replace unnamed rule, got %+v", merged)
+	}
+}
+
 func TestParseModSecurityRejectsFieldSelectors(t *testing.T) {
 	for _, variable := range []string{"ARGS:name", "REQUEST_HEADERS:Host", "REQUEST_COOKIES:session"} {
 		_, err := ParseCustomRules([]byte(fmt.Sprintf(`SecRule %s "@contains probe" "id:test,deny"`, variable)))

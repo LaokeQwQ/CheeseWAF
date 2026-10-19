@@ -100,6 +100,76 @@ func TestGuardContextReturnsOnCancellationWhileDetectorIgnoresContext(t *testing
 	}
 }
 
+func TestGuardContextHoldsSitePermitUntilDetectorExit(t *testing.T) {
+	const siteID = "guard-site-hold"
+	reserved := make([]siteAdmissionToken, 0, maxInflightGuardsPerSite-1)
+	for i := 0; i < maxInflightGuardsPerSite-1; i++ {
+		token, admitted := guardSiteAdmissions.acquire(siteID)
+		if !admitted {
+			t.Fatalf("failed to reserve guard site slot %d/%d", i+1, maxInflightGuardsPerSite-1)
+		}
+		reserved = append(reserved, token)
+	}
+	defer func() {
+		for _, token := range reserved {
+			token.release()
+		}
+	}()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	ctx, cancel := context.WithCancel(withRequestSite(context.Background(), siteID))
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := GuardContext(ctx, func() (*DetectionResult, error) {
+			close(started)
+			<-release
+			close(finished)
+			return nil, nil
+		})
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("guarded detector did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GuardContext error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("GuardContext did not return after cancellation")
+	}
+	if _, admitted := guardSiteAdmissions.acquire(siteID); admitted {
+		t.Fatal("guard site permit was released before detector exit")
+	}
+
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("abandoned detector did not finish after release")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		token, admitted := guardSiteAdmissions.acquire(siteID)
+		if admitted {
+			token.release()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("guard site permit was not released after detector exit")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestGuardContextDoesNotLeakWhenLateDetectorPanics(t *testing.T) {
 	baselineSlots := len(guardSlots)
 	release := make(chan struct{})

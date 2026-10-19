@@ -272,8 +272,15 @@ sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
   sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
 fi
-sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
-sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo groupadd --system cheesewaf 2>/dev/null || true
+sudo useradd --system --gid cheesewaf --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf 2>/dev/null || true
+# Keep root-owned environment/receipt files protected while the service owns
+# and atomically replaces its runtime configuration. Data and logs stay service-owned.
+sudo chown -R root:cheesewaf /etc/cheesewaf
+sudo chmod 01770 /etc/cheesewaf
+sudo chown cheesewaf:cheesewaf /etc/cheesewaf/cheesewaf.yaml
+sudo chmod 0600 /etc/cheesewaf/cheesewaf.yaml
+sudo chown -R cheesewaf:cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
 
 #### Step 3: Register Systemd Service
@@ -297,7 +304,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-The systemd unit permits atomic replacement inside `/etc/cheesewaf`; keep the directory writable by the `cheesewaf` service account. After installation, complete setup, save one system setting, and restart once to verify that the configuration survives the service sandbox.
+The systemd unit permits atomic replacement inside `/etc/cheesewaf`. Keep that directory owned by `root:cheesewaf` with sticky mode `01770`, which lets the service create temporary files but prevents it from unlinking root-owned environment and receipt files. Keep `cheesewaf.yaml` owned by `cheesewaf:cheesewaf` with mode `0600`; the service account can then atomically replace its own runtime configuration. Data and logs should remain owned by `cheesewaf`. After installation, complete setup, save one system setting, and restart once to verify that the configuration survives the service sandbox.
 
 The installer checks the archive against the `SHA256SUMS` file shipped in the same release. This detects transfer corruption; it does not independently authenticate a compromised release account. For provenance verification, install a pinned `cosign` and set `CHEESEWAF_VERIFY_SIGNATURE=1`; the installer then verifies the keyless GitHub Actions signature bundle for `SHA256SUMS` before running any release code. The management interface binds to `127.0.0.1:9443` by default. Set `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` only when a public listener is intentional; use a reverse proxy or SSH tunnel for remote access. The setup URL and token expire after 10 minutes; completing the wizard revokes the token, and the admin API then requires the generated security-entry cookie:
 

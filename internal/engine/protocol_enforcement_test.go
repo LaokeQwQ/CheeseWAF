@@ -126,6 +126,30 @@ func TestDetectProtocolViolationsRejectsEmptyOrMergedContentMetadata(t *testing.
 	}
 }
 
+func TestDetectProtocolViolationsAllowsQuotedCommaInContentTypeParameter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("body"))
+	req.Header.Set("Content-Type", `multipart/form-data; boundary="a,b"`)
+
+	if violation := DetectProtocolViolations(req); violation != nil {
+		t.Fatalf("expected quoted comma in Content-Type parameter to pass, got %+v", violation)
+	}
+}
+
+func TestDetectProtocolViolationsRejectsMalformedContentType(t *testing.T) {
+	for _, value := range []string{
+		"text/plain, application/json",
+		`multipart/form-data; boundary="unterminated`,
+	} {
+		t.Run(value, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("body"))
+			req.Header.Set("Content-Type", value)
+			if violation := DetectProtocolViolations(req); violation == nil || violation.Type != "ambiguous_header" {
+				t.Fatalf("violation=%+v, want ambiguous_header", violation)
+			}
+		})
+	}
+}
+
 func TestDetectCLTESmugglingFromTransferEncodingField(t *testing.T) {
 	// net/http moves TE into r.TransferEncoding and may clear Header["Transfer-Encoding"].
 	req := httptest.NewRequest(http.MethodPost, "http://example.test/", strings.NewReader("0123456789"))

@@ -412,10 +412,12 @@ grep -Fq 'install-linux.sh' scripts/ci/package-release.sh ||
   fail "Linux channel packages must ship install-linux.sh"
 grep -Fq 'dst: install-linux.sh' .goreleaser.yaml ||
   fail "GoReleaser archive must include install-linux.sh"
-grep -Fq 'chmod 0770 "$config_dir"' scripts/ci/install-linux.sh ||
-  fail "Linux installer must leave the config directory writable by the service group for atomic saves"
-grep -Fq 'chmod 0660 "${config_dir}/cheesewaf.yaml"' scripts/ci/install-linux.sh ||
-  fail "Linux installer must make the runtime config writable by the service group"
+grep -Fq 'chmod 01770 "$config_dir"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must use a sticky config directory to protect root-owned bootstrap files"
+grep -Fq 'chown cheesewaf:cheesewaf "${config_dir}/cheesewaf.yaml"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must make the runtime config service-owned for atomic saves"
+grep -Fq 'chmod 0600 "${config_dir}/cheesewaf.yaml"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must keep the runtime config private to the service account"
 grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
   fail "Ansible unit must start cheesewaf serve"
 grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||

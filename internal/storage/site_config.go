@@ -15,7 +15,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 	}
 	originScheme := site.OriginScheme
 	if originScheme == "" {
-		originScheme = originSchemeFromUpstreams(upstreams)
+		originScheme = OriginSchemeFromUpstreams(upstreams)
 	}
 	passHost := true
 	if site.PassHost != nil {
@@ -128,7 +128,9 @@ func SiteFromConfig(site config.SiteConfig) Site {
 	}
 }
 
-func originSchemeFromUpstreams(upstreams []string) string {
+// OriginSchemeFromUpstreams infers a safe origin transport when legacy site
+// records omit the explicit scheme. Secure upstreams must never be downgraded.
+func OriginSchemeFromUpstreams(upstreams []string) string {
 	for _, address := range upstreams {
 		parsed, err := url.Parse(strings.TrimSpace(address))
 		if err != nil {
@@ -155,7 +157,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 	}
 	originScheme := site.Advanced.Origin.Scheme
 	if originScheme == "" {
-		originScheme = "http"
+		originScheme = OriginSchemeFromUpstreams(site.Upstreams)
 	}
 	timeout := parseDuration(site.Advanced.Origin.ProxyTimeout, 30*time.Second)
 	return config.SiteConfig{

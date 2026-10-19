@@ -63,15 +63,14 @@ func (h *Handler) allowSetupMutation(w http.ResponseWriter, r *http.Request) boo
 	expected := ""
 	if h.SetupTokenSource != nil {
 		expected = h.SetupTokenSource.Current()
-	}
-	if expected == "" {
+	} else {
 		expected = h.SetupToken
-	}
-	if expected == "" {
-		expected = os.Getenv("CHEESEWAF_SETUP_TOKEN")
-	}
-	if expected == "" {
-		expected = setup.GetSetupToken()
+		if expected == "" {
+			expected = os.Getenv("CHEESEWAF_SETUP_TOKEN")
+		}
+		if expected == "" {
+			expected = setup.GetSetupToken()
+		}
 	}
 	got := r.Header.Get("X-CheeseWAF-Setup-Token")
 	if !validSetupTokenValue(expected) || !validSetupTokenValue(got) {

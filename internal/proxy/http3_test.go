@@ -63,6 +63,7 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	cfg.Server.HTTP3.Enabled = true
 	cfg.Server.HTTP3.ZeroRTT = true
 	cfg.Server.IdleTimeout = 17 * time.Second
+	cfg.Server.WriteTimeout = 23 * time.Second
 	cfg.TLS.CertFile = certFile
 	cfg.TLS.KeyFile = keyFile
 	cfg.Sites[0].WAF.Performance.MaxHeaderBytes = 2048
@@ -91,6 +92,12 @@ func TestHTTP3ServerBuildsQUICConfig(t *testing.T) {
 	}
 	if h3.ConnContext == nil {
 		t.Fatal("expected HTTP/3 connection context when 0-RTT is enabled")
+	}
+
+	writer := &deadlineResponseWriter{ResponseWriter: httptest.NewRecorder()}
+	h3.Handler.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "http://localhost/", nil))
+	if len(writer.deadlines) == 0 {
+		t.Fatal("HTTP/3 handler did not set a rolling response write deadline")
 	}
 }
 

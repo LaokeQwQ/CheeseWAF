@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,8 +64,21 @@ func detectAmbiguousContentHeaders(r *http.Request) *ProtocolViolation {
 				Message: "ambiguous duplicate " + name + " header",
 			}
 		}
-		if len(values) == 1 && (strings.TrimSpace(values[0]) == "" ||
-			(name != "Transfer-Encoding" && strings.Contains(values[0], ","))) {
+		if len(values) == 1 && strings.TrimSpace(values[0]) == "" {
+			return &ProtocolViolation{
+				Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
+				Message: "invalid or merged " + name + " header",
+			}
+		}
+		if len(values) == 1 && name == "Content-Type" {
+			if _, _, err := mime.ParseMediaType(values[0]); err != nil {
+				return &ProtocolViolation{
+					Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
+					Message: "invalid or merged " + name + " header",
+				}
+			}
+		}
+		if len(values) == 1 && name == "Content-Encoding" && strings.Contains(values[0], ",") {
 			return &ProtocolViolation{
 				Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
 				Message: "invalid or merged " + name + " header",

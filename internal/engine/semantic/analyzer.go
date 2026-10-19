@@ -1739,6 +1739,13 @@ func bodyInputsWithTraversalStatus(r *http.Request, body []byte) ([]InputPoint, 
 	}
 	if json.Valid(body) {
 		status.merge(flattenJSONInputsWithStatus("body.json", "", body, &inputs))
+		if jsonHasDuplicateKeys(body) {
+			// The decoder walk is last-wins. Preserve an explicit raw-body
+			// candidate so a first-occurrence payload is inspected too, and
+			// surface the parser ambiguity for JSON served under other media types.
+			status.mark(jsonDuplicateKeyReason)
+			inputs = append(inputs, InputPoint{Source: "body.json.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
+		}
 	}
 	if len(inputs) == 0 {
 		// A small malformed/non-JSON body is fully represented by its bounded raw
@@ -8185,7 +8192,7 @@ func xxePayloadContext(candidate semanticCandidate, lower string) bool {
 		return false
 	}
 	switch source {
-	case "query", "body.form", "body.json", "body.multipart":
+	case "query", "body.form", "body.json", "body.multipart", "body.multipart.file":
 		return xxePayloadField(name)
 	default:
 		return false

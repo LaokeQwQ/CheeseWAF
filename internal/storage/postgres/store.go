@@ -180,7 +180,11 @@ func (s *Store) VerifyMigrationHandoff(ctx context.Context, evidence storage.Mig
 // precision. pgx/PostgreSQL round trips discard sub-microsecond precision, so
 // evidence produced before the durable write must use the same canonical form.
 func postgresTimestampsEquivalent(left, right time.Time) bool {
-	return left.UTC().Truncate(time.Microsecond).Equal(right.UTC().Truncate(time.Microsecond))
+	return postgresTimestamp(left).Equal(postgresTimestamp(right))
+}
+
+func postgresTimestamp(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
@@ -445,7 +449,7 @@ func ensureSiteDefaults(site *storage.Site) {
 		site.Advanced.Certificate.ACME.Domains = append([]string(nil), site.Domains...)
 	}
 	if site.Advanced.Origin.Scheme == "" {
-		site.Advanced.Origin.Scheme = "http"
+		site.Advanced.Origin.Scheme = storage.OriginSchemeFromUpstreams(site.Upstreams)
 	}
 	if !site.Advanced.AccessControl.DynamicGuard {
 		site.Advanced.AccessControl.DynamicGuard = true
@@ -617,6 +621,8 @@ func (s *Store) CreateSite(ctx context.Context, v *storage.Site) error {
 		return errors.New("site is nil")
 	}
 	ensureSite(v)
+	v.CreatedAt = postgresTimestamp(v.CreatedAt)
+	v.UpdatedAt = postgresTimestamp(v.UpdatedAt)
 	_, e := s.exec(ctx, `INSERT INTO sites(`+siteColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, v.ID, v.Name, encodeStrings(v.Domains), encodeStrings(v.Upstreams), v.ListenPort, v.LoadBalance, v.EnableSSL, v.CertFile, v.KeyFile, v.WAFEnabled, v.WAFMode, v.ParanoiaLevel, encodeJSON(v.Advanced), v.Enabled, timestamp(v.CreatedAt), timestamp(v.UpdatedAt))
 	return e
 }
@@ -628,7 +634,7 @@ func (s *Store) UpdateSite(ctx context.Context, v *storage.Site) error {
 		return errors.New("site is nil")
 	}
 	expected := v.UpdatedAt
-	next := time.Now().UTC()
+	next := postgresTimestamp(time.Now())
 	query := `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,updated_at=? WHERE id=?`
 	args := []any{v.Name, encodeStrings(v.Domains), encodeStrings(v.Upstreams), v.ListenPort, v.LoadBalance, v.EnableSSL, v.CertFile, v.KeyFile, v.WAFEnabled, v.WAFMode, v.ParanoiaLevel, encodeJSON(v.Advanced), v.Enabled, next, v.ID}
 	if !expected.IsZero() {

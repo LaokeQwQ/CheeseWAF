@@ -377,6 +377,8 @@ export type ScheduledTask = {
   target: string;
   channel?: string;
   recipient?: string;
+  /** Recipient is blank when redacted; preserve it on an unchanged update. */
+  recipient_configured?: boolean;
   period?: string;
   format?: string;
   keep: number;

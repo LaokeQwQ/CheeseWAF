@@ -276,15 +276,14 @@ public_url_host="$public_host"
 # atomically rename it over the destination (rename replaces a symlink).
 # Keep the temporary and final file on the same filesystem so rename is
 # atomic. The configuration directory is root-owned and writable only by the
-# dedicated service group: config.Save creates a temporary file beside the
-# target before atomically replacing it, so the service needs directory write
-# permission even though the bootstrap files remain root-owned.
+# dedicated service group. The sticky bit prevents the service from unlinking
+# root-owned bootstrap/secret files while config.Save can replace its own file.
 service_group="cheesewaf"
 if ! getent group "$service_group" >/dev/null 2>&1; then
   groupadd --system "$service_group"
 fi
 chown root:"$service_group" "$config_dir"
-chmod 0770 "$config_dir"
+chmod 01770 "$config_dir"
 admin_env_tmp="$(mktemp "${config_dir}/.admin.env.XXXXXX")"
 trap 'rm -f "$admin_env_tmp"' EXIT
 printf 'CHEESEWAF_ADMIN_PUBLIC_HOST=%s\n' "$public_host" >"$admin_env_tmp"
@@ -303,10 +302,12 @@ else
 fi
 chown -R root:"$service_group" "$config_dir"
 chown -R cheesewaf:cheesewaf "$data_dir" "$log_dir"
-# Runtime configuration is replaced atomically by the service account. Keep
-# it root-owned while granting the service group the required read/write bits.
-chmod 0660 "${config_dir}/cheesewaf.yaml"
-chmod 0770 "$config_dir"
+# Runtime configuration is replaced atomically by the service account. Make
+# that file service-owned and private; the sticky directory protects the
+# root-owned admin.env, edge-origin.env, and installation receipt files.
+chown cheesewaf:cheesewaf "${config_dir}/cheesewaf.yaml"
+chmod 0600 "${config_dir}/cheesewaf.yaml"
+chmod 01770 "$config_dir"
 
 if command -v systemctl >/dev/null 2>&1 && [[ -f "${unit_dir}/cheesewaf.service" && "${CHEESEWAF_NO_START:-0}" != "1" ]]; then
   systemctl daemon-reload

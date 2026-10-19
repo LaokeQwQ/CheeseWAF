@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -66,7 +67,7 @@ func (h *Handler) ApproveAIApproval(w http.ResponseWriter, r *http.Request) {
 // destructive AI approval. The adapter owns the challenge and binds it to the
 // authenticated approver session; request body identity fields are ignored.
 func (h *Handler) StartAIApprovalConfirmation(w http.ResponseWriter, r *http.Request) {
-	if !h.aiInteractiveSession(r) || h.AssistantGateApproval == nil {
+	if !h.aiInteractiveSession(r) || !approvalHTTPRequestIsLocal(r) || h.AssistantGateApproval == nil {
 		writeError(w, http.StatusForbidden, "AI_APPROVAL_CONFIRMATION_FORBIDDEN", "interactive user session and high-risk approval gate are required")
 		return
 	}
@@ -88,7 +89,7 @@ func (h *Handler) StartAIApprovalConfirmation(w http.ResponseWriter, r *http.Req
 // approval flow. Credentials are verified by the production adapter against
 // the current management session; client confirmation booleans are ignored.
 func (h *Handler) ConfirmAIApproval(w http.ResponseWriter, r *http.Request) {
-	if !h.aiInteractiveSession(r) || h.AssistantGateApproval == nil {
+	if !h.aiInteractiveSession(r) || !approvalHTTPRequestIsLocal(r) || h.AssistantGateApproval == nil {
 		writeError(w, http.StatusForbidden, "AI_APPROVAL_CONFIRMATION_FORBIDDEN", "interactive user session and high-risk approval gate are required")
 		return
 	}
@@ -99,7 +100,9 @@ func (h *Handler) ConfirmAIApproval(w http.ResponseWriter, r *http.Request) {
 	result, err := h.AssistantGateApproval.ConfirmContext(r.Context(), chi.URLParam(r, "id"), h.aiApprovalActor(r), payload)
 	if err != nil {
 		status := http.StatusConflict
-		if strings.Contains(strings.ToLower(err.Error()), "credential") || strings.Contains(strings.ToLower(err.Error()), "verifier") {
+		if errors.Is(err, ai.ErrHighRiskCredentialLocked) || errors.Is(err, ai.ErrHighRiskCredentialBusy) {
+			status = http.StatusTooManyRequests
+		} else if strings.Contains(strings.ToLower(err.Error()), "credential") || strings.Contains(strings.ToLower(err.Error()), "verifier") {
 			status = http.StatusForbidden
 		}
 		writeError(w, status, "AI_APPROVAL_CONFIRMATION_ERROR", err.Error())
@@ -1002,7 +1005,7 @@ func normalizeProtectionLevel(value string) string {
 }
 
 func (setProtectionLevelTool) SensitivityForArgs(args map[string]any) ai.ToolSensitivity {
-	if level, _ := args["level"].(string); strings.EqualFold(strings.TrimSpace(level), "off") {
+	if level, _ := args["level"].(string); normalizeProtectionLevel(level) == config.ProtectionLevelOff {
 		return ai.Destructive
 	}
 	return ai.Modify

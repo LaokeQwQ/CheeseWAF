@@ -820,6 +820,25 @@ func TestBudgetExhaustedPolicyAppliedEndToEnd(t *testing.T) {
 	}
 }
 
+func TestIncompleteInputPolicyAppliedEndToEnd(t *testing.T) {
+	for _, level := range []string{config.ProtectionLevelSmart, config.ProtectionLevelHigh, config.ProtectionLevelStrict} {
+		t.Run(level, func(t *testing.T) {
+			server, sink, cleanup := newPolicyTestServerWithDetectors(t, level, incompleteInputDetector{})
+			defer cleanup()
+
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/?id=1", nil))
+
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("level %s: incomplete request should receive the closed-policy challenge, got status=%d body=%q", level, recorder.Code, recorder.Body.String())
+			}
+			if len(sink.entries) != 1 || sink.entries[0].Action != engine.ActionChallenge.String() || sink.entries[0].Category != "detection_incomplete" {
+				t.Fatalf("level %s: unexpected incomplete-input decision: %#v", level, sink.entries)
+			}
+		})
+	}
+}
+
 // TestBudgetExhaustedDoesNotFailOpen checks that a detection whose action is
 // "challenge" is actually challenged by the server rather than forwarded.
 //
@@ -960,6 +979,25 @@ func TestServerWebAttackPolicyLevels(t *testing.T) {
 		}
 		if decision.Reason == "" || decision.DetectorCategory != "detection_budget" {
 			t.Fatalf("unexpected budget decision: %#v", decision)
+		}
+	})
+
+	t.Run("incomplete input closed challenge bypasses severity gate", func(t *testing.T) {
+		incomplete := &engine.DetectionResult{
+			Detected:   true,
+			DetectorID: "pipeline.incomplete",
+			Category:   "detection_incomplete",
+			Severity:   engine.SeverityMedium,
+			Action:     engine.ActionChallenge,
+			Confidence: 0.55,
+			Message:    "request analysis incomplete; challenge preferred",
+		}
+		decision := evaluateWebAttackPolicyWithEvidence(config.ProtectionLevelSmart, incomplete, nil, config.DefaultParanoiaLevel)
+		if decision.Action != engine.ActionChallenge.String() {
+			t.Fatalf("closed incomplete input must honor challenge without severity gate, got %#v", decision)
+		}
+		if decision.DetectorCategory != "detection_incomplete" {
+			t.Fatalf("unexpected incomplete decision: %#v", decision)
 		}
 	})
 
@@ -2194,6 +2232,21 @@ func (s *captureSink) Close() error                { return nil }
 type staticDetector struct {
 	result   *engine.DetectionResult
 	priority int
+}
+
+type incompleteInputError struct{}
+
+func (incompleteInputError) Error() string            { return "test input coverage incomplete" }
+func (incompleteInputError) AnalysisIncomplete() bool { return true }
+func (incompleteInputError) IncompleteReason() string { return "test_input_incomplete" }
+
+type incompleteInputDetector struct{}
+
+func (incompleteInputDetector) ID() string    { return "test.incomplete" }
+func (incompleteInputDetector) Name() string  { return "Incomplete Input Detector" }
+func (incompleteInputDetector) Priority() int { return 290 }
+func (incompleteInputDetector) Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error) {
+	return nil, incompleteInputError{}
 }
 
 func (d staticDetector) ID() string   { return "test.semantic" }

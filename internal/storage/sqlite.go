@@ -889,7 +889,7 @@ func ensureSiteDefaults(site *Site) {
 		site.Advanced.Certificate.ACME.Domains = append([]string(nil), site.Domains...)
 	}
 	if site.Advanced.Origin.Scheme == "" {
-		site.Advanced.Origin.Scheme = "http"
+		site.Advanced.Origin.Scheme = OriginSchemeFromUpstreams(site.Upstreams)
 	}
 	// Dynamic guard is the safe default for new sites. The API can still reject
 	// an explicit attempt to disable it until per-site runtime semantics exist.

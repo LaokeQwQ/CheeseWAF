@@ -412,10 +412,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) HTTPServer() *http.Server {
 	return &http.Server{
 		Addr:              s.config.Server.Listen,
-		Handler:           s.Handler(),
+		Handler:           withIdleWriteTimeout(s.Handler(), s.config.Server.WriteTimeout),
 		ReadHeaderTimeout: s.config.Server.ReadTimeout,
 		ReadTimeout:       s.config.Server.ReadTimeout,
-		WriteTimeout:      0, // Streaming responses must not inherit a fixed connection deadline.
+		WriteTimeout:      0, // withIdleWriteTimeout applies a rolling deadline to response writes.
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes(s.config),
 	}
@@ -814,6 +814,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				if exhausted, _ := reqCtx.Metadata["detection_budget_exhausted"].(bool); exhausted {
 					engine.RecordBudgetExhaustedPass()
 					log.Printf("waf: detection budget exhausted, forwarding un-analysed request site_id=%q trace_id=%q policy=%q", site.ID, reqCtx.TraceID, policy.WebAttack)
+				} else if incomplete, _ := reqCtx.Metadata["detection_input_incomplete"].(bool); incomplete {
+					// A closed/observe decision must never be silently reduced to a
+					// normal policy log when input coverage was incomplete.
+					log.Printf("waf: input analysis incomplete, forwarding according to explicit fail-mode site_id=%q trace_id=%q policy=%q", site.ID, reqCtx.TraceID, policy.WebAttack)
 				}
 			}
 		}
@@ -1573,20 +1577,24 @@ func evaluateWebAttackPolicyWithEvidence(
 	decision.DetectorID = result.DetectorID
 	// Operational fail-mode from pipeline budget policy is not a "weak signal".
 	// Honor detector action without severity/confidence gates (open/observe/closed).
-	if result.Category == "detection_budget" {
+	if result.Category == "detection_budget" || result.Category == "detection_incomplete" {
+		incompleteKind := "detection budget exhausted"
+		if result.Category == "detection_incomplete" {
+			incompleteKind = "request analysis incomplete"
+		}
 		switch result.Action {
 		case engine.ActionChallenge:
 			decision.Action = engine.ActionChallenge.String()
-			decision.Reason = "detection budget exhausted policy (closed)"
+			decision.Reason = incompleteKind + " policy (closed)"
 		case engine.ActionBlock:
 			decision.Action = engine.ActionBlock.String()
-			decision.Reason = "detection budget exhausted policy (closed-block)"
+			decision.Reason = incompleteKind + " policy (closed-block)"
 		case engine.ActionLog:
 			decision.Action = engine.ActionLog.String()
-			decision.Reason = "detection budget exhausted policy (observe)"
+			decision.Reason = incompleteKind + " policy (observe)"
 		default:
 			decision.Action = engine.ActionLog.String()
-			decision.Reason = "detection budget exhausted policy (open/pass)"
+			decision.Reason = incompleteKind + " policy (open/pass)"
 		}
 		return decision
 	}

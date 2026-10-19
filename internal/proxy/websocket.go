@@ -96,9 +96,11 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 		header.Set("X-Real-IP", clientIP)
 	}
 	upstreamHost := webSocketHost(r, upstream.Host, passHost, hostHeader)
+	subprotocols := webSocketSubprotocols(r.Header)
 	upstreamConn, response, err := websocket.Dial(ctx, upstream.String(), &websocket.DialOptions{
 		HTTPHeader:      header,
 		Host:            upstreamHost,
+		Subprotocols:    subprotocols,
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
@@ -124,8 +126,19 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 		return &webSocketHandshakeError{err: fmt.Errorf("WebSocket upstream handshake: %w", err)}
 	}
 	defer upstreamConn.CloseNow()
+	if response != nil {
+		for _, value := range response.Header.Values("Set-Cookie") {
+			w.Header().Add("Set-Cookie", value)
+		}
+	}
+	selectedSubprotocol := upstreamConn.Subprotocol()
+	var acceptedSubprotocols []string
+	if selectedSubprotocol != "" {
+		acceptedSubprotocols = []string{selectedSubprotocol}
+	}
 	clientConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
+		Subprotocols:       acceptedSubprotocols,
 		CompressionMode:    websocket.CompressionDisabled,
 	})
 	if err != nil {
@@ -179,6 +192,18 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func webSocketSubprotocols(header http.Header) []string {
+	var subprotocols []string
+	for _, value := range header.Values("Sec-WebSocket-Protocol") {
+		for _, protocol := range strings.Split(value, ",") {
+			if protocol = strings.TrimSpace(protocol); protocol != "" {
+				subprotocols = append(subprotocols, protocol)
+			}
+		}
+	}
+	return subprotocols
 }
 
 func webSocketUpstreamURL(target, request *url.URL, originScheme string) (*url.URL, error) {

@@ -1,9 +1,11 @@
 package rules
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"testing"
@@ -102,6 +104,103 @@ func TestEngineARGSRuleMatchesQueryAndURLEncodedFormValues(t *testing.T) {
 				t.Fatalf("ARGS should match argument value: result=%+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestEngineARGSRuleMatchesMultipartFieldsButNotFileNamesOrContent(t *testing.T) {
+	compiled, err := FromConfig([]config.CustomRuleConfig{{
+		ID: "args", Name: "ARGS", Pattern: `(?i)union\s+select`, Location: "args", Action: "block", Severity: "high", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("comment", "union select"); err != nil {
+		t.Fatal(err)
+	}
+	file, err := writer.CreateFormFile("upload", "union select.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(file, "safe file content"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/upload?q=safe", bytes.NewReader(body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(compiled).Detect(context.Background(), reqCtx)
+	if err != nil || result == nil || result.Action != engine.ActionBlock {
+		t.Fatalf("ARGS should match multipart field values: result=%+v err=%v", result, err)
+	}
+
+	// A filename or opaque file body is not an ARGS value by ModSecurity semantics.
+	for _, value := range []string{"union select.txt", "safe file content"} {
+		var fileBody bytes.Buffer
+		fileWriter := multipart.NewWriter(&fileBody)
+		file, err := fileWriter.CreateFormFile("upload", "safe.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(file, value); err != nil {
+			t.Fatal(err)
+		}
+		if err := fileWriter.Close(); err != nil {
+			t.Fatal(err)
+		}
+		fileReq, err := http.NewRequest(http.MethodPost, "/upload", bytes.NewReader(fileBody.Bytes()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fileReq.Header.Set("Content-Type", fileWriter.FormDataContentType())
+		fileCtx, err := engine.NewRequestContext(fileReq, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := New(compiled).Detect(context.Background(), fileCtx)
+		if err != nil || got != nil {
+			t.Fatalf("ARGS must not match uploaded file data %q: result=%+v err=%v", value, got, err)
+		}
+	}
+}
+
+func TestARGSMultipartFieldLimitReportsIncomplete(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for i := 0; i <= maxArgumentFields; i++ {
+		if err := writer.WriteField("field", "value"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "/upload", bytes.NewReader(body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	views := new(requestViews)
+	_ = views.argumentValues(reqCtx)
+	var incomplete interface {
+		AnalysisIncomplete() bool
+		IncompleteReason() string
+	}
+	if !errors.As(views.err, &incomplete) || !incomplete.AnalysisIncomplete() || incomplete.IncompleteReason() != "custom_rule_multipart_limit" {
+		t.Fatalf("multipart argument cap should be reported as incomplete, got %v", views.err)
 	}
 }
 

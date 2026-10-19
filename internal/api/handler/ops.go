@@ -21,39 +21,43 @@ import (
 )
 
 type scheduledTaskResponse struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	Schedule  string    `json:"schedule"`
-	Every     string    `json:"every"`
-	Frequency string    `json:"frequency"`
-	At        string    `json:"at"`
-	Target    string    `json:"target"`
-	Channel   string    `json:"channel"`
-	Recipient string    `json:"recipient"`
-	Period    string    `json:"period"`
-	Format    string    `json:"format"`
-	Keep      int       `json:"keep"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Schedule  string `json:"schedule"`
+	Every     string `json:"every"`
+	Frequency string `json:"frequency"`
+	At        string `json:"at"`
+	Target    string `json:"target"`
+	Channel   string `json:"channel"`
+	Recipient string `json:"recipient"`
+	// RecipientConfigured tells clients that recipient is intentionally redacted
+	// and must be preserved when the task is submitted unchanged.
+	RecipientConfigured bool      `json:"recipient_configured"`
+	Period              string    `json:"period"`
+	Format              string    `json:"format"`
+	Keep                int       `json:"keep"`
+	Enabled             bool      `json:"enabled"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type scheduledTaskPayload struct {
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	Type      string           `json:"type"`
-	Schedule  string           `json:"schedule"`
-	Every     flexibleDuration `json:"every"`
-	Frequency string           `json:"frequency"`
-	At        string           `json:"at"`
-	Target    string           `json:"target"`
-	Channel   string           `json:"channel"`
-	Recipient *string          `json:"recipient"`
-	Period    string           `json:"period"`
-	Format    string           `json:"format"`
-	Keep      int              `json:"keep"`
-	Enabled   bool             `json:"enabled"`
-	CreatedAt time.Time        `json:"created_at"`
+	ID                  string           `json:"id"`
+	Name                string           `json:"name"`
+	Type                string           `json:"type"`
+	Schedule            string           `json:"schedule"`
+	Every               flexibleDuration `json:"every"`
+	Frequency           string           `json:"frequency"`
+	At                  string           `json:"at"`
+	Target              string           `json:"target"`
+	Channel             string           `json:"channel"`
+	Recipient           *string          `json:"recipient"`
+	RecipientConfigured *bool            `json:"recipient_configured"`
+	Period              string           `json:"period"`
+	Format              string           `json:"format"`
+	Keep                int              `json:"keep"`
+	Enabled             bool             `json:"enabled"`
+	CreatedAt           time.Time        `json:"created_at"`
 }
 
 type flexibleDuration time.Duration
@@ -80,7 +84,7 @@ func (h *Handler) UpdateTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, item := range payload {
 		task := item.config()
-		if item.Recipient == nil {
+		if item.Recipient == nil || (item.RecipientConfigured != nil && *item.RecipientConfigured && strings.TrimSpace(stringValue(item.Recipient)) == "") {
 			task.Recipient = existing[task.ID]
 		}
 		req = append(req, task)
@@ -421,21 +425,22 @@ func scheduledTaskResponses(tasks []config.ScheduledTaskConfig, now time.Time) [
 	for _, task := range tasks {
 		normalizeScheduledTask(&task, now)
 		out = append(out, scheduledTaskResponse{
-			ID:        task.ID,
-			Name:      task.Name,
-			Type:      task.Type,
-			Schedule:  task.Schedule,
-			Every:     durationForJSON(task.Every),
-			Frequency: task.Frequency,
-			At:        task.At,
-			Target:    task.Target,
-			Channel:   task.Channel,
-			Recipient: "",
-			Period:    task.Period,
-			Format:    task.Format,
-			Keep:      task.Keep,
-			Enabled:   task.Enabled,
-			CreatedAt: task.CreatedAt,
+			ID:                  task.ID,
+			Name:                task.Name,
+			Type:                task.Type,
+			Schedule:            task.Schedule,
+			Every:               durationForJSON(task.Every),
+			Frequency:           task.Frequency,
+			At:                  task.At,
+			Target:              task.Target,
+			Channel:             task.Channel,
+			Recipient:           "",
+			RecipientConfigured: strings.TrimSpace(task.Recipient) != "",
+			Period:              task.Period,
+			Format:              task.Format,
+			Keep:                task.Keep,
+			Enabled:             task.Enabled,
+			CreatedAt:           task.CreatedAt,
 		})
 	}
 	return out

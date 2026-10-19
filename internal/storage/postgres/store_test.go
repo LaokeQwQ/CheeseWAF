@@ -143,6 +143,18 @@ func TestRebindQuestionMarksToPostgresParameters(t *testing.T) {
 	}
 }
 
+func TestPostgresTimestampMatchesStoredPrecision(t *testing.T) {
+	input := time.Date(2026, 10, 19, 12, 34, 56, 123456789, time.FixedZone("offset", 8*60*60))
+	got := postgresTimestamp(input)
+	want := input.UTC().Truncate(time.Microsecond)
+	if !got.Equal(want) {
+		t.Fatalf("postgresTimestamp() = %s, want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+	if got.Nanosecond()%int(time.Microsecond) != 0 {
+		t.Fatalf("postgresTimestamp() retained sub-microsecond precision: %s", got.Format(time.RFC3339Nano))
+	}
+}
+
 func TestNilStoreOperationsReturnInvalidStore(t *testing.T) {
 	var s *Store
 	if err := s.Migrate(context.Background()); !errors.Is(err, ErrInvalidStore) {

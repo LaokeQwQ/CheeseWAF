@@ -52,10 +52,11 @@ func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
 		if !item.Enabled || strings.TrimSpace(item.Value) == "" {
 			continue
 		}
+		typ := normalizeIntelType(item.Type)
 		indicator := Indicator{
 			ID:         item.ID,
 			Value:      strings.TrimSpace(item.Value),
-			Type:       empty(item.Type, "ip"),
+			Type:       typ,
 			Severity:   strings.ToLower(empty(item.Severity, "medium")),
 			Source:     item.Source,
 			Labels:     cloneStrings(item.Labels),
@@ -64,7 +65,7 @@ func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
 			ExpiresAt:  item.ExpiresAt,
 		}
 		index := len(intel.items)
-		if indicator.Type != "ip" {
+		if typ != "ip" {
 			intel.items = append(intel.items, indicator)
 			continue
 		}
@@ -85,6 +86,15 @@ func NewIntel(configs []config.ThreatIntelConfig) (*Intel, error) {
 		intel.items = append(intel.items, indicator)
 	}
 	return intel, nil
+}
+
+func normalizeIntelType(typ string) string {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "", "ip", "ip-src", "ip-dst", "ipv4-addr", "ipv6-addr", "cidr":
+		return "ip"
+	default:
+		return strings.ToLower(strings.TrimSpace(typ))
+	}
 }
 
 func (i *Intel) Match(raw string) []Indicator {

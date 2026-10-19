@@ -26,11 +26,11 @@ func (s *Server) TLSServer(altSvc string) (*http.Server, error) {
 	}
 	return &http.Server{
 		Addr:              s.config.Server.ListenTLS,
-		Handler:           handler,
+		Handler:           withIdleWriteTimeout(handler, s.config.Server.WriteTimeout),
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: s.config.Server.ReadTimeout,
 		ReadTimeout:       s.config.Server.ReadTimeout,
-		WriteTimeout:      0, // Response writes may stream; upstream/header deadlines remain bounded.
+		WriteTimeout:      0, // withIdleWriteTimeout applies a rolling deadline to response writes.
 		IdleTimeout:       s.config.Server.IdleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes(s.config),
 	}, nil
@@ -51,7 +51,7 @@ func (s *Server) HTTP3Server() (*http3.Server, string, error) {
 	}
 	return &http3.Server{
 		Addr:      addr,
-		Handler:   withQUICReplayGuard(s.Handler()),
+		Handler:   withIdleWriteTimeout(withQUICReplayGuard(s.Handler()), s.config.Server.WriteTimeout),
 		TLSConfig: http3.ConfigureTLSConfig(tlsConfig),
 		QUICConfig: &quic.Config{
 			Allow0RTT:          s.config.Server.HTTP3.ZeroRTT,

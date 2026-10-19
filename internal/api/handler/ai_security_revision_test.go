@@ -84,6 +84,47 @@ func TestRevisionProtectionOffRequiresDestructiveRole(t *testing.T) {
 	}
 }
 
+func TestRevisionProtectionOffTranslationsAreDestructive(t *testing.T) {
+	tool := setProtectionLevelTool{}
+	for _, level := range []string{"off", "关闭", "停用"} {
+		if got := tool.SensitivityForArgs(map[string]any{"level": level}); got != ai.Destructive {
+			t.Errorf("level %q sensitivity = %v, want destructive", level, got)
+		}
+	}
+}
+
+func TestRevisionAIApprovalConfirmationRequiresLocalTransport(t *testing.T) {
+	cfg := config.Default()
+	store := ai.NewApprovalStore()
+	adapter, err := ai.NewGateApprovalAdapter(store, approval.NewGate(1), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{Config: &cfg, AssistantApprovals: store, AssistantGateApproval: adapter})
+	claims := &middleware.Claims{Subject: "approver", ID: "session", Username: "admin", Role: "admin"}
+	for name, invoke := range map[string]func(http.ResponseWriter, *http.Request){
+		"start":   h.StartAIApprovalConfirmation,
+		"confirm": h.ConfirmAIApproval,
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/ai/tools/approvals/missing/confirmation", strings.NewReader(`{}`))
+		r = r.WithContext(context.WithValue(r.Context(), middleware.UserContextKey, claims))
+		w := httptest.NewRecorder()
+		invoke(w, r)
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "AI_APPROVAL_CONFIRMATION_FORBIDDEN") {
+			t.Errorf("%s remote confirmation status=%d body=%s", name, w.Code, w.Body.String())
+		}
+
+		local := httptest.NewRequest(http.MethodPost, "/ai/tools/approvals/missing/confirmation", strings.NewReader(`{}`))
+		local = local.WithContext(context.WithValue(local.Context(), middleware.UserContextKey, claims))
+		local = local.WithContext(context.WithValue(local.Context(), localApprovalTransportKey{}, true))
+		localWriter := httptest.NewRecorder()
+		invoke(localWriter, local)
+		if localWriter.Code == http.StatusForbidden && strings.Contains(localWriter.Body.String(), "AI_APPROVAL_CONFIRMATION_FORBIDDEN") {
+			t.Errorf("%s trusted local confirmation was rejected as remote: status=%d body=%s", name, localWriter.Code, localWriter.Body.String())
+		}
+	}
+}
+
 func TestRevisionHandlerUsesInjectedProductionAIGate(t *testing.T) {
 	cfg := config.Default()
 	store := ai.NewApprovalStore()

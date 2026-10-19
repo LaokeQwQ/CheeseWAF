@@ -117,6 +117,10 @@ func TestSiteConfigRoundTripPreservesOriginSettings(t *testing.T) {
 	if got := SiteToConfig(Site{}).OriginScheme; got != "http" {
 		t.Fatalf("storage origin scheme default not applied: %q", got)
 	}
+	secure := SiteToConfig(Site{Upstreams: []string{"https://origin.example.test"}})
+	if secure.OriginScheme != "https" {
+		t.Fatalf("storage conversion downgraded secure upstream to %q", secure.OriginScheme)
+	}
 }
 
 func TestSiteFromConfigInfersOriginSchemeFromUpstream(t *testing.T) {

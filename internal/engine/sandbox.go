@@ -34,9 +34,10 @@ const (
 	maxInflightRegexMatches = 64
 	// maxInflightGuards bounds detector Guard workers on timeout paths.
 	maxInflightGuards = 128
-	// Keep a site from monopolizing detector guard workers. A blank or
-	// unregistered site falls back to the global guard semaphore only.
-	maxInflightGuardsPerSite = 16
+	// Keep a site from monopolizing detector guard workers. This must exceed the
+	// semantic queue quota because each site may have that many semantic jobs
+	// concurrently entering GuardContext.
+	maxInflightGuardsPerSite = 64
 )
 
 // ErrDetectionOverload reports that Guard could not start detector work
@@ -246,7 +247,6 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 		siteToken.release()
 		return zero, ErrDetectionOverload
 	}
-	defer siteToken.release()
 	done := make(chan struct {
 		res T
 		err error
@@ -254,6 +254,10 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 
 	go func() {
 		defer func() { <-guardSlots }()
+		// Keep the site permit until detector work actually exits. Releasing it
+		// when the caller times out would let an uncooperative detector exceed
+		// the per-site worker bound.
+		defer siteToken.release()
 		defer func() {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())

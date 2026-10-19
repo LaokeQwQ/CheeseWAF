@@ -127,6 +127,56 @@ func TestWebSocketPassHostUsesPublicHost(t *testing.T) {
 	}
 }
 
+func TestWebSocketPreservesUpstreamCookieAndSubprotocol(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Set-Cookie", "session=issued; Path=/; HttpOnly")
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			Subprotocols:    []string{"chat.v2"},
+			CompressionMode: websocket.CompressionDisabled,
+		})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		if typ, payload, err := conn.Read(r.Context()); err == nil {
+			_ = conn.Write(r.Context(), typ, payload)
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := reviewProxyConfig(upstream.URL)
+	cfg.Sites[0].WAF.WebSocketEnabled = true
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	frontend := httptest.NewServer(server.Handler())
+	defer frontend.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(frontend.URL, "http"), &websocket.DialOptions{
+		Subprotocols: []string{"chat.v1", "chat.v2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if got := conn.Subprotocol(); got != "chat.v2" {
+		t.Fatalf("client subprotocol = %q, want chat.v2", got)
+	}
+	if response == nil || response.Header.Get("Set-Cookie") != "session=issued; Path=/; HttpOnly" {
+		t.Fatalf("upgrade Set-Cookie = %v, want upstream session cookie", response)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if typ, payload, err := conn.Read(ctx); err != nil || typ != websocket.MessageText || string(payload) != "hello" {
+		t.Fatalf("websocket echo = (%v, %q, %v), want text hello", typ, payload, err)
+	}
+}
+
 func TestWebSocketOriginSchemeOverridesUpstreamScheme(t *testing.T) {
 	target, _ := url.Parse("http://origin.example.test/base")
 	request, _ := url.Parse("/rewritten?x=1")

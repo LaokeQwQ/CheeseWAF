@@ -43,6 +43,50 @@ func TestListTasksReturnsReadableDurations(t *testing.T) {
 	}
 }
 
+func TestListTasksRedactsButMarksConfiguredRecipient(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{
+		ID: "security-report", Name: "Security report", Type: "security_report",
+		Channel: "webhook", Recipient: "https://hooks.example.test/report", Enabled: true,
+	}}
+	handler := New(Options{Config: &cfg})
+	recorder := httptest.NewRecorder()
+	handler.ListTasks(recorder, httptest.NewRequest(http.MethodGet, "/api/scheduler/tasks", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list tasks failed, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data []struct {
+			Recipient  string `json:"recipient"`
+			Configured bool   `json:"recipient_configured"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(response.Data) != 1 || response.Data[0].Recipient != "" || !response.Data[0].Configured {
+		t.Fatalf("recipient redaction marker mismatch: %+v", response.Data)
+	}
+}
+
+func TestUpdateTasksPreservesMarkedRedactedRecipient(t *testing.T) {
+	cfg := config.Default()
+	cfg.Scheduler.Tasks = []config.ScheduledTaskConfig{{
+		ID: "security-report", Name: "Security report", Type: "security_report",
+		Frequency: "daily", Channel: "webhook", Recipient: "https://hooks.example.test/report", Enabled: true,
+	}}
+	handler := New(Options{Config: &cfg})
+	body := `[{"id":"security-report","name":"Security report","type":"security_report","frequency":"daily","channel":"webhook","recipient":"","recipient_configured":true,"enabled":true}]`
+	recorder := httptest.NewRecorder()
+	handler.UpdateTasks(recorder, httptest.NewRequest(http.MethodPut, "/api/scheduler/tasks", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update tasks failed, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := cfg.Scheduler.Tasks[0].Recipient; got != "https://hooks.example.test/report" {
+		t.Fatalf("marked redacted recipient was overwritten: %q", got)
+	}
+}
+
 func TestUpdateTasksAcceptsReadableDurationsAndWrappedPayload(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")

@@ -54,6 +54,7 @@ type ReportFormValues = {
   at: string;
   channel: string;
   recipient: string;
+  recipient_configured?: boolean;
   period: string;
 };
 
@@ -182,6 +183,14 @@ export default function OperationsPage() {
     if (reportFormDirty.current.has('at')) submittedForm.at = reportForm.at;
     if (reportFormDirty.current.has('channel')) submittedForm.channel = reportForm.channel;
     if (reportFormDirty.current.has('recipient')) submittedForm.recipient = reportForm.recipient;
+    if (reportFormDirty.current.has('recipient')) {
+      submittedForm.recipient_configured = Boolean(reportForm.recipient.trim());
+    } else if (reportTask.recipient_configured) {
+      // The API redacts configured destinations. Keep the marker so a save of
+      // another field does not replace the hidden webhook/path with a default.
+      submittedForm.recipient = '';
+      submittedForm.recipient_configured = true;
+    }
     if (reportFormDirty.current.has('period')) submittedForm.period = reportForm.period;
     tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...submittedForm }, t));
   };
@@ -617,7 +626,8 @@ function reportFormFromTask(task: ScheduledTask): ReportFormValues {
     frequency: task.frequency ?? 'daily',
     at: task.at ?? '08:00',
     channel: task.channel ?? 'file',
-    recipient: task.recipient ?? './data/reports',
+    recipient: task.recipient ?? (task.recipient_configured ? '' : './data/reports'),
+    recipient_configured: task.recipient_configured,
     period: task.period ?? 'daily',
   };
 }
@@ -695,6 +705,9 @@ function normalizeTaskFormValues(base: ScheduledTask, values: TaskFormValues): P
     target: values.target || base.target || '',
     channel: values.channel || '',
     recipient: values.recipient || '',
+    recipient_configured: base.recipient_configured && !values.recipient?.trim()
+      ? true
+      : Boolean(values.recipient?.trim()),
     keep: Number(values.keep || 7),
     enabled: values.enabled,
   };

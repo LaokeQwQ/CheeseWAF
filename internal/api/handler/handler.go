@@ -1651,6 +1651,29 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		ConfigPath:         h.ConfigPath,
 		Store:              h.Store,
 		DefaultAdminListen: defaultAdminListen,
+		ApplyRuntime: func(next, previous *config.Config) (func() error, error) {
+			rollback := func() error {
+				var rollbackErr error
+				if h.OnProtectionChanged != nil {
+					rollbackErr = errors.Join(rollbackErr, h.OnProtectionChanged(previous.Protection))
+				}
+				if h.OnConfigChanged != nil {
+					rollbackErr = errors.Join(rollbackErr, h.OnConfigChanged(previous))
+				}
+				return rollbackErr
+			}
+			if h.OnProtectionChanged != nil {
+				if err := h.OnProtectionChanged(next.Protection); err != nil {
+					return rollback, err
+				}
+			}
+			if h.OnConfigChanged != nil {
+				if err := h.OnConfigChanged(next); err != nil {
+					return rollback, err
+				}
+			}
+			return rollback, nil
+		},
 	}, setup.SetupPayload{
 		Username:          req.Username,
 		Password:          req.Password,
@@ -1676,12 +1699,6 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		if err := h.publishConfig(result.Config); err != nil {
 			writeError(w, http.StatusInternalServerError, "CONFIG_PUBLISH_ERROR", err.Error())
 			return
-		}
-		if h.OnConfigChanged != nil {
-			if err := h.OnConfigChanged(result.Config); err != nil {
-				writeError(w, http.StatusInternalServerError, "CONFIG_RUNTIME_SYNC_ERROR", err.Error())
-				return
-			}
 		}
 	}
 	if draftID := setupSessionID(r); draftID != "" {

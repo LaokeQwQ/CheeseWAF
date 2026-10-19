@@ -23,9 +23,9 @@ const defaultRequestBodyLimit = 8 << 20
 // an unbounded goroutine leak.
 const maxInflightBodyReads = 256
 
-// Keep a noisy site from consuming every body-reader worker. The global pool
-// remains the hard process bound; this smaller per-site quota leaves room for
-// other sites to make progress while a single tenant uploads slowly.
+// Keep a noisy site from consuming every body-reader worker while other sites
+// are active. When this is the only active site, admission may use otherwise
+// idle global capacity; the global pool remains the hard process bound.
 const maxInflightBodyReadsPerSite = 32
 
 var bodyReadSlots = make(chan struct{}, maxInflightBodyReads)
@@ -205,7 +205,10 @@ func (c *RequestContext) EnsureBodyContext(ctx context.Context) error {
 	c.DecodedBody = nil
 	c.bodyMu.Unlock()
 
-	siteToken, admitted := bodyReadSiteAdmissions.acquire(c.SiteID)
+	// The site limit is a fairness boundary, not an arbitrary hard ceiling. A
+	// lone site may use available process-wide body readers; once another site
+	// is active, its configured quota applies again.
+	siteToken, admitted := bodyReadSiteAdmissions.acquireWithGlobalCapacity(c.SiteID, len(bodyReadSlots) < cap(bodyReadSlots))
 	if !admitted {
 		c.finishBodyRead(nil, nil, ErrRequestBodyReadOverload, done, originalBody, closeOnce)
 		closeBodyReadSource(originalBody, closeOnce)

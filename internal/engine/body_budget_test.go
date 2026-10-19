@@ -101,6 +101,46 @@ func TestBodyReadSiteAdmissionLeavesGlobalCapacityForOtherSites(t *testing.T) {
 	quiet.release()
 }
 
+func TestBodyReadSiteAdmissionUsesIdleGlobalCapacityForLoneSite(t *testing.T) {
+	admission := siteAdmission{maxActive: maxInflightBodyReadsPerSite, maxSites: 8}
+	tokens := make([]siteAdmissionToken, 0, maxInflightBodyReadsPerSite+1)
+	for i := 0; i < maxInflightBodyReadsPerSite+1; i++ {
+		token, admitted := admission.acquireWithGlobalCapacity("lone-site", true)
+		if !admitted {
+			t.Fatalf("lone site was rejected at idle global capacity slot %d", i+1)
+		}
+		tokens = append(tokens, token)
+	}
+	for _, token := range tokens {
+		token.release()
+	}
+}
+
+func TestBodyReadSiteAdmissionRestoresFairQuotaWhenSitesCompete(t *testing.T) {
+	admission := siteAdmission{maxActive: maxInflightBodyReadsPerSite, maxSites: 8}
+	tokens := make([]siteAdmissionToken, 0, maxInflightBodyReadsPerSite)
+	for i := 0; i < maxInflightBodyReadsPerSite; i++ {
+		token, admitted := admission.acquireWithGlobalCapacity("noisy-site", true)
+		if !admitted {
+			t.Fatalf("noisy site admission rejected slot %d/%d", i+1, maxInflightBodyReadsPerSite)
+		}
+		tokens = append(tokens, token)
+	}
+	quiet, admitted := admission.acquireWithGlobalCapacity("quiet-site", true)
+	if !admitted {
+		t.Fatal("quiet site was rejected while global capacity remained")
+	}
+	defer quiet.release()
+	defer func() {
+		for _, token := range tokens {
+			token.release()
+		}
+	}()
+	if _, admitted := admission.acquireWithGlobalCapacity("noisy-site", true); admitted {
+		t.Fatal("noisy site exceeded its fairness quota while another site was active")
+	}
+}
+
 func TestBodyReadSiteBudgetLeavesOtherSiteCapacity(t *testing.T) {
 	const perRequest = (8 << 20) - 1
 	const noisySite = "budget-noisy"

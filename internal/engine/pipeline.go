@@ -232,6 +232,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
 	}
 	var firstDetected *DetectionResult
+	inputIncompleteReason := ""
 	preFilters := snapshot.preFilters
 	semanticGroup := snapshot.semanticGroup
 
@@ -299,11 +300,27 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 			if budgetAnalysisIncomplete(ctx, reqCtx, err) {
 				return finalizeBudgetExhausted(reqCtx, firstDetected), nil
 			}
-			reason, _ := detectorIncompleteReason(err)
-			if reason == "" {
-				reason = "detector_error"
+			if reason, incomplete := detectorIncompleteReason(err); incomplete {
+				// A completed detector with incomplete input must not prevent later
+				// semantic detectors from examining the request. Preserve its audit
+				// metadata and apply the configured fail-mode after all checks run.
+				mergeRequestContext(reqCtx, fork)
+				if result != nil {
+					reqCtx.Results = append(reqCtx.Results, *result)
+					if result.Detected && result.Action == ActionBlock {
+						return result, nil
+					}
+					if result.Detected && (firstDetected == nil || betterDetectionResult(result, firstDetected)) {
+						snapshot := *result
+						firstDetected = &snapshot
+					}
+				}
+				if inputIncompleteReason == "" {
+					inputIncompleteReason = reason
+				}
+				continue
 			}
-			return finalizeInputIncomplete(reqCtx, firstDetected, reason), nil
+			return finalizeInputIncomplete(reqCtx, firstDetected, "detector_error"), nil
 		}
 		mergeRequestContext(reqCtx, fork)
 		if result == nil {
@@ -405,7 +422,6 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 
 		// Merge in priority order for stable Results / Metadata.
 		var detectErr error
-		inputIncompleteReason := ""
 		guardOverloaded := false
 		for i := range outs {
 			out := outs[i]
@@ -461,6 +477,9 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		}
 	}
 
+	if inputIncompleteReason != "" {
+		return finalizeInputIncomplete(reqCtx, firstDetected, inputIncompleteReason), nil
+	}
 	if firstDetected != nil {
 		return firstDetected, nil
 	}

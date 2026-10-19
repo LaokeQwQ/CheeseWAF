@@ -62,3 +62,35 @@ func TestJSONDuplicateKeyCandidatesAndIncompleteSignal(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONDuplicateKeysUnderGenericMediaType(t *testing.T) {
+	body := []byte(`{"q":"1' OR '1'='1","q":"benign"}`)
+	req := httptest.NewRequest("POST", "http://example.com/api", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "text/plain")
+	inputs, status := bodyInputsWithTraversalStatus(req, body)
+	if !status.omitted || status.reason != jsonDuplicateKeyReason {
+		t.Fatalf("duplicate keys under generic media type status=%+v, want duplicate-key incomplete", status)
+	}
+	foundRaw := false
+	for _, input := range inputs {
+		if input.Source == "body.json.raw" && input.Name == "body" && input.Raw == string(body) {
+			foundRaw = true
+			break
+		}
+	}
+	if !foundRaw {
+		t.Fatalf("generic JSON duplicate-key raw candidate missing: %+v", inputs)
+	}
+
+	ctx, err := engine.NewRequestContext(req, "site-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewAnalyzer("block", 2).Detect(context.Background(), ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected {
+		t.Fatalf("attack in first duplicate value was not inspected: result=%+v metadata=%+v", result, ctx.Metadata)
+	}
+}

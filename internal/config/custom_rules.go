@@ -164,13 +164,13 @@ func modSecurityLocation(variable string) (string, bool) {
 
 func modSecuritySeverity(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "0", "emergency":
+	case "0", "emergency", "1", "alert", "2", "critical":
 		return "critical"
-	case "1", "alert", "high":
+	case "3", "error", "high":
 		return "high"
-	case "2", "error", "medium":
+	case "4", "warning", "medium":
 		return "medium"
-	case "3", "warning", "low":
+	case "5", "notice", "6", "info", "7", "debug", "8", "disabled", "low":
 		return "low"
 	default:
 		return "medium"
@@ -180,11 +180,11 @@ func modSecuritySeverity(value string) string {
 // MergeCustomRules merges imported rules by ID or location+pattern. Existing
 // order is retained and imported entries replace matching entries.
 func MergeCustomRules(existing, imported []CustomRuleConfig) ([]CustomRuleConfig, error) {
-	base, err := PrepareCustomRules(existing)
+	base, err := prepareCustomRules(existing, false)
 	if err != nil {
 		return nil, err
 	}
-	next, err := PrepareCustomRules(imported)
+	next, err := prepareCustomRules(imported, false)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,10 @@ func MergeCustomRules(existing, imported []CustomRuleConfig) ([]CustomRuleConfig
 		byMatch[rule.Location+"\n"+rule.Pattern] = i
 	}
 	for _, rule := range next {
-		idx, ok := byID[rule.ID]
+		idx, ok := -1, false
+		if rule.ID != "" {
+			idx, ok = byID[rule.ID]
+		}
 		if !ok {
 			idx, ok = byMatch[rule.Location+"\n"+rule.Pattern]
 		}
@@ -218,7 +221,9 @@ func MergeCustomRules(existing, imported []CustomRuleConfig) ([]CustomRuleConfig
 			byMatch[rule.Location+"\n"+rule.Pattern] = idx
 			continue
 		}
-		byID[rule.ID] = len(merged)
+		if rule.ID != "" {
+			byID[rule.ID] = len(merged)
+		}
 		byMatch[rule.Location+"\n"+rule.Pattern] = len(merged)
 		merged = append(merged, rule)
 	}
@@ -325,6 +330,13 @@ func yamlMappingHasKey(node *yaml.Node, key string) bool {
 // PrepareCustomRules validates a complete replacement set before publishing it.
 // On any validation error it returns no rules so callers can keep the old set.
 func PrepareCustomRules(rules []CustomRuleConfig) ([]CustomRuleConfig, error) {
+	return prepareCustomRules(rules, true)
+}
+
+// prepareCustomRules validates and normalizes a rule set. IDs are generated
+// only for a complete published set; merge operations keep omitted IDs absent
+// so a derived ID cannot replace an unrelated rule.
+func prepareCustomRules(rules []CustomRuleConfig, generateIDs bool) ([]CustomRuleConfig, error) {
 	if rules == nil {
 		rules = []CustomRuleConfig{}
 	}
@@ -352,7 +364,10 @@ func PrepareCustomRules(rules []CustomRuleConfig) ([]CustomRuleConfig, error) {
 	if err := validateCustomRuleDuplicates(normalized); err != nil {
 		return nil, err
 	}
-	return assignCustomRuleIDs(normalized), nil
+	if generateIDs {
+		return assignCustomRuleIDs(normalized), nil
+	}
+	return normalized, nil
 }
 
 func normalizeCustomRule(rule CustomRuleConfig) CustomRuleConfig {

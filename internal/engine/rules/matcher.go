@@ -1,9 +1,11 @@
 package rules
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"sort"
@@ -23,6 +25,11 @@ type requestViews struct {
 	cookies      string
 	cookiesReady bool
 }
+
+const (
+	maxArgumentFields     = 128
+	maxArgumentValueBytes = 16 << 10
+)
 
 func (v *requestViews) match(rule Rule, reqCtx *engine.RequestContext) string {
 	if reqCtx == nil || reqCtx.Request == nil {
@@ -172,7 +179,15 @@ func (v *requestViews) argumentValues(reqCtx *engine.RequestContext) []string {
 	for _, key := range queryKeys {
 		values = append(values, query[key]...)
 	}
-	mediaType, _, mediaTypeErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	mediaType, mediaParams, mediaTypeErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaTypeErr != nil {
+		// A malformed form media type means the body view was not covered. Keep
+		// query values available, but make the incomplete inspection explicit.
+		contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+		if strings.HasPrefix(contentType, "multipart/form-data") || strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+			v.err = ruleInputIncompleteError{reason: "custom_rule_form_media_type"}
+		}
+	}
 	if mediaTypeErr == nil && strings.EqualFold(mediaType, "application/x-www-form-urlencoded") {
 		form, err := url.ParseQuery(string(reqCtx.DecodedBody))
 		if err != nil {
@@ -186,12 +201,71 @@ func (v *requestViews) argumentValues(reqCtx *engine.RequestContext) []string {
 		for _, key := range formKeys {
 			values = append(values, form[key]...)
 		}
+	} else if mediaTypeErr == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		values = append(values, multipartArgumentValues(reqCtx.DecodedBody, mediaParams["boundary"], &v.err)...)
 	}
 	return values
 }
 
-type ruleInputIncompleteError struct{}
+// multipartArgumentValues mirrors the non-file portion of ModSecurity ARGS.
+// Limits are deliberately stricter than the enclosing request-body ceiling so
+// a multipart request cannot create unbounded parser work or retained values.
+func multipartArgumentValues(body []byte, boundary string, incomplete *error) []string {
+	if boundary == "" || len(body) == 0 {
+		*incomplete = ruleInputIncompleteError{reason: "custom_rule_multipart_incomplete"}
+		return nil
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	values := make([]string, 0)
+	parts := 0
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			return values
+		}
+		if err != nil {
+			*incomplete = ruleInputIncompleteError{reason: "custom_rule_multipart_incomplete"}
+			return values
+		}
+		parts++
+		if parts > maxArgumentFields {
+			*incomplete = ruleInputIncompleteError{reason: "custom_rule_multipart_limit"}
+			return values
+		}
+		if part.FileName() != "" {
+			// Files are not ARGS values. Drain this bounded request-body part so
+			// multipart framing can continue to the next ordinary field.
+			if _, err := io.Copy(io.Discard, part); err != nil {
+				*incomplete = ruleInputIncompleteError{reason: "custom_rule_multipart_incomplete"}
+				return values
+			}
+			continue
+		}
+		value, err := io.ReadAll(io.LimitReader(part, maxArgumentValueBytes+1))
+		if err != nil {
+			*incomplete = ruleInputIncompleteError{reason: "custom_rule_multipart_incomplete"}
+			return values
+		}
+		if len(value) > maxArgumentValueBytes {
+			*incomplete = ruleInputIncompleteError{reason: "custom_rule_multipart_limit"}
+			return values
+		}
+		values = append(values, string(value))
+	}
+}
 
-func (ruleInputIncompleteError) Error() string            { return "custom rule JSON field inspection incomplete" }
+type ruleInputIncompleteError struct{ reason string }
+
+func (e ruleInputIncompleteError) Error() string {
+	if e.reason == "" {
+		return "custom rule field inspection incomplete"
+	}
+	return "custom rule field inspection incomplete: " + e.reason
+}
 func (ruleInputIncompleteError) AnalysisIncomplete() bool { return true }
-func (ruleInputIncompleteError) IncompleteReason() string { return "custom_rule_json_field_limit" }
+func (e ruleInputIncompleteError) IncompleteReason() string {
+	if e.reason == "" {
+		return "custom_rule_json_field_limit"
+	}
+	return e.reason
+}

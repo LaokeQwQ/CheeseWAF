@@ -267,13 +267,17 @@ sudo install -m 0755 cheesewaf /usr/local/bin/cheesewaf
 sudo ln -sf /usr/local/bin/cheesewaf /usr/local/bin/waf-cli
 sudo mkdir -p /usr/share/cheesewaf/web /var/lib/cheesewaf /var/log/cheesewaf
 sudo cp -R web/dist/. /usr/share/cheesewaf/web/
-sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf 2>/dev/null || true
-sudo install -d -o root -g cheesewaf -m 0770 /etc/cheesewaf
+if ! id cheesewaf >/dev/null 2>&1; then
+  sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
+fi
+sudo install -d -o root -g cheesewaf -m 01770 /etc/cheesewaf
 # 仅在运行时配置不存在时初始化一次；之后只编辑运行时副本，
 # 不要修改版本库中的 configs/cheesewaf.yaml 模板。
 if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
-  sudo install -o root -g cheesewaf -m 0660 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
+  sudo install -o cheesewaf -g cheesewaf -m 0600 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
 fi
+sudo chown cheesewaf:cheesewaf /etc/cheesewaf/cheesewaf.yaml
+sudo chmod 0600 /etc/cheesewaf/cheesewaf.yaml
 sudo chown -R cheesewaf:cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
 
@@ -298,7 +302,7 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-systemd 沙箱允许在 `/etc/cheesewaf` 目录内原子替换配置；该目录由 `root:cheesewaf` 所有并设为 `0770`，运行时配置保持 root 所有但对服务组可读写。安装后请完成 setup、保存一次系统配置并重启服务，确认配置在沙箱下仍能保存。
+systemd 沙箱允许在 `/etc/cheesewaf` 目录内原子替换配置；该目录由 `root:cheesewaf` 所有并设为带 sticky bit 的 `01770`，防止服务账号删除 root 所有的环境文件和安装回执。运行时配置由 `cheesewaf` 服务账号所有、权限为 `0600`，可安全完成原子保存。安装后请完成 setup、保存一次系统配置并重启服务，确认配置在沙箱下仍能保存。
 
 安装器会用同一 release 中的 `SHA256SUMS` 校验压缩包。这只能检测传输损坏，不能独立证明 release 未被发布账号替换。需要 provenance 校验时，请安装固定版本的 `cosign` 并设置 `CHEESEWAF_VERIFY_SIGNATURE=1`；安装器会先验证 GitHub Actions 为 `SHA256SUMS` 生成的 keyless 签名 bundle，再执行 release 中的安装代码。安装器默认将管理口绑定到 `127.0.0.1:9443`。只有明确设置 `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` 时才公开监听；远程访问建议使用反向代理或 SSH 隧道。初始化 URL 和 Token 有效期均为 10 分钟，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
 

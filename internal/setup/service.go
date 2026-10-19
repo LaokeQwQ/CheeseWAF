@@ -44,8 +44,12 @@ type CompleteOptions struct {
 	Paths              DefaultPaths
 	Config             *config.Config
 	Store              storage.Store
-	markComplete       func(string) error
-	persistUser        func(context.Context, storage.Store, *storage.User, bool) error
+	// ApplyRuntime applies the completed setup configuration before setup is
+	// marked complete. It returns a compensating action that restores the prior
+	// runtime state if application partially fails or setup cannot commit.
+	ApplyRuntime func(next, previous *config.Config) (rollback func() error, err error)
+	markComplete func(string) error
+	persistUser  func(context.Context, storage.Store, *storage.User, bool) error
 }
 
 type CompleteResult struct {
@@ -166,11 +170,24 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err := persistUser(ctx, store, user, false); err != nil {
 		return nil, rollbackSetup(ctx, store, cfg, previousConfig, nil, fileState, err)
 	}
+	var rollbackRuntime func() error
+	if opts.ApplyRuntime != nil {
+		rollbackRuntime, err = opts.ApplyRuntime(cfg, previousConfig)
+		if err != nil {
+			if rollbackRuntime != nil {
+				err = errors.Join(err, rollbackRuntime())
+			}
+			return nil, rollbackSetup(ctx, store, cfg, previousConfig, user, fileState, err)
+		}
+	}
 	markComplete := opts.markComplete
 	if markComplete == nil {
 		markComplete = MarkComplete
 	}
 	if err := markComplete(paths.DataDir); err != nil {
+		if rollbackRuntime != nil {
+			err = errors.Join(err, rollbackRuntime())
+		}
 		return nil, rollbackSetup(ctx, store, cfg, previousConfig, user, fileState, err)
 	}
 	committed = true

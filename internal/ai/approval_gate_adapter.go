@@ -30,9 +30,16 @@ var (
 	ErrHighRiskCredentialVerifierUnavailable = errors.New("high-risk AI credential verifier is unavailable")
 	ErrHighRiskCredentialRejected            = errors.New("high-risk AI credential was rejected")
 	ErrHighRiskCredentialProofInvalid        = errors.New("high-risk AI credential proof is invalid")
+	ErrHighRiskCredentialLocked              = errors.New("high-risk AI credential challenge is locked after repeated failures")
+	ErrHighRiskCredentialBusy                = errors.New("high-risk AI credential verification is already in progress")
 )
 
 const highRiskCredentialProofTTL = time.Minute
+
+const (
+	highRiskCredentialMaxFailures = 5
+	highRiskCredentialLockWindow  = 5 * time.Minute
+)
 
 // GateApprovalChallenge is the server-created challenge returned before a
 // destructive AI request can be confirmed. WarningStartedAt is authoritative;
@@ -115,6 +122,14 @@ type gateApprovalChallengeState struct {
 	intentDigest   string
 	proof          GateApprovalCredentialProof
 	proofExpiresAt time.Time
+	failures       int
+	verifying      bool
+}
+
+type gateCredentialBudget struct {
+	failures  int
+	verifying bool
+	expiresAt time.Time
 }
 
 // GateApprovalAdapter is the narrow bridge between the historical AI
@@ -136,6 +151,7 @@ type GateApprovalAdapter struct {
 	mu                 sync.Mutex
 	bindings           map[string]gateApprovalBinding
 	challenges         map[string]gateApprovalChallengeState
+	credentialBudgets  map[string]gateCredentialBudget
 	credentialVerifier GateApprovalCredentialVerifier
 }
 
@@ -147,12 +163,13 @@ func NewGateApprovalAdapter(store *ApprovalStore, gate *approval.Gate, policyEpo
 		return nil, ErrHighRiskApprovalUnavailable
 	}
 	return &GateApprovalAdapter{
-		store:       store,
-		gate:        gate,
-		policyEpoch: policyEpoch,
-		now:         time.Now,
-		bindings:    make(map[string]gateApprovalBinding),
-		challenges:  make(map[string]gateApprovalChallengeState),
+		store:             store,
+		gate:              gate,
+		policyEpoch:       policyEpoch,
+		now:               time.Now,
+		bindings:          make(map[string]gateApprovalBinding),
+		challenges:        make(map[string]gateApprovalChallengeState),
+		credentialBudgets: make(map[string]gateCredentialBudget),
 	}, nil
 }
 
@@ -432,19 +449,59 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 	proof := state.proof
 	useCachedProof := state.challenge.ConfirmationStep >= 2 && state.proofExpiresAt.After(now) && proof.valid()
 	verifier := a.credentialVerifier
-	a.mu.Unlock()
+	budgetKey := actor.Subject + ":" + actor.SessionID
 	if !useCachedProof {
+		budget := a.credentialBudgets[budgetKey]
+		if !budget.verifying && !budget.expiresAt.After(now) {
+			budget = gateCredentialBudget{expiresAt: now.Add(highRiskCredentialLockWindow)}
+		}
+		if state.failures >= highRiskCredentialMaxFailures || budget.failures >= highRiskCredentialMaxFailures {
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialLocked
+		}
+		if state.verifying || budget.verifying {
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialBusy
+		}
 		if verifier == nil {
+			a.mu.Unlock()
 			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialVerifierUnavailable
 		}
+		state.verifying = true
+		a.challenges[id] = state
+		budget.verifying = true
+		a.credentialBudgets[budgetKey] = budget
+	}
+	a.mu.Unlock()
+	if !useCachedProof {
 		verifiedProof, err := verifier(ctx, actor, input)
+		a.mu.Lock()
+		state = a.challenges[id]
+		state.verifying = false
+		budget := a.credentialBudgets[budgetKey]
+		budget.verifying = false
 		if err != nil {
+			state.failures++
+			budget.failures++
+			a.challenges[id] = state
+			budget.expiresAt = now.Add(highRiskCredentialLockWindow)
+			a.credentialBudgets[budgetKey] = budget
+			a.mu.Unlock()
 			return GateApprovalResult{Approval: request, Challenge: state.challenge}, fmt.Errorf("%w: %v", ErrHighRiskCredentialRejected, err)
 		}
 		proof = verifiedProof
 		if !proof.valid() {
+			state.failures++
+			budget.failures++
+			a.challenges[id] = state
+			budget.expiresAt = now.Add(highRiskCredentialLockWindow)
+			a.credentialBudgets[budgetKey] = budget
+			a.mu.Unlock()
 			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialProofInvalid
 		}
+		a.challenges[id] = state
+		a.credentialBudgets[budgetKey] = budget
+		a.mu.Unlock()
 	}
 	return a.confirmWithProof(id, actor, input, proof)
 }
