@@ -670,10 +670,10 @@ func TestAdminHandlerAllowsFirstInstallPathsBeforeSecurityEntry(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}), "security-entry-secret")
 
-	for _, path := range []string{"/", "/setup", "/api/setup/status", "/api/setup", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test"} {
+	for _, path := range []string{"/setup", "/api/setup/status", "/api/setup", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
-		if path == "/" || path == "/setup" {
+		if path == "/setup" {
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("first-install console path %s returned %d: %s", path, recorder.Code, recorder.Body.String())
 			}

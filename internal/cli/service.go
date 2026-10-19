@@ -1023,11 +1023,11 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 	if now == nil {
 		now = time.Now
 	}
-	// The first-install endpoints perform their own setup-token and origin
-	// checks. Keep them reachable while the completion marker is absent so a
-	// persisted post-install security entry cannot lock the wizard behind the
-	// very gate it is meant to configure.
-	if cfg != nil && setup.NeedsSetup(cfg.Setup.DataDir) && isFirstInstallPath(r.URL.Path) {
+	// First-install endpoints perform their own setup-token, completion, and
+	// origin checks. Keep those routes reachable so a persisted security entry
+	// cannot lock the wizard behind the very gate it is meant to configure.
+	// No other API or UI route is included in this allowlist.
+	if isFirstInstallPath(r.URL.Path) {
 		return true
 	}
 	login := config.Default().Console.Login
@@ -1091,7 +1091,7 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 func isFirstInstallPath(path string) bool {
 	path = strings.TrimRight(path, "/")
 	switch path {
-	case "", "/setup", "/api/setup", "/api/setup/status", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test", "/api/setup/integrations/victoria/test":
+	case "/setup", "/api/setup", "/api/setup/status", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test", "/api/setup/integrations/victoria/test":
 		return true
 	}
 	return false

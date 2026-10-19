@@ -135,7 +135,7 @@ for _ in $(seq 1 45); do
     echo "::error::container exited during startup smoke" >&2
     exit 1
   fi
-  if curl --fail --silent --show-error --insecure "https://127.0.0.1:${host_port}/" >/dev/null 2>&1; then
+  if curl --fail --silent --show-error --insecure "https://127.0.0.1:${host_port}/health/ready" >/dev/null 2>&1; then
     ready="yes"
     break
   fi
