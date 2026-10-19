@@ -506,10 +506,16 @@ func runServeCRPApprove(t *testing.T, ctx context.Context, requester *http.Clien
 	case <-time.After(approval.WarningDelay):
 	}
 	checkpoint := map[string]any{"confirmation_id": started.Challenge.ConfirmationID, "confirmation_phrase": started.Challenge.Phrase, "password": "launcher-approver-password", "second_confirmation": true}
+	// CRP approvals are classified as high-risk cluster operations by the HTTP
+	// handler. The first confirmation records the second checkpoint and must
+	// return the documented third-confirmation challenge before authorization
+	// can be committed.
 	var confirmed struct {
 		Record approval.Record `json:"record"`
 	}
-	runServeCRPJSON(t, ctx, approver, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation", approverCSRF, checkpoint, http.StatusOK, &confirmed)
+	runServeCRPJSON(t, ctx, approver, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation", approverCSRF, checkpoint, http.StatusConflict, nil)
+	final := map[string]any{"confirmation_id": started.Challenge.ConfirmationID, "confirmation_phrase": started.Challenge.Phrase, "password": "launcher-approver-password", "second_confirmation": true, "third_confirmation": true}
+	runServeCRPJSON(t, ctx, approver, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation", approverCSRF, final, http.StatusOK, &confirmed)
 	if confirmed.Record.Status != approval.StatusApproved || confirmed.Record.Commit == nil {
 		t.Fatalf("approval was not durably authorized: %+v", confirmed.Record)
 	}
