@@ -16,6 +16,7 @@ type ReviewQueue interface {
 }
 
 const selectedInspectionURIKey = "waf_inspection_uri"
+const reviewCandidateURIKey = "review_candidate_uri"
 
 func (s *Server) SetReviewQueue(queue ReviewQueue) {
 	if s == nil {
@@ -119,6 +120,9 @@ func reviewItemFromContext(reqCtx *engine.RequestContext) *storage.ReviewItem {
 		item.URI = uri
 	}
 	if cand, ok := reqCtx.Metadata["review_candidate"].(map[string]any); ok && cand != nil {
+		if uri, ok := reqCtx.Metadata[reviewCandidateURIKey].(string); ok && uri != "" {
+			item.URI = uri
+		}
 		item.Category = anyString(cand["category"])
 		item.Severity = anyString(cand["severity"])
 		item.Payload = anyString(cand["payload"])

@@ -32,6 +32,7 @@ func (s *Server) detectRequestIdentities(ctx context.Context, pipeline requestDe
 	}
 	started := time.Now()
 	var selected *engine.RequestContext
+	var reviewView *engine.RequestContext
 	var selectedResult *engine.DetectionResult
 	selectedRank := -1
 	incompleteAudit := map[string]any{}
@@ -78,6 +79,9 @@ func (s *Server) detectRequestIdentities(ctx context.Context, pipeline requestDe
 		selectedOperational := selectedResult != nil && (selectedResult.Category == "detection_budget" || selectedResult.Category == "detection_incomplete")
 		actualFinding := result != nil && result.Detected && result.Category != "detection_budget" && result.Category != "detection_incomplete"
 		candidate := detectionFromReviewCandidate(view) != nil
+		if candidate && reviewView == nil {
+			reviewView = view
+		}
 		selectedCandidate := selected != nil && detectionFromReviewCandidate(selected) != nil
 		if rank > selectedRank || (rank == selectedRank && ((selectedOperational && actualFinding) || (candidate && !selectedCandidate))) {
 			selected, selectedResult, selectedRank = view, result, rank
@@ -86,11 +90,20 @@ func (s *Server) detectRequestIdentities(ctx context.Context, pipeline requestDe
 			break
 		}
 	}
-	// Keep the original body owner and transport request alive. Only the chosen
-	// identity's audit/evidence is published, never duplicate body evidence.
+	// Keep the original body owner and transport request alive. Enforcement
+	// evidence comes from one view, without accumulating duplicate body results.
 	owner.Metadata = selected.Metadata
 	owner.Results = selected.Results
 	owner.Metadata[selectedInspectionURIKey] = selected.Request.URL.RequestURI()
+	if detectionFromReviewCandidate(selected) != nil {
+		reviewView = selected
+	}
+	if reviewView != nil {
+		// Review evidence follows its own identity even when another view's
+		// log result wins enforcement selection.
+		owner.Metadata["review_candidate"] = reviewView.Metadata["review_candidate"]
+		owner.Metadata[reviewCandidateURIKey] = reviewView.Request.URL.RequestURI()
+	}
 	for key, value := range incompleteAudit {
 		if flag, ok := value.(bool); ok && flag {
 			owner.Metadata[key] = true

@@ -50,7 +50,8 @@ type Options struct {
 	InitialVoters []Member
 	// InsecureTestMode is an explicit loopback-only escape hatch for tests.
 	// Production callers must leave it false and provide mutual TLS material.
-	InsecureTestMode bool
+	InsecureTestMode  bool
+	configureTestRaft func(*raft.Config)
 }
 
 type Member struct {
@@ -316,6 +317,9 @@ func New(opts Options) (*Runtime, error) {
 	config.SnapshotInterval = 20 * time.Minute
 	config.SnapshotThreshold = 1024
 	config.LogOutput = io.Discard
+	if opts.InsecureTestMode && opts.configureTestRaft != nil {
+		opts.configureTestRaft(config)
+	}
 	r := &Runtime{opts: opts, machine: machine, logs: logs, transport: transport, snapshots: snapshots, notify: notify, existing: existing, done: make(chan struct{}), bindings: bindings, consensusState: cloneRuntimeState(machine.Snapshot())}
 	r.raft, err = raft.NewRaft(config, r, logs, logs, snapshots, transport)
 	if err != nil {
