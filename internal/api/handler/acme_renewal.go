@@ -117,45 +117,15 @@ func (w *acmeRenewalWorker) scan(ctx context.Context) error {
 }
 
 func (w *acmeRenewalWorker) scanSite(ctx context.Context, site *storage.Site) error {
-	if site == nil || !site.Enabled || !site.EnableSSL {
+	if site == nil {
 		return nil
-	}
-	cert := site.Advanced.Certificate
-	if cert.Mode != "acme" || !cert.AutoRenew {
-		return nil
-	}
-	domains := append([]string(nil), site.Domains...)
-	if len(domains) == 0 {
-		domains = append(domains, cert.ACME.Domains...)
-	}
-	if len(domains) == 0 {
-		return w.recordFailure(ctx, site, errors.New("no domains configured for ACME renewal"))
 	}
 	if !w.begin(site.ID) {
 		return nil
 	}
 	defer w.end(site.ID)
 
-	now := w.handler.nowUTC()
-	if strings.TrimSpace(site.CertFile) == "" || strings.TrimSpace(site.KeyFile) == "" {
-		return w.renew(ctx, site, domains)
-	}
-	certExpiry, certErr := validateACMECertificateFiles(site.CertFile, site.KeyFile, domains, now, false)
-	renewAt := cert.ACME.ExpiresAt
-	if !certExpiry.IsZero() {
-		deadline := certExpiry.Add(-w.renewBefore)
-		if renewAt.IsZero() || deadline.Before(renewAt) {
-			renewAt = deadline
-		}
-	}
-	if certErr != nil {
-		return w.renew(ctx, site, domains)
-	}
-	if !renewAt.IsZero() && now.Before(renewAt) {
-		return nil
-	}
-
-	return w.renew(ctx, site, domains)
+	return w.renew(ctx, site.ID)
 }
 
 func (w *acmeRenewalWorker) begin(siteID string) bool {
@@ -177,17 +147,38 @@ func (w *acmeRenewalWorker) end(siteID string) {
 	w.mu.Unlock()
 }
 
-func (w *acmeRenewalWorker) renew(ctx context.Context, site *storage.Site, domains []string) error {
+func (w *acmeRenewalWorker) renew(ctx context.Context, siteID string) error {
 	// Site mutations and the manual issuance API share this lock so a renewal
 	// cannot overwrite a concurrent operator update with stale metadata.
 	w.handler.siteMutationMu.Lock()
 	defer w.handler.siteMutationMu.Unlock()
-	current, err := w.handler.Store.GetSite(ctx, site.ID)
+	current, err := w.handler.Store.GetSite(ctx, siteID)
 	if err != nil {
 		return err
 	}
-	if current == nil || !current.Advanced.Certificate.AutoRenew || current.Advanced.Certificate.Mode != "acme" {
+	if current == nil || !current.Enabled || !current.EnableSSL || !current.Advanced.Certificate.AutoRenew || current.Advanced.Certificate.Mode != "acme" {
 		return nil
+	}
+	domains := append([]string(nil), current.Domains...)
+	if len(domains) == 0 {
+		domains = append(domains, current.Advanced.Certificate.ACME.Domains...)
+	}
+	if len(domains) == 0 {
+		return w.recordFailure(ctx, current, errors.New("no domains configured for ACME renewal"))
+	}
+	now := w.handler.nowUTC()
+	if strings.TrimSpace(current.CertFile) != "" && strings.TrimSpace(current.KeyFile) != "" {
+		certExpiry, certErr := validateACMECertificateFiles(current.CertFile, current.KeyFile, domains, now, false)
+		renewAt := current.Advanced.Certificate.ACME.ExpiresAt
+		if !certExpiry.IsZero() {
+			deadline := certExpiry.Add(-w.renewBefore)
+			if renewAt.IsZero() || deadline.Before(renewAt) {
+				renewAt = deadline
+			}
+		}
+		if certErr == nil && !renewAt.IsZero() && now.Before(renewAt) {
+			return nil
+		}
 	}
 	runtime := w.handler.trustedSiteACMERuntime(current)
 	acmeCfg := current.Advanced.Certificate.ACME
