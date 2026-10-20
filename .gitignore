@@ -133,6 +133,8 @@ docs/**/*交接*.md
 !docs/acceptance-matrix.md
 *.private.md
 *.local.md
+# New documentation stays local; existing tracked documents remain versioned.
+/docs/**
 
 # Frontend dependencies and build cache
 node_modules/
