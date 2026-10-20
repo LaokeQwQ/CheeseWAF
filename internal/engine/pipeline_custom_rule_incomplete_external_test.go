@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -54,7 +55,10 @@ func TestPipelineContinuesAfterIncompleteCustomJSONRuleInspection(t *testing.T) 
 	}
 	reqCtx.Metadata["budget_exhausted_policy"] = "closed"
 
-	result, err := engine.NewPipeline(rules.New(compiled), bodyMarkerDetector{}).Detect(context.Background(), reqCtx)
+	pipeline := engine.NewPipeline(rules.New(compiled), bodyMarkerDetector{})
+	// Allow bounded JSON parsing on race-instrumented runners before checking continuation.
+	pipeline.SetDetectionBudget(5 * time.Second)
+	result, err := pipeline.Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
