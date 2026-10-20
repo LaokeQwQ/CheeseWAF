@@ -35,6 +35,14 @@ type KnowledgeBase struct {
 var knowledgeDefaultJSON []byte
 
 func NewKnowledgeBase(cfg config.AIKnowledgeConfig) *KnowledgeBase {
+	var raw []byte
+	if path := strings.TrimSpace(cfg.File); cfg.Enabled && path != "" {
+		raw, _ = readKnowledgeFile(path)
+	}
+	return newKnowledgeBase(cfg, raw)
+}
+
+func newKnowledgeBase(cfg config.AIKnowledgeConfig, raw []byte) *KnowledgeBase {
 	if !cfg.Enabled {
 		return &KnowledgeBase{}
 	}
@@ -46,12 +54,8 @@ func NewKnowledgeBase(cfg config.AIKnowledgeConfig) *KnowledgeBase {
 	if cfg.Builtin {
 		snippets = decodeKnowledgeJSON(knowledgeDefaultJSON)
 	}
-	if path := strings.TrimSpace(cfg.File); path != "" {
-		if raw, err := readKnowledgeFile(path); err == nil {
-			if custom := decodeKnowledgeJSON(raw); len(custom) > 0 {
-				snippets = custom
-			}
-		}
+	if custom := decodeKnowledgeJSON(raw); len(custom) > 0 {
+		snippets = custom
 	}
 	kb := &KnowledgeBase{enabled: true, maxSnippets: min(maxSnippets, 10), snippets: snippets}
 	for _, item := range snippets {
@@ -174,28 +178,44 @@ func knowledgeTerms(query string) []string {
 const maxKnowledgeFileBytes = 2 << 20
 
 func readKnowledgeFile(path string) ([]byte, error) {
-	// Lstat rejects devices, FIFOs, and symlinks before opening (which could block).
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxKnowledgeFileBytes {
-		return nil, fmt.Errorf("knowledge source must be a regular file of at most 2 MiB")
-	}
-	f, err := openKnowledgeFile(path)
+	f, _, err := openValidatedKnowledgeFile(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	opened, err := f.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return nil, fmt.Errorf("knowledge source changed while opening")
+	return readOpenedKnowledgeFile(f)
+}
+
+func openValidatedKnowledgeFile(path string) (*os.File, os.FileInfo, error) {
+	// Lstat rejects devices, FIFOs, and symlinks before opening (which could block).
+	info, err := statKnowledgeFile(path)
+	if err != nil {
+		return nil, nil, err
 	}
+	if !info.Mode().IsRegular() || info.Size() > maxKnowledgeFileBytes {
+		return nil, nil, fmt.Errorf("knowledge source must be a regular file of at most 2 MiB")
+	}
+	f, err := openKnowledgeFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || opened.Size() > maxKnowledgeFileBytes || !os.SameFile(info, opened) {
+		f.Close()
+		return nil, nil, fmt.Errorf("knowledge source changed while opening")
+	}
+	return f, opened, nil
+}
+
+func readOpenedKnowledgeFile(f *os.File) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(f, maxKnowledgeFileBytes+1))
 	if len(raw) > maxKnowledgeFileBytes {
 		return nil, fmt.Errorf("knowledge source exceeds 2 MiB")
 	}
-	return raw, err
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 var knowledgeCache struct {
@@ -205,22 +225,32 @@ var knowledgeCache struct {
 	file   os.FileInfo
 }
 
-// CachedKnowledgeBase publishes a single immutable snapshot per configuration.
-// Operators change/reload configuration to activate a new knowledge document.
+// CachedKnowledgeBase publishes an immutable snapshot until the configuration or
+// knowledge file identity, size, modification time, or mode changes.
 func CachedKnowledgeBase(cfg config.AIKnowledgeConfig) *KnowledgeBase {
 	knowledgeCache.Lock()
 	defer knowledgeCache.Unlock()
 	var info os.FileInfo
-	if cfg.File != "" {
-		info, _ = os.Lstat(cfg.File)
+	var f *os.File
+	if path := strings.TrimSpace(cfg.File); path != "" {
+		// Stat the open handle: Windows Lstat file IDs are resolved lazily from
+		// the path, which may already name a replacement at the next cache lookup.
+		f, info, _ = openValidatedKnowledgeFile(path)
+		if f != nil {
+			defer f.Close()
+		}
 	}
 	changed := (info == nil) != (knowledgeCache.file == nil)
 	if info != nil && knowledgeCache.file != nil {
 		changed = !os.SameFile(info, knowledgeCache.file) || info.Size() != knowledgeCache.file.Size() || info.ModTime() != knowledgeCache.file.ModTime() || info.Mode() != knowledgeCache.file.Mode()
 	}
 	if knowledgeCache.base == nil || knowledgeCache.config != cfg || changed {
+		var raw []byte
+		if cfg.Enabled && f != nil {
+			raw, _ = readOpenedKnowledgeFile(f)
+		}
 		knowledgeCache.config = cfg
-		knowledgeCache.base = NewKnowledgeBase(cfg)
+		knowledgeCache.base = newKnowledgeBase(cfg, raw)
 		knowledgeCache.file = info
 	}
 	return knowledgeCache.base

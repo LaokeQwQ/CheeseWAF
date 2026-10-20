@@ -20,16 +20,36 @@ func TestRevisionKnowledgeCacheRefreshesReplacedFile(t *testing.T) {
 	}
 	cfg := config.AIKnowledgeConfig{Enabled: true, File: path, MaxSnippets: 5}
 	first := CachedKnowledgeBase(cfg)
-	replacement := filepath.Join(filepath.Dir(path), "next.json")
-	if err := os.WriteFile(replacement, []byte(`[{"id":"b","title":"beta","content":"second"}]`), 0600); err != nil {
+	if len(first.Search("alpha", 1)) != 1 {
+		t.Fatal("cache did not load initial knowledge document")
+	}
+	original, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
+	}
+	replacement := filepath.Join(filepath.Dir(path), "next.json")
+	if err := os.WriteFile(replacement, []byte(`[{"id":"b","title":"bravo","content":"other"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacement, original.ModTime(), original.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	next, err := os.Stat(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Size() != original.Size() || !next.ModTime().Equal(original.ModTime()) {
+		t.Fatal("replacement must preserve size and modification time")
 	}
 	if err := replaceFileAtomic(replacement, path); err != nil {
 		t.Fatal(err)
 	}
 	second := CachedKnowledgeBase(cfg)
-	if first == second || len(second.Search("beta", 1)) != 1 {
+	if first == second || len(second.Search("bravo", 1)) != 1 || len(second.Search("alpha", 1)) != 0 {
 		t.Fatal("cache ignored replaced knowledge document")
+	}
+	if again := CachedKnowledgeBase(cfg); again != second {
+		t.Fatal("cache did not reuse unchanged knowledge document")
 	}
 }
 
