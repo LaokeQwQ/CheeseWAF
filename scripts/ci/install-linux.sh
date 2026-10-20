@@ -20,6 +20,11 @@ fi
 [[ -n "$template_admin_listen" ]] || die "configs/cheesewaf.yaml has no admin_listen bootstrap value"
 admin_listen="${CHEESEWAF_ADMIN_LISTEN:-$template_admin_listen}"
 admin_port="${admin_listen##*:}"
+admin_public=false
+case "$admin_listen" in 127.0.0.1:*|localhost:*|'[::1]':*) ;; *)
+ [[ "${CHEESEWAF_ADMIN_PUBLIC:-0}" == 1 ]] || die "public admin listener requires CHEESEWAF_ADMIN_PUBLIC=1"
+ admin_public=true ;;
+esac
 validate_install_path() {
   local label="$1"
   local path="$2"
@@ -36,8 +41,45 @@ validate_install_path() {
     [[ ! -L "$current" ]] || die "${label} traverses a symbolic link: ${current}"
   done
 }
+validate_admin_listener() {
+  admin_port="${admin_listen##*:}"
+  [[ "$admin_listen" =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]*):[0-9]{1,5}$ ]] || die "invalid CHEESEWAF_ADMIN_LISTEN: use host:port"
+  ((10#$admin_port >= 1 && 10#$admin_port <= 65535)) || die "invalid admin port: ${admin_port}"
+  admin_public=false
+  case "$admin_listen" in 127.0.0.1:*|localhost:*|'[::1]':*) ;; *)
+    [[ "${CHEESEWAF_ADMIN_PUBLIC:-0}" == 1 ]] || die "public admin listener requires CHEESEWAF_ADMIN_PUBLIC=1"
+    admin_public=true ;;
+  esac
+}
+validate_existing_config() {
+  fresh_config=1
+  if [[ -e "${config_dir}/cheesewaf.yaml" || -L "${config_dir}/cheesewaf.yaml" ]]; then
+    [[ -f "${config_dir}/cheesewaf.yaml" && ! -L "${config_dir}/cheesewaf.yaml" ]] || die "existing config file must be a regular file"
+    fresh_config=0
+    existing_entry="$(sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | awk '$1 == "path:" {gsub(/"/, "", $2); print $2; exit}')"
+    [[ "$existing_entry" == /* && "$existing_entry" != *".."* && "$existing_entry" != *"?"* && "$existing_entry" != *"#"* ]] || die "existing config has an invalid security-entry path"
+    admin_listen="$(awk '$1 == "admin_listen:" {gsub(/"/, "", $2); print $2; exit}' "${config_dir}/cheesewaf.yaml")"
+    [[ -n "$admin_listen" ]] || die "config has no server.admin_listen"
+    validate_admin_listener
+  fi
+}
+validate_public_host() {
+  local host="$1"
+  if [[ "$host" =~ ^\[([0-9A-Fa-f:.]+)\]$ ]]; then
+    return 0
+  elif [[ "$host" == *:* ]]; then
+    [[ "$host" =~ ^[0-9A-Fa-f:.]+$ ]]
+  else
+    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+  fi
+}
 prompt_read() {
   if [[ -r /dev/tty ]]; then read -r "$@" </dev/tty; else read -r "$@"; fi
+}
+has_interactive_terminal() {
+  [[ -t 0 ]] && return 0
+  [[ -r /dev/tty && -w /dev/tty ]] || return 1
+  { : </dev/tty; } 2>/dev/null
 }
 
 [[ "$(uname -s)" == "Linux" ]] || die "install-linux.sh is for Linux hosts"
@@ -47,7 +89,7 @@ prompt_read() {
 command -v awk >/dev/null 2>&1 || die "awk is required"
 command -v od >/dev/null 2>&1 || die "od is required"
 lang="${CHEESEWAF_LANG:-}"
-if [[ -z "$lang" && ( -t 0 || -r /dev/tty ) ]]; then
+if [[ -z "$lang" ]] && has_interactive_terminal; then
   printf 'Language / 语言 [1=English, 2=简体中文] (1): '
   prompt_read choice
   [[ "$choice" == "2" ]] && lang="zh-CN" || lang="en"
@@ -94,7 +136,7 @@ msg() {
   fi
 }
 
-if [[ -z "$install_root" && ( -t 0 || -r /dev/tty ) ]]; then
+if [[ -z "$install_root" ]] && has_interactive_terminal; then
   msg install_root_prompt
   prompt_read selected_install_root
   install_root="${selected_install_root:-}"
@@ -117,8 +159,15 @@ validate_install_path CHEESEWAF_CONFIG_DIR "$config_dir"
 validate_install_path CHEESEWAF_DATA_DIR "$data_dir"
 validate_install_path CHEESEWAF_LOG_DIR "$log_dir"
 validate_install_path CHEESEWAF_UNIT_DIR "$unit_dir"
-[[ "$admin_listen" =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]*):[0-9]{1,5}$ ]] || die "invalid CHEESEWAF_ADMIN_LISTEN: use host:port"
-((10#$admin_port >= 1 && 10#$admin_port <= 65535)) || die "invalid admin port: ${admin_port}"
+validate_admin_listener
+setup_wait_seconds="${CHEESEWAF_SETUP_URL_WAIT_SECONDS:-15}"
+[[ "$setup_wait_seconds" =~ ^[0-9]+$ ]] || die "CHEESEWAF_SETUP_URL_WAIT_SECONDS must be a non-negative integer"
+if [[ -n "${CHEESEWAF_ADMIN_PUBLIC_HOST:-}" ]]; then
+  validate_public_host "$CHEESEWAF_ADMIN_PUBLIC_HOST" || die "invalid CHEESEWAF_ADMIN_PUBLIC_HOST"
+fi
+if id cheesewaf >/dev/null 2>&1; then
+  [[ "$(id -u cheesewaf)" != 0 && "$(id -g cheesewaf)" != 0 ]] || die "existing cheesewaf account must not be root"
+fi
 secret_file="${config_dir}/install-secrets.txt"
 
 entry="${CHEESEWAF_SECURITY_ENTRY:-}"
@@ -133,25 +182,169 @@ if [[ -z "$entry" ]]; then
     done
   done
 fi
-if [[ ( -t 0 || -r /dev/tty ) && -z "${CHEESEWAF_SECURITY_ENTRY:-}" ]]; then
+if has_interactive_terminal && [[ -z "${CHEESEWAF_SECURITY_ENTRY:-}" ]]; then
   msg entry_prompt
   prompt_read custom_entry
   [[ -n "$custom_entry" ]] && entry="$custom_entry"
 fi
 [[ "$entry" =~ ^[A-Za-z0-9]{8,64}$ ]] || { msg entry_invalid; exit 1; }
 
-# Decide whether this is a fresh installation before replacing any files. On
-# upgrades, retain legacy/custom entry paths accepted by the daemon; only a new
-# entry generated by this installer is subject to the stricter input policy.
-fresh_config=1
-if [[ -e "${config_dir}/cheesewaf.yaml" ]]; then
-  [[ -f "${config_dir}/cheesewaf.yaml" && ! -L "${config_dir}/cheesewaf.yaml" ]] || die "existing config file must be a regular file"
-  fresh_config=0
-  existing_entry="$(sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | awk '$1 == "path:" {gsub(/"/, "", $2); print $2; exit}')"
-  [[ "$existing_entry" == /* && "$existing_entry" != *".."* && "$existing_entry" != *"?"* && "$existing_entry" != *"#"* ]] || die "existing config has an invalid security-entry path"
-fi
+# Read-only preflight runs while the old service is still available. Re-read
+# after stopping it: the service can replace its own configuration atomically.
+validate_existing_config
+service_was_running=0
+stop_requested=0
+mutations_started=0
+upgrade_complete=0
+recovery_dir=""
+admin_env_tmp=""
 
-install -d -m 0755 "$bin_dir" "$web_dir" "$config_dir" "$data_dir" "$log_dir" "$unit_dir"
+recovery_paths_safe() {
+  (validate_install_path CHEESEWAF_BIN_DIR "$bin_dir" &&
+   validate_install_path CHEESEWAF_WEB_DIR "$web_dir" &&
+   validate_install_path CHEESEWAF_CONFIG_DIR "$config_dir" &&
+   validate_install_path CHEESEWAF_DATA_DIR "$data_dir" &&
+   validate_install_path CHEESEWAF_LOG_DIR "$log_dir" &&
+   validate_install_path CHEESEWAF_UNIT_DIR "$unit_dir") || return 1
+  [[ -f "${config_dir}/cheesewaf.yaml" && ! -L "${config_dir}/cheesewaf.yaml" ]] || return 1
+  [[ ! -L "${config_dir}/admin.env" && ( ! -e "${config_dir}/admin.env" || -f "${config_dir}/admin.env" ) ]] || return 1
+  cmp -s "${recovery_dir}/config" "${config_dir}/cheesewaf.yaml"
+}
+restore_upgrade_file() {
+  local source="$1" destination="$2" temporary
+  [[ ! -L "$destination" && ( ! -e "$destination" || -f "$destination" ) ]] || return 1
+  temporary="$(mktemp "${destination}.restore.XXXXXX")" || return 1
+  cp -p "$source" "$temporary" && mv -f -- "$temporary" "$destination"
+}
+metadata_path_safe() {
+  local path="$1"
+  while [[ -n "$path" && "$path" != / ]]; do
+    [[ ! -L "$path" ]] || return 1
+    path="${path%/*}"
+  done
+}
+recover_previous_service() {
+  local name restore_web
+  # A failed restart may already have launched the new binary. Stop it even
+  # when changed configuration prevents us from safely restoring the old one.
+  if (( mutations_started == 1 )); then systemctl stop cheesewaf || return 1; fi
+  recovery_paths_safe || return 1
+  if (( mutations_started == 1 )); then
+    for name in binary unit admin.env wrapper; do
+      [[ ! -e "${recovery_dir}/${name}" ]] || [[ -f "${recovery_dir}/${name}" && ! -L "${recovery_dir}/${name}" ]] || return 1
+    done
+    restore_upgrade_file "${recovery_dir}/binary" "${bin_dir}/cheesewaf" || return 1
+    restore_upgrade_file "${recovery_dir}/unit" "${unit_dir}/cheesewaf.service" || return 1
+    if [[ -e "${config_dir}/admin.env" ]]; then
+      cmp -s "${recovery_dir}/admin.env" "${config_dir}/admin.env" ||
+        cmp -s "${recovery_dir}/new-admin.env" "${config_dir}/admin.env" || return 1
+    fi
+    if [[ -f "${recovery_dir}/admin.env" ]]; then
+      restore_upgrade_file "${recovery_dir}/admin.env" "${config_dir}/admin.env" || return 1
+    elif [[ -e "${config_dir}/admin.env" || -L "${config_dir}/admin.env" ]]; then
+      [[ -f "${config_dir}/admin.env" && ! -L "${config_dir}/admin.env" ]] || return 1
+      cmp -s "${recovery_dir}/new-admin.env" "${config_dir}/admin.env" || return 1
+      rm -f -- "${config_dir}/admin.env" || return 1
+    fi
+    if [[ -f "${recovery_dir}/wrapper" ]]; then
+      restore_upgrade_file "${recovery_dir}/wrapper" "${bin_dir}/waf-cli-wrapper" || return 1
+    elif [[ -e "${bin_dir}/waf-cli-wrapper" || -L "${bin_dir}/waf-cli-wrapper" ]]; then
+      [[ -f "${bin_dir}/waf-cli-wrapper" && ! -L "${bin_dir}/waf-cli-wrapper" ]] || return 1
+      cmp -s ./waf-cli "${bin_dir}/waf-cli-wrapper" || return 1
+      rm -f -- "${bin_dir}/waf-cli-wrapper" || return 1
+    fi
+    [[ -d "$web_dir" && ! -L "$web_dir" ]] || return 1
+    restore_web="$(mktemp -d "${web_dir}.recovery.XXXXXX")" || return 1
+    cp -Rp "${recovery_dir}/web" "${restore_web}/web" || return 1
+    mv -- "$web_dir" "${restore_web}/failed-web" || return 1
+    mv -- "${restore_web}/web" "$web_dir" || return 1
+    echo "Failed upgrade web files retained in ${restore_web}/failed-web" >&2
+    # Restore metadata in place; never replace user configuration or data.
+    recovery_paths_safe || return 1
+    local path mode uid gid
+    while IFS= read -r -d '' path && IFS= read -r mode && IFS= read -r uid && IFS= read -r gid; do
+      [[ -e "$path" ]] && metadata_path_safe "$path" || return 1
+      chown "${uid}:${gid}" "$path" || return 1
+      chmod "$mode" "$path" || return 1
+    done <"${recovery_dir}/permissions"
+    systemctl daemon-reload || return 1
+  fi
+  [[ -x "${bin_dir}/cheesewaf" && ! -L "${bin_dir}/cheesewaf" && -f "${unit_dir}/cheesewaf.service" && ! -L "${unit_dir}/cheesewaf.service" ]] || return 1
+  recovery_paths_safe || return 1
+  systemctl start cheesewaf && systemctl is-active --quiet cheesewaf
+}
+finish_install() {
+  local status="$1"
+  trap - EXIT HUP INT TERM
+  if (( status != 0 && service_was_running == 1 && stop_requested == 1 && upgrade_complete == 0 )); then
+    if (( mutations_started == 0 )) && systemctl is-active --quiet cheesewaf; then
+      : # A failed stop left the unchanged service running.
+    elif recover_previous_service; then
+      echo "Upgrade failed; the previous CheeseWAF service was restored." >&2
+    else
+      echo "Upgrade failed; automatic recovery was unsafe or failed. The service was not restarted." >&2
+    fi
+    echo "Upgrade recovery files: ${recovery_dir}" >&2
+  elif [[ -n "$recovery_dir" ]]; then
+    rm -rf -- "$recovery_dir"
+  fi
+  if [[ -n "$admin_env_tmp" ]] && (validate_install_path CHEESEWAF_CONFIG_DIR "$config_dir"); then
+    rm -f -- "$admin_env_tmp"
+  fi
+  exit "$status"
+}
+trap 'finish_install "$?"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet cheesewaf; then
+  service_was_running=1
+  [[ "$fresh_config" == 0 && -x "${bin_dir}/cheesewaf" && ! -L "${bin_dir}/cheesewaf" && -f "${unit_dir}/cheesewaf.service" && ! -L "${unit_dir}/cheesewaf.service" && -d "$web_dir" ]] || die "running installation cannot be safely backed up at the selected paths"
+  [[ ! -L "${config_dir}/admin.env" && ( ! -e "${config_dir}/admin.env" || -f "${config_dir}/admin.env" ) ]] || die "existing admin.env must be a regular file"
+  [[ ! -L "${bin_dir}/waf-cli-wrapper" && ( ! -e "${bin_dir}/waf-cli-wrapper" || -f "${bin_dir}/waf-cli-wrapper" ) ]] || die "existing CLI wrapper must be a regular file"
+  recovery_dir="$(mktemp -d)"
+  cp -Pp "${config_dir}/cheesewaf.yaml" "${recovery_dir}/config"
+  [[ -f "${recovery_dir}/config" && ! -L "${recovery_dir}/config" ]] || die "existing config file must be a regular file"
+  stop_requested=1
+  systemctl stop cheesewaf
+  recovery_paths_safe || die "installation paths or configuration changed while stopping the service"
+  validate_existing_config
+  cp -Pp "${bin_dir}/cheesewaf" "${recovery_dir}/binary"
+  cp -Pp "${unit_dir}/cheesewaf.service" "${recovery_dir}/unit"
+  [[ -f "${recovery_dir}/binary" && ! -L "${recovery_dir}/binary" && -f "${recovery_dir}/unit" && ! -L "${recovery_dir}/unit" ]] || die "installation files changed while stopping the service"
+  cp -Rp "$web_dir" "${recovery_dir}/web"
+  for file in admin.env; do
+    [[ ! -L "${config_dir}/${file}" ]] || die "existing ${file} must not be a symlink"
+    if [[ -e "${config_dir}/${file}" ]]; then
+      [[ -f "${config_dir}/${file}" ]] || die "existing ${file} must be a regular file"
+      cp -p "${config_dir}/${file}" "${recovery_dir}/${file}"
+    fi
+  done
+  if [[ -e "${bin_dir}/waf-cli-wrapper" || -L "${bin_dir}/waf-cli-wrapper" ]]; then
+    [[ -f "${bin_dir}/waf-cli-wrapper" && ! -L "${bin_dir}/waf-cli-wrapper" ]] || die "existing CLI wrapper must be a regular file"
+    cp -p "${bin_dir}/waf-cli-wrapper" "${recovery_dir}/wrapper"
+  fi
+  # Ownership reconciliation below touches these trees recursively. Record
+  # metadata only, so rollback cannot overwrite databases or user config.
+  for directory in "$config_dir" "$data_dir" "$log_dir"; do
+    [[ -d "$directory" ]] || continue
+    find "$directory" -print0 >"${recovery_dir}/paths"
+    while IFS= read -r -d '' file; do
+      [[ ! -L "$file" ]] || die "existing runtime tree contains a symbolic link: ${file}"
+      printf '%s\0' "$file" >>"${recovery_dir}/permissions"
+      stat -c $'%a\n%u\n%g' "$file" >>"${recovery_dir}/permissions"
+    done <"${recovery_dir}/paths"
+  done
+  for directory in "$bin_dir" "$unit_dir"; do
+    printf '%s\0' "$directory" >>"${recovery_dir}/permissions"
+    stat -c $'%a\n%u\n%g' "$directory" >>"${recovery_dir}/permissions"
+  done
+fi
+mutations_started=1
+
+install -d -m 0755 "$bin_dir" "$web_dir" "$unit_dir"
+install -d -m 0700 "$config_dir" "$data_dir" "$log_dir"
 # Re-check final destinations after creation so a pre-existing symlink cannot
 # redirect a privileged write through a selected install root.
 validate_install_path CHEESEWAF_PREFIX "$prefix"
@@ -177,10 +370,10 @@ if [[ -f ./systemd/cheesewaf.service ]]; then
   sed -i -E \
     -e "s#^WorkingDirectory=.*#WorkingDirectory=${data_dir}#" \
     -e "s#^Environment=CHEESEWAF_WEB_DIR=.*#Environment=CHEESEWAF_WEB_DIR=${web_dir}#" \
-    -e "s#^EnvironmentFile=-/etc/cheesewaf/admin.env$#EnvironmentFile=-${config_dir}/admin.env#" \
-    -e "s#^EnvironmentFile=-/etc/cheesewaf/edge-origin.env$#EnvironmentFile=-${config_dir}/edge-origin.env#" \
+    -e "s#^EnvironmentFile=-/etc/cheesewaf/admin.env\$#EnvironmentFile=-${config_dir}/admin.env#" \
+    -e "s#^EnvironmentFile=-/etc/cheesewaf/edge-origin.env\$#EnvironmentFile=-${config_dir}/edge-origin.env#" \
     -e "s#^ExecStart=.*#ExecStart=${bin_dir}/cheesewaf serve --config ${config_dir}/cheesewaf.yaml --data-dir ${data_dir}#" \
-    -e "s#^ReadWritePaths=.*#ReadWritePaths=${config_dir}/cheesewaf.yaml ${data_dir} ${log_dir}#" \
+    -e "s#^ReadWritePaths=.*#ReadWritePaths=${config_dir} ${data_dir} ${log_dir}#" \
     "${unit_dir}/cheesewaf.service"
 fi
 
@@ -188,10 +381,10 @@ fi
 # listener, TLS, security-entry, site, and policy settings stay untouched.
 if (( fresh_config == 1 )); then
   sed -i -E "s#^([[:space:]]*)admin_listen:.*#\1admin_listen: \"${admin_listen}\"#" "${config_dir}/cheesewaf.yaml"
-  sed -i -E 's#^([[:space:]]*)admin_public:.*#\1admin_public: true#' "${config_dir}/cheesewaf.yaml"
+  sed -i -E "s#^([[:space:]]*)admin_public:.*#\\1admin_public: ${admin_public}#" "${config_dir}/cheesewaf.yaml"
   sed -i -E '/^[[:space:]]*admin_tls:/,/^[[:space:]]*read_timeout:/{s#^([[:space:]]*)enabled:.*#\1enabled: true#}' "${config_dir}/cheesewaf.yaml"
   sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)path:.*#\1path: /'"${entry}"'#}' "${config_dir}/cheesewaf.yaml"
-  sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)enabled:.*#\1enabled: false#}' "${config_dir}/cheesewaf.yaml"
+  sed -i -E '/^[[:space:]]*security_entry:/,/^[[:space:]]*background:/{s#^([[:space:]]*)enabled:.*#\1enabled: true#}' "${config_dir}/cheesewaf.yaml"
 fi
 
 # Fail closed if a template format change made one of the installer-owned
@@ -201,17 +394,17 @@ installed_admin_listen="$(awk '$1 == "admin_listen:" {gsub(/"/, "", $2); print $
 [[ -n "$installed_admin_listen" ]] || die "config has no server.admin_listen"
 if (( fresh_config == 1 )); then
   [[ "$installed_admin_listen" == "$admin_listen" ]] || die "failed to set server.admin_listen"
-  grep -Eq '^[[:space:]]+admin_public:[[:space:]]*true[[:space:]]*$' "${config_dir}/cheesewaf.yaml" || die "failed to enable public admin mode"
+  grep -Eq "^[[:space:]]+admin_public:[[:space:]]*${admin_public}[[:space:]]*$" "${config_dir}/cheesewaf.yaml" || die "failed to enable public admin mode"
   sed -n '/^[[:space:]]*admin_tls:[[:space:]]*$/,/^[[:space:]]*read_timeout:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*true[[:space:]]*$' || die "failed to enable admin TLS"
 else
   admin_listen="$installed_admin_listen"
-  admin_port="${admin_listen##*:}"
+  validate_admin_listener
 fi
 installed_entry="$(sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | awk '$1 == "path:" {gsub(/"/, "", $2); print $2; exit}')"
 if (( fresh_config == 1 )); then
   [[ "$installed_entry" =~ ^/[A-Za-z0-9]{8,64}$ ]] || die "config has an invalid security-entry path"
   [[ "$installed_entry" == "/${entry}" ]] || die "failed to set security-entry path"
-  sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*false[[:space:]]*$' || die "failed to keep security entry disabled during setup"
+  sed -n '/^[[:space:]]*security_entry:[[:space:]]*$/,/^[[:space:]]*background:/p' "${config_dir}/cheesewaf.yaml" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*true[[:space:]]*$' || die "failed to enable security entry"
 else
   [[ "$installed_entry" == /* && "$installed_entry" != *".."* && "$installed_entry" != *"?"* && "$installed_entry" != *"#"* ]] || die "config has an invalid security-entry path"
   entry="${installed_entry#/}"
@@ -245,16 +438,33 @@ if [[ -z "$public_host" && "${CHEESEWAF_DETECT_PUBLIC_IP:-0}" == "1" ]] && comma
 fi
 public_detected=1
 [[ -n "$public_host" ]] || { public_host="127.0.0.1"; public_detected=0; }
+validate_public_host "$public_host" || die "invalid CHEESEWAF_ADMIN_PUBLIC_HOST"
 if [[ "$public_host" =~ ^\[([0-9A-Fa-f:.]+)\]$ ]]; then
   public_host="${BASH_REMATCH[1]}"
-elif [[ "$public_host" == *:* ]]; then
-  [[ "$public_host" =~ ^[0-9A-Fa-f:.]+$ ]] || die "invalid CHEESEWAF_ADMIN_PUBLIC_HOST"
-elif [[ ! "$public_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
-  die "invalid CHEESEWAF_ADMIN_PUBLIC_HOST"
 fi
 public_url_host="$public_host"
 [[ "$public_url_host" == *:* ]] && public_url_host="[${public_url_host}]"
-printf 'CHEESEWAF_ADMIN_PUBLIC_HOST=%s\n' "$public_host" >"${config_dir}/admin.env"
+# The service account owns the runtime directory for normal config updates.
+# Never let a service-created symlink turn this privileged receipt write into
+# an arbitrary-file overwrite: create the file outside that directory and
+# atomically rename it over the destination (rename replaces a symlink).
+# Keep the temporary and final file on the same filesystem so rename is
+# atomic. The configuration directory is root-owned and writable only by the
+# dedicated service group. The sticky bit prevents the service from unlinking
+# root-owned bootstrap/secret files while config.Save can replace its own file.
+service_group="cheesewaf"
+if ! getent group "$service_group" >/dev/null 2>&1; then
+  groupadd --system "$service_group"
+fi
+chown root:"$service_group" "$config_dir"
+chmod 01770 "$config_dir"
+admin_env_tmp="$(mktemp "${config_dir}/.admin.env.XXXXXX")"
+printf 'CHEESEWAF_ADMIN_PUBLIC_HOST=%s\n' "$public_host" >"$admin_env_tmp"
+if [[ -n "$recovery_dir" ]]; then cp "$admin_env_tmp" "${recovery_dir}/new-admin.env"; fi
+chmod 0640 "$admin_env_tmp"
+chown root:root "$admin_env_tmp"
+mv -f -- "$admin_env_tmp" "${config_dir}/admin.env"
+admin_env_tmp=""
 chmod 0640 "${config_dir}/admin.env"
 
 if id cheesewaf >/dev/null 2>&1; then
@@ -262,18 +472,29 @@ if id cheesewaf >/dev/null 2>&1; then
   service_gid="$(id -g cheesewaf)"
   [[ "$service_uid" != "0" && "$service_gid" != "0" ]] || die "existing cheesewaf account must not be root"
 else
-  useradd --system --home "$data_dir" --shell /usr/sbin/nologin cheesewaf
+  useradd --system --gid "$service_group" --home "$data_dir" --shell /usr/sbin/nologin cheesewaf
 fi
-chown -R cheesewaf:cheesewaf "$config_dir" "$data_dir" "$log_dir"
+[[ -f "${config_dir}/cheesewaf.yaml" && ! -L "${config_dir}/cheesewaf.yaml" ]] || die "existing config file must be a regular file"
+chown -R root:"$service_group" "$config_dir"
+chown -R cheesewaf:cheesewaf "$data_dir" "$log_dir"
+# Runtime configuration is replaced atomically by the service account. Make
+# that file service-owned and private; the sticky directory protects the
+# root-owned admin.env, edge-origin.env, and installation receipt files.
+[[ -f "${config_dir}/cheesewaf.yaml" && ! -L "${config_dir}/cheesewaf.yaml" ]] || die "existing config file must be a regular file"
+chown cheesewaf:cheesewaf "${config_dir}/cheesewaf.yaml"
+chmod 0600 "${config_dir}/cheesewaf.yaml"
+chmod 01770 "$config_dir"
 
 if command -v systemctl >/dev/null 2>&1 && [[ -f "${unit_dir}/cheesewaf.service" && "${CHEESEWAF_NO_START:-0}" != "1" ]]; then
   systemctl daemon-reload
   systemctl enable cheesewaf >/dev/null
   systemctl restart cheesewaf
-  service_state="$(systemctl is-active cheesewaf || true)"
+  service_state="$(systemctl is-active cheesewaf)"
+  [[ "$service_state" == active ]] || die "CheeseWAF did not become active after restart"
 else
   service_state="not started (systemd unavailable or CHEESEWAF_NO_START=1)"
 fi
+upgrade_complete=1
 
 version="$(${bin_dir}/cheesewaf version 2>/dev/null | head -n 1 || echo unknown)"
 msg installed "$version"
@@ -291,6 +512,13 @@ msg firewall
 
 setup_url_file="${data_dir}/setup.url"
 setup_url=""
+if [[ ! -r "$setup_url_file" && "$service_state" == "active" ]]; then
+  setup_wait_deadline=$((SECONDS + setup_wait_seconds))
+  while (( SECONDS <= setup_wait_deadline )); do
+    [[ -r "$setup_url_file" ]] && break
+    sleep 1
+  done
+fi
 if [[ -r "$setup_url_file" ]]; then
   setup_url="$(sed -n 's/^url=//p' "$setup_url_file" | head -n 1)"
 fi

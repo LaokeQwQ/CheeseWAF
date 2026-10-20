@@ -30,6 +30,26 @@ var (
 // they carry immutable binding fields and credentials, never arbitrary data.
 const approvalHTTPMaxBodyBytes int64 = 64 << 10
 
+const (
+	approvalCredentialMaxFailures = 5
+	approvalCredentialLockWindow  = 5 * time.Minute
+	approvalCredentialProofTTL    = time.Minute
+)
+
+type localApprovalTransportKey struct{}
+
+// WithLocalApprovalTransport is only for the ConnContext of the dedicated
+// local Unix-domain control listener. Never apply it to the public TCP listener.
+func WithLocalApprovalTransport(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localApprovalTransportKey{}, true)
+}
+
+// IsLocalApprovalTransport reports whether the trusted server listener marked
+// the connection as local control transport.
+func IsLocalApprovalTransport(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(localApprovalTransportKey{}) == true
+}
+
 // ApprovalCredentialProof is an opaque result produced by a trusted
 // credential verifier. Confirmation booleans are derived only from this proof
 // and are never accepted from an HTTP payload.
@@ -37,6 +57,7 @@ type ApprovalCredentialProof struct {
 	token             string
 	passwordConfirmed bool
 	totpConfirmed     bool
+	requiresTOTP      bool
 }
 
 // NewApprovalCredentialProof creates a verifier-issued proof. The token must
@@ -46,8 +67,27 @@ func NewApprovalCredentialProof(token string, passwordConfirmed, totpConfirmed b
 	return ApprovalCredentialProof{token: token, passwordConfirmed: passwordConfirmed, totpConfirmed: totpConfirmed}
 }
 
+// NewMFAApprovalCredentialProof marks a verified password as requiring the
+// account's enrolled second factor before authorization may be committed.
+func NewMFAApprovalCredentialProof(token string, passwordConfirmed, totpConfirmed, requiresTOTP bool) ApprovalCredentialProof {
+	return ApprovalCredentialProof{token: token, passwordConfirmed: passwordConfirmed, totpConfirmed: totpConfirmed, requiresTOTP: requiresTOTP}
+}
+
 func (p ApprovalCredentialProof) valid() bool {
 	return p.token != "" && approval.ValidateIdentifier(p.token) == nil && (p.passwordConfirmed || p.totpConfirmed)
+}
+
+// Accessors and CombineApprovalCredentialProof are used by production
+// composition adapters without exposing mutable credential state.
+func (p ApprovalCredentialProof) Token() string           { return p.token }
+func (p ApprovalCredentialProof) PasswordConfirmed() bool { return p.passwordConfirmed }
+func (p ApprovalCredentialProof) TOTPConfirmed() bool     { return p.totpConfirmed }
+func (p ApprovalCredentialProof) RequiresTOTP() bool      { return p.requiresTOTP }
+func CombineApprovalCredentialProof(password, totp ApprovalCredentialProof) ApprovalCredentialProof {
+	if !password.valid() || !totp.valid() || !totp.totpConfirmed {
+		return ApprovalCredentialProof{}
+	}
+	return ApprovalCredentialProof{token: password.token, passwordConfirmed: password.passwordConfirmed, totpConfirmed: true, requiresTOTP: password.requiresTOTP}
 }
 
 // ApprovalCredentialVerifier verifies one operator credential against the
@@ -107,8 +147,9 @@ type ApprovalHTTPHandler struct {
 	sessionValidator     middleware.SessionValidator
 	authorityResolver    approval.AuthorityResolver
 
-	mu         sync.Mutex
-	challenges map[string]approvalChallengeState
+	mu                sync.Mutex
+	challenges        map[string]approvalChallengeState
+	credentialBudgets map[string]approvalCredentialBudget
 }
 
 // SessionValidator returns the validator bound to this approval transport.
@@ -131,8 +172,18 @@ func (h *ApprovalHTTPHandler) PolicyEpoch() uint64 {
 }
 
 type approvalChallengeState struct {
-	challenge ApprovalChallenge
-	session   ApprovalSession
+	challenge      ApprovalChallenge
+	session        ApprovalSession
+	failures       int
+	verifying      bool
+	proof          ApprovalCredentialProof
+	proofExpiresAt time.Time
+}
+
+type approvalCredentialBudget struct {
+	failures  int
+	verifying bool
+	expiresAt time.Time
 }
 
 func NewApprovalHTTPHandler(opts ApprovalHTTPOptions) *ApprovalHTTPHandler {
@@ -153,6 +204,7 @@ func NewApprovalHTTPHandler(opts ApprovalHTTPOptions) *ApprovalHTTPHandler {
 		sessionValidator:     opts.SessionValidator,
 		authorityResolver:    authority,
 		challenges:           make(map[string]approvalChallengeState),
+		credentialBudgets:    make(map[string]approvalCredentialBudget),
 	}
 }
 
@@ -199,6 +251,10 @@ func (h *ApprovalHTTPHandler) SubmitApproval(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusForbidden, "APPROVAL_SESSION_CHANGED", "approval session must come from the current session")
 		return
 	}
+	if payload.PreApproved {
+		writeError(w, http.StatusForbidden, "APPROVAL_PREAPPROVAL_FORBIDDEN", "HTTP approval requires interactive authorization")
+		return
+	}
 	language := payload.Language
 	if language == "" {
 		language = payload.ConfirmationLanguage
@@ -213,16 +269,16 @@ func (h *ApprovalHTTPHandler) SubmitApproval(w http.ResponseWriter, r *http.Requ
 	}
 	record, err := h.gate.Submit(h.now(), approval.Request{
 		ID:                   payload.ID,
-		Risk:                 approval.RiskLevel(payload.Risk),
+		Risk:                 approval.RiskHigh,
 		Scope:                payload.Scope,
 		PolicyEpoch:          payload.PolicyEpoch,
 		TTL:                  ttl,
-		PreApproved:          payload.PreApproved,
-		Untrusted:            payload.Untrusted,
+		PreApproved:          false,
+		Untrusted:            true,
 		Test:                 payload.Test,
 		TokenOperation:       payload.TokenOperation,
 		KMSOperation:         payload.KMSOperation,
-		ClusterOperation:     payload.ClusterOperation,
+		ClusterOperation:     payload.ClusterOperation || strings.HasPrefix(payload.Scope, "crp:") || strings.HasPrefix(payload.Scope, "cluster:"),
 		BreakGlass:           payload.BreakGlass,
 		Actor:                session.Subject,
 		SessionID:            session.SessionID,
@@ -269,7 +325,7 @@ func (h *ApprovalHTTPHandler) StartApprovalConfirmation(w http.ResponseWriter, r
 		writeApprovalError(w, approval.ErrNotPending)
 		return
 	}
-	if record.Request.Actor != session.Subject || record.Request.SessionID != session.SessionID {
+	if record.Request.Actor == session.Subject || record.Request.SessionID == session.SessionID {
 		writeError(w, http.StatusForbidden, "APPROVAL_SESSION_CHANGED", approval.ErrSessionChanged.Error())
 		return
 	}
@@ -365,7 +421,7 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	if !decodeApprovalJSON(w, r, &payload) {
 		return
 	}
-	local := approvalHTTPRemoteIsLoopback(r.RemoteAddr)
+	local := approvalHTTPRequestIsLocal(r)
 
 	h.mu.Lock()
 	state, exists := h.challenges[id]
@@ -377,6 +433,16 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	if state.session.Subject != session.Subject || state.session.SessionID != session.SessionID {
 		h.mu.Unlock()
 		writeError(w, http.StatusForbidden, "APPROVAL_SESSION_CHANGED", approval.ErrSessionChanged.Error())
+		return
+	}
+	if state.failures >= approvalCredentialMaxFailures {
+		h.mu.Unlock()
+		writeError(w, http.StatusTooManyRequests, "APPROVAL_CREDENTIAL_LOCKED", "approval challenge is locked after repeated credential failures")
+		return
+	}
+	if state.verifying {
+		h.mu.Unlock()
+		writeError(w, http.StatusTooManyRequests, "APPROVAL_CREDENTIAL_BUSY", "approval credential verification is already in progress")
 		return
 	}
 	payloadLanguage := payload.Language
@@ -434,7 +500,40 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "APPROVAL_WARNING_DELAY", approval.ErrWarningDelay.Error())
 		return
 	}
-	proof, err := h.verifyApprovalCredentials(r, session, payload)
+	h.mu.Lock()
+	current := h.challenges[id]
+	budgetKey := session.Subject + ":" + session.SessionID
+	budget := h.credentialBudgets[budgetKey]
+	if !budget.verifying && !budget.expiresAt.After(now) {
+		budget = approvalCredentialBudget{expiresAt: now.Add(approvalCredentialLockWindow)}
+	}
+	if current.verifying || current.failures >= approvalCredentialMaxFailures || budget.verifying || budget.failures >= approvalCredentialMaxFailures {
+		h.mu.Unlock()
+		writeError(w, http.StatusTooManyRequests, "APPROVAL_CREDENTIAL_LOCKED", "approval challenge is unavailable")
+		return
+	}
+	current.verifying = true
+	h.challenges[id] = current
+	budget.verifying = true
+	h.credentialBudgets[budgetKey] = budget
+	h.mu.Unlock()
+	proof := current.proof
+	var err error
+	if !payload.ThirdConfirmation || current.challenge.ConfirmationStep < 2 || !current.proofExpiresAt.After(now) || !proof.valid() {
+		proof, err = h.verifyApprovalCredentials(r, session, payload)
+	}
+	h.mu.Lock()
+	current = h.challenges[id]
+	current.verifying = false
+	budget = h.credentialBudgets[budgetKey]
+	budget.verifying = false
+	if err != nil && !errors.Is(err, ErrApprovalVerifierUnavailable) {
+		current.failures++
+		budget.failures++
+	}
+	h.challenges[id] = current
+	h.credentialBudgets[budgetKey] = budget
+	h.mu.Unlock()
 	if err != nil {
 		if errors.Is(err, ErrApprovalVerifierUnavailable) {
 			writeError(w, http.StatusServiceUnavailable, "APPROVAL_CREDENTIAL_VERIFIER_UNAVAILABLE", "approval credential verifier is unavailable")
@@ -488,6 +587,8 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	if errors.Is(err, approval.ErrThirdConfirmation) {
 		state.challenge.ConfirmationStep = 2
 		state.challenge.RequiresThirdConfirmation = true
+		state.proof = proof
+		state.proofExpiresAt = h.now().Add(approvalCredentialProofTTL)
 		h.challenges[id] = state
 		h.mu.Unlock()
 		writeError(w, http.StatusConflict, "APPROVAL_THIRD_CONFIRMATION_REQUIRED", err.Error())
@@ -500,6 +601,8 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	}
 	state.challenge.ConfirmationStep = 3
 	state.challenge.RequiresThirdConfirmation = false
+	state.proof = ApprovalCredentialProof{}
+	state.proofExpiresAt = time.Time{}
 	h.challenges[id] = state
 	h.mu.Unlock()
 	approved, _ := h.gate.Get(id)
@@ -565,8 +668,8 @@ func (h *ApprovalHTTPHandler) verifyApprovalCredentials(r *http.Request, session
 			proof = totpProof
 		}
 	}
-	if !provided {
-		return ApprovalCredentialProof{}, nil
+	if !provided || (!proof.passwordConfirmed && !proof.totpConfirmed) || (proof.requiresTOTP && !proof.totpConfirmed) {
+		return ApprovalCredentialProof{}, ErrApprovalCredentialRejected
 	}
 	if !proof.valid() {
 		return ApprovalCredentialProof{}, ErrApprovalCredentialRejected
@@ -730,7 +833,7 @@ func approvalSessionFromRequest(w http.ResponseWriter, r *http.Request) (Approva
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return ApprovalSession{}, false
 	}
-	return ApprovalSession{Subject: claims.Subject, SessionID: claims.ID, ID: claims.ID, Username: claims.Username, Role: claims.Role, RemoteAddr: r.RemoteAddr, Local: approvalHTTPRemoteIsLoopback(r.RemoteAddr)}, true
+	return ApprovalSession{Subject: claims.Subject, SessionID: claims.ID, ID: claims.ID, Username: claims.Username, Role: claims.Role, RemoteAddr: r.RemoteAddr, Local: approvalHTTPRequestIsLocal(r)}, true
 }
 
 func approvalIDFromRequest(r *http.Request) string {
@@ -821,4 +924,18 @@ func isApprovalInvalidInput(err error) bool {
 		errors.Is(err, approval.ErrBreakGlassReason) ||
 		errors.Is(err, approval.ErrBreakGlassActor) ||
 		errors.Is(err, approval.ErrEpochRegression)
+}
+
+// Only the dedicated local listener can establish transport locality. A TCP
+// loopback peer may be an unmarked reverse proxy and does not prove locality.
+func approvalHTTPRequestIsLocal(r *http.Request) bool {
+	if r == nil || !IsLocalApprovalTransport(r.Context()) {
+		return false
+	}
+	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+		if r.Header.Get(name) != "" {
+			return false
+		}
+	}
+	return true
 }

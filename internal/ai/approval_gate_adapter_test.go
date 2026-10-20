@@ -82,6 +82,143 @@ func TestGateApprovalAdapterIgnoresCallerCredentialBooleansAndFailsClosedWithout
 	}
 }
 
+func TestGateApprovalAdapterBoundsCredentialFailuresPerSession(t *testing.T) {
+	clock := time.Date(2026, 9, 8, 14, 0, 0, 0, time.UTC)
+	store := NewApprovalStore()
+	gate := approval.NewGate(131)
+	var calls int
+	adapter, err := NewGateApprovalAdapterWithCredentialVerifier(store, gate, 131, func(context.Context, ApprovalActor, GateApprovalConfirmation) (GateApprovalCredentialProof, error) {
+		calls++
+		return GateApprovalCredentialProof{}, errors.New("bad credential")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.now = func() time.Time { return clock }
+	store.now = func() time.Time { return clock }
+	request, err := adapter.CreateFor(fakeTool{sensitivity: Destructive}, nil, "", ApprovalActor{Subject: "requester", SessionID: "requester-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approver := ApprovalActor{Subject: "approver", SessionID: "approver-session"}
+	challenge, err := adapter.BeginConfirmation(request.ID, approver, "en-US")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(approval.WarningDelay)
+	input := GateApprovalConfirmation{SecondConfirmation: true, ConfirmationPhrase: challenge.Phrase}
+	for i := 0; i < highRiskCredentialMaxFailures; i++ {
+		if _, err := adapter.Confirm(request.ID, approver, input); !errors.Is(err, ErrHighRiskCredentialRejected) {
+			t.Fatalf("failure %d error=%v", i+1, err)
+		}
+	}
+	if _, err := adapter.Confirm(request.ID, approver, input); !errors.Is(err, ErrHighRiskCredentialLocked) {
+		t.Fatalf("over-budget error=%v", err)
+	}
+	if calls != highRiskCredentialMaxFailures {
+		t.Fatalf("credential verifier calls=%d, want %d", calls, highRiskCredentialMaxFailures)
+	}
+}
+
+func TestGateApprovalAdapterPrunesExpiredCredentialBudgets(t *testing.T) {
+	clock := time.Date(2026, 9, 8, 14, 0, 0, 0, time.UTC)
+	store := NewApprovalStore()
+	gate := approval.NewGate(133)
+	adapter, err := NewGateApprovalAdapterWithCredentialVerifier(store, gate, 133, func(context.Context, ApprovalActor, GateApprovalConfirmation) (GateApprovalCredentialProof, error) {
+		return GateApprovalCredentialProof{}, errors.New("bad credential")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.now = func() time.Time { return clock }
+	store.now = func() time.Time { return clock }
+
+	newChallenge := func(t *testing.T, actor ApprovalActor) (ApprovalRequest, GateApprovalChallenge) {
+		t.Helper()
+		request, err := adapter.CreateFor(fakeTool{sensitivity: Destructive}, nil, "", ApprovalActor{Subject: "requester-" + actor.SessionID, SessionID: "requester-" + actor.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		challenge, err := adapter.BeginConfirmation(request.ID, actor, "en-US")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return request, challenge
+	}
+
+	failedRequest, failedChallenge := newChallenge(t, ApprovalActor{Subject: "failed", SessionID: "failed-session"})
+	clock = clock.Add(approval.WarningDelay)
+	input := GateApprovalConfirmation{SecondConfirmation: true, ConfirmationPhrase: failedChallenge.Phrase}
+	if _, err := adapter.Confirm(failedRequest.ID, ApprovalActor{Subject: "failed", SessionID: "failed-session"}, input); !errors.Is(err, ErrHighRiskCredentialRejected) {
+		t.Fatalf("failed credential error=%v", err)
+	}
+
+	// A successful verification also creates a session budget. The first
+	// checkpoint returns ErrThirdConfirmation after the proof is accepted.
+	adapter.SetCredentialVerifier(func(context.Context, ApprovalActor, GateApprovalConfirmation) (GateApprovalCredentialProof, error) {
+		return NewGateApprovalCredentialProof("success-proof", true, false), nil
+	})
+	successRequest, successChallenge := newChallenge(t, ApprovalActor{Subject: "success", SessionID: "success-session"})
+	clock = clock.Add(approval.WarningDelay)
+	input = GateApprovalConfirmation{Password: "secret", SecondConfirmation: true, ConfirmationPhrase: successChallenge.Phrase}
+	if _, err := adapter.Confirm(successRequest.ID, ApprovalActor{Subject: "success", SessionID: "success-session"}, input); !errors.Is(err, approval.ErrThirdConfirmation) {
+		t.Fatalf("successful checkpoint error=%v", err)
+	}
+	if got := len(adapter.credentialBudgets); got != 2 {
+		t.Fatalf("credential budgets after attempts=%d, want 2", got)
+	}
+
+	clock = clock.Add(highRiskCredentialLockWindow + time.Second)
+	// Any confirmation attempt performs pruning, including an unknown ID.
+	_, _ = adapter.Confirm("unknown", ApprovalActor{Subject: "unknown", SessionID: "unknown-session"}, GateApprovalConfirmation{})
+	if got := len(adapter.credentialBudgets); got != 0 {
+		t.Fatalf("expired credential budgets retained=%d, want 0", got)
+	}
+}
+
+func TestGateApprovalAdapterRejectsConcurrentCredentialVerification(t *testing.T) {
+	clock := time.Date(2026, 9, 8, 14, 0, 0, 0, time.UTC)
+	store := NewApprovalStore()
+	gate := approval.NewGate(132)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	adapter, err := NewGateApprovalAdapterWithCredentialVerifier(store, gate, 132, func(context.Context, ApprovalActor, GateApprovalConfirmation) (GateApprovalCredentialProof, error) {
+		close(started)
+		<-release
+		return GateApprovalCredentialProof{}, errors.New("bad credential")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.now = func() time.Time { return clock }
+	store.now = func() time.Time { return clock }
+	request, err := adapter.CreateFor(fakeTool{sensitivity: Destructive}, nil, "", ApprovalActor{Subject: "requester", SessionID: "requester-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approver := ApprovalActor{Subject: "approver", SessionID: "approver-session"}
+	challenge, err := adapter.BeginConfirmation(request.ID, approver, "en-US")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(approval.WarningDelay)
+	input := GateApprovalConfirmation{SecondConfirmation: true, ConfirmationPhrase: challenge.Phrase}
+	first := make(chan error, 1)
+	go func() {
+		_, err := adapter.Confirm(request.ID, approver, input)
+		first <- err
+	}()
+	<-started
+	if _, err := adapter.Confirm(request.ID, approver, input); !errors.Is(err, ErrHighRiskCredentialBusy) {
+		close(release)
+		t.Fatalf("concurrent verification error=%v", err)
+	}
+	close(release)
+	if err := <-first; !errors.Is(err, ErrHighRiskCredentialRejected) {
+		t.Fatalf("first verification error=%v", err)
+	}
+}
+
 func TestGateApprovalAdapterConcurrentFinalConfirmationHasSingleCommit(t *testing.T) {
 	clock := time.Date(2026, 9, 8, 15, 0, 0, 0, time.UTC)
 	store := NewApprovalStore()

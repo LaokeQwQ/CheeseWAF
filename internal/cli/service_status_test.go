@@ -14,13 +14,18 @@ import (
 func TestLoadConfigUsesCanonicalGeneratedConfigPath(t *testing.T) {
 	originalConfigPath := configPath
 	originalDataDir := dataDir
+	originalConfigExplicit := configExplicit
 	t.Cleanup(func() {
 		configPath = originalConfigPath
 		dataDir = originalDataDir
+		configExplicit = originalConfigExplicit
 	})
 
 	dataDir = t.TempDir()
 	configPath = filepath.Join(dataDir, "missing.yaml")
+	// This test exercises the default generated-config fallback. A path assigned
+	// directly by the fixture is not equivalent to an explicit --config flag.
+	configExplicit = false
 	_, path, err := loadConfig()
 	if err != nil {
 		t.Fatalf("loadConfig() error = %v", err)

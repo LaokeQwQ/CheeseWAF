@@ -3,8 +3,8 @@ package ip
 import (
 	"encoding/json"
 	"net"
+	"net/netip"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -12,11 +12,13 @@ import (
 )
 
 type GeoIPPolicy struct {
-	enabled bool
-	blocked map[string]struct{}
-	ranges  []countryRange
-	precise []precisionRange
-	reader  *maxminddb.Reader
+	enabled        bool
+	blocked        map[string]struct{}
+	ranges         []countryRange
+	precise        []precisionRange
+	reader         *maxminddb.Reader
+	countryIndex   prefixIndex[string]
+	precisionIndex prefixIndex[GeoIPLocation]
 }
 
 type countryRange struct {
@@ -125,6 +127,11 @@ func NewGeoIPPolicy(cfg config.GeoIPConfig) (*GeoIPPolicy, error) {
 				return nil, err
 			}
 			policy.ranges = append(policy.ranges, countryRange{country: country, network: network})
+			prefix, err := netip.ParsePrefix(network.String())
+			if err != nil {
+				return nil, err
+			}
+			policy.countryIndex.add(prefix, country)
 		}
 	}
 	if strings.TrimSpace(cfg.PrecisionDatabase) != "" {
@@ -136,6 +143,13 @@ func NewGeoIPPolicy(cfg config.GeoIPConfig) (*GeoIPPolicy, error) {
 			return nil, err
 		}
 		policy.precise = ranges
+		for _, item := range ranges {
+			prefix, err := netip.ParsePrefix(item.network.String())
+			if err != nil {
+				return nil, err
+			}
+			policy.precisionIndex.add(prefix, item.location)
+		}
 	}
 	if strings.TrimSpace(cfg.Database) != "" {
 		reader, err := maxminddb.Open(cfg.Database)
@@ -238,35 +252,36 @@ func (p *GeoIPPolicy) Blocked(clientIP string) bool {
 }
 
 func (p *GeoIPPolicy) countryFromCIDR(ip net.IP) string {
-	for _, item := range p.ranges {
-		if item.network.Contains(ip) {
-			return item.country
-		}
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return ""
 	}
-	return ""
+	matches := p.countryIndex.match(address.Unmap())
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[len(matches)-1]
 }
-
 func (p *GeoIPPolicy) precisionLocation(ip net.IP) (GeoIPLocation, bool) {
-	matches := make([]precisionRange, 0, 2)
-	for _, item := range p.precise {
-		if item.network.Contains(ip) {
-			matches = append(matches, item)
-		}
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return GeoIPLocation{}, false
 	}
+	matches := p.precisionIndex.match(address.Unmap())
 	if len(matches) == 0 {
 		return GeoIPLocation{}, false
 	}
-	sort.SliceStable(matches, func(i, j int) bool {
-		return matches[i].ones < matches[j].ones
-	})
 	location := GeoIPLocation{}
 	for _, item := range matches {
-		location = mergeLocation(location, item.location)
+		location = mergeLocation(location, item)
 	}
 	return location, true
 }
 
 func (l GeoIPLocation) Metadata() map[string]any {
+	if l == (GeoIPLocation{}) {
+		return nil
+	}
 	metadata := map[string]any{}
 	addString(metadata, "country_code", l.CountryCode)
 	addString(metadata, "country_name", l.CountryName)

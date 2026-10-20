@@ -38,27 +38,31 @@ func (e *Engine) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*en
 		if !rule.Enabled {
 			continue
 		}
-		value := views.match(rule, reqCtx)
-		if rule.literalPrefix != "" && !strings.Contains(value, rule.literalPrefix) {
-			continue
-		}
-		if rule.Pattern.MatchString(value) {
-			result := &engine.DetectionResult{
-				Detected:   true,
-				DetectorID: e.ID() + "." + rule.ID,
-				Category:   "custom_rule",
-				Severity:   rule.Severity,
-				Action:     rule.Action,
-				Message:    "custom rule matched: " + rule.Name,
-				Confidence: 0.8,
-				Payload:    matchPayload(value, rule),
+		for _, value := range views.variants(rule, reqCtx) {
+			if rule.literalPrefix != "" && !strings.Contains(value, rule.literalPrefix) {
+				continue
 			}
-			if best == nil || actionStrength(result.Action) > actionStrength(best.Action) {
-				best = result
+			if rule.Pattern.MatchString(value) {
+				result := &engine.DetectionResult{
+					Detected:   true,
+					DetectorID: e.ID() + "." + rule.ID,
+					Category:   "custom_rule",
+					Severity:   rule.Severity,
+					Action:     rule.Action,
+					Message:    "custom rule matched: " + rule.Name,
+					Confidence: 0.8,
+					Payload:    matchPayload(value, rule),
+				}
+				if best == nil || actionStrength(result.Action) > actionStrength(best.Action) {
+					best = result
+				}
 			}
 		}
 	}
-	return best, nil
+	if best != nil && best.Action == engine.ActionBlock {
+		return best, nil
+	}
+	return best, views.err
 }
 
 func matchPayload(value string, rule Rule) string {

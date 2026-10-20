@@ -37,6 +37,7 @@ export default function CaptchaAssetsPanel() {
   const queryClient = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const previewURL = useRef('');
+  const previewRequestSequence = useRef(0);
   const [section, setSection] = useState<'assets' | 'storage'>('assets');
   const [kind, setKind] = useState<CAPTCHAAssetKind | 'all'>('all');
   const [uploadKind, setUploadKind] = useState<CAPTCHAAssetKind>('background');
@@ -81,8 +82,12 @@ export default function CaptchaAssetsPanel() {
     onError: (error) => toast.error(errorMessage(error, t('botChallenge.captchaAssets.deleteFailed'))),
   });
   const previewMutation = useMutation({
-    mutationFn: async (asset: CAPTCHAAsset) => ({ asset, result: await fetchCAPTCHAAssetPreview(asset.id) }),
-    onSuccess: ({ asset, result }) => {
+    mutationFn: async (asset: CAPTCHAAsset) => {
+      const sequence = ++previewRequestSequence.current;
+      return { asset, result: await fetchCAPTCHAAssetPreview(asset.id), sequence };
+    },
+    onSuccess: ({ asset, result, sequence }) => {
+      if (sequence !== previewRequestSequence.current) return;
       if (previewURL.current) URL.revokeObjectURL(previewURL.current);
       previewURL.current = URL.createObjectURL(result.blob);
       setPreview({ asset, url: previewURL.current });

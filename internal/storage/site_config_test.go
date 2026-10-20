@@ -18,6 +18,9 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 			Enabled:       true,
 			Mode:          "block",
 			ParanoiaLevel: 3,
+			Rewrite: []config.RewriteRuleConfig{{
+				ID: "rewrite-1", Pattern: "^/old$", Replacement: "/new", RedirectCode: 308, Enabled: true,
+			}},
 			SemanticEngines: config.SemanticEngineSwitches{
 				NoSQL: true,
 				SSTI:  true,
@@ -77,11 +80,65 @@ func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	if len(converted.WAF.CustomRules) != 1 || converted.WAF.CustomRules[0].ID != "review-1" {
 		t.Fatalf("expected custom rules round-trip: %+v", converted.WAF.CustomRules)
 	}
+	if len(converted.WAF.Rewrite) != 1 || converted.WAF.Rewrite[0].Replacement != "/new" || converted.WAF.Rewrite[0].RedirectCode != 308 {
+		t.Fatalf("expected rewrite rules round-trip: %+v", converted.WAF.Rewrite)
+	}
 	if converted.WAF.SemanticPolicy.PromoteSeconds != 45 || !converted.WAF.SemanticPolicy.AutoAgree {
 		t.Fatalf("expected promote/auto-agree round-trip: %+v", converted.WAF.SemanticPolicy)
 	}
 	if len(converted.WAF.SemanticPolicy.FingerprintDeny) != 1 || converted.WAF.SemanticPolicy.FingerprintDeny[0] != "aabbccddeeff0011" {
 		t.Fatalf("expected fingerprint deny round-trip: %+v", converted.WAF.SemanticPolicy)
+	}
+}
+
+func TestSiteConfigRoundTripPreservesOriginSettings(t *testing.T) {
+	passHost := false
+	original := config.SiteConfig{
+		ID:           "site-origin",
+		Name:         "site-origin",
+		OriginScheme: "https",
+		PassHost:     &passHost,
+		HostHeader:   "origin.example.test",
+	}
+
+	stored := SiteFromConfig(original)
+	if stored.Advanced.Origin.Scheme != "https" || stored.Advanced.Origin.PassHost || stored.Advanced.Origin.HostHeader != original.HostHeader {
+		t.Fatalf("origin settings not mapped to storage: %+v", stored.Advanced.Origin)
+	}
+	converted := SiteToConfig(stored)
+	if converted.OriginScheme != original.OriginScheme || converted.PassHost == nil || *converted.PassHost != *original.PassHost || converted.HostHeader != original.HostHeader {
+		t.Fatalf("origin settings did not round trip: scheme=%q pass_host=%v host_header=%q", converted.OriginScheme, converted.PassHost, converted.HostHeader)
+	}
+
+	defaults := SiteFromConfig(config.SiteConfig{})
+	if defaults.Advanced.Origin.Scheme != "http" || !defaults.Advanced.Origin.PassHost {
+		t.Fatalf("origin defaults not applied: %+v", defaults.Advanced.Origin)
+	}
+	if got := SiteToConfig(Site{}).OriginScheme; got != "http" {
+		t.Fatalf("storage origin scheme default not applied: %q", got)
+	}
+	secure := SiteToConfig(Site{Upstreams: []string{"https://origin.example.test"}})
+	if secure.OriginScheme != "https" {
+		t.Fatalf("storage conversion downgraded secure upstream to %q", secure.OriginScheme)
+	}
+}
+
+func TestSiteFromConfigInfersOriginSchemeFromUpstream(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		address string
+		want    string
+	}{
+		{name: "https URL", address: "https://origin.example.test:8443", want: "https"},
+		{name: "secure websocket URL", address: "wss://origin.example.test:8443", want: "https"},
+		{name: "unqualified host", address: "origin.example.test:8080", want: "http"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := SiteFromConfig(config.SiteConfig{Upstreams: []config.UpstreamConfig{{Address: test.address}}})
+			if got.Advanced.Origin.Scheme != test.want {
+				t.Fatalf("inferred origin scheme = %q, want %q", got.Advanced.Origin.Scheme, test.want)
+			}
+		})
 	}
 }
 

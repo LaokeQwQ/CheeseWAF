@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
@@ -128,6 +129,8 @@ func runServe(ctx context.Context) error {
 	var productionDeps *ProductionDependencies
 	var productionWiring ProductionServeWiring
 	var materializeProductionPolicy bool
+	var assistantApprovals *ai.ApprovalStore
+	var assistantGateApproval *ai.GateApprovalAdapter
 	if production {
 		// Open and fully validate every production dependency before creating the
 		// runtime directory or PID lease. A failed control-plane, Redis, approval,
@@ -143,6 +146,9 @@ func runServe(ctx context.Context) error {
 		}
 		defer productionDeps.Close()
 		store = productionWiring.ManagementStore
+		if roles, ok := store.(interface{ ConfigureRoles(map[string][]string) }); ok {
+			roles.ConfigureRoles(cfg.APISec.Permissions)
+		}
 		verifier, ok := store.(storage.MigrationHandoffVerifier)
 		if !ok {
 			_ = productionDeps.Close()
@@ -155,6 +161,23 @@ func runServe(ctx context.Context) error {
 		materializeProductionPolicy, err = productionStartupPolicyMaterialization(productionWiring.Startup.State, handoff)
 		if err != nil {
 			return err
+		}
+		// Production AI approvals use the same durable Gate and management-backed
+		// credential verifier as the ApprovalHTTP service. Keep one compatibility
+		// store for the handler and adapter so execution cannot switch ledgers.
+		assistantApprovals, err = ai.NewPersistentApprovalStore(filepath.Join(cfg.Setup.RuntimeDir, "ai_approvals.json"))
+		if err != nil {
+			return fmt.Errorf("open production AI approval store: %w", err)
+		}
+		adapterFactory, ok := productionDeps.Approval.(interface {
+			NewAIGateApprovalAdapter(*ai.ApprovalStore) (*ai.GateApprovalAdapter, error)
+		})
+		if !ok {
+			return fmt.Errorf("%w: approval runtime has no AI gate adapter", ErrProductionApprovalUnavailable)
+		}
+		assistantGateApproval, err = adapterFactory.NewAIGateApprovalAdapter(assistantApprovals)
+		if err != nil {
+			return fmt.Errorf("configure production AI approval gate: %w", err)
 		}
 	}
 	if err := repairRuntimeConfig(loadedConfigPath, cfg); err != nil {
@@ -352,6 +375,12 @@ func runServe(ctx context.Context) error {
 		}
 		fmt.Printf("The one-time setup URL is stored in the protected runtime file: %s (receipt %s)\n", filepath.Join(cfg.Setup.DataDir, setup.URLFileName), receipt)
 	}
+	gateConfig := &atomic.Pointer[config.Config]{}
+	initialGateConfig, err := config.Clone(cfg)
+	if err != nil {
+		return fmt.Errorf("prepare admin entrance configuration: %w", err)
+	}
+	gateConfig.Store(initialGateConfig)
 	adminRouter, apiHandler := api.NewRouterWithAPI(api.Options{
 		Config:                             cfg,
 		IsolateConfig:                      true,
@@ -365,6 +394,8 @@ func runServe(ctx context.Context) error {
 		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
 		ManagementTokenCleanupContext:      runtimeCtx,
+		AssistantApprovals:                 assistantApprovals,
+		AssistantGateApproval:              assistantGateApproval,
 		ApprovalHTTP:                       productionWiring.ApprovalHTTP,
 		OTAClient:                          configuredOTAClient(cfg),
 		OTAState:                           configuredOTAState(cfg),
@@ -383,7 +414,23 @@ func runServe(ctx context.Context) error {
 		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
 		},
+		OnConfigChanged: func(next *config.Config) error {
+			if next == nil {
+				return fmt.Errorf("completed setup configuration is nil")
+			}
+			updated, cloneErr := config.Clone(next)
+			if cloneErr != nil {
+				return cloneErr
+			}
+			gateConfig.Store(updated)
+			return nil
+		},
 	})
+	// The serving runtime owns renewal even if ACME is enabled later through
+	// settings. Each scan reads the live configuration and skips disabled ACME.
+	// Constructing an embedded router alone still starts no background worker.
+	stopACMERenewal := apiHandler.StartACMERenewal(runtimeCtx)
+	defer stopACMERenewal()
 	if productionDeps != nil {
 		machine := productionDeps.Consensus.Machine()
 		applier, materializerErr := NewProtectionPolicyMaterializer(apiHandler, machine, cfg.Setup.RuntimeDir)
@@ -404,7 +451,7 @@ func runServe(ctx context.Context) error {
 			}
 		}
 	}
-	adminHandler, err := edgeOriginProtectedAdminHandler(cfg, adminRouter, authSecret, clock)
+	adminHandler, err := edgeOriginProtectedAdminHandlerWithConfigSource(cfg, adminRouter, authSecret, clock, gateConfig.Load)
 	if err != nil {
 		return err
 	}
@@ -418,6 +465,10 @@ func runServe(ctx context.Context) error {
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		MaxHeaderBytes:    1 << 20,
 	}
+	// The approval transport may mark requests local only when the admin
+	// listener itself is bound to a literal loopback address. Public or
+	// wildcard listeners must never inherit local-control privileges.
+	admin.ConnContext = localAdminConnContext(cfg.Server.AdminListen)
 	interconnect, err := newClusterInterconnectServer(cfg, adminRouter, clusterIdentityService)
 	if err != nil {
 		return err
@@ -529,6 +580,27 @@ func runServe(ctx context.Context) error {
 	return serveErr
 }
 
+func adminListenerIsLoopback(address string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func localAdminConnContext(address string) func(context.Context, net.Conn) context.Context {
+	if !adminListenerIsLoopback(address) {
+		return nil
+	}
+	return func(ctx context.Context, conn net.Conn) context.Context {
+		if conn == nil || !adminListenerIsLoopback(conn.RemoteAddr().String()) {
+			return ctx
+		}
+		return handler.WithLocalApprovalTransport(ctx)
+	}
+}
+
 // The first migration commit anchors the exact production config and is not
 // a protection-policy mutation. It must match the independently checked
 // handoff and ledger before the router can be served. Subsequent typed policy
@@ -601,7 +673,11 @@ const (
 )
 
 func edgeOriginProtectedAdminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) (http.Handler, error) {
-	handler := adminHandlerWithClock(cfg, apiHandler, authSecret, clock)
+	return edgeOriginProtectedAdminHandlerWithConfigSource(cfg, apiHandler, authSecret, clock, nil)
+}
+
+func edgeOriginProtectedAdminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock, configSource func() *config.Config) (http.Handler, error) {
+	handler := adminHandlerWithConfigSource(cfg, apiHandler, authSecret, clock, configSource)
 	hmacSecret := os.Getenv(edgeOriginHMACEnv)
 	accessID := os.Getenv(cloudflareAccessIDEnv)
 	accessSecret := os.Getenv(cloudflareAccessSecretEnv)
@@ -766,8 +842,15 @@ func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string
 }
 
 func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock) http.Handler {
+	return adminHandlerWithConfigSource(cfg, apiHandler, authSecret, clock, func() *config.Config { return cfg })
+}
+
+func adminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, authSecret string, clock timekeeper.Clock, configSource func() *config.Config) http.Handler {
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
+	}
+	if configSource == nil {
+		configSource = func() *config.Config { return cfg }
 	}
 	var panicAuditor *middleware.Auditor
 	if cfg != nil && cfg.APISec.Audit.Enabled {
@@ -779,7 +862,7 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 	uiFS, _ := resolveAdminUIFS()
 	if uiFS == nil {
 		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
-		return adminSecurityHeaders(withRecovery(adminEntranceGateWithClock(cfg, authSecret, apiHandler, clock)))
+		return adminSecurityHeaders(withRecovery(adminEntranceGateWithConfigSource(cfg, authSecret, apiHandler, clock, configSource)))
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -788,7 +871,11 @@ func adminHandlerWithClock(cfg *config.Config, apiHandler http.Handler, authSecr
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
+		gateCfg := configSource()
+		if gateCfg == nil {
+			gateCfg = cfg
+		}
+		if !allowAdminEntranceAt(gateCfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
 			return
 		}
 		if r.URL.Path == metricsPath && !metricsPublic {
@@ -882,8 +969,15 @@ func adminEntranceGate(cfg *config.Config, authSecret string, next http.Handler)
 }
 
 func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http.Handler, clock timekeeper.Clock) http.Handler {
+	return adminEntranceGateWithConfigSource(cfg, authSecret, next, clock, func() *config.Config { return cfg })
+}
+
+func adminEntranceGateWithConfigSource(cfg *config.Config, authSecret string, next http.Handler, clock timekeeper.Clock, configSource func() *config.Config) http.Handler {
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
+	}
+	if configSource == nil {
+		configSource = func() *config.Config { return cfg }
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -892,7 +986,11 @@ func adminEntranceGateWithClock(cfg *config.Config, authSecret string, next http
 		metricsPublic = cfg.Monitor.Prometheus.Public
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowAdminEntranceAt(cfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
+		gateCfg := configSource()
+		if gateCfg == nil {
+			gateCfg = cfg
+		}
+		if !allowAdminEntranceAt(gateCfg, authSecret, metricsPath, metricsPublic, w, r, clock.Now) {
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -922,6 +1020,17 @@ func allowAdminEntrance(cfg *config.Config, authSecret, metricsPath string, metr
 func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, metricsPublic bool, w http.ResponseWriter, r *http.Request, now func() time.Time) bool {
 	if now == nil {
 		now = time.Now
+	}
+	// First-install endpoints perform their own setup-token, completion, and
+	// origin checks. Keep those routes reachable so a persisted security entry
+	// cannot lock the wizard behind the very gate it is meant to configure.
+	// No other API or UI route is included in this allowlist.
+	if isFirstInstallPath(r.URL.Path) {
+		return true
+	}
+	if cfg != nil && setup.NeedsSetup(cfg.Setup.DataDir) &&
+		(r.Method == http.MethodGet || r.Method == http.MethodHead) && isAdminStaticAssetPath(r.URL.Path) {
+		return true
 	}
 	login := config.Default().Console.Login
 	if cfg != nil {
@@ -978,6 +1087,15 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 	}
 	// Console UI without a valid entry cookie.
 	writeAdminTeapot(w)
+	return false
+}
+
+func isFirstInstallPath(path string) bool {
+	path = strings.TrimRight(path, "/")
+	switch path {
+	case "/setup", "/api/setup", "/api/setup/status", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test", "/api/setup/integrations/victoria/test":
+		return true
+	}
 	return false
 }
 
@@ -1230,7 +1348,7 @@ func resolveWebDir() string {
 }
 
 func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub) {
-	if cfg == nil || (hub == nil && !cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
+	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
 	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
@@ -1249,19 +1367,30 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				var logs []storage.LogEntry
-				if sink == nil {
-					log.Printf("monitor collection: log sink is unavailable")
-				} else if queried, _, err := sink.Query(ctx, storage.LogFilter{Limit: 1000}); err != nil {
-					log.Printf("monitor collection: log sink query failed: %v", err)
-				} else {
-					logs = queried
-				}
 				now := time.Now()
-				snapshot := monitor.Collect(startedAt, len(cfg.Sites), logs, map[string]int64{
+				diskUsage := map[string]int64{
 					"data": dirSizes.size(cfg.Setup.DataDir, now),
 					"logs": dirSizes.size(filepath.Dir(cfg.Logging.Output.File.Path), now),
-				})
+				}
+				var snapshot monitor.Snapshot
+				// Prefer the sink's exact Count contract for aggregate counters. This
+				// avoids turning a bounded sample into a misleading full-corpus metric.
+				if requests, blocked, challenges, ok := exactMonitorLogTotals(ctx, sink); ok {
+					snapshot = monitor.Collect(startedAt, len(cfg.Sites), nil, diskUsage)
+					snapshot.Requests = intFromMonitorTotal(requests)
+					snapshot.Blocked = intFromMonitorTotal(blocked)
+					snapshot.Challenges = intFromMonitorTotal(challenges)
+				} else {
+					var logs []storage.LogEntry
+					if sink == nil {
+						log.Printf("monitor collection: log sink is unavailable")
+					} else if queried, _, err := sink.Query(ctx, storage.LogFilter{Limit: 1000}); err != nil {
+						log.Printf("monitor collection: log sink query failed: %v", err)
+					} else {
+						logs = queried
+					}
+					snapshot = monitor.Collect(startedAt, len(cfg.Sites), logs, diskUsage)
+				}
 				if err := writer.Push(ctx, snapshot); err != nil {
 					log.Printf("monitor collection: remote write failed: %v", err)
 				}
@@ -1276,6 +1405,42 @@ func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Sto
 			}
 		}
 	}()
+}
+
+type monitorLogCounter interface {
+	Count(context.Context, storage.LogFilter) (int64, bool, error)
+}
+
+func exactMonitorLogTotals(ctx context.Context, sink storage.LogSink) (requests, blocked, challenges int64, ok bool) {
+	counter, supported := sink.(monitorLogCounter)
+	if !supported {
+		return 0, 0, 0, false
+	}
+	count := func(filter storage.LogFilter) (int64, bool) {
+		value, available, err := counter.Count(ctx, filter)
+		return value, err == nil && available && value >= 0
+	}
+	if requests, ok = count(storage.LogFilter{}); !ok {
+		return 0, 0, 0, false
+	}
+	if blocked, ok = count(storage.LogFilter{Action: "block"}); !ok {
+		return 0, 0, 0, false
+	}
+	if challenges, ok = count(storage.LogFilter{Action: "challenge"}); !ok {
+		return 0, 0, 0, false
+	}
+	return requests, blocked, challenges, true
+}
+
+func intFromMonitorTotal(value int64) int {
+	if value <= 0 {
+		return 0
+	}
+	maxInt := int64(^uint(0) >> 1)
+	if value > maxInt {
+		return int(maxInt)
+	}
+	return int(value)
 }
 
 func publishMonitorEvents(ctx context.Context, hub *realtime.Hub, snapshot monitor.Snapshot, alerts []monitor.Alert) {
@@ -1411,8 +1576,11 @@ func loadConfig() (*config.Config, string, error) {
 		}
 		return cfg, configPath, nil
 	}
-	if configPath != "" {
-		fmt.Printf("config %s not found, using built-in defaults\n", configPath)
+	if _, err := os.Stat(configPath); err != nil && !os.IsNotExist(err) {
+		return nil, configPath, fmt.Errorf("read config: %w", err)
+	}
+	if configPath != "" && configExplicit {
+		return nil, configPath, fmt.Errorf("explicit config %q does not exist", configPath)
 	}
 	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{
 		DataDir:    dataDir,

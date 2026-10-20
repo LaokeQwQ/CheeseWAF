@@ -68,7 +68,7 @@ function renderPage(scopes: string[]) {
   const canReadLogs = scopes.includes('read:logs') || scopes.includes('*');
   sessionStorage.setItem(
     'cheesewaf-account',
-    JSON.stringify({ username: 'tester', role: canReadLogs ? 'admin' : 'api_token' }),
+    JSON.stringify({ username: 'tester', role: canReadLogs ? 'custom-observer' : 'api_token', scopes }),
   );
   localStorage.removeItem('cheesewaf-token');
   const client = new QueryClient({

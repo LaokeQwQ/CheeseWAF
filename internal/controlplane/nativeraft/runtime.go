@@ -11,9 +11,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/hashicorp/raft"
@@ -42,6 +44,10 @@ type Options struct {
 	Mode        StartMode
 	TLS         *TLSOptions
 	TLSConfig   *TLSOptions
+	// InitialVoters is the allowlist used by a fresh join before Raft has a
+	// persisted configuration. Every inbound RPC certificate and header must
+	// identify one of these voters.
+	InitialVoters []Member
 	// InsecureTestMode is an explicit loopback-only escape hatch for tests.
 	// Production callers must leave it false and provide mutual TLS material.
 	InsecureTestMode bool
@@ -50,6 +56,59 @@ type Options struct {
 type Member struct {
 	ID      string
 	Address string
+}
+
+// ParseInitialVoter parses the CLI representation "node-id=host:port" and
+// rejects incomplete or malformed voters before any backend is opened.
+func ParseInitialVoter(raw string) (Member, error) {
+	if raw == "" || strings.TrimSpace(raw) != raw {
+		return Member{}, fmt.Errorf("initial voter must be node-id=host:port")
+	}
+	id, address, ok := strings.Cut(raw, "=")
+	if !ok {
+		return Member{}, fmt.Errorf("initial voter must be node-id=host:port")
+	}
+	voter := Member{ID: id, Address: address}
+	if err := ValidateInitialVoters([]Member{voter}); err != nil {
+		return Member{}, err
+	}
+	return voter, nil
+}
+
+// ValidateInitialVoters validates the explicit trust allowlist used before a
+// joining node has a persisted Raft configuration. An empty allowlist is
+// permitted here because existing nodes may recover their membership from
+// disk; a fresh join is rejected by New when it discovers that no state exists.
+func ValidateInitialVoters(voters []Member) error {
+	ids := make(map[string]struct{}, len(voters))
+	addresses := make(map[string]struct{}, len(voters))
+	for _, voter := range voters {
+		if !controlplane.ValidIdentity(voter.ID) || strings.TrimSpace(voter.ID) != voter.ID {
+			return fmt.Errorf("invalid initial voter id")
+		}
+		host, rawPort, err := net.SplitHostPort(voter.Address)
+		port, portErr := strconv.Atoi(rawPort)
+		if err != nil || host == "" || strings.TrimSpace(voter.Address) != voter.Address || portErr != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("invalid initial voter address")
+		}
+		for _, r := range host {
+			if unicode.IsSpace(r) || unicode.IsControl(r) {
+				return fmt.Errorf("invalid initial voter address")
+			}
+		}
+		if strings.ContainsAny(host, "/\\") {
+			return fmt.Errorf("invalid initial voter address")
+		}
+		if _, exists := ids[voter.ID]; exists {
+			return fmt.Errorf("duplicate initial voter id")
+		}
+		if _, exists := addresses[voter.Address]; exists {
+			return fmt.Errorf("duplicate initial voter address")
+		}
+		ids[voter.ID] = struct{}{}
+		addresses[voter.Address] = struct{}{}
+	}
+	return nil
 }
 
 type Status struct {
@@ -109,6 +168,9 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if opts.Mode != ModeBootstrap && opts.Mode != ModeJoin {
 		return nil, fmt.Errorf("mode must be explicitly set to %q or %q", ModeBootstrap, ModeJoin)
+	}
+	if err := ValidateInitialVoters(opts.InitialVoters); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(opts.DataDir) == "" {
 		return nil, fmt.Errorf("data directory is required")
@@ -200,6 +262,17 @@ func New(opts Options) (*Runtime, error) {
 		}
 	}
 	bindings := newPeerBindings()
+	if opts.Mode == ModeJoin && !opts.InsecureTestMode && !existing && len(opts.InitialVoters) == 0 {
+		_ = logs.Close()
+		return nil, fmt.Errorf("native-raft join requires at least one initial voter")
+	}
+	for _, voter := range opts.InitialVoters {
+		if !controlplane.ValidIdentity(voter.ID) || !validAddress(voter.Address) {
+			_ = logs.Close()
+			return nil, fmt.Errorf("invalid initial voter")
+		}
+		bindings.bind(voter.Address, voter.ID)
+	}
 	var transport *raft.NetworkTransport
 	if opts.InsecureTestMode {
 		layer, layerErr := newPlainStreamLayer(opts.BindAddress)
@@ -252,11 +325,31 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if configuration := r.raft.GetConfiguration(); configuration.Error() == nil {
 		for _, server := range configuration.Configuration().Servers {
-			bindings.bind(string(server.Address), string(server.ID))
+			if server.Suffrage == raft.Voter {
+				bindings.bind(string(server.Address), string(server.ID))
+			}
 		}
 	}
 	go r.observeLeadership()
+	go r.observeConfiguration()
 	return r, nil
+}
+
+func (r *Runtime) observeConfiguration() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+			future := r.raft.GetConfiguration()
+			if future.Error() != nil || len(future.Configuration().Servers) == 0 {
+				continue
+			}
+			r.bindings.replaceVoters(future.Configuration().Servers)
+		}
+	}
 }
 
 func (r *Runtime) Prepare(ctx context.Context) error {

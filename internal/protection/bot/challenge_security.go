@@ -452,6 +452,7 @@ type FailureTracker struct {
 	levels           []int
 	blockAt          int
 	now              func() time.Time
+	cleanupCursor    []FailureKey
 }
 
 func NewFailureTracker(c FailureTrackerConfig) (*FailureTracker, error) {
@@ -477,11 +478,11 @@ func (t *FailureTracker) RecordFailure(k FailureKey) (FailureDecision, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	n := t.now()
-	t.clean(n)
+	t.cleanBudget(n, 16)
 	e := t.m[k]
 	if e == nil {
 		if len(t.m) >= t.cap {
-			return FailureDecision{}, errors.New("failure tracker capacity reached")
+			return FailureDecision{Blocked: true, BlockedUntil: n.Add(t.block)}, errors.New("failure tracker capacity reached")
 		}
 		e = &failureEntry{}
 		t.m[k] = e
@@ -498,12 +499,15 @@ func (t *FailureTracker) Check(k FailureKey) FailureDecision {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	n := t.now()
-	t.clean(n)
 	e := t.m[k]
 	if e == nil {
 		return FailureDecision{}
 	}
 	t.trim(e, n)
+	if len(e.at) == 0 && !n.Before(e.last.Add(t.idle)) {
+		delete(t.m, k)
+		return FailureDecision{}
+	}
 	return t.result(e, n)
 }
 func (t *FailureTracker) Reset(k FailureKey) {
@@ -935,4 +939,17 @@ func hasLeadingZeroNibbles(sum []byte, n int) bool {
 		}
 	}
 	return true
+}
+
+func (t *FailureTracker) cleanBudget(n time.Time, budget int) {
+	for k, e := range t.m {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		t.trim(e, n)
+		if len(e.at) == 0 && !n.Before(e.last.Add(t.idle)) {
+			delete(t.m, k)
+		}
+	}
 }

@@ -1,6 +1,8 @@
 package nativeraft
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -11,8 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-msgpack/v2/codec"
 	"github.com/hashicorp/raft"
 )
+
+const tlsHandshakeTimeout = 5 * time.Second
 
 // TLSOptions contains the node certificate and CA used by native-raft. The
 // certificate SAN must contain the configured NodeID. Every peer connection
@@ -48,6 +53,21 @@ func (p *peerBindings) bind(address, nodeID string) {
 	p.byAddr[address] = nodeID
 }
 
+func (p *peerBindings) replaceVoters(voters []raft.Server) {
+	if p == nil {
+		return
+	}
+	next := make(map[string]string, len(voters))
+	for _, voter := range voters {
+		if voter.Suffrage == raft.Voter && voter.Address != "" && voter.ID != "" {
+			next[string(voter.Address)] = string(voter.ID)
+		}
+	}
+	p.mu.Lock()
+	p.byAddr = next
+	p.mu.Unlock()
+}
+
 func (p *peerBindings) lookup(address string) string {
 	if p == nil {
 		return ""
@@ -60,11 +80,39 @@ func (p *peerBindings) lookup(address string) string {
 	return ""
 }
 
+func (p *peerBindings) authorize(nodeID, address string) bool {
+	if p == nil || nodeID == "" || address == "" {
+		return false
+	}
+	return p.lookup(address) == nodeID
+}
+
+func (p *peerBindings) identifyCertificate(cert *x509.Certificate) string {
+	if p == nil || cert == nil {
+		return ""
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	matched := ""
+	for _, nodeID := range p.byAddr {
+		if certificateIdentifiesNode(cert, nodeID) {
+			if matched != "" && matched != nodeID {
+				return ""
+			}
+			matched = nodeID
+		}
+	}
+	return matched
+}
+
 type raftStreamLayer struct {
 	listener  net.Listener
 	advertise net.Addr
 	tlsConfig *tls.Config
 	bindings  *peerBindings
+	ready     chan net.Conn
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func newPlainStreamLayer(bindAddr string) (*raftStreamLayer, error) {
@@ -72,7 +120,7 @@ func newPlainStreamLayer(bindAddr string) (*raftStreamLayer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &raftStreamLayer{listener: listener, advertise: listener.Addr()}, nil
+	return &raftStreamLayer{listener: listener, advertise: listener.Addr(), done: make(chan struct{})}, nil
 }
 
 func newTLSStreamLayer(bindAddr string, tlsConfig *tls.Config, bindings *peerBindings) (*raftStreamLayer, error) {
@@ -80,42 +128,161 @@ func newTLSStreamLayer(bindAddr string, tlsConfig *tls.Config, bindings *peerBin
 	if err != nil {
 		return nil, err
 	}
-	return &raftStreamLayer{listener: tls.NewListener(listener, tlsConfig), advertise: listener.Addr(), tlsConfig: tlsConfig, bindings: bindings}, nil
+	layer := &raftStreamLayer{listener: listener, advertise: listener.Addr(), tlsConfig: tlsConfig, bindings: bindings, ready: make(chan net.Conn), done: make(chan struct{})}
+	go layer.acceptTLSLoop()
+	return layer, nil
 }
 
 func (s *raftStreamLayer) Accept() (net.Conn, error) {
-	conn, err := s.listener.Accept()
-	if err != nil || s.tlsConfig == nil {
-		return conn, err
+	if s.tlsConfig == nil {
+		return s.listener.Accept()
 	}
-	tlsConn, ok := conn.(*tls.Conn)
-	if !ok {
-		_ = conn.Close()
-		return nil, fmt.Errorf("native-raft TLS listener returned unexpected connection type")
-	}
-	if err := tlsConn.Handshake(); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("native-raft TLS handshake: %w", err)
-	}
-	if expected := s.bindings.lookup(conn.RemoteAddr().String()); expected != "" {
-		state := tlsConn.ConnectionState()
-		if len(state.PeerCertificates) == 0 || !certificateIdentifiesNode(state.PeerCertificates[0], expected) {
-			_ = conn.Close()
-			return nil, fmt.Errorf("native-raft peer certificate is not bound to node %q", expected)
+	select {
+	case conn := <-s.ready:
+		if conn == nil {
+			return nil, net.ErrClosed
 		}
+		return conn, nil
+	case <-s.done:
+		return nil, net.ErrClosed
 	}
-	return tlsConn, nil
 }
 
-func (s *raftStreamLayer) Close() error   { return s.listener.Close() }
+func (s *raftStreamLayer) Close() error {
+	s.closeOnce.Do(func() {
+		close(s.done)
+		_ = s.listener.Close()
+	})
+	return nil
+}
 func (s *raftStreamLayer) Addr() net.Addr { return s.advertise }
 
+func (s *raftStreamLayer) acceptTLSLoop() {
+	sem := make(chan struct{}, 64)
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			select {
+			case <-s.done:
+				return
+			default:
+			}
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-s.done:
+			_ = conn.Close()
+			return
+		}
+		go func(raw net.Conn) {
+			defer func() { <-sem }()
+			tlsConn := tls.Server(raw, s.tlsConfig)
+			_ = tlsConn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
+			if err := tlsConn.Handshake(); err != nil {
+				_ = raw.Close()
+				return
+			}
+			_ = tlsConn.SetDeadline(time.Time{})
+			state := tlsConn.ConnectionState()
+			if len(state.PeerCertificates) == 0 {
+				_ = tlsConn.Close()
+				return
+			}
+			peerID := s.bindings.identifyCertificate(state.PeerCertificates[0])
+			if peerID == "" {
+				_ = tlsConn.Close()
+				return
+			}
+			authorized := &rpcIdentityConn{Conn: tlsConn, reader: bufio.NewReader(tlsConn), peerID: peerID, bindings: s.bindings}
+			select {
+			case s.ready <- authorized:
+			case <-s.done:
+				_ = authorized.Close()
+			}
+		}(conn)
+	}
+}
+
+// rpcIdentityConn re-frames each inbound request after checking the sender's
+// certificate identity against the Raft RPC header. It also preserves the
+// InstallSnapshot byte stream following its framed request.
+type rpcIdentityConn struct {
+	net.Conn
+	reader   *bufio.Reader
+	pending  bytes.Buffer
+	peerID   string
+	bindings *peerBindings
+	rawLeft  int64
+}
+
+func (c *rpcIdentityConn) Read(p []byte) (int, error) {
+	if c.pending.Len() > 0 {
+		return c.pending.Read(p)
+	}
+	if c.rawLeft > 0 {
+		want := int64(len(p))
+		if want > c.rawLeft {
+			want = c.rawLeft
+		}
+		n, err := c.reader.Read(p[:want])
+		c.rawLeft -= int64(n)
+		return n, err
+	}
+	rpcType, err := c.reader.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	var request any
+	switch rpcType {
+	case 0:
+		request = &raft.AppendEntriesRequest{}
+	case 1:
+		request = &raft.RequestVoteRequest{}
+	case 2:
+		request = &raft.InstallSnapshotRequest{}
+	case 3:
+		request = &raft.TimeoutNowRequest{}
+	case 4:
+		request = &raft.RequestPreVoteRequest{}
+	default:
+		return 0, fmt.Errorf("native-raft unknown RPC type %d", rpcType)
+	}
+	if err := codec.NewDecoder(c.reader, &codec.MsgpackHandle{}).Decode(request); err != nil {
+		return 0, err
+	}
+	header, ok := request.(raft.WithRPCHeader)
+	if !ok {
+		return 0, fmt.Errorf("native-raft RPC has no identity header")
+	}
+	h := header.GetRPCHeader()
+	if !c.bindings.authorize(string(h.ID), string(h.Addr)) || string(h.ID) != c.peerID {
+		return 0, fmt.Errorf("native-raft RPC identity is not authorized")
+	}
+	if snapshot, ok := request.(*raft.InstallSnapshotRequest); ok {
+		c.rawLeft = snapshot.Size
+	}
+	c.pending.WriteByte(rpcType)
+	if err := codec.NewEncoder(&c.pending, &codec.MsgpackHandle{}).Encode(request); err != nil {
+		return 0, err
+	}
+	return c.pending.Read(p)
+}
+
 func (s *raftStreamLayer) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
-	raw, err := net.DialTimeout("tcp", string(address), timeout)
+	if timeout <= 0 {
+		timeout = tlsHandshakeTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	raw, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", string(address))
 	if err != nil || s.tlsConfig == nil {
 		return raw, err
 	}
 	expected := s.bindings.lookup(string(address))
+	if expected == "" {
+		_ = raw.Close()
+		return nil, fmt.Errorf("native-raft peer address is not an authorized voter")
+	}
 	host, _, splitErr := net.SplitHostPort(string(address))
 	if splitErr != nil {
 		_ = raw.Close()
@@ -130,10 +297,12 @@ func (s *raftStreamLayer) Dial(address raft.ServerAddress, timeout time.Duration
 		return verifyPeerCertificate(rawCerts, config.RootCAs, expected)
 	}
 	tlsConn := tls.Client(raw, config)
+	_ = tlsConn.SetDeadline(deadline)
 	if err := tlsConn.Handshake(); err != nil {
 		_ = raw.Close()
 		return nil, fmt.Errorf("native-raft TLS handshake with %s: %w", host, err)
 	}
+	_ = tlsConn.SetDeadline(time.Time{})
 	return tlsConn, nil
 }
 

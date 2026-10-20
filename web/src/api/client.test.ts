@@ -76,6 +76,11 @@ describe('AI Ops API', () => {
 describe('log event lookup', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it('rejects unrelated results from both lookup filters', async () => {
+    vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { data: { items: [{ id: 'other', trace_id: 'other' }] } } });
+    await expect(fetchLogEvent('missing')).rejects.toMatchObject({ code: 'LOG_NOT_FOUND' });
+  });
+
   it('falls back to an exact id query instead of a bounded recent scan', async () => {
     const event = { id: 'old-event', trace_id: 'trace-old', timestamp: '2026-01-01T00:00:00Z' };
     const get = vi.spyOn(apiClient, 'get')
@@ -248,11 +253,23 @@ describe('authenticated account cache and request paths', () => {
     }));
     apiClient.defaults.adapter = adapter;
 
+    queryClient.setQueryData(['private-users'], ['previous-account']);
     await login('admin', 'correct-password');
+    expect(queryClient.getQueryData(['private-users'])).toBeUndefined();
     expect(sessionStorage.getItem('cheesewaf-account')).toBe(JSON.stringify({ subject: 'account-1', username: 'admin', role: 'admin', scopes: ['read:users'] }));
 
     await fetchSession();
     expect(sessionStorage.getItem('cheesewaf-account')).toBe(JSON.stringify({ subject: 'account-1', username: 'admin', role: 'admin', scopes: ['read:users'] }));
+  });
+
+  it('reads the HTTPS CSRF cookie and survives malformed cookie encoding', () => {
+    document.cookie = 'cheesewaf_csrf=%E0%A4%A; Path=/';
+    setCSRFToken('');
+    expect(() => getCSRFToken()).not.toThrow();
+    document.cookie = '__Host-cheesewaf_csrf=secure-token; Secure; Path=/';
+    expect(getCSRFToken()).toBe('secure-token');
+    document.cookie = 'cheesewaf_csrf=; Max-Age=0; Path=/';
+    document.cookie = '__Host-cheesewaf_csrf=; Max-Age=0; Secure; Path=/';
   });
 
   it('updates the account cache after refresh and legacy bootstrap responses', async () => {

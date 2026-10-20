@@ -28,12 +28,13 @@ var (
 )
 
 type SetupPayload struct {
-	Username          string `json:"username"`
-	Password          string `json:"password"`
-	AdminListen       string `json:"admin_listen"`
-	AdminStrategy     string `json:"admin_strategy"`
-	AdminPublic       bool   `json:"admin_public"`
-	SecurityEntryPath string `json:"security_entry_path"`
+	Username          string          `json:"username"`
+	Password          string          `json:"password"`
+	AdminListen       string          `json:"admin_listen"`
+	AdminStrategy     string          `json:"admin_strategy"`
+	AdminPublic       bool            `json:"admin_public"`
+	SecurityEntryPath string          `json:"security_entry_path"`
+	Profile           HardwareProfile `json:"profile"`
 }
 
 type CompleteOptions struct {
@@ -43,8 +44,12 @@ type CompleteOptions struct {
 	Paths              DefaultPaths
 	Config             *config.Config
 	Store              storage.Store
-	markComplete       func(string) error
-	persistUser        func(context.Context, storage.Store, *storage.User, bool) error
+	// ApplyRuntime applies the completed setup configuration before setup is
+	// marked complete. It returns a compensating action that restores the prior
+	// runtime state if application partially fails or setup cannot commit.
+	ApplyRuntime func(next, previous *config.Config) (rollback func() error, err error)
+	markComplete func(string) error
+	persistUser  func(context.Context, storage.Store, *storage.User, bool) error
 }
 
 type CompleteResult struct {
@@ -136,6 +141,7 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err := applySetupConfig(cfg, paths, payload); err != nil {
 		return nil, err
 	}
+	applySetupProfile(cfg, payload.Profile)
 	if err := config.Validate(cfg); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSetupValidation, err)
 	}
@@ -164,15 +170,43 @@ func CompleteSetup(ctx context.Context, opts CompleteOptions, payload SetupPaylo
 	if err := persistUser(ctx, store, user, false); err != nil {
 		return nil, rollbackSetup(ctx, store, cfg, previousConfig, nil, fileState, err)
 	}
+	var rollbackRuntime func() error
+	if opts.ApplyRuntime != nil {
+		rollbackRuntime, err = opts.ApplyRuntime(cfg, previousConfig)
+		if err != nil {
+			if rollbackRuntime != nil {
+				err = errors.Join(err, rollbackRuntime())
+			}
+			return nil, rollbackSetup(ctx, store, cfg, previousConfig, user, fileState, err)
+		}
+	}
 	markComplete := opts.markComplete
 	if markComplete == nil {
 		markComplete = MarkComplete
 	}
 	if err := markComplete(paths.DataDir); err != nil {
+		if rollbackRuntime != nil {
+			err = errors.Join(err, rollbackRuntime())
+		}
 		return nil, rollbackSetup(ctx, store, cfg, previousConfig, user, fileState, err)
 	}
 	committed = true
 	return &CompleteResult{User: user, Config: cfg, Paths: paths, SecurityEntryPath: cfg.Console.Login.SecurityEntry.Path}, nil
+}
+
+// applySetupProfile maps the selected wizard tier onto the runtime knobs that
+// are represented by the shared configuration. Unknown/custom profiles keep
+// the existing values so custom tuning can happen after first login.
+func applySetupProfile(cfg *config.Config, profile HardwareProfile) {
+	if cfg == nil {
+		return
+	}
+	switch profile {
+	case ProfileLow, ProfileMedium, ProfileSmart, ProfileHigh:
+		defaults := ProfileDefaults(profile)
+		cfg.Protection.Policy.WebAttack = defaults.WebAttackLevel
+		cfg.Protection.RateLimit.Default.Requests = defaults.RateLimitRequests
+	}
 }
 
 func setupExistingAccountError(users []storage.User) error {
@@ -366,13 +400,24 @@ func setupConfig(existing *config.Config, configPath string) (*config.Config, er
 
 func applySetupConfig(cfg *config.Config, paths DefaultPaths, payload SetupPayload) error {
 	cfg.Server.AdminListen = payload.AdminListen
-	cfg.Server.AdminPublic = payload.AdminPublic
-	cfg.Server.AdminTLS = config.AdminTLSConfig{
-		Enabled:    payload.AdminPublic,
-		CertFile:   paths.CertFile,
-		KeyFile:    paths.KeyFile,
-		SelfSigned: payload.AdminPublic,
+	adminTLS := cfg.Server.AdminTLS
+	if payload.AdminStrategy == "public_tls" {
+		payload.AdminPublic = true
+		adminTLS.Enabled = true
+		adminTLS.SelfSigned = true
+	} else if payload.AdminStrategy == "local" {
+		payload.AdminPublic = false
 	}
+	if adminTLS.CertFile == "" {
+		adminTLS.CertFile = paths.CertFile
+	}
+	if adminTLS.KeyFile == "" {
+		adminTLS.KeyFile = paths.KeyFile
+	}
+	if payload.AdminStrategy != "" {
+		cfg.Server.AdminPublic = payload.AdminPublic
+	}
+	cfg.Server.AdminTLS = adminTLS
 	cfg.Console.Login.SecurityEntry.Path = "/" + payload.SecurityEntryPath
 	// The bootstrap config keeps the entry disabled so /setup remains reachable;
 	// once this mutation succeeds the persisted config enables the gate for all

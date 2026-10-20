@@ -22,9 +22,10 @@ const (
 )
 
 var (
-	configPath = envOrDefault("CHEESEWAF_CONFIG", "./data/config/cheesewaf.yaml")
-	dataDir    = envOrDefault("CHEESEWAF_DATA_DIR", "./data")
-	cliLang    = ""
+	configPath     = envOrDefault("CHEESEWAF_CONFIG", "./data/config/cheesewaf.yaml")
+	dataDir        = envOrDefault("CHEESEWAF_DATA_DIR", "./data")
+	cliLang        = ""
+	configExplicit = os.Getenv("CHEESEWAF_CONFIG") != ""
 )
 
 func envOrDefault(name, fallback string) string {
@@ -43,6 +44,7 @@ func newRootCommand() *cobra.Command {
 		Long:    clilang.T("root.long"),
 		Version: version.Version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			configExplicit = os.Getenv("CHEESEWAF_CONFIG") != "" || cmd.Root().PersistentFlags().Changed("config")
 			// Resolve language after flags are parsed (flag > env > data-dir > system).
 			clilang.Configure(cliLang, dataDir)
 			// Refresh short descriptions that depend on locale for help of leaf commands.

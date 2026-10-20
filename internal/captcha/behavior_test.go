@@ -210,8 +210,11 @@ func TestBehaviorChallenge_RestorePublishesBoundedOffsetWithoutPublishingAnswer(
 		t.Fatalf("invalid offset metadata: %+v", challenge.Presentation)
 	}
 	tok, ok := openBehaviorToken(normalizeBehaviorOptions(opts), challenge.Token)
-	if !ok || tok.Point.X != 0 {
-		t.Fatal("restore target must remain the sealed zero-alignment position")
+	if !ok || tok.Point.X == 0 {
+		t.Fatal("restore target must be a sealed non-zero offset")
+	}
+	if absBehavior(tok.Point.X) > challenge.Presentation.MaxOffset*100 {
+		t.Fatalf("sealed restore target exceeds the published movement bound: target=%d max=%d", tok.Point.X, challenge.Presentation.MaxOffset)
 	}
 }
 
@@ -515,8 +518,8 @@ func TestBehaviorChallenge_RotateUsesCorrectionAngle(t *testing.T) {
 	if !ok {
 		t.Fatal("cannot open rotate token")
 	}
-	if tok.Angle != 0 || challenge.Presentation.InitialAngle < 30 || challenge.Presentation.InitialAngle > 330 {
-		t.Fatal("rotate challenge does not preserve a secret upright target and safe public initial angle")
+	if tok.Angle == 0 || challenge.Presentation.InitialAngle < 30 || challenge.Presentation.InitialAngle > 330 {
+		t.Fatal("rotate challenge does not preserve a secret randomized target and safe public initial angle")
 	}
 	targetX := angleTrackX(challenge.Presentation.InitialAngle, tok.Angle)
 	good := BehaviorResponse{Token: challenge.Token, Angle: tok.Angle, DurationMS: 500, Track: []BehaviorTrackPoint{{X: 0, Y: 5000, T: 0, Type: "down"}, {X: targetX, Y: 5000, T: 500, Type: "up"}}}

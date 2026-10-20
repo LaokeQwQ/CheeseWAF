@@ -63,10 +63,10 @@ CheeseWAF takes a balanced approach: **an in-process AST semantic parser provide
 | Dimension | Regex WAF (e.g., ModSecurity) | Synchronous LLM WAF | Heavy Container Stack | Commercial Cloud WAF | CheeseWAF |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Detection Engine** | Regex pattern matching | Synchronous LLM per request | Regex + statistical analysis | Signature sets + threat feed | **AST syntax analysis + Async LLM Auto-Pilot (ALAP)** |
-| **Inline Latency Added** | 1–10 ms | **500–2000 ms** (high) | 2–15 ms | Dependent on CDN routing | **< 1 ms** (sub-millisecond, zero model wait) |
+| **Inline Latency Added** | 1–10 ms | **500–2000 ms** (high) | 2–15 ms | Dependent on CDN routing | **Typically sub-millisecond** (benchmark-dependent; no model wait) |
 | **API / Token Cost** | None | Extremely high (all traffic) | None | Bandwidth & tier billing | **Low** (reviews only ambiguous samples out-of-band) |
-| **Evasion & False Positives** | Easily bypassed by encodings | Prone to hallucinations | Complex rule maintenance | Vendor-dependent updates | **Parses syntax trees; immune to obfuscation; FPR < 0.8%** |
-| **Footprint & Deployment** | Requires custom Nginx build | External API dependency | 5–10 containers, 1–2 GB+ RAM | Cloud-only | **Single binary / single container, embedded SQLite, tens of MB RAM** |
+| **Evasion & False Positives** | Easily bypassed by encodings | Prone to hallucinations | Complex rule maintenance | Vendor-dependent updates | **Parses syntax trees to reduce signature-style bypasses; benchmark FPR varies by corpus** |
+| **Footprint & Deployment** | Requires custom Nginx build | External API dependency | 5–10 containers, 1–2 GB+ RAM | Cloud-only | **One Go binary plus static Web assets (or one container), embedded SQLite, external stores optional** |
 | **Architectural Disruption** | Bound to web server | Modifies primary traffic path | Replaces primary gateway | DNS / reverse proxy takeover | **Runs as standalone reverse proxy or sidecar via `adapterd`** |
 | **Data Privacy & Compliance** | Local | Full traffic sent to external API | Local | Traffic traverses public cloud | **100% on-premises; optional private self-hosted LLM** |
 | **Air-gapped Environments** | Supported | Not supported (requires cloud API) | Partially supported | Not supported | **Fully supported with offline Ed25519 CRP verification** |
@@ -160,7 +160,7 @@ flowchart TB
 | Plane | Default Address | Description |
 | :--- | :--- | :--- |
 | **Data Plane** | Configuration-defined (sample: `http://127.0.0.1:8080`) | Ingress listener for incoming Web traffic and reverse proxying |
-| **Admin Plane** | Configuration-defined (installer profile binds `0.0.0.0:9443` and advertises a host) | Web UI, RESTful API, and setup wizard; use the installer output or `server.admin_listen` |
+| **Admin Plane** | Configuration-defined (installer defaults to `127.0.0.1:9443`; public binding requires explicit opt-in) | Web UI, RESTful API, and setup wizard; use the installer output or `server.admin_listen` |
 | **Cluster Plane** | `https://127.0.0.1:9444` | Optional TLS/mTLS node interconnect when `cluster.enabled: true` for health checks and topology discovery |
 
 ---
@@ -232,7 +232,7 @@ Run this command as root on the target Linux host. It prompts for a language, de
 curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
 ```
 
-The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The public admin surface uses HTTPS and a one-time setup token; browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
+The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The admin surface uses HTTPS and a one-time setup token; it binds to loopback unless public access is explicitly enabled. Browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall when public access is enabled. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
 
 The interactive installer also accepts an application root directory. For example, `/opt/cheesewaf` derives `bin`, `web`, `config`, `data`, and `logs` beneath that root. Press Enter to keep the FHS layout under `/usr/local`, `/usr/share`, `/etc`, `/var/lib`, and `/var/log`; automation can set `CHEESEWAF_INSTALL_DIR` or override individual `CHEESEWAF_*_DIR` variables.
 
@@ -260,6 +260,14 @@ Use the bundled automated installer:
 sudo ./install-linux.sh
 ```
 
+Upgrades preserve existing configuration. An existing public management listener still requires confirmation for each upgrade, even with `server.admin_public: true`. Keep the original installation's directory overrides and run:
+
+```bash
+sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
+```
+
+For a one-command upgrade, pass the variable after `sudo`: `curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`. Without confirmation, the installer exits before stopping the service.
+
 For manual installation, copy both the binary executable and the Web administration assets:
 
 ```bash
@@ -269,11 +277,18 @@ sudo mkdir -p /usr/share/cheesewaf/web /etc/cheesewaf /var/lib/cheesewaf /var/lo
 sudo cp -R web/dist/. /usr/share/cheesewaf/web/
 # Initialize the runtime copy only when it does not already exist; edit this
 # runtime file afterwards, never the tracked configs/cheesewaf.yaml template.
-if [ ! -e /etc/cheesewaf/cheesewaf.yaml ]; then
+if ! sudo test -e /etc/cheesewaf/cheesewaf.yaml; then
   sudo install -m 0640 configs/cheesewaf.yaml /etc/cheesewaf/cheesewaf.yaml
 fi
-sudo useradd --system --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf
-sudo chown -R cheesewaf:cheesewaf /etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
+sudo groupadd --system cheesewaf 2>/dev/null || true
+sudo useradd --system --gid cheesewaf --home /var/lib/cheesewaf --shell /usr/sbin/nologin cheesewaf 2>/dev/null || true
+# Keep root-owned environment/receipt files protected while the service owns
+# and atomically replaces its runtime configuration. Data and logs stay service-owned.
+sudo chown -R root:cheesewaf /etc/cheesewaf
+sudo chmod 01770 /etc/cheesewaf
+sudo chown cheesewaf:cheesewaf /etc/cheesewaf/cheesewaf.yaml
+sudo chmod 0600 /etc/cheesewaf/cheesewaf.yaml
+sudo chown -R cheesewaf:cheesewaf /var/lib/cheesewaf /var/log/cheesewaf
 ```
 
 #### Step 3: Register Systemd Service
@@ -297,7 +312,9 @@ sudo systemctl enable --now cheesewaf
 sudo systemctl status cheesewaf
 ```
 
-The installer binds the management interface to `0.0.0.0:9443` by default and prints both public and private addresses. The setup URL is short-lived; completing the wizard revokes its token, and the admin API then requires the generated security-entry cookie:
+The systemd unit permits atomic replacement inside `/etc/cheesewaf`. Keep that directory owned by `root:cheesewaf` with sticky mode `01770`, which lets the service create temporary files but prevents it from unlinking root-owned environment and receipt files. Keep `cheesewaf.yaml` owned by `cheesewaf:cheesewaf` with mode `0600`; the service account can then atomically replace its own runtime configuration. Data and logs should remain owned by `cheesewaf`. After installation, complete setup, save one system setting, and restart once to verify that the configuration survives the service sandbox.
+
+The installer checks the archive against the `SHA256SUMS` file shipped in the same release. This detects transfer corruption; it does not independently authenticate a compromised release account. For provenance verification, install a pinned `cosign` and set `CHEESEWAF_VERIFY_SIGNATURE=1`; the installer then verifies the keyless GitHub Actions signature bundle for `SHA256SUMS` before running any release code. The management interface binds to `127.0.0.1:9443` by default. Set `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` only when a public listener is intentional; use a reverse proxy or SSH tunnel for remote access. The setup URL and token expire after 10 minutes; completing the wizard revokes the token, and the admin API then requires the generated security-entry cookie:
 
 ```bash
 # View the initial setup URL containing the one-time access token:
@@ -355,11 +372,12 @@ volumes:
 ```bash
 docker compose up -d
 docker compose logs -f cheesewaf
+docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url
 ```
 
 #### Step 3: Access Setup Wizard
 
-Open `https://127.0.0.1:9443/setup` in your browser to complete initialization (self-signed certificates are generated automatically). The `cheesewaf-data` volume persists configuration and rules across container upgrades.
+Open `https://127.0.0.1:9443/setup` in your browser to complete initialization (self-signed certificates are generated automatically). The `cheesewaf-data` volume persists configuration and rules across container upgrades. The setup token is in the volume and can be read with `docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url`.
 
 ---
 
@@ -398,7 +416,7 @@ Log into the Web Console and navigate to **Sites** -> **New Site**:
 1. Enter your domain (e.g., `demo.example.com`).
 2. Enter the upstream server address and port (e.g., `192.168.1.100:8080`).
 3. Select a paranoia level (Level 3 recommended for general production).
-4. Save the configuration to hot-reload immediately without restarting the daemon.
+4. Save the configuration. Site, edge, protection, API security, block page, and time-sync changes hot-reload; listener addresses, admin TLS, traffic TLS, storage, logging, scheduler, and ACME runtime changes require a service restart. The system API returns `restart_required` and the affected sections.
 
 ### 3. Configure Model Endpoint (ALAP)
 
@@ -500,13 +518,34 @@ CheeseWAF provides three administrative interfaces:
 
 ## Configuration Reference
 
+### Capability Boundaries
+
+| Capability | Current behavior |
+| :--- | :--- |
+| ACME issue | Available through the site certificate wizard when `acme.enabled` is true; issuance is manual and audited. |
+| ACME automatic renewal | Available through the in-process hourly renewal worker. It scans enabled ACME sites, renews certificates within 30 days of expiry, validates SAN/key permissions, persists status, and reloads the site; failures are retained in site status and notifications. |
+| OTA updates | Read-only candidate checks; no updater worker installs binaries. |
+| Vulnerability feeds | Configuration is retained for compatibility, but no feed worker runs. |
+| Diagnostic uploads | Not exposed by the serving composition: no trusted external upload adapter is configured. |
+| KMS recovery | Not exposed by the serving composition: no external key provider is configured. |
+| Scoped management tokens | The standalone token-service package is not composed into the serving API. |
+| Tamper-evident audit signing | Critical events fail closed without a configured signer; the serving composition does not configure one. |
+| Request shared state | `storage.redis` is control-plane coordination only. Rate-limit and bot challenge state remain per process; Redis challenge mode is unavailable. |
+| gRPC / gRPC-Web | HTTP/2 pass-through is available only after explicit site opt-in. Five-byte message frames, protobuf fields, and `grpc-encoding` are not decoded; request trailers are rejected, while responses retain only `grpc-status`, `grpc-message`, and `grpc-status-details-bin`. Other trailers are removed and their names are logged. |
+
+The console exposes these boundaries in its capabilities response so an unavailable worker is not presented as an active feature.
+
+WebSocket, gRPC, and other streaming upgrades do not enter the semantic WAF after the connection is established. They are bounded transport pass-through capabilities, not protocol-level message protection. Deploy a protocol-aware gateway upstream when protobuf or frame-level inspection is required.
+
+`ai.knowledge.file` must name a readable regular file, not a symlink, no larger than 2 MiB. A load failure logs a diagnostic and falls back to builtin knowledge when `ai.knowledge.builtin` is `true`, or an empty knowledge base otherwise.
+
 On first launch, the daemon generates `data/config/cheesewaf.yaml` in the data directory (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)). Core configuration structure:
 
 ```yaml
 server:
   listen: "127.0.0.1:8080"       # Data plane ingress listener
-  admin_listen: "0.0.0.0:9443"   # Public management listener used by the installer
-  admin_public: true
+  admin_listen: "127.0.0.1:9443" # Private management listener; public binding is opt-in
+  admin_public: false
   admin_tls:
     enabled: true
   # The installer writes a random security entry after bootstrap
@@ -560,7 +599,7 @@ waf-cli --config ./data/config/cheesewaf.yaml rules import --site default --file
 waf-cli --config ./data/config/cheesewaf.yaml rules export --site default --format json
 ```
 
-Configuration files hot-reload automatically upon file changes or when receiving a `SIGHUP` signal. If an imported rule contains syntax errors, the service continues running with its existing active rules.
+Live policy files hot-reload automatically upon file changes or when receiving a `SIGHUP` signal. Listener, TLS, storage, logging, scheduler, and ACME runtime changes still require a service restart. If an imported rule contains syntax errors, the service continues running with its existing active rules.
 
 ---
 
@@ -637,7 +676,7 @@ make corpus-governance
 make security-corpus
 ```
 
-Automated CI gates require evaluation snapshots to contain at least 250 benign requests and 10,000 attack samples while enforcing a baseline of **FPR < 0.8%** and **TPR >= 99%**.
+The repository's current evaluation gate uses snapshots of at least 250 benign requests and 10,000 attack samples with an internal baseline of **FPR < 0.8%** and **TPR >= 99%**. These are CI corpus thresholds, not a production guarantee; results vary with traffic, site policy, and detector profile.
 
 ---
 

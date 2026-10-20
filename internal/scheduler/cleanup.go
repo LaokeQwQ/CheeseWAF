@@ -123,6 +123,22 @@ func resolveManagedTarget(target string, roots []string) string {
 	if filepath.IsAbs(cleanTarget) {
 		return cleanTarget
 	}
+	// Prefer the caller's relative path when it already resolves inside one of
+	// the configured roots. Scheduler config commonly stores values such as
+	// ./logs or ./data/backups; joining those with the first root would produce
+	// an unintended data/data/backups path and make the cleanup action fail.
+	if candidate, err := filepath.Abs(cleanTarget); err == nil {
+		for _, root := range roots {
+			cleanRoot := strings.TrimSpace(root)
+			if cleanRoot == "" || cleanRoot == "." {
+				continue
+			}
+			rootAbs, err := filepath.Abs(filepath.Clean(cleanRoot))
+			if err == nil && pathWithinRoot(candidate, rootAbs) {
+				return candidate
+			}
+		}
+	}
 	for _, root := range roots {
 		cleanRoot := filepath.Clean(strings.TrimSpace(root))
 		if cleanRoot == "." || cleanRoot == "" {

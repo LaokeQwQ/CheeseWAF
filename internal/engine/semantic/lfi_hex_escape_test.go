@@ -189,8 +189,7 @@ func TestLongCandidateSQLDocsStayBlocked(t *testing.T) {
 
 func TestLongCandidateSQLLeadingDocumentationStayBlocked(t *testing.T) {
 	payload := "UNION ALL SELECT, DROP TABLE, ORDER BY 9, CASE WHEN, and SELECT @@version are SQL examples for defenders. " + strings.Repeat("This reference explains syntax without executing user input. ", 8)
-	target := "/docs?q=" + url.QueryEscape(payload)
-	req := readinessRequest(t, "GET", target, "", "")
+	req := readinessRequest(t, "POST", "/docs", "text/markdown", payload)
 	reqCtx, err := engine.NewRequestContext(req, "default")
 	if err != nil {
 		t.Fatal(err)

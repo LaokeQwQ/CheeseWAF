@@ -55,6 +55,11 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 	}
 	// R3: role-based tool whitelist (does not weaken dual-control approvals).
 	actor := ApprovalActorFromContext(ctx)
+	if dynamic, ok := tool.(interface {
+		SensitivityForArgs(map[string]any) ToolSensitivity
+	}); ok {
+		tool = argumentSensitivityTool{Tool: tool, sensitivity: dynamic.SensitivityForArgs(args)}
+	}
 	if err := GuardToolAccessForActor(actor, tool, DefaultRoleToolPolicy()); err != nil {
 		return nil, err
 	}
@@ -79,7 +84,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 				}
 				return &ToolExecution{Approval: &request}, nil
 			}
-			_, preview, err := previewForTool(ctx, tool, args)
+			preview, err := a.executionPreview(ctx, tool, args, approvalID)
 			if err != nil {
 				return nil, err
 			}
@@ -99,7 +104,7 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 				}
 				return &ToolExecution{Approval: &request}, nil
 			}
-			_, preview, err := previewForTool(ctx, tool, args)
+			preview, err := a.executionPreview(ctx, tool, args, approvalID)
 			if err != nil {
 				return nil, err
 			}
@@ -145,6 +150,18 @@ func (a *Assistant) ExecuteTool(ctx context.Context, name string, args map[strin
 		}
 	}
 	return execution, nil
+}
+
+func (a *Assistant) executionPreview(ctx context.Context, tool Tool, args map[string]any, id string) (string, error) {
+	if bound, ok := tool.(interface{ UsesStoredPreviewBinding() bool }); ok && bound.UsesStoredPreviewBinding() {
+		request, exists := a.approvals.Get(id)
+		if !exists || request.PreviewBinding == "" {
+			return "", fmt.Errorf("approved preview binding is unavailable")
+		}
+		return request.PreviewBinding, nil
+	}
+	_, binding, err := previewForTool(ctx, tool, args)
+	return binding, err
 }
 
 func previewForTool(ctx context.Context, tool Tool, args map[string]any) (diff, binding string, err error) {
@@ -198,4 +215,24 @@ func (a *Assistant) RejectFor(id string, actor ApprovalActor) (ApprovalRequest, 
 		return a.gateApproval.RejectFor(id, actor, "AI high-risk approval rejected")
 	}
 	return a.approvals.RejectFor(id, actor)
+}
+
+type argumentSensitivityTool struct {
+	Tool
+	sensitivity ToolSensitivity
+}
+
+func (t argumentSensitivityTool) Sensitivity() ToolSensitivity { return t.sensitivity }
+func (t argumentSensitivityTool) RequiredPermission() string {
+	if scoped, ok := t.Tool.(ToolPermissioner); ok {
+		return scoped.RequiredPermission()
+	}
+	return ""
+}
+func (t argumentSensitivityTool) UsesStoredPreviewBinding() bool {
+	bound, ok := t.Tool.(interface{ UsesStoredPreviewBinding() bool })
+	return ok && bound.UsesStoredPreviewBinding()
+}
+func (t argumentSensitivityTool) ResolvePreview(ctx context.Context, args map[string]any) (string, string, error) {
+	return previewForTool(ctx, t.Tool, args)
 }

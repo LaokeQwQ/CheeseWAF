@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -145,8 +146,6 @@ func (w *Wizard) setupHTTPHandler(bundle *DefaultBundle, done chan struct{}) htt
 			resp.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_ = setupPageTemplate.Execute(resp, map[string]string{
 				"AdminListen": w.adminAPI(),
-				"ConfigFile":  bundle.Paths.ConfigFile,
-				"CertFile":    bundle.Paths.CertFile,
 			})
 		case http.MethodPost:
 			w.handleSetupSubmit(resp, req, bundle, complete)
@@ -161,9 +160,6 @@ func (w *Wizard) setupHTTPHandler(bundle *DefaultBundle, done chan struct{}) htt
 		}
 		writeSetupJSON(resp, http.StatusOK, map[string]any{
 			"needs_setup": w.NeedsSetup(),
-			"config_file": bundle.Paths.ConfigFile,
-			"cert_file":   bundle.Paths.CertFile,
-			"sqlite_file": bundle.Paths.SQLiteFile,
 		})
 	})
 	mux.HandleFunc("/api/setup", func(resp http.ResponseWriter, req *http.Request) {
@@ -173,10 +169,34 @@ func (w *Wizard) setupHTTPHandler(bundle *DefaultBundle, done chan struct{}) htt
 		}
 		w.handleSetupSubmit(resp, req, bundle, complete)
 	})
-	return mux
+	return setupSecurityHeaders(mux)
+}
+
+// setupSecurityHeaders protects the short-lived first-install surface before
+// the full admin handler is available. The wizard is served over TLS by
+// RunWebWizard; checking r.TLS keeps httptest and embedded callers honest
+// without advertising HSTS on an HTTP transport.
+func setupSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		if r != nil && r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (w *Wizard) handleSetupSubmit(resp http.ResponseWriter, req *http.Request, bundle *DefaultBundle, complete func()) {
+	if req.Body != nil {
+		req.Body = http.MaxBytesReader(resp, req.Body, 1<<20)
+	}
 	payload, err := readSetupPayload(req)
 	if err != nil {
 		writeSetupError(resp, http.StatusBadRequest, err.Error())
@@ -204,7 +224,15 @@ func readSetupPayload(req *http.Request) (SetupPayload, error) {
 	var payload SetupPayload
 	contentType := strings.ToLower(req.Header.Get("Content-Type"))
 	if strings.Contains(contentType, "application/json") {
-		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		decoder := json.NewDecoder(req.Body)
+		if err := decoder.Decode(&payload); err != nil {
+			return payload, err
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			if err == nil {
+				return payload, errors.New("request body must contain exactly one JSON document")
+			}
 			return payload, err
 		}
 		return payload, nil
@@ -279,8 +307,6 @@ var setupPageTemplate = template.Must(template.New("setup-page").Parse(`<!doctyp
   <main>
     <h1>CheeseWAF Setup</h1>
     <p>Create the first administrator account and confirm the admin listener. The temporary setup service will stop after completion.</p>
-    <code>Config: {{.ConfigFile}}</code>
-    <code>Certificate: {{.CertFile}}</code>
     <form method="post" action="/setup">
       <label>Username<input name="username" autocomplete="username" required minlength="3" value="admin"></label>
       <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="10" title="At least 10 chars; 3 of: upper, lower, non-repeating digits, special"></label>

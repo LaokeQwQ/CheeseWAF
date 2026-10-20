@@ -5,6 +5,7 @@ import {
   AppErrorBoundary,
   buildFreshModuleURL,
   extractFailedModuleURL,
+  reportUIError,
 } from "./AppErrorBoundary";
 
 vi.mock("react-i18next", () => ({
@@ -49,6 +50,16 @@ describe("extractFailedModuleURL", () => {
 });
 
 describe("UI error reporting", () => {
+  it('sends the HTTPS cookie as CSRF and reports non-success responses', async () => {
+    vi.spyOn(document, 'cookie', 'get').mockReturnValue('__Host-cheesewaf_csrf=secure-csrf');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const logger = vi.spyOn(console, 'error').mockImplementation(() => {});
+    reportUIError('test-trace', new Error('boom'), { componentStack: '' });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0][1].headers['X-CSRF-Token']).toBe('secure-csrf');
+    await waitFor(() => expect(logger).toHaveBeenCalledWith('[CheeseWAF UI error report failed]', 'test-trace', expect.any(Error)));
+  });
   beforeEach(() => {
     sessionStorage.clear();
     window.history.replaceState({}, "", "/");

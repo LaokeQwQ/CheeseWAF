@@ -79,6 +79,10 @@ func TestValidateOptionsRejectsMissingProductionDependenciesBeforeIO(t *testing.
 		{"implicit raft mode", func(o *Options) { o.Mode = "" }, "bootstrap or join"},
 		{"cluster whitespace", func(o *Options) { o.ClusterID = " cluster-a" }, "cluster"},
 		{"node invisible whitespace", func(o *Options) { o.NodeID = "node\u200b-a" }, "node"},
+		{"incomplete initial voter", func(o *Options) { o.InitialVoters = []nativeraft.Member{{ID: "node-b"}} }, "initial voter address"},
+		{"duplicate initial voter", func(o *Options) {
+			o.InitialVoters = []nativeraft.Member{{ID: "node-b", Address: "raft-b.example:9451"}, {ID: "node-b", Address: "raft-c.example:9451"}}
+		}, "duplicate initial voter id"},
 		{"public HTTP", func(o *Options) { o.Listen = "0.0.0.0:9445" }, "loopback"},
 		{"public raft", func(o *Options) { o.RaftListen = "0.0.0.0:9444" }, "loopback"},
 		{"remote insecure PostgreSQL", func(o *Options) {

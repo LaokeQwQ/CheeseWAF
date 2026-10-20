@@ -392,7 +392,7 @@ type Manager struct {
 	confirmationVerifier ConfirmationVerifier
 	consumeConfirmation  bool
 	allowTemporaryEgress bool
-	confirmations        map[string]struct{}
+	confirmations        map[string]time.Time
 }
 
 func NewManager(now func() time.Time) *Manager {
@@ -411,7 +411,7 @@ func NewManagerWithOptions(opts ManagerOptions) *Manager {
 		requirePolicy: opts.RequirePolicy, requireConfirmation: opts.RequireConfirmation,
 		confirmationVerifier: opts.ConfirmationVerifier, consumeConfirmation: opts.ConsumeConfirmation,
 		allowTemporaryEgress: opts.AllowTemporaryEgress,
-		confirmations:        make(map[string]struct{}),
+		confirmations:        make(map[string]time.Time),
 	}
 }
 
@@ -458,6 +458,11 @@ func newID() (string, error) {
 }
 func (m *Manager) Issue(r IssueRequest) (Lease, error) {
 	m.mu.Lock()
+	m.pruneLocked(m.now())
+	if len(m.leases) >= 65536 || len(m.confirmations) >= 65536 {
+		m.mu.Unlock()
+		return Lease{}, ErrUsageLimit
+	}
 	requirePolicy, requireConfirmation := m.requirePolicy, m.requireConfirmation
 	confirmationVerifier, allowTemporaryEgress := m.confirmationVerifier, m.allowTemporaryEgress
 	consumeConfirmation := m.consumeConfirmation
@@ -543,10 +548,10 @@ func (m *Manager) Issue(r IssueRequest) (Lease, error) {
 			m.mu.Unlock()
 			return Lease{}, ErrConfirmationReplay
 		}
-		m.confirmations[r.ConfirmationID] = struct{}{}
+		m.confirmations[r.ConfirmationID] = now.Add(MaxLeaseTTL)
 	}
 	m.leases[id] = l
-	m.audit = append(m.audit, m.eventLocked(l, "issued", 0, 0, "issued", now))
+	m.appendAuditLocked(m.eventLocked(l, "issued", 0, 0, "issued", now))
 	m.mu.Unlock()
 	return l, nil
 }
@@ -587,16 +592,16 @@ func (m *Manager) Authorize(l Lease, s RequestScope) error {
 	m.mu.Lock()
 	stored, err := m.validateLocked(l.ID, s, now)
 	if err != nil {
-		m.audit = append(m.audit, m.eventForScope(l.ID, s, "authorization_denied", err.Error(), now))
+		m.appendAuditLocked(m.eventForScope(l.ID, s, "authorization_denied", err.Error(), now))
 		m.mu.Unlock()
 		return err
 	}
 	if stored.Consumed {
-		m.audit = append(m.audit, m.eventLocked(stored, "authorization_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "authorization_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
 		m.mu.Unlock()
 		return ErrLeaseConsumed
 	}
-	m.audit = append(m.audit, m.eventLocked(stored, "authorized", 0, 0, "authorized", now))
+	m.appendAuditLocked(m.eventLocked(stored, "authorized", 0, 0, "authorized", now))
 	m.mu.Unlock()
 	return nil
 }
@@ -642,21 +647,21 @@ func (m *Manager) AcquireUse(id string, s RequestScope) (Lease, func(), error) {
 func (m *Manager) consumeLocked(id string, s RequestScope, now time.Time) (Lease, error) {
 	stored, err := m.validateLocked(id, s, now)
 	if err != nil {
-		m.audit = append(m.audit, m.eventForScope(id, s, "consume_denied", err.Error(), now))
+		m.appendAuditLocked(m.eventForScope(id, s, "consume_denied", err.Error(), now))
 		return Lease{}, err
 	}
 	if stored.Consumed || (stored.MaxRequests > 0 && stored.Requests >= stored.MaxRequests) {
 		if stored.Consumed {
-			m.audit = append(m.audit, m.eventLocked(stored, "consume_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
+			m.appendAuditLocked(m.eventLocked(stored, "consume_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
 			return Lease{}, ErrLeaseConsumed
 		}
-		m.audit = append(m.audit, m.eventLocked(stored, "consume_denied", 0, stored.Requests, ErrUsageLimit.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "consume_denied", 0, stored.Requests, ErrUsageLimit.Error(), now))
 		return Lease{}, ErrUsageLimit
 	}
 	stored.Consumed = true
 	stored.Requests++
 	m.leases[stored.ID] = stored
-	m.audit = append(m.audit, m.eventLocked(stored, "consumed", 0, stored.Requests, "consumed", now))
+	m.appendAuditLocked(m.eventLocked(stored, "consumed", 0, stored.Requests, "consumed", now))
 	return stored, nil
 }
 
@@ -677,26 +682,26 @@ func (m *Manager) RecordUsage(l Lease, s RequestScope, bytes int64, result strin
 	defer m.mu.Unlock()
 	stored, err := m.validateLocked(l.ID, s, now)
 	if err != nil {
-		m.audit = append(m.audit, m.eventForScope(l.ID, s, "result_denied", err.Error(), now))
+		m.appendAuditLocked(m.eventForScope(l.ID, s, "result_denied", err.Error(), now))
 		return err
 	}
 	if !stored.Consumed {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseNotConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseNotConsumed.Error(), now))
 		return ErrLeaseNotConsumed
 	}
 	if stored.Completed {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
 		return ErrLeaseConsumed
 	}
 	if stored.MaxBytes > 0 && stored.Bytes > stored.MaxBytes-bytes {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", bytes, stored.Requests, ErrUsageLimit.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", bytes, stored.Requests, ErrUsageLimit.Error(), now))
 		return ErrUsageLimit
 	}
 	stored.Bytes += bytes
 	stored.Completed = true
 	stored.LastResult = result
 	m.leases[stored.ID] = stored
-	m.audit = append(m.audit, m.eventLocked(stored, "result", bytes, stored.Requests, result, now))
+	m.appendAuditLocked(m.eventLocked(stored, "result", bytes, stored.Requests, result, now))
 	return nil
 }
 
@@ -713,19 +718,19 @@ func (m *Manager) RecordTransfer(l Lease, s RequestScope, usage Usage) error {
 	defer m.mu.Unlock()
 	stored, err := m.validateLocked(l.ID, s, now)
 	if err != nil {
-		m.audit = append(m.audit, m.eventForScope(l.ID, s, "result_denied", err.Error(), now))
+		m.appendAuditLocked(m.eventForScope(l.ID, s, "result_denied", err.Error(), now))
 		return err
 	}
 	if !stored.Consumed {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseNotConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseNotConsumed.Error(), now))
 		return ErrLeaseNotConsumed
 	}
 	if stored.Completed {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
 		return ErrLeaseConsumed
 	}
 	if stored.MaxBytes > 0 && stored.Bytes > stored.MaxBytes-total {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", total, stored.Requests, ErrUsageLimit.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", total, stored.Requests, ErrUsageLimit.Error(), now))
 		return ErrUsageLimit
 	}
 	stored.Bytes += total
@@ -735,7 +740,7 @@ func (m *Manager) RecordTransfer(l Lease, s RequestScope, usage Usage) error {
 	event := m.eventLocked(stored, "result", total, stored.Requests, usage.Result, now)
 	event.BytesSent = usage.BytesSent
 	event.BytesReceived = usage.BytesReceived
-	m.audit = append(m.audit, event)
+	m.appendAuditLocked(event)
 	return nil
 }
 
@@ -756,23 +761,23 @@ func (m *Manager) RecordTransferFinal(l Lease, s RequestScope, usage Usage) erro
 	defer m.mu.Unlock()
 	stored, ok := m.leases[l.ID]
 	if !ok {
-		m.audit = append(m.audit, m.eventForScope(l.ID, s, "result_denied", ErrInvalidLease.Error(), now))
+		m.appendAuditLocked(m.eventForScope(l.ID, s, "result_denied", ErrInvalidLease.Error(), now))
 		return ErrInvalidLease
 	}
 	if !leaseMatchesScope(stored, s) {
-		m.audit = append(m.audit, m.eventForScope(l.ID, s, "result_denied", ErrLeaseScope.Error(), now))
+		m.appendAuditLocked(m.eventForScope(l.ID, s, "result_denied", ErrLeaseScope.Error(), now))
 		return ErrLeaseScope
 	}
 	if !stored.Consumed {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseNotConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseNotConsumed.Error(), now))
 		return ErrLeaseNotConsumed
 	}
 	if stored.Completed {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", 0, stored.Requests, ErrLeaseConsumed.Error(), now))
 		return ErrLeaseConsumed
 	}
 	if stored.MaxBytes > 0 && stored.Bytes > stored.MaxBytes-total {
-		m.audit = append(m.audit, m.eventLocked(stored, "result_denied", total, stored.Requests, ErrUsageLimit.Error(), now))
+		m.appendAuditLocked(m.eventLocked(stored, "result_denied", total, stored.Requests, ErrUsageLimit.Error(), now))
 		return ErrUsageLimit
 	}
 	stored.Bytes += total
@@ -782,7 +787,7 @@ func (m *Manager) RecordTransferFinal(l Lease, s RequestScope, usage Usage) erro
 	event := m.eventLocked(stored, "result", total, stored.Requests, usage.Result, now)
 	event.BytesSent = usage.BytesSent
 	event.BytesReceived = usage.BytesReceived
-	m.audit = append(m.audit, event)
+	m.appendAuditLocked(event)
 	return nil
 }
 
@@ -848,7 +853,7 @@ func (m *Manager) Revoke(id string) error {
 	if !l.Revoked {
 		l.Revoked = true
 		m.leases[id] = l
-		m.audit = append(m.audit, m.eventLocked(l, "revoked", 0, l.Requests, "revoked", now))
+		m.appendAuditLocked(m.eventLocked(l, "revoked", 0, l.Requests, "revoked", now))
 	}
 	return nil
 }
@@ -864,4 +869,35 @@ func (m *Manager) Audit() []AuditEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]AuditEvent(nil), m.audit...)
+}
+
+func (m *Manager) appendAuditLocked(event AuditEvent) {
+	const capacity = 4096
+	if len(m.audit) >= capacity {
+		copy(m.audit, m.audit[len(m.audit)-capacity+1:])
+		m.audit = m.audit[:capacity-1]
+	}
+	m.audit = append(m.audit, event)
+}
+func (m *Manager) pruneLocked(now time.Time) {
+	budget := 128
+	for id, lease := range m.leases {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		if !now.Before(lease.ExpiresAt.Add(MaxLeaseTTL)) {
+			delete(m.leases, id)
+		}
+	}
+	budget = 128
+	for id, expires := range m.confirmations {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		if !now.Before(expires) {
+			delete(m.confirmations, id)
+		}
+	}
 }

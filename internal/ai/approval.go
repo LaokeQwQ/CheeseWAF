@@ -38,6 +38,7 @@ type ApprovalRequest struct {
 	ArgsSalt           string          `json:"-"`
 	ArgsDigest         string          `json:"-"`
 	PreviewDigest      string          `json:"-"`
+	PreviewBinding     string          `json:"-"`
 	Sensitivity        ToolSensitivity `json:"sensitivity"`
 	Diff               string          `json:"diff,omitempty"`
 	Status             ApprovalStatus  `json:"status"`
@@ -206,6 +207,7 @@ func (s *ApprovalStore) CreateForWithPreview(tool Tool, args map[string]any, dif
 		ArgsSalt:           salt,
 		ArgsDigest:         digest,
 		PreviewDigest:      previewDigest,
+		PreviewBinding:     preview,
 		Sensitivity:        tool.Sensitivity(),
 		Diff:               safeDiff,
 		Status:             ApprovalPending,
@@ -625,9 +627,10 @@ func sanitizeApprovalDiff(diff string) (string, error) {
 
 type approvalRequestDisk struct {
 	ApprovalRequest
-	ArgsSalt      string `json:"args_salt"`
-	ArgsDigest    string `json:"args_digest"`
-	PreviewDigest string `json:"preview_digest,omitempty"`
+	ArgsSalt       string `json:"args_salt"`
+	ArgsDigest     string `json:"args_digest"`
+	PreviewDigest  string `json:"preview_digest,omitempty"`
+	PreviewBinding string `json:"preview_binding,omitempty"`
 }
 
 type approvalStoreDisk struct {
@@ -669,6 +672,7 @@ func (s *ApprovalStore) loadLocked() error {
 		request.ArgsSalt = diskRequest.ArgsSalt
 		request.ArgsDigest = diskRequest.ArgsDigest
 		request.PreviewDigest = diskRequest.PreviewDigest
+		request.PreviewBinding = diskRequest.PreviewBinding
 		if request.ID == "" {
 			changed = true
 			continue
@@ -739,6 +743,7 @@ func (s *ApprovalStore) persistLocked() error {
 			ArgsSalt:        request.ArgsSalt,
 			ArgsDigest:      request.ArgsDigest,
 			PreviewDigest:   request.PreviewDigest,
+			PreviewBinding:  request.PreviewBinding,
 		})
 	}
 	raw, err := json.MarshalIndent(approvalStoreDisk{Requests: items}, "", "  ")

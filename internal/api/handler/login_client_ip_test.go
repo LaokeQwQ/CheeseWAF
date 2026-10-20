@@ -28,7 +28,7 @@ func TestTrustedLoginClientIPOnlyHonorsXFFFromLoopback(t *testing.T) {
 		{name: "rfc1918 192.168 ignores xff", peer: "192.168.1.1", xff: "198.51.100.50", want: ""},
 		{name: "public peer ignores xff", peer: "203.0.113.40", xff: "198.51.100.50", want: ""},
 		{name: "loopback without xff", peer: "127.0.0.1", xff: "", want: ""},
-		{name: "loopback takes first xff hop", peer: "127.0.0.1", xff: "198.51.100.1, 10.0.0.2", want: "198.51.100.1"},
+		{name: "loopback takes appended xff hop", peer: "127.0.0.1", xff: "198.51.100.1, 10.0.0.2", want: "10.0.0.2"},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -57,12 +57,12 @@ func TestLoginRateLimitKeysIgnorePrivatePeerXFF(t *testing.T) {
 	}
 	foundPeer := false
 	for _, key := range keys {
-		if key == "peer:10.1.2.3" {
+		if key == "client:10.1.2.3" {
 			foundPeer = true
 		}
 	}
 	if !foundPeer {
-		t.Fatalf("expected peer key, got %v", keys)
+		t.Fatalf("expected socket source key, got %v", keys)
 	}
 }
 

@@ -7,8 +7,8 @@ server:
     # The one-command installer exposes the admin surface over TLS. It replaces
     # the placeholder security entry with a random alphanumeric segment before
     # starting the service; setup remains token-gated until the wizard finishes.
-    admin_listen: "0.0.0.0:9443"
-    admin_public: true
+    admin_listen: "127.0.0.1:9443"
+    admin_public: false
     admin_tls:
         enabled: true
         cert_file: "./data/certs/admin.crt"
@@ -70,6 +70,9 @@ cluster:
             data_dir: "./data/cluster/native-raft"
             listen: 127.0.0.1:9451
             mode: bootstrap
+            # Seed voters are trusted only while a fresh node has no persisted Raft membership.
+            # Use native-raft peer addresses, not cluster interconnect addresses.
+            initial_voters: []
     join:
         require_approval: true
         token_ttl: 15m0s
@@ -352,6 +355,8 @@ storage:
     sqlite:
         path: "./data/cheesewaf.db"
     redis:
+        # Control-plane coordination only. It does not provide shared request
+        # rate-limit or bot challenge state; challenge_backend must remain memory.
         enabled: false
         address: 127.0.0.1:6379
         instance_id: ""
@@ -452,6 +457,7 @@ ai:
         builtin: true
         max_snippets: 5
         # Optional administrator-managed JSON snippets. Set to an absolute path on the host.
+        # Must be a readable regular file, not a symlink, no larger than 2 MiB.
         file: ""
 update:
     ota:

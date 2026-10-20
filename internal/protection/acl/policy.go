@@ -78,7 +78,11 @@ func (r Rule) matches(req *http.Request) bool {
 	if r.Method != "" && r.Method != strings.ToUpper(req.Method) {
 		return false
 	}
-	if r.PathPrefix != "" && !strings.HasPrefix(req.URL.Path, r.PathPrefix) {
+	path, valid := engine.NormalizeRequestPath(req.URL.Path)
+	if !valid {
+		return false
+	}
+	if r.PathPrefix != "" && !engine.PathMatchesPrefix(path, r.PathPrefix) {
 		return false
 	}
 	if r.Header != "" {

@@ -193,8 +193,14 @@ func (i *ACMESHIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult
 	if err := os.MkdirAll(req.Home, 0o700); err != nil {
 		return fail("prepare_home", "failed to create acme.sh home", err, "")
 	}
+	if err := os.Chmod(req.Home, 0o700); err != nil {
+		return fail("prepare_home", "failed to restrict acme.sh home permissions", err, "")
+	}
 	if err := os.MkdirAll(req.CertDir, 0o750); err != nil {
 		return fail("prepare_cert_dir", "failed to create certificate directory", err, "")
+	}
+	if err := os.Chmod(req.CertDir, 0o750); err != nil {
+		return fail("prepare_cert_dir", "failed to restrict certificate directory permissions", err, "")
 	}
 	record("prepare", StepSucceeded, "acme.sh home and certificate directory ready", "")
 

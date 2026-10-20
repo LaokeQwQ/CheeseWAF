@@ -52,8 +52,8 @@ func TestEnsureDefaultsCreatesConfigAndCertificate(t *testing.T) {
 	if bytes.Contains(config, []byte("change-me-in-production")) {
 		t.Fatalf("default config must not write the placeholder bot secret")
 	}
-	if !bytes.Contains(config, []byte("admin_public: true")) || !bytes.Contains(config, []byte("enabled: true")) {
-		t.Fatalf("default config should enable public admin TLS")
+	if bytes.Contains(config, []byte("admin_public: true")) || !bytes.Contains(config, []byte("enabled: true")) {
+		t.Fatalf("default config should keep the admin listener private while enabling TLS")
 	}
 }
 
@@ -221,6 +221,75 @@ func TestWizardSetupHandlerCreatesAdminAndMarksComplete(t *testing.T) {
 	}
 	if !cfg.Console.Login.SecurityEntry.Enabled || !regexp.MustCompile(`^/[A-Za-z0-9]{8,64}$`).MatchString(cfg.Console.Login.SecurityEntry.Path) {
 		t.Fatalf("security entry was not generated for web setup: %+v", cfg.Console.Login.SecurityEntry)
+	}
+}
+
+func TestWizardSetupHandlerAppliesSecurityHeadersAndMinimizesStatus(t *testing.T) {
+	dataDir := t.TempDir()
+	wizard := NewWizard(dataDir)
+	bundle, err := wizard.PrepareDefaults()
+	if err != nil {
+		t.Fatalf("PrepareDefaults() error = %v", err)
+	}
+	handler := wizard.setupHTTPHandler(bundle, make(chan struct{}))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status endpoint returned %d: %s", response.Code, response.Body.String())
+	}
+	for name, want := range map[string]string{
+		"Cache-Control":                "no-store",
+		"X-Frame-Options":              "DENY",
+		"X-Content-Type-Options":       "nosniff",
+		"Referrer-Policy":              "no-referrer",
+		"Cross-Origin-Opener-Policy":   "same-origin",
+		"Cross-Origin-Resource-Policy": "same-origin",
+	} {
+		if got := response.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	for _, want := range []string{"default-src 'self'", "frame-ancestors 'none'", "script-src 'none'"} {
+		if !strings.Contains(response.Header().Get("Content-Security-Policy"), want) {
+			t.Errorf("CSP %q does not contain %q", response.Header().Get("Content-Security-Policy"), want)
+		}
+	}
+	if got := response.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HTTP setup response must not advertise HSTS, got %q", got)
+	}
+	for _, secret := range []string{bundle.Paths.ConfigFile, bundle.Paths.CertFile, bundle.Paths.SQLiteFile} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Errorf("anonymous setup status exposed server path %q: %s", secret, response.Body.String())
+		}
+	}
+
+	tlsRequest := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
+	tlsRequest.TLS = &tls.ConnectionState{}
+	tlsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(tlsResponse, tlsRequest)
+	if got := tlsResponse.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Fatal("TLS setup response must include HSTS")
+	}
+}
+
+func TestWizardSetupHandlerRejectsTrailingJSON(t *testing.T) {
+	wizard := NewWizard(t.TempDir())
+	bundle, err := wizard.PrepareDefaults()
+	if err != nil {
+		t.Fatalf("PrepareDefaults() error = %v", err)
+	}
+	handler := wizard.setupHTTPHandler(bundle, make(chan struct{}))
+	request := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(`{"username":"admin","password":"Correct-Horse-9x!"} {}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON returned %d, want 400: %s", response.Code, response.Body.String())
+	}
+	if !wizard.NeedsSetup() {
+		t.Fatal("rejected setup request marked setup complete")
 	}
 }
 

@@ -2,10 +2,49 @@ package storage
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+func TestOpenSQLiteRepairsExistingUnixPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits are not a Windows database ACL")
+	}
+	path := filepath.Join(t.TempDir(), "permissions.db")
+	if err := os.WriteFile(path, []byte{}, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if mode := mustFileMode(t, path); mode&0o077 != 0 {
+		t.Fatalf("sqlite database remained group/world accessible: %o", mode)
+	}
+}
+
+func TestSQLiteSecurityDoesNotInterpretModeBitsOnWindows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "windows-mode.db")
+	if err := os.WriteFile(path, []byte{}, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureSQLiteFile(path, false); err != nil {
+		t.Fatalf("non-POSIX permissions should be ignored: %v", err)
+	}
+}
+
+func mustFileMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
+}
 
 func TestSQLiteStoreSiteLifecycle(t *testing.T) {
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "cheesewaf.db"))

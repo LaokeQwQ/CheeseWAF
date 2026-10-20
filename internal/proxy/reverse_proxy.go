@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/protection/bot"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
 )
 
@@ -31,33 +33,64 @@ var stripClientForwardHeaders = append([]string{
 	"X-Forwarded-Proto",
 	"X-Forwarded-Port",
 	"X-Forwarded-Scheme",
+	"X-Original-URL", "X-Rewrite-URL", "X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override",
 }, proxytrust.ProviderIdentityHeaders()...)
 
 func NewReverseProxy(target *url.URL, timeout time.Duration) *httputil.ReverseProxy {
-	return newReverseProxy(target, timeout, "")
+	return newReverseProxyWithOptions(target, timeout, "", reverseProxyOptions{})
 }
 
 // NewReverseProxyForClient rebuilds upstream forwarding headers from the
 // client identity already validated by the proxy trust policy.
 func NewReverseProxyForClient(target *url.URL, timeout time.Duration, clientIP string) *httputil.ReverseProxy {
-	return newReverseProxy(target, timeout, normalizedClientIP(clientIP))
+	return newReverseProxyWithOptions(target, timeout, normalizedClientIP(clientIP), reverseProxyOptions{})
 }
 
-func newReverseProxy(target *url.URL, timeout time.Duration, trustedClientIP string) *httputil.ReverseProxy {
+// NewReverseProxyForSite applies the site's origin transport and Host policy.
+// Site configuration is kept separate from the request-facing forwarding
+// identity so a saved per-site origin setting cannot be silently ignored.
+func NewReverseProxyForSite(target *url.URL, timeout time.Duration, clientIP string, originScheme string, passHost bool, hostHeader string) *httputil.ReverseProxy {
+	if target == nil {
+		return newReverseProxyWithOptions(target, timeout, normalizedClientIP(clientIP), reverseProxyOptions{})
+	}
+	clone := *target
+	if scheme := strings.ToLower(strings.TrimSpace(originScheme)); scheme == "http" || scheme == "https" {
+		clone.Scheme = scheme
+	}
+	return newReverseProxyWithOptions(&clone, timeout, normalizedClientIP(clientIP), reverseProxyOptions{
+		passHost:   passHost,
+		hostHeader: strings.TrimSpace(hostHeader),
+	})
+}
+
+type reverseProxyOptions struct {
+	passHost   bool
+	hostHeader string
+}
+
+func newReverseProxyWithOptions(target *url.URL, timeout time.Duration, trustedClientIP string, options reverseProxyOptions) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 	proxy.Transport = transportForTimeout(timeout)
-	originalDirector := proxy.Director
-	proxy.Director = func(r *http.Request) {
-		originalHost := r.Host
-		clientAddr := r.RemoteAddr
+	proxy.Director = nil
+	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		r := pr.Out
+		originalHost := pr.In.Host
+		clientAddr := pr.In.RemoteAddr
 		for _, h := range stripClientForwardHeaders {
-			r.Header.Del(h)
+			deleteHeaderAliases(r.Header, h)
 		}
-		originalDirector(r)
-		r.Host = target.Host
+		pr.SetURL(target)
+		switch {
+		case options.hostHeader != "":
+			r.Host = options.hostHeader
+		case options.passHost:
+			r.Host = originalHost
+		default:
+			r.Host = target.Host
+		}
 		if originalHost != "" {
 			r.Header.Set("X-Forwarded-Host", originalHost)
 		}
@@ -69,13 +102,29 @@ func newReverseProxy(target *url.URL, timeout time.Duration, trustedClientIP str
 			r.Header.Set("X-Forwarded-For", ip)
 			r.Header.Set("X-Real-IP", ip)
 		}
-		if r.TLS != nil {
+		if requestIsHTTPS(pr.In, bot.TrustedCIDRsFromContext(pr.In.Context())) {
 			r.Header.Set("X-Forwarded-Proto", "https")
+			r.Header.Set("X-Forwarded-Port", "443")
 		} else {
 			r.Header.Set("X-Forwarded-Proto", "http")
+			r.Header.Set("X-Forwarded-Port", "80")
 		}
 	}
 	return proxy
+}
+
+func deleteHeaderAliases(header http.Header, name string) {
+	for key := range header {
+		if strings.EqualFold(strings.ReplaceAll(key, "_", "-"), name) {
+			delete(header, key)
+		}
+	}
+}
+
+func stripRoutingOverrideHeaders(header http.Header) {
+	for _, name := range []string{"X-Original-URL", "X-Rewrite-URL", "X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override"} {
+		deleteHeaderAliases(header, name)
+	}
 }
 
 func normalizedClientIP(raw string) string {
@@ -109,6 +158,9 @@ func transportForTimeout(timeout time.Duration) *http.Transport {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = timeout
+	transport.DialContext = (&net.Dialer{Timeout: min(timeout, 10*time.Second), KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = min(timeout, 10*time.Second)
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ClientSessionCache: tls.NewLRUClientSessionCache(1024)}
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.MaxIdleConns = 256
 	transport.MaxIdleConnsPerHost = 64

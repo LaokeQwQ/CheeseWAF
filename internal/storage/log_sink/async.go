@@ -15,6 +15,7 @@ const (
 	defaultAsyncLogSinkQueueBytes   = 16 << 20
 	defaultAsyncLogSinkCloseTimeout = 5 * time.Second
 	defaultAsyncLogCloneConcurrency = 8
+	remoteLogBatchSize              = 64
 )
 
 var (

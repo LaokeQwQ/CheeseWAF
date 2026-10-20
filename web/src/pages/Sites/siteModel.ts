@@ -1,6 +1,8 @@
 import type { NginxImportSite, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
 
 export const defaultSiteAdvanced: SiteAdvanced = {
+  grpc_enabled: false,
+  websocket_enabled: false,
   certificate: {
     mode: 'file',
     cert_pem: '',

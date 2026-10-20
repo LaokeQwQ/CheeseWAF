@@ -10,6 +10,11 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 prompt_read() {
   if [[ -r /dev/tty ]]; then read -r "$@" </dev/tty; else read -r "$@"; fi
 }
+has_interactive_terminal() {
+  [[ -t 0 ]] && return 0
+  [[ -r /dev/tty && -w /dev/tty ]] || return 1
+  { : </dev/tty; } 2>/dev/null
+}
 [[ "$(uname -s)" == "Linux" ]] || die "this installer supports Linux only"
 [[ "$(id -u)" -eq 0 ]] || die "run as root: curl ... | sudo bash"
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid CHEESEWAF_REPO"
@@ -17,7 +22,7 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 
-if [[ -z "$lang" && ( -t 0 || -r /dev/tty ) ]]; then
+if [[ -z "$lang" ]] && has_interactive_terminal; then
   printf 'Language / 语言 [1=English, 2=简体中文] (1): '
   prompt_read choice
   [[ "$choice" == "2" ]] && lang="zh-CN" || lang="en"
@@ -33,7 +38,7 @@ esac
 
 api_url="https://api.github.com/repos/${repo}/releases/latest"
 if [[ "$release_ref" != "latest" ]]; then
-  [[ "$release_ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "CHEESEWAF_RELEASE must be a semver tag such as v0.4.2 or v0.4.2-beta"
+  [[ "$release_ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || die "CHEESEWAF_RELEASE must be a semver tag such as v0.4.5 or v0.4.5-beta"
   release_tag="$release_ref"
   [[ "$release_tag" == v* ]] || release_tag="v${release_tag}"
   api_url="https://api.github.com/repos/${repo}/releases/tags/${release_tag}"
@@ -48,6 +53,7 @@ version="${tag#v}"
 asset="cheesewaf-${arch}-linux-${version}.tar.gz"
 asset_url="https://github.com/${repo}/releases/download/${tag}/${asset}"
 sum_url="https://github.com/${repo}/releases/download/${tag}/SHA256SUMS"
+sum_bundle_url="https://github.com/${repo}/releases/download/${tag}/SHA256SUMS.bundle"
 
 tmp_dir="$(mktemp -d -t cheesewaf-install.XXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -56,6 +62,21 @@ curl --proto '=https' --proto-redir '=https' -fsSL --retry 3 --connect-timeout 1
 checksum_lines="$(cd "$tmp_dir" && awk -v name="$asset" '$2 == name || $2 == "*"name {print}' SHA256SUMS)"
 [[ "$(printf '%s\n' "$checksum_lines" | awk 'NF {count++} END {print count + 0}')" == "1" ]] || die "SHA256SUMS must contain exactly one entry for ${asset}"
 (cd "$tmp_dir" && printf '%s\n' "$checksum_lines" | sha256sum -c -) || die "checksum verification failed for ${asset}"
+
+# SHA256SUMS is published beside the archive, so it protects transport
+# integrity only. Operators that require release provenance can install the
+# pinned cosign package separately and opt into verification of the keyless
+# GitHub Actions bundle. The identity is fixed to this repository's release
+# workflow and a version tag; an unsigned or unrelated release is rejected.
+if [[ "${CHEESEWAF_VERIFY_SIGNATURE:-0}" == "1" ]]; then
+  command -v cosign >/dev/null 2>&1 || die "cosign is required when CHEESEWAF_VERIFY_SIGNATURE=1"
+  curl --proto '=https' --proto-redir '=https' -fsSL --retry 3 --connect-timeout 10 -o "${tmp_dir}/SHA256SUMS.bundle" "$sum_bundle_url" || die "unable to download SHA256SUMS signature bundle"
+  cosign verify-blob \
+    --bundle "${tmp_dir}/SHA256SUMS.bundle" \
+    --certificate-identity-regexp "https://github\\.com/${repo}/\\.github/workflows/ci\\.yml@refs/tags/v[0-9].*" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "${tmp_dir}/SHA256SUMS" >/dev/null || die "SHA256SUMS signature verification failed"
+fi
 
 package_prefix="cheesewaf-${arch}-linux-"
 while IFS= read -r member; do

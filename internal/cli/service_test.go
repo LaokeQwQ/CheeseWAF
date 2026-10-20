@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
@@ -31,6 +33,42 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
+
+func TestLocalAdminConnContextRequiresLoopbackListenerAndPeer(t *testing.T) {
+	ctx := context.Background()
+	loopback := localAdminConnContext("127.0.0.1:9443")
+	if loopback == nil {
+		t.Fatal("loopback admin listener did not enable local transport context")
+	}
+	marked := loopback(ctx, fakeAddrConn{remote: "127.0.0.1:1234"})
+	if !handler.IsLocalApprovalTransport(marked) {
+		t.Fatal("loopback peer was not marked local")
+	}
+	public := localAdminConnContext("0.0.0.0:9443")
+	if public != nil {
+		t.Fatal("wildcard listener must not enable local transport context")
+	}
+	remote := loopback(ctx, fakeAddrConn{remote: "10.0.0.2:1234"})
+	if handler.IsLocalApprovalTransport(remote) {
+		t.Fatal("non-loopback peer was marked local")
+	}
+}
+
+type fakeAddrConn struct{ remote string }
+
+func (c fakeAddrConn) Read([]byte) (int, error)         { return 0, nil }
+func (c fakeAddrConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c fakeAddrConn) Close() error                     { return nil }
+func (c fakeAddrConn) LocalAddr() net.Addr              { return testNetAddr("127.0.0.1:9443") }
+func (c fakeAddrConn) RemoteAddr() net.Addr             { return testNetAddr(c.remote) }
+func (c fakeAddrConn) SetDeadline(time.Time) error      { return nil }
+func (c fakeAddrConn) SetReadDeadline(time.Time) error  { return nil }
+func (c fakeAddrConn) SetWriteDeadline(time.Time) error { return nil }
+
+type testNetAddr string
+
+func (a testNetAddr) Network() string { return "tcp" }
+func (a testNetAddr) String() string  { return string(a) }
 
 func TestValidateStartupUsersRejectsHistoricalNonCanonicalUsername(t *testing.T) {
 	ctx := context.Background()
@@ -611,6 +649,85 @@ func TestAdminHandlerSecurityEntryGatesConsole(t *testing.T) {
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if health.Code != http.StatusOK || health.Body.String() != "api:/health" {
 		t.Fatalf("expected health to remain available, got %d: %s", health.Code, health.Body.String())
+	}
+}
+
+func TestAdminHandlerAllowsFirstInstallPathsBeforeSecurityEntry(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(webDir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"assets/setup.js": "console.log('setup')", "assets/setup.css": "body{display:block}",
+		"cheesewaf-logo.png": "logo", "favicon.ico": "icon",
+	} {
+		if err := os.WriteFile(filepath.Join(webDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("cheesewaf-login"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("CHEESEWAF_WEB_DIR", webDir)
+
+	cfg := config.Default()
+	cfg.Setup.DataDir = t.TempDir()
+	cfg.Console.Login.SecurityEntry.Enabled = true
+	cfg.Console.Login.SecurityEntry.Path = "/secure-admin"
+	cfg.Console.Login.SecurityEntry.CookieName = "cw_entry_test"
+	var apiPath string
+	handler := adminHandler(&cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}), "security-entry-secret")
+
+	for _, path := range []string{"/setup", "/api/setup/status", "/api/setup", "/api/setup/probe", "/api/setup/draft", "/api/setup/integrations/postgres/test"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if path == "/setup" {
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("first-install console path %s returned %d: %s", path, recorder.Code, recorder.Body.String())
+			}
+			continue
+		}
+		if apiPath != path || recorder.Code != http.StatusNoContent {
+			t.Fatalf("first-install API path %s was not passed through: path=%q status=%d body=%s", path, apiPath, recorder.Code, recorder.Body.String())
+		}
+	}
+	for _, path := range []string{"/assets/setup.js", "/assets/setup.css", "/cheesewaf-logo.png", "/favicon.ico"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("first-install static asset %s %s returned %d", method, path, recorder.Code)
+			}
+		}
+	}
+	for _, path := range []string{"/", "/login", "/api/sites"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		want := http.StatusTeapot
+		if strings.HasPrefix(path, "/api/") {
+			want = http.StatusForbidden
+		}
+		if recorder.Code != want {
+			t.Fatalf("unrelated first-install path %s bypassed entry gate: got %d, want %d", path, recorder.Code, want)
+		}
+	}
+	if err := setup.MarkComplete(cfg.Setup.DataDir); err != nil {
+		t.Fatalf("mark setup complete: %v", err)
+	}
+	postSetup := httptest.NewRecorder()
+	handler.ServeHTTP(postSetup, httptest.NewRequest(http.MethodGet, "/", nil))
+	if postSetup.Code != http.StatusTeapot {
+		t.Fatalf("post-setup console path bypassed security entry, got %d: %s", postSetup.Code, postSetup.Body.String())
+	}
+	for _, path := range []string{"/assets/setup.js", "/assets/setup.css", "/cheesewaf-logo.png", "/favicon.ico"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusTeapot {
+			t.Fatalf("post-setup static asset %s bypassed entry gate: %d", path, recorder.Code)
+		}
 	}
 }
 

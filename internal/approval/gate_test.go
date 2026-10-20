@@ -12,10 +12,17 @@ func approvalTestBinding(record Record, now time.Time, id, actor string) Confirm
 	if err != nil {
 		panic(err)
 	}
+	sessionID := record.Request.SessionID
+	if record.Request.Risk == RiskHigh || record.Request.Risk == RiskEmergency {
+		if actor == record.Request.Actor {
+			actor += "-approver"
+		}
+		sessionID += "-approver"
+	}
 	return Confirmation{
 		WarningReadAt: now.Add(-WarningDelay), PasswordConfirmed: true, SecondConfirmation: true,
 		ConfirmationID: id, Actor: actor, Scope: record.Request.Scope, PolicyEpoch: record.Request.PolicyEpoch,
-		Local: true, SessionID: record.Request.SessionID, ConfirmationLanguage: record.Request.ConfirmationLanguage,
+		Local: true, SessionID: sessionID, ConfirmationLanguage: record.Request.ConfirmationLanguage,
 		ConfirmationPhrase: phrase, IntentDigest: record.Request.IntentDigest, WorkflowDigest: record.Request.WorkflowDigest, Nonce: record.Request.Nonce,
 	}
 }
@@ -39,8 +46,12 @@ func TestSensitiveRequestsCannotBePreApprovedAndNeedThreeConfirmations(t *testin
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	gate := NewGate(2)
 	record, err := gate.Submit(now, Request{ID: "r-token", Risk: RiskLow, Scope: "token:write", PolicyEpoch: 2, TTL: time.Minute, PreApproved: true, TokenOperation: true, Actor: "operator", SessionID: "session-token", ConfirmationLanguage: "zh-CN"})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("pre-approved sensitive request error=%v, want invalid request", err)
+	}
+	record, err = gate.Submit(now, Request{ID: "r-token", Risk: RiskLow, Scope: "token:write", PolicyEpoch: 2, TTL: time.Minute, TokenOperation: true, Actor: "operator", SessionID: "session-token", ConfirmationLanguage: "zh-CN"})
 	if err != nil {
-		t.Fatalf("submit: %v", err)
+		t.Fatalf("interactive submit: %v", err)
 	}
 	if record.Status != StatusPending || record.Commit != nil {
 		t.Fatalf("sensitive request was auto-approved: %+v", record)

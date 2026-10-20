@@ -45,6 +45,9 @@ export type NginxImportSite = {
 };
 
 export type SiteAdvanced = {
+  /** Explicit HTTP/2 gRPC pass-through; protobuf/frame inspection is unavailable. */
+  grpc_enabled?: boolean;
+  websocket_enabled?: boolean;
   certificate: SiteCertificateConfig;
   origin: SiteOriginConfig;
   health_check: SiteHealthCheckConfig;
@@ -374,6 +377,8 @@ export type ScheduledTask = {
   target: string;
   channel?: string;
   recipient?: string;
+  /** Recipient is blank when redacted; preserve it on an unchanged update. */
+  recipient_configured?: boolean;
   period?: string;
   format?: string;
   keep: number;
@@ -1216,7 +1221,20 @@ export type TimeSyncStatus = {
 };
 
 export type SystemConfig = {
+	restart_required?: boolean;
+	restart_fields?: string[];
 	capabilities: {
+		acme_auto_renew?: SystemCapability;
+		grpc_proxy?: SystemCapability & { mode?: 'passthrough' | string; message?: string };
+		grpc_message_inspection?: SystemCapability;
+		backup?: SystemCapability;
+		storage_cleanup?: SystemCapability;
+		diagnostic_upload?: SystemCapability;
+		kms_recovery?: SystemCapability;
+		scoped_api_tokens?: SystemCapability;
+		audit_signing?: SystemCapability;
+		control_plane_redis?: SystemCapability & { configured?: boolean; scope?: string };
+		request_shared_state?: SystemCapability;
 		ota_updates: SystemCapability;
 		vulnerability_feeds: SystemCapability;
 		bot_challenge_redis: SystemCapability;
@@ -1362,6 +1380,8 @@ export type SystemConfig = {
 export type SystemCapability = {
 	available: boolean;
 	reason: string;
+	message?: string;
+	mode?: string;
 };
 
 export type OTAReleaseCandidate = {

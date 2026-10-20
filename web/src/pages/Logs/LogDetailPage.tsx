@@ -16,7 +16,7 @@ export default function LogDetailPage() {
   const locale = i18n?.resolvedLanguage;
   const navigate = useNavigate();
   const { traceId = '' } = useParams();
-  const reference = decodeURIComponent(traceId);
+  const reference = traceId;
   const abortRef = useRef<AbortController | null>(null);
   const [analysisTrace, setAnalysisTrace] = useState<AIAssistantTraceEvent[]>([]);
   const [streamReasoning, setStreamReasoning] = useState('');

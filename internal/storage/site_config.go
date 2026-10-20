@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -10,6 +12,14 @@ func SiteFromConfig(site config.SiteConfig) Site {
 	upstreams := make([]string, 0, len(site.Upstreams))
 	for _, upstream := range site.Upstreams {
 		upstreams = append(upstreams, upstream.Address)
+	}
+	originScheme := site.OriginScheme
+	if originScheme == "" {
+		originScheme = OriginSchemeFromUpstreams(upstreams)
+	}
+	passHost := true
+	if site.PassHost != nil {
+		passHost = *site.PassHost
 	}
 	return Site{
 		ID:            site.ID,
@@ -26,6 +36,8 @@ func SiteFromConfig(site config.SiteConfig) Site {
 		ParanoiaLevel: site.WAF.ParanoiaLevel,
 		Enabled:       site.Enabled,
 		Advanced: SiteAdvanced{
+			WebSocketEnabled: site.WAF.WebSocketEnabled,
+			GRPCEnabled:      site.WAF.GRPCEnabled,
 			Certificate: CertificateConfig{
 				Mode:          site.Certificate.Mode,
 				CertPEM:       site.Certificate.CertPEM,
@@ -53,10 +65,15 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				ProxyTimeout:  site.WAF.Performance.ProxyTimeout.String(),
 				MaxBodyBytes:  site.WAF.Performance.MaxBodyBytes,
 				MaxHeaderSize: site.WAF.Performance.MaxHeaderBytes,
-				Scheme:        "http",
-				PassHost:      true,
+				Scheme:        originScheme,
+				PassHost:      passHost,
+				HostHeader:    site.HostHeader,
 			},
 			Protection: SiteProtectionConfig{
+				Bot:           inheritedBool(site.WAF.BotEnabled),
+				RateLimit:     inheritedBool(site.WAF.RateLimitEnabled),
+				ACL:           inheritedBool(site.WAF.ACLEnabled),
+				APISecurity:   inheritedBool(site.WAF.APISecurityEnabled),
 				SemanticSQL:   site.WAF.SemanticEngines.SQL,
 				SemanticXSS:   site.WAF.SemanticEngines.XSS,
 				SemanticRCE:   site.WAF.SemanticEngines.RCE,
@@ -67,6 +84,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				SemanticSSTI:  site.WAF.SemanticEngines.SSTI,
 			},
 			SemanticPolicy: SiteSemanticPolicy{
+				DetectionBudget:       site.WAF.SemanticPolicy.DetectionBudget.String(),
 				BudgetExhaustedPolicy: site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
 				DecodeDepth:           site.WAF.SemanticPolicy.DecodeDepth,
 				PathAllowlist:         cloneStrings(site.WAF.SemanticPolicy.PathAllowlist),
@@ -81,6 +99,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				BotCC:       site.WAF.ProtectionPolicy.BotCC,
 				ThreatIntel: site.WAF.ProtectionPolicy.ThreatIntel,
 			},
+			Rewrite: siteRewriteFromConfig(site.WAF.Rewrite),
 			Response: SiteResponseConfig{
 				Enabled:           site.WAF.Response.Enabled,
 				MaxBodyBytes:      site.WAF.Response.MaxBodyBytes,
@@ -109,6 +128,24 @@ func SiteFromConfig(site config.SiteConfig) Site {
 	}
 }
 
+// OriginSchemeFromUpstreams infers a safe origin transport when legacy site
+// records omit the explicit scheme. Secure upstreams must never be downgraded.
+func OriginSchemeFromUpstreams(upstreams []string) string {
+	for _, address := range upstreams {
+		parsed, err := url.Parse(strings.TrimSpace(address))
+		if err != nil {
+			continue
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "https", "wss":
+			return "https"
+		case "http", "ws":
+			return "http"
+		}
+	}
+	return "http"
+}
+
 func SiteToConfig(site Site) config.SiteConfig {
 	upstreams := make([]config.UpstreamConfig, 0, len(site.Upstreams))
 	for _, upstream := range site.Upstreams {
@@ -118,18 +155,25 @@ func SiteToConfig(site Site) config.SiteConfig {
 	if mode == "" {
 		mode = "block"
 	}
+	originScheme := site.Advanced.Origin.Scheme
+	if originScheme == "" {
+		originScheme = OriginSchemeFromUpstreams(site.Upstreams)
+	}
 	timeout := parseDuration(site.Advanced.Origin.ProxyTimeout, 30*time.Second)
 	return config.SiteConfig{
-		ID:          site.ID,
-		Name:        site.Name,
-		Domains:     site.Domains,
-		Upstreams:   upstreams,
-		ListenPort:  site.ListenPort,
-		LoadBalance: site.LoadBalance,
-		Enabled:     site.Enabled,
-		EnableSSL:   site.EnableSSL,
-		CertFile:    site.CertFile,
-		KeyFile:     site.KeyFile,
+		ID:           site.ID,
+		Name:         site.Name,
+		Domains:      site.Domains,
+		Upstreams:    upstreams,
+		ListenPort:   site.ListenPort,
+		LoadBalance:  site.LoadBalance,
+		Enabled:      site.Enabled,
+		EnableSSL:    site.EnableSSL,
+		CertFile:     site.CertFile,
+		KeyFile:      site.KeyFile,
+		OriginScheme: originScheme,
+		PassHost:     cloneBoolPtr(&site.Advanced.Origin.PassHost),
+		HostHeader:   site.Advanced.Origin.HostHeader,
 		Certificate: config.SiteCertificateConfig{
 			Mode:          site.Advanced.Certificate.Mode,
 			CertPEM:       site.Advanced.Certificate.CertPEM,
@@ -154,10 +198,16 @@ func SiteToConfig(site Site) config.SiteConfig {
 			},
 		},
 		WAF: config.WAFConfig{
-			Enabled:          site.WAFEnabled,
-			Mode:             mode,
-			ParanoiaLevel:    site.ParanoiaLevel,
-			AccessLogEnabled: cloneBoolPtr(site.Advanced.AccessLogEnabled),
+			WebSocketEnabled:   site.Advanced.WebSocketEnabled,
+			GRPCEnabled:        site.Advanced.GRPCEnabled,
+			BotEnabled:         cloneBoolPtr(&site.Advanced.Protection.Bot),
+			RateLimitEnabled:   cloneBoolPtr(&site.Advanced.Protection.RateLimit),
+			ACLEnabled:         cloneBoolPtr(&site.Advanced.Protection.ACL),
+			APISecurityEnabled: cloneBoolPtr(&site.Advanced.Protection.APISecurity),
+			Enabled:            site.WAFEnabled,
+			Mode:               mode,
+			ParanoiaLevel:      site.ParanoiaLevel,
+			AccessLogEnabled:   cloneBoolPtr(site.Advanced.AccessLogEnabled),
 			SemanticEngines: config.SemanticEngineSwitches{
 				SQL:   site.Advanced.Protection.SemanticSQL,
 				XSS:   site.Advanced.Protection.SemanticXSS,
@@ -169,6 +219,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 				SSTI:  site.Advanced.Protection.SemanticSSTI,
 			},
 			SemanticPolicy: config.SemanticPolicyConfig{
+				DetectionBudget:       parseDuration(site.Advanced.SemanticPolicy.DetectionBudget, 0),
 				BudgetExhaustedPolicy: site.Advanced.SemanticPolicy.BudgetExhaustedPolicy,
 				DecodeDepth:           site.Advanced.SemanticPolicy.DecodeDepth,
 				PathAllowlist:         cloneStrings(site.Advanced.SemanticPolicy.PathAllowlist),
@@ -321,6 +372,20 @@ func siteRewriteToConfig(rules []SiteRewriteRule) []config.RewriteRuleConfig {
 	return out
 }
 
+func siteRewriteFromConfig(rules []config.RewriteRuleConfig) []SiteRewriteRule {
+	out := make([]SiteRewriteRule, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, SiteRewriteRule{
+			ID:           rule.ID,
+			Pattern:      rule.Pattern,
+			Replacement:  rule.Replacement,
+			RedirectCode: rule.RedirectCode,
+			Enabled:      rule.Enabled,
+		})
+	}
+	return out
+}
+
 func cloneStrings(values []string) []string {
 	if values == nil {
 		return []string{}
@@ -370,3 +435,5 @@ func cloneBoolPtr(value *bool) *bool {
 	copied := *value
 	return &copied
 }
+
+func inheritedBool(v *bool) bool { return v == nil || *v }

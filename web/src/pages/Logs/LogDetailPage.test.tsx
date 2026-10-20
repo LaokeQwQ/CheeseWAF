@@ -54,6 +54,10 @@ afterEach(() => {
 });
 
 describe('LogDetailPage', () => {
+  it('preserves a route reference containing a literal percent sign', async () => {
+    renderDetail('trace%25ref');
+    await waitFor(() => expect(apiMocks.fetchLogEvent).toHaveBeenCalledWith('trace%ref'));
+  });
   it('loads event by route reference', async () => {
     renderDetail('trace-1');
     await waitFor(() => expect(apiMocks.fetchLogEvent).toHaveBeenCalledWith('trace-1'));

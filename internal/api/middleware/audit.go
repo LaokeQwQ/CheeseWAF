@@ -45,6 +45,10 @@ type AuditEntry struct {
 	Path      string    `json:"path"`
 	Status    int       `json:"status"`
 	RemoteIP  string    `json:"remote_ip"`
+	PeerIP    string    `json:"peer_ip,omitempty"`
+	IPSource  string    `json:"ip_source,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
 	LatencyMS int64     `json:"latency_ms"`
 	Target    string    `json:"target,omitempty"`
 	Message   string    `json:"message,omitempty"`
@@ -73,12 +77,22 @@ func NewAuditorWithClock(path string, clock timekeeper.Clock) *Auditor {
 }
 
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
+	return a.MiddlewareWithSource(next, nil)
+}
+
+func (a *Auditor) MiddlewareWithSource(next http.Handler, resolve func(*http.Request) (client, peer, source string)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(recorder, r)
-		now := a.nowUTC()
+		// Authentication failures are handled before an identity exists. Do not
+		// let unauthenticated traffic fill and rotate the management audit stream.
+		// Authenticated denials still retain their forensic record below.
 		claims, _ := r.Context().Value(UserContextKey).(*Claims)
+		if recorder.status == http.StatusUnauthorized && claims == nil {
+			return
+		}
+		now := a.nowUTC()
 		entry := AuditEntry{
 			Timestamp: now,
 			Method:    r.Method,
@@ -91,6 +105,11 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 			entry.Subject = claims.Subject
 			entry.User = claims.Username
 			entry.Role = claims.Role
+			entry.SessionID = claims.ID
+		}
+		entry.UserAgent = r.UserAgent()
+		if resolve != nil {
+			entry.RemoteIP, entry.PeerIP, entry.IPSource = resolve(r)
 		}
 		entry = normalizeAuditEntry(entry)
 		if err := a.Write(context.WithoutCancel(r.Context()), entry); err != nil {
@@ -200,6 +219,10 @@ func normalizeAuditEntry(entry AuditEntry) AuditEntry {
 	entry.Method = truncateAuditField(entry.Method, maxAuditMethodBytes)
 	entry.Path = truncateAuditField(entry.Path, maxAuditPathBytes)
 	entry.RemoteIP = truncateAuditField(entry.RemoteIP, maxAuditRemoteIPBytes)
+	entry.PeerIP = truncateAuditField(entry.PeerIP, maxAuditRemoteIPBytes)
+	entry.IPSource = truncateAuditField(entry.IPSource, 32)
+	entry.SessionID = truncateAuditField(entry.SessionID, maxAuditSubjectBytes)
+	entry.UserAgent = truncateAuditField(entry.UserAgent, 256)
 	entry.Target = truncateAuditField(entry.Target, maxAuditTargetBytes)
 	entry.Message = truncateAuditField(entry.Message, maxAuditMessageBytes)
 	return entry

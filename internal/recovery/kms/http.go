@@ -47,10 +47,11 @@ func NewHTTPBackend(o HTTPOptions) (*HTTPBackend, error) {
 	if o.Client == nil {
 		o.Client = &http.Client{}
 	}
-	client := *o.Client
-	if client.CheckRedirect == nil {
-		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	if err := ValidateHTTPTransport(o.Client); err != nil {
+		return nil, err
 	}
+	client := *o.Client
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	if o.Timeout <= 0 {
 		o.Timeout = 5 * time.Second
 	}
@@ -164,17 +165,23 @@ func (b *HTTPBackend) do(ctx context.Context, method, path string, body []byte) 
 	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, b.timeout)
+	// The cancel is transferred to the response body so bounded response reads
+	// remain covered by the same operation deadline.
 	token, err := b.token.Token(ctx)
 	if err != nil {
+		cancel()
 		return nil, ErrUnavailable
 	}
 	if !strictToken(token) {
+		cancel()
 		return nil, ErrPermission
 	}
 	u := *b.endpoint
 	u.Path = strings.TrimRight(u.Path, "/") + path
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, ErrInvalidConfig
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -182,11 +189,13 @@ func (b *HTTPBackend) do(ctx context.Context, method, path string, body []byte) 
 	req.Header.Set("Accept", "application/json")
 	res, err := b.client.Do(req)
 	if err != nil {
+		cancel()
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			return nil, ctxErr
 		}
 		return nil, ErrUnavailable
 	}
+	res.Body = &cancelBody{ReadCloser: res.Body, cancel: cancel}
 	return res, nil
 }
 func decodeBounded(r io.Reader, out any) error {
@@ -219,3 +228,10 @@ func ValidateHTTPTransport(client *http.Client) error {
 	}
 	return nil
 }
+
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error { defer b.cancel(); return b.ReadCloser.Close() }

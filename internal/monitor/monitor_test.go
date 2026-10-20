@@ -28,6 +28,22 @@ func TestRenderPrometheusIncludesCoreMetrics(t *testing.T) {
 	}
 }
 
+func TestRenderPrometheusUsesCounterAndCumulativeHistogramTypes(t *testing.T) {
+	got := string(RenderPrometheus(Snapshot{Requests: 2, Blocked: 1}))
+	if !strings.Contains(got, "# TYPE cheesewaf_requests_total counter\n") {
+		t.Fatalf("requests_total must be a counter:\n%s", got)
+	}
+	if strings.Contains(got, "# TYPE cheesewaf_requests_total gauge") {
+		t.Fatalf("requests_total must not be declared as a gauge:\n%s", got)
+	}
+	if !strings.Contains(got, "# TYPE cheesewaf_semantic_latency_seconds histogram\n") {
+		t.Fatalf("semantic latency must be a histogram:\n%s", got)
+	}
+	if !strings.Contains(got, `cheesewaf_semantic_latency_seconds_bucket{le="+Inf"} 0`) {
+		t.Fatalf("semantic latency must include the +Inf bucket:\n%s", got)
+	}
+}
+
 func TestAlerterFiresRule(t *testing.T) {
 	alerter := NewAlerter(config.AlertEngineConfig{
 		Enabled: true,

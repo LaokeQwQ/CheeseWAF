@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -80,15 +82,78 @@ type NodeIdentity struct {
 }
 
 type NodeRegistration struct {
-	NodeID            string    `json:"node_id"`
-	Role              string    `json:"role"`
-	ClusterID         string    `json:"cluster_id"`
-	AdvertiseAddr     string    `json:"advertise_addr"`
-	JoinedAt          time.Time `json:"joined_at"`
-	CertificateSerial string    `json:"certificate_serial"`
-	CertificateExpiry time.Time `json:"certificate_expiry"`
-	Revoked           bool      `json:"revoked"`
-	RevokedReason     string    `json:"revoked_reason,omitempty"`
+	NodeID               string    `json:"node_id"`
+	Role                 string    `json:"role"`
+	ClusterID            string    `json:"cluster_id"`
+	AdvertiseAddr        string    `json:"advertise_addr"`
+	JoinedAt             time.Time `json:"joined_at"`
+	CertificateSerial    string    `json:"certificate_serial"`
+	CertificateExpiry    time.Time `json:"certificate_expiry"`
+	CertificatePublicKey string    `json:"certificate_public_key,omitempty"`
+	Revoked              bool      `json:"revoked"`
+	RevokedReason        string    `json:"revoked_reason,omitempty"`
+}
+
+// NodeRotationProofMessage is the domain-separated payload a node signs with
+// its currently installed certificate private key before requesting rotation.
+func NodeRotationProofMessage(nodeID, currentSerial string, csrPEM []byte) []byte {
+	// The HTTP handler trims the JSON string and PEM clients commonly include a
+	// trailing newline. Canonicalizing here keeps proof verification stable
+	// across transport whitespace without changing the CSR contents.
+	h := sha256.Sum256(bytes.TrimSpace(csrPEM))
+	return []byte("CheeseWAF node certificate rotation v1\n" + strings.TrimSpace(nodeID) + "\n" + strings.TrimSpace(currentSerial) + "\n" + hex.EncodeToString(h[:]))
+}
+
+func mustEncodeNodePublicKey(publicKey any) string {
+	der, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return ""
+	}
+	return base64.RawStdEncoding.EncodeToString(der)
+}
+
+func verifyNodeRotationProof(node *NodeRegistration, csrPEM, proof []byte) error {
+	if node == nil || strings.TrimSpace(node.CertificatePublicKey) == "" {
+		return fmt.Errorf("node certificate public key is unavailable; re-enrollment is required")
+	}
+	encoded := strings.TrimSpace(string(proof))
+	if encoded == "" {
+		return fmt.Errorf("node private-key possession proof is required")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		signature, err = base64.StdEncoding.DecodeString(encoded)
+	}
+	if err != nil || len(signature) == 0 {
+		return fmt.Errorf("node private-key possession proof is invalid")
+	}
+	der, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(node.CertificatePublicKey))
+	if err != nil {
+		return fmt.Errorf("stored node certificate public key is invalid")
+	}
+	publicKey, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return fmt.Errorf("stored node certificate public key is invalid: %w", err)
+	}
+	message := NodeRotationProofMessage(node.NodeID, node.CertificateSerial, csrPEM)
+	digest := sha256.Sum256(message)
+	switch key := publicKey.(type) {
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(key, digest[:], signature) {
+			return fmt.Errorf("node private-key possession proof was rejected")
+		}
+	case *rsa.PublicKey:
+		if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature); err != nil {
+			return fmt.Errorf("node private-key possession proof was rejected")
+		}
+	case ed25519.PublicKey:
+		if !ed25519.Verify(key, message, signature) {
+			return fmt.Errorf("node private-key possession proof was rejected")
+		}
+	default:
+		return fmt.Errorf("stored node certificate public key type is unsupported")
+	}
+	return nil
 }
 
 type NodeCertificateBundle struct {
@@ -289,13 +354,14 @@ func (s *MemoryIdentityService) EnrollNode(value string, node NodeIdentity) (Nod
 	}
 	now := s.clock.Now()
 	registration := NodeRegistration{
-		NodeID:            node.NodeID,
-		Role:              node.Role,
-		ClusterID:         node.ClusterID,
-		AdvertiseAddr:     node.AdvertiseAddr,
-		JoinedAt:          now,
-		CertificateSerial: bundle.Certificate.SerialNumber.String(),
-		CertificateExpiry: bundle.Certificate.NotAfter,
+		NodeID:               node.NodeID,
+		Role:                 node.Role,
+		ClusterID:            node.ClusterID,
+		AdvertiseAddr:        node.AdvertiseAddr,
+		JoinedAt:             now,
+		CertificateSerial:    bundle.Certificate.SerialNumber.String(),
+		CertificateExpiry:    bundle.Certificate.NotAfter,
+		CertificatePublicKey: mustEncodeNodePublicKey(bundle.Certificate.PublicKey),
 	}
 	stored := registration
 	s.nodes[node.NodeID] = &stored
@@ -351,13 +417,14 @@ func (s *MemoryIdentityService) EnrollNodeWithCSR(value string, node NodeIdentit
 	}
 	now := s.clock.Now()
 	registration := NodeRegistration{
-		NodeID:            node.NodeID,
-		Role:              node.Role,
-		ClusterID:         node.ClusterID,
-		AdvertiseAddr:     node.AdvertiseAddr,
-		JoinedAt:          now,
-		CertificateSerial: bundle.Certificate.SerialNumber.String(),
-		CertificateExpiry: bundle.Certificate.NotAfter,
+		NodeID:               node.NodeID,
+		Role:                 node.Role,
+		ClusterID:            node.ClusterID,
+		AdvertiseAddr:        node.AdvertiseAddr,
+		JoinedAt:             now,
+		CertificateSerial:    bundle.Certificate.SerialNumber.String(),
+		CertificateExpiry:    bundle.Certificate.NotAfter,
+		CertificatePublicKey: mustEncodeNodePublicKey(bundle.Certificate.PublicKey),
 	}
 	stored := registration
 	s.nodes[node.NodeID] = &stored
@@ -396,6 +463,10 @@ func (s *MemoryIdentityService) ListNodes() []NodeRegistration {
 }
 
 func (s *MemoryIdentityService) RotateNodeCertificateWithCSR(nodeID string, csrPEM []byte) (NodeCertificateRotation, error) {
+	return s.RotateNodeCertificateWithCSRAndProof(nodeID, csrPEM, nil)
+}
+
+func (s *MemoryIdentityService) RotateNodeCertificateWithCSRAndProof(nodeID string, csrPEM, proof []byte) (NodeCertificateRotation, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
 		return NodeCertificateRotation{}, fmt.Errorf("node id is required")
@@ -416,6 +487,9 @@ func (s *MemoryIdentityService) RotateNodeCertificateWithCSR(nodeID string, csrP
 	if _, revoked := s.revoked[nodeID]; revoked {
 		return NodeCertificateRotation{}, fmt.Errorf("node %q is revoked", nodeID)
 	}
+	if err := verifyNodeRotationProof(node, csrPEM, proof); err != nil {
+		return NodeCertificateRotation{}, err
+	}
 	identity := NodeIdentity{
 		NodeID:        node.NodeID,
 		Role:          node.Role,
@@ -435,6 +509,7 @@ func (s *MemoryIdentityService) RotateNodeCertificateWithCSR(nodeID string, csrP
 	previous := *node
 	node.CertificateSerial = bundle.Certificate.SerialNumber.String()
 	node.CertificateExpiry = bundle.Certificate.NotAfter
+	node.CertificatePublicKey = mustEncodeNodePublicKey(bundle.Certificate.PublicKey)
 	if err := s.saveStateLocked(); err != nil {
 		*node = previous
 		return NodeCertificateRotation{}, err

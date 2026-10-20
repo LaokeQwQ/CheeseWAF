@@ -1,8 +1,10 @@
 // Package engine provides HTTP protocol enforcement and smuggling detection.
-// Detects CL.TE, TE.CL smuggling, chunked encoding abuse, and header injection.
+// Checks observable framing conflicts, invalid protocol fields, and header injection.
+// net/http owns raw chunk framing/size validation before handlers see a request.
 package engine
 
 import (
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +24,9 @@ func DetectProtocolViolations(r *http.Request) *ProtocolViolation {
 	if r == nil {
 		return nil
 	}
+	if v := detectAmbiguousContentHeaders(r); v != nil {
+		return v
+	}
 
 	// 1. HTTP Smuggling: CL.TE (Content-Length + Transfer-Encoding conflict)
 	if v := detectCLTESmuggling(r); v != nil {
@@ -30,11 +35,6 @@ func DetectProtocolViolations(r *http.Request) *ProtocolViolation {
 
 	// 2. HTTP Smuggling: TE.CL (Transfer-Encoding + Content-Length conflict)
 	if v := detectTECLSmuggling(r); v != nil {
-		return v
-	}
-
-	// 3. Chunked encoding abuse
-	if v := detectChunkedAbuse(r); v != nil {
 		return v
 	}
 
@@ -48,6 +48,43 @@ func DetectProtocolViolations(r *http.Request) *ProtocolViolation {
 		return v
 	}
 
+	return nil
+}
+
+// detectAmbiguousContentHeaders rejects duplicate framing/representation
+// headers before different consumers can select different values. The proxy
+// forwards headers as supplied, while RequestContext uses Header.Get, so
+// accepting duplicates would let inspection and the upstream disagree.
+func detectAmbiguousContentHeaders(r *http.Request) *ProtocolViolation {
+	for _, name := range []string{"Content-Type", "Content-Encoding", "Transfer-Encoding"} {
+		values := r.Header.Values(name)
+		if len(values) > 1 {
+			return &ProtocolViolation{
+				Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
+				Message: "ambiguous duplicate " + name + " header",
+			}
+		}
+		if len(values) == 1 && strings.TrimSpace(values[0]) == "" {
+			return &ProtocolViolation{
+				Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
+				Message: "invalid or merged " + name + " header",
+			}
+		}
+		if len(values) == 1 && name == "Content-Type" {
+			if _, _, err := mime.ParseMediaType(values[0]); err != nil {
+				return &ProtocolViolation{
+					Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
+					Message: "invalid or merged " + name + " header",
+				}
+			}
+		}
+		if len(values) == 1 && name == "Content-Encoding" && strings.Contains(values[0], ",") {
+			return &ProtocolViolation{
+				Detected: true, Type: "ambiguous_header", Severity: SeverityHigh, Confidence: 0.98,
+				Message: "invalid or merged " + name + " header",
+			}
+		}
+	}
 	return nil
 }
 
@@ -114,6 +151,9 @@ func positiveContentLength(r *http.Request) bool {
 
 // CL.TE smuggling: attacker sends both Content-Length and Transfer-Encoding,
 // front-end uses CL, back-end uses TE → request body smuggling.
+// Go canonicalizes a successfully parsed HTTP/1 chunked request to ContentLength
+// -1 and removes Content-Length. This is a defense for observable conflicts in
+// constructed/adapted requests, not a claim to inspect discarded wire headers.
 func detectCLTESmuggling(r *http.Request) *ProtocolViolation {
 	if !positiveContentLength(r) || !hasChunkedTransferEncoding(r) {
 		return nil
@@ -157,26 +197,6 @@ func detectTECLSmuggling(r *http.Request) *ProtocolViolation {
 	return nil
 }
 
-// Chunked encoding abuse: oversized chunks, malformed sizes, chunk size overflow.
-func detectChunkedAbuse(r *http.Request) *ProtocolViolation {
-	if !hasChunkedTransferEncoding(r) {
-		return nil
-	}
-
-	// Detect overly large chunk size prefix (potential overflow attack)
-	body := r.ContentLength
-	if body < 0 {
-		body = 0
-	}
-	if body > 10*1024*1024 { // 10MB single chunk
-		return &ProtocolViolation{
-			Detected: true, Type: "chunked_abuse", Severity: SeverityHigh, Confidence: 0.82,
-			Message: "chunked encoding abuse: request body exceeds safe chunk size limit",
-		}
-	}
-	return nil
-}
-
 func detectUpgradeDowngradeAbuse(r *http.Request) *ProtocolViolation {
 	if r.ProtoMajor >= 2 {
 		if connection := r.Header.Get("Connection"); connection != "" {
@@ -212,7 +232,7 @@ func detectUpgradeDowngradeAbuse(r *http.Request) *ProtocolViolation {
 		return nil
 	}
 	connection := strings.ToLower(r.Header.Get("Connection"))
-	if r.Method != http.MethodGet || !strings.Contains(connection, "upgrade") || strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key")) == "" {
+	if r.Method != http.MethodGet || !strings.Contains(connection, "upgrade") || strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key")) == "" || strings.TrimSpace(r.Header.Get("Sec-WebSocket-Version")) != "13" {
 		return &ProtocolViolation{
 			Detected: true, Type: "upgrade_abuse", Severity: SeverityMedium, Confidence: 0.78,
 			Message: "malformed WebSocket upgrade request",

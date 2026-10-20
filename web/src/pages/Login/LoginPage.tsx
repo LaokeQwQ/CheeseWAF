@@ -18,7 +18,7 @@ import {
   SelectValue,
   toast,
 } from '@/components/ui';
-import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
+import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, fetchSession, isAuthenticatedFlag, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
 import { safeImageDataUri } from '../../features/captcha/protocol';
 import BrandLogo from '../../components/BrandLogo';
 import { useAppStore, type Language } from '../../stores';
@@ -99,11 +99,21 @@ export default function LoginPage() {
   const captchaPowControllerRef = useRef<AbortController | null>(null);
   const captchaRetryFailuresRef = useRef(0);
   const backgroundVideoRef = useRef<HTMLVideoElement | null>(null);
-  // Session is cookie-based; do not gate the UI on localStorage tokens.
-  const token = null as string | null;
+  const [sessionRedirect, setSessionRedirect] = useState(false);
   const stateFrom = (location.state as { from?: string } | null)?.from;
   const queryFrom = new URLSearchParams(location.search).get('returnTo');
   const from = sanitizeInternalReturnPath(queryFrom ?? stateFrom);
+
+  useEffect(() => {
+    if (!isAuthenticatedFlag()) return;
+    let cancelled = false;
+    void fetchSession().then(() => {
+      if (!cancelled) setSessionRedirect(true);
+    }).catch(() => {
+      // A stale local auth marker should not block the login form.
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const resetSliderMotion = useCallback(() => {
     dragRef.current = null;
@@ -679,7 +689,7 @@ export default function LoginPage() {
     setCaptchaState(options?.captcha.enabled ? 'ready' : 'disabled');
   }, [cancelCaptchaWork, options?.captcha.enabled]);
 
-  if (token) {
+  if (sessionRedirect) {
     return <Navigate to={from} replace />;
   }
 

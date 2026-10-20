@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -32,8 +33,21 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, fmt.Errorf("sqlite path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return nil, fmt.Errorf("create sqlite dir: %w", err)
+	if path != ":memory:" {
+		if strings.HasPrefix(path, "file:") {
+			return nil, errors.New("sqlite requires a filesystem path, not a URI")
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, fmt.Errorf("create sqlite dir: %w", err)
+		}
+		if err := secureSQLiteFile(path, runtime.GOOS != "windows"); err != nil {
+			return nil, fmt.Errorf("secure sqlite database: %w", err)
+		}
+		for _, candidate := range []string{path + "-wal", path + "-shm"} {
+			if err := secureExistingSQLiteArtifact(candidate, runtime.GOOS != "windows"); err != nil {
+				return nil, fmt.Errorf("secure sqlite sidecar: %w", err)
+			}
+		}
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -45,6 +59,78 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("configure sqlite pragmas: %w", err)
 	}
 	return &SQLiteStore{db: db}, nil
+}
+
+func secureSQLiteFile(path string, enforcePOSIXMode bool) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		f, createErr := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(createErr) {
+			return secureSQLiteFile(path, enforcePOSIXMode)
+		}
+		if createErr != nil {
+			return createErr
+		}
+		return f.Close()
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", path)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return fmt.Errorf("%q changed while opening", path)
+	}
+	if enforcePOSIXMode && opened.Mode().Perm()&0o077 != 0 {
+		if err := f.Chmod(0o600); err != nil {
+			return fmt.Errorf("repair permissions on %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func secureExistingSQLiteArtifact(path string, enforcePOSIXMode bool) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", path)
+	}
+	if !enforcePOSIXMode || info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return fmt.Errorf("%q changed while opening", path)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return fmt.Errorf("repair permissions on %q: %w", path, err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) MarkTOTPConsumed(ctx context.Context, userID string, counter int64, expiresAt time.Time) error {
@@ -167,12 +253,29 @@ func (s *SQLiteStore) UpdateSite(ctx context.Context, site *Site) error {
 	if site == nil {
 		return fmt.Errorf("site is nil")
 	}
-	site.UpdatedAt = time.Now().UTC()
+	expected := site.UpdatedAt
+	next := time.Now().UTC()
 	domains, upstreams := encodeStrings(site.Domains), encodeStrings(site.Upstreams)
 	advanced := encodeJSON(site.Advanced)
-	_, err := s.db.ExecContext(ctx, `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,updated_at=? WHERE id=?`,
-		site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, site.ParanoiaLevel, advanced, boolInt(site.Enabled), formatTime(site.UpdatedAt), site.ID)
-	return err
+	query := `UPDATE sites SET name=?,domains=?,upstreams=?,listen_port=?,loadbalance=?,enable_ssl=?,cert_file=?,key_file=?,waf_enabled=?,waf_mode=?,paranoia_level=?,advanced=?,enabled=?,updated_at=? WHERE id=?`
+	args := []any{site.Name, domains, upstreams, site.ListenPort, site.LoadBalance, boolInt(site.EnableSSL), site.CertFile, site.KeyFile, boolInt(site.WAFEnabled), site.WAFMode, site.ParanoiaLevel, advanced, boolInt(site.Enabled), formatTime(next), site.ID}
+	if !expected.IsZero() {
+		query += ` AND updated_at=?`
+		args = append(args, formatTime(expected))
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrSiteConflict
+	}
+	site.UpdatedAt = next
+	return nil
 }
 
 // RestoreSite replaces a site without advancing UpdatedAt. It is used only
@@ -280,6 +383,9 @@ func (s *SQLiteStore) CreateUser(ctx context.Context, user *User) error {
 	if err := identity.ValidateUsername(user.Username); err != nil {
 		return err
 	}
+	if err := ValidateRoleName(user.Role); err != nil {
+		return err
+	}
 	ensureUser(user)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO users(id,username,password_hash,role,two_fa_enabled,two_fa_secret,created_at,updated_at,credential_epoch) VALUES(?,?,?,?,?,?,?,?,?)`,
 		user.ID, user.Username, user.PasswordHash, user.Role, boolInt(user.TwoFAEnabled), user.TwoFASecret, formatTime(user.CreatedAt), formatTime(user.UpdatedAt), user.CredentialEpoch)
@@ -291,6 +397,9 @@ func (s *SQLiteStore) UpdateUser(ctx context.Context, user *User) error {
 		return errors.New("user is nil")
 	}
 	if err := identity.ValidateUsername(user.Username); err != nil {
+		return err
+	}
+	if err := ValidateRoleName(user.Role); err != nil {
 		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -780,7 +889,12 @@ func ensureSiteDefaults(site *Site) {
 		site.Advanced.Certificate.ACME.Domains = append([]string(nil), site.Domains...)
 	}
 	if site.Advanced.Origin.Scheme == "" {
-		site.Advanced.Origin.Scheme = "http"
+		site.Advanced.Origin.Scheme = OriginSchemeFromUpstreams(site.Upstreams)
+	}
+	// Dynamic guard is the safe default for new sites. The API can still reject
+	// an explicit attempt to disable it until per-site runtime semantics exist.
+	if !site.Advanced.AccessControl.DynamicGuard {
+		site.Advanced.AccessControl.DynamicGuard = true
 	}
 	if site.Advanced.Origin.ProxyTimeout == "" {
 		site.Advanced.Origin.ProxyTimeout = "30s"
@@ -829,9 +943,7 @@ func ensureUser(user *User) {
 	if user.ID == "" {
 		user.ID = uuid.NewString()
 	}
-	if user.Role == "" {
-		user.Role = "admin"
-	}
+
 	if user.CreatedAt.IsZero() {
 		user.CreatedAt = now
 	}

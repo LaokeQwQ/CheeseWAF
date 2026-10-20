@@ -47,20 +47,25 @@ func (w *jsonWalker) value(prefix string, depth int, suppress bool) bool {
 			if w.status != nil {
 				w.status.mark(jsonDepthLimitIncompleteReason)
 			}
-			suppress = true
+			return false
 		} else if w.nodes >= maxJSONNodes {
 			if w.status != nil {
 				w.status.mark(jsonNodeLimitIncompleteReason)
 			}
-			suppress = true
+			return false
 		} else if len(*w.inputs) >= maxCandidates {
 			if w.status != nil {
 				w.status.mark(jsonCollectorLimitReason)
 			}
-			suppress = true
+			return false
 		} else {
 			w.nodes++
 		}
+	}
+	// A suppressed subtree must be delegated to the iterative decoder path;
+	// validating it recursively defeats the depth bound even for invalid JSON.
+	if suppress {
+		return false
 	}
 	w.skipWS()
 	if w.pos >= len(w.src) {

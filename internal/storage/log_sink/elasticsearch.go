@@ -42,7 +42,7 @@ func NewElasticsearchSink(cfg config.ElasticsearchConfig, client *http.Client) (
 	sink.async = newAsyncLogWriter("elasticsearch", sink.writeSync, nil, func() error {
 		sink.client.CloseIdleConnections()
 		return nil
-	}, asyncLogWriterOptions{})
+	}, asyncLogWriterOptions{batchSize: remoteLogBatchSize, writeBatch: sink.writeBatchSync})
 	return sink, nil
 }
 
@@ -54,29 +54,51 @@ func (s *ElasticsearchSink) Write(ctx context.Context, entry *storage.LogEntry) 
 }
 
 func (s *ElasticsearchSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
-	if entry == nil {
+	return s.writeBatchSync(ctx, []*storage.LogEntry{entry})
+}
+
+func (s *ElasticsearchSink) writeBatchSync(ctx context.Context, entries []*storage.LogEntry) error {
+	if len(entries) == 0 {
 		return nil
 	}
-	doc, err := json.Marshal(entry)
-	if err != nil {
-		return err
+	var body bytes.Buffer
+	count := 0
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		id := entry.ID
+		if id == "" {
+			id = entry.TraceID
+		}
+		meta := map[string]any{"index": map[string]any{}}
+		if id != "" {
+			meta = map[string]any{"index": map[string]any{"_id": id}}
+		}
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		doc, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		body.Write(metaJSON)
+		body.WriteByte('\n')
+		body.Write(doc)
+		body.WriteByte('\n')
+		count++
 	}
-	id := entry.ID
-	if id == "" {
-		id = entry.TraceID
+	if count == 0 {
+		return nil
 	}
-	method := http.MethodPost
-	endpoint := strings.TrimRight(s.cfg.Endpoint, "/") + "/" + url.PathEscape(s.cfg.Index) + "/_doc"
-	if id != "" {
-		method = http.MethodPut
-		endpoint += "/" + url.PathEscape(id)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(doc))
+	endpoint := strings.TrimRight(s.cfg.Endpoint, "/") + "/" + url.PathEscape(s.cfg.Index) + "/_bulk"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body.Bytes()))
 	if err != nil {
 		return err
 	}
 	s.applyAuth(req)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-ndjson")
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
@@ -85,6 +107,30 @@ func (s *ElasticsearchSink) writeSync(ctx context.Context, entry *storage.LogEnt
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("elasticsearch returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		Errors bool `json:"errors"`
+		Items  []map[string]struct {
+			Status int `json:"status"`
+			Error  any `json:"error"`
+		} `json:"items"`
+	}
+	if err := decodeBoundedLogQueryJSON(resp.Body, &result); err != nil {
+		return fmt.Errorf("decode elasticsearch bulk response: %w", err)
+	}
+	if result.Errors {
+		failed := 0
+		for _, item := range result.Items {
+			for _, op := range item {
+				if op.Status >= 300 || op.Error != nil {
+					failed++
+				}
+			}
+		}
+		if failed == 0 {
+			failed = 1
+		}
+		return fmt.Errorf("elasticsearch bulk rejected %d item(s)", failed)
 	}
 	return nil
 }

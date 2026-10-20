@@ -2,10 +2,14 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -37,6 +41,7 @@ func (h *Handler) GetSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "site not found")
 		return
 	}
+	w.Header().Set("ETag", siteETag(site.UpdatedAt))
 	writeData(w, siteView(*site))
 }
 
@@ -47,7 +52,12 @@ func (h *Handler) CreateSite(w http.ResponseWriter, r *http.Request) {
 	h.siteMutationMu.Lock()
 	defer h.siteMutationMu.Unlock()
 	var site storage.Site
-	if !decode(w, r, &site) {
+	authSet, dynamicSet, ok := decodeSiteMutation(w, r, &site)
+	if !ok {
+		return
+	}
+	if err := validateSiteCapabilities(site, authSet, dynamicSet); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "SITE_CAPABILITY_UNAVAILABLE", err.Error())
 		return
 	}
 	storage.NormalizeSiteForWrite(&site)
@@ -77,7 +87,12 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 	h.siteMutationMu.Lock()
 	defer h.siteMutationMu.Unlock()
 	var site storage.Site
-	if !decode(w, r, &site) {
+	authSet, dynamicSet, ok := decodeSiteMutation(w, r, &site)
+	if !ok {
+		return
+	}
+	if err := validateSiteCapabilities(site, authSet, dynamicSet); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "SITE_CAPABILITY_UNAVAILABLE", err.Error())
 		return
 	}
 	site.ID = chi.URLParam(r, "id")
@@ -89,6 +104,25 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 	}
 	if existing == nil {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "site not found")
+		return
+	}
+	if match := r.Header.Get("If-Match"); match != "" {
+		if match != siteETag(existing.UpdatedAt) {
+			writeError(w, http.StatusConflict, "SITE_CONFLICT", "site changed; reload the current version")
+			return
+		}
+		site.UpdatedAt = existing.UpdatedAt
+	}
+	if site.UpdatedAt.IsZero() {
+		writeError(w, http.StatusPreconditionRequired, "SITE_VERSION_REQUIRED", "updated_at or If-Match is required")
+		return
+	}
+	if !site.UpdatedAt.Equal(existing.UpdatedAt) {
+		writeError(w, http.StatusConflict, "SITE_CONFLICT", "site changed; reload the current version")
+		return
+	}
+	if !h.authorizeSiteSecurityMutation(r, existing, &site) {
+		writeError(w, http.StatusForbidden, "SITE_SECURITY_FORBIDDEN", "changing site protection or upstream targets requires write:protection and write:system")
 		return
 	}
 	// GET redacts KeyPEM and ACME env values; empty client fields mean "keep existing".
@@ -106,6 +140,10 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Store.UpdateSite(r.Context(), &site); err != nil {
+		if errors.Is(err, storage.ErrSiteConflict) {
+			writeError(w, http.StatusConflict, "SITE_CONFLICT", "site changed; reload the current version")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
@@ -120,7 +158,61 @@ func (h *Handler) UpdateSite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "CONFIG_SYNC_ERROR", err.Error())
 		return
 	}
+	w.Header().Set("ETag", siteETag(site.UpdatedAt))
 	writeData(w, siteView(site))
+}
+
+// decodeSiteMutation retains presence information for the two access-control
+// fields whose runtime semantics are not available yet. A missing field keeps
+// backward compatibility; an explicitly requested unsupported behavior gets a
+// clear 422 instead of being persisted and silently ignored.
+func decodeSiteMutation(w http.ResponseWriter, r *http.Request, site *storage.Site) (authSet, dynamicSet, ok bool) {
+	var raw json.RawMessage
+	if !decode(w, r, &raw) {
+		return false, false, false
+	}
+	if err := json.Unmarshal(raw, site); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return false, false, false
+	}
+	var envelope struct {
+		Advanced *struct {
+			AccessControl *map[string]json.RawMessage `json:"access_control"`
+		} `json:"advanced"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Advanced != nil && envelope.Advanced.AccessControl != nil {
+		access := *envelope.Advanced.AccessControl
+		_, authSet = access["auth_enabled"]
+		if value, present := access["dynamic_guard"]; present {
+			// Older clients marshal a zero-value storage.Site, which contains
+			// dynamic_guard=false and null trusted CIDRs even when the caller did
+			// not request a capability change. The UI sends a normalized [] list;
+			// use that distinction to reject an explicit disable without breaking
+			// those legacy payloads.
+			var disabled bool
+			if json.Unmarshal(value, &disabled) == nil && !disabled {
+				if cidrs, ok := access["trusted_cidrs"]; ok && string(cidrs) != "null" {
+					dynamicSet = true
+				}
+				if providers, ok := access["trusted_proxy_providers"]; ok && string(providers) != "null" {
+					dynamicSet = true
+				}
+			} else {
+				dynamicSet = present
+			}
+		}
+	}
+	return authSet, dynamicSet, true
+}
+
+func validateSiteCapabilities(site storage.Site, authSet, dynamicSet bool) error {
+	if authSet && site.Advanced.AccessControl.AuthEnabled {
+		return errors.New("site auth_enabled is not available in this runtime")
+	}
+	if dynamicSet && !site.Advanced.AccessControl.DynamicGuard {
+		return errors.New("site dynamic_guard cannot be disabled because the runtime has no per-site dynamic-guard switch")
+	}
+	return nil
 }
 
 func (h *Handler) DeleteSite(w http.ResponseWriter, r *http.Request) {
@@ -494,4 +586,19 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 		return nil, err
 	}
 	return candidate, nil
+}
+
+func siteETag(updated time.Time) string { return `"` + updated.UTC().Format(time.RFC3339Nano) + `"` }
+
+func (h *Handler) authorizeSiteSecurityMutation(r *http.Request, before, after *storage.Site) bool {
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	permissions := h.currentConfig().APISec.Permissions
+	protectionChanged := before.WAFEnabled != after.WAFEnabled || before.WAFMode != after.WAFMode || before.ParanoiaLevel != after.ParanoiaLevel || !reflect.DeepEqual(before.Advanced.Protection, after.Advanced.Protection) || !reflect.DeepEqual(before.Advanced.Policy, after.Advanced.Policy) || !reflect.DeepEqual(before.Advanced.SemanticPolicy, after.Advanced.SemanticPolicy) || !reflect.DeepEqual(before.Advanced.AccessControl, after.Advanced.AccessControl)
+	if protectionChanged && !callerHasPermission(claims, permissions, "write:protection") {
+		return false
+	}
+	if (!reflect.DeepEqual(before.Upstreams, after.Upstreams) || !reflect.DeepEqual(before.Advanced.Origin, after.Advanced.Origin)) && !callerHasPermission(claims, permissions, "write:system") {
+		return false
+	}
+	return true
 }

@@ -16,6 +16,7 @@ reviews:
       - "^canary$"
       - "^master$"
   path_filters:
+    - "internal/ai/knowledge*.go"
     - "internal/engine/semantic/**"
     - "internal/security/**"
     - "internal/config/**"

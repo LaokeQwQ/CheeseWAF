@@ -31,6 +31,22 @@ run_verifier() {
     CHEESEWAF_REF_NAME="$ref_name" \
       CHEESEWAF_TAG_COMMIT="$tag_commit" \
       CHEESEWAF_MASTER_REF="$master_ref" \
+      CHEESEWAF_REF_PROTECTED=true \
+      bash "$verifier"
+  )
+}
+
+run_unprotected_verifier() {
+  local ref_name="$1"
+  local tag_commit="$2"
+  local master_ref="$3"
+
+  (
+    cd "$test_repo"
+    CHEESEWAF_REF_NAME="$ref_name" \
+      CHEESEWAF_TAG_COMMIT="$tag_commit" \
+      CHEESEWAF_MASTER_REF="$master_ref" \
+      CHEESEWAF_REF_PROTECTED=false \
       bash "$verifier"
   )
 }
@@ -39,6 +55,9 @@ run_verifier "$stable_ref" "$head_sha" "$head_sha" >/dev/null ||
   fail "stable tag verifier must accept the product version on protected master"
 run_verifier "${stable_ref}-beta" "$head_sha" "$head_sha" >/dev/null ||
   fail "beta tag verifier must accept the product beta version on protected master"
+if run_unprotected_verifier "$stable_ref" "$head_sha" "$head_sha" >/dev/null; then
+  fail "stable tag verifier must reject an unprotected release tag"
+fi
 
 if run_verifier v9.9.9 "$head_sha" "$head_sha" >/dev/null; then
   fail "stable tag verifier must reject a tag that differs from product-version"

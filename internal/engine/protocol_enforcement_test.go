@@ -57,6 +57,7 @@ func TestDetectProtocolViolationsWebSocketUpgradeShape(t *testing.T) {
 		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", "websocket")
 		req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		req.Header.Set("Sec-WebSocket-Version", "13")
 
 		if got := DetectProtocolViolations(req); got != nil {
 			t.Fatalf("expected valid websocket upgrade to pass, got %+v", got)
@@ -73,6 +74,80 @@ func TestDetectProtocolViolationsWebSocketUpgradeShape(t *testing.T) {
 			t.Fatalf("expected malformed upgrade violation, got %+v", got)
 		}
 	})
+}
+
+func TestDetectProtocolViolationsRequiresWebSocketVersion13(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/socket", nil)
+	req.ProtoMajor = 1
+	req.ProtoMinor = 1
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Sec-WebSocket-Version", "12")
+	violation := DetectProtocolViolations(req)
+	if violation == nil || violation.Type != "upgrade_abuse" {
+		t.Fatalf("violation=%+v, want malformed websocket upgrade", violation)
+	}
+}
+
+func TestDetectProtocolViolationsRejectsAmbiguousContentHeaders(t *testing.T) {
+	for _, name := range []string{"Content-Type", "Content-Encoding", "Transfer-Encoding"} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("body"))
+			req.Header.Add(name, "first")
+			req.Header.Add(name, "second")
+			violation := DetectProtocolViolations(req)
+			if violation == nil || violation.Type != "ambiguous_header" {
+				t.Fatalf("violation=%+v, want ambiguous_header", violation)
+			}
+		})
+	}
+}
+
+func TestDetectProtocolViolationsRejectsEmptyOrMergedContentMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{name: "empty content type", header: "Content-Type", value: ""},
+		{name: "merged content type", header: "Content-Type", value: "text/plain, application/json"},
+		{name: "empty content encoding", header: "Content-Encoding", value: ""},
+		{name: "merged content encoding", header: "Content-Encoding", value: "identity, gzip"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("body"))
+			req.Header[tc.header] = []string{tc.value}
+			violation := DetectProtocolViolations(req)
+			if violation == nil || violation.Type != "ambiguous_header" {
+				t.Fatalf("violation=%+v, want ambiguous_header", violation)
+			}
+		})
+	}
+}
+
+func TestDetectProtocolViolationsAllowsQuotedCommaInContentTypeParameter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("body"))
+	req.Header.Set("Content-Type", `multipart/form-data; boundary="a,b"`)
+
+	if violation := DetectProtocolViolations(req); violation != nil {
+		t.Fatalf("expected quoted comma in Content-Type parameter to pass, got %+v", violation)
+	}
+}
+
+func TestDetectProtocolViolationsRejectsMalformedContentType(t *testing.T) {
+	for _, value := range []string{
+		"text/plain, application/json",
+		`multipart/form-data; boundary="unterminated`,
+	} {
+		t.Run(value, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://example.test/upload", strings.NewReader("body"))
+			req.Header.Set("Content-Type", value)
+			if violation := DetectProtocolViolations(req); violation == nil || violation.Type != "ambiguous_header" {
+				t.Fatalf("violation=%+v, want ambiguous_header", violation)
+			}
+		})
+	}
 }
 
 func TestDetectCLTESmugglingFromTransferEncodingField(t *testing.T) {

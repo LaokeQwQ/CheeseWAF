@@ -296,7 +296,7 @@ func TestPipelineHighConcurrency(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
 				req := httptest.NewRequest("GET", payloads[(workerID+i)%len(payloads)], nil)
-				reqCtx, err := engine.NewRequestContext(req, "default")
+				reqCtx, err := engine.NewRequestContext(req, fmt.Sprintf("stress-site-%d", workerID))
 				if err != nil {
 					errCh <- fmt.Errorf("worker %d: NewRequestContext error: %w", workerID, err)
 					return

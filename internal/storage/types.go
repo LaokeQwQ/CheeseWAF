@@ -299,6 +299,7 @@ type UserStore interface {
 
 var (
 	ErrCredentialEpochChanged = errors.New("credential epoch changed")
+	ErrSiteConflict           = errors.New("site was changed by another writer")
 	ErrUserNotFound           = errors.New("user not found")
 	ErrSessionNotFound        = errors.New("session not found")
 )
@@ -343,16 +344,18 @@ type Site struct {
 }
 
 type SiteAdvanced struct {
-	Certificate    CertificateConfig     `json:"certificate"`
-	Origin         OriginConfig          `json:"origin"`
-	HealthCheck    SiteHealthCheckConfig `json:"health_check"`
-	Protection     SiteProtectionConfig  `json:"protection"`
-	SemanticPolicy SiteSemanticPolicy    `json:"semantic_policy"`
-	Policy         SiteProtectionPolicy  `json:"policy"`
-	Response       SiteResponseConfig    `json:"response"`
-	Rewrite        []SiteRewriteRule     `json:"rewrite"`
-	CustomRules    []SiteCustomRule      `json:"custom_rules,omitempty"`
-	AccessControl  SiteAccessControl     `json:"access_control"`
+	WebSocketEnabled bool                  `json:"websocket_enabled"`
+	GRPCEnabled      bool                  `json:"grpc_enabled"`
+	Certificate      CertificateConfig     `json:"certificate"`
+	Origin           OriginConfig          `json:"origin"`
+	HealthCheck      SiteHealthCheckConfig `json:"health_check"`
+	Protection       SiteProtectionConfig  `json:"protection"`
+	SemanticPolicy   SiteSemanticPolicy    `json:"semantic_policy"`
+	Policy           SiteProtectionPolicy  `json:"policy"`
+	Response         SiteResponseConfig    `json:"response"`
+	Rewrite          []SiteRewriteRule     `json:"rewrite"`
+	CustomRules      []SiteCustomRule      `json:"custom_rules,omitempty"`
+	AccessControl    SiteAccessControl     `json:"access_control"`
 	// AccessLogEnabled records normal pass/cache/redirect traffic. Security events always log.
 	// Omitted/nil defaults to true for backward compatibility.
 	AccessLogEnabled *bool `json:"access_log_enabled,omitempty"`
@@ -360,6 +363,7 @@ type SiteAdvanced struct {
 
 // SiteSemanticPolicy is commercial ops config for the staged analyzer.
 type SiteSemanticPolicy struct {
+	DetectionBudget       string   `json:"detection_budget,omitempty"`
 	BudgetExhaustedPolicy string   `json:"budget_exhausted_policy"`
 	DecodeDepth           int      `json:"decode_depth"`
 	PathAllowlist         []string `json:"path_allowlist"`

@@ -16,6 +16,8 @@ import (
 func TestCompleteSetupRestoresFilesWhenCompletionMarkerFails(t *testing.T) {
 	dataDir := t.TempDir()
 	paths, cfg, store := setupFailureFixture(t, dataDir)
+	runtimeApplied := false
+	runtimeRolledBack := false
 	originalConfig, err := os.ReadFile(paths.ConfigFile)
 	if err != nil {
 		t.Fatal(err)
@@ -33,14 +35,24 @@ func TestCompleteSetupRestoresFilesWhenCompletionMarkerFails(t *testing.T) {
 	}
 
 	_, err = CompleteSetup(context.Background(), CompleteOptions{
-		Config:       cfg,
-		ConfigPath:   paths.ConfigFile,
-		Paths:        paths,
-		Store:        store,
+		Config:     cfg,
+		ConfigPath: paths.ConfigFile,
+		Paths:      paths,
+		Store:      store,
+		ApplyRuntime: func(next, previous *config.Config) (func() error, error) {
+			runtimeApplied = true
+			return func() error {
+				runtimeRolledBack = true
+				return nil
+			}, nil
+		},
 		markComplete: func(string) error { return errors.New("injected completion failure") },
 	}, validSetupPayload())
 	if err == nil {
 		t.Fatal("expected setup failure")
+	}
+	if !runtimeApplied || !runtimeRolledBack {
+		t.Fatalf("runtime apply/rollback = %t/%t, want true/true", runtimeApplied, runtimeRolledBack)
 	}
 	assertSetupRolledBack(t, paths, cfg, store, originalConfig, originalConfigInfo.Mode().Perm())
 	cert, err := os.ReadFile(paths.CertFile)
@@ -50,6 +62,39 @@ func TestCompleteSetupRestoresFilesWhenCompletionMarkerFails(t *testing.T) {
 	if string(cert) != string(originalCert) {
 		t.Fatalf("certificate changed after rollback: %q", cert)
 	}
+}
+
+func TestCompleteSetupRestoresFilesWhenRuntimeApplyFails(t *testing.T) {
+	dataDir := t.TempDir()
+	paths, cfg, store := setupFailureFixture(t, dataDir)
+	originalConfig, err := os.ReadFile(paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeRollbackCalled := false
+	_, err = CompleteSetup(context.Background(), CompleteOptions{
+		Config:     cfg,
+		ConfigPath: paths.ConfigFile,
+		Paths:      paths,
+		Store:      store,
+		ApplyRuntime: func(next, previous *config.Config) (func() error, error) {
+			return func() error {
+				runtimeRollbackCalled = true
+				return nil
+			}, errors.New("injected runtime apply failure")
+		},
+	}, validSetupPayload())
+	if err == nil || !strings.Contains(err.Error(), "injected runtime apply failure") {
+		t.Fatalf("expected runtime apply failure, got %v", err)
+	}
+	if !runtimeRollbackCalled {
+		t.Fatal("runtime rollback was not requested after apply failure")
+	}
+	assertSetupRolledBack(t, paths, cfg, store, originalConfig, originalInfo.Mode().Perm())
 }
 
 func TestCompleteSetupDoesNotImplicitlyRenameCaseVariantExistingUser(t *testing.T) {
@@ -254,6 +299,25 @@ func validSetupPayload() SetupPayload {
 		Password:      "Correct-Horse-9x!",
 		AdminListen:   "0.0.0.0:9443",
 		AdminStrategy: "public_tls",
+	}
+}
+
+func TestCompleteSetupAppliesSelectedProfile(t *testing.T) {
+	dataDir := t.TempDir()
+	paths, cfg, store := setupFailureFixture(t, dataDir)
+	payload := validSetupPayload()
+	payload.Profile = ProfileHigh
+	result, err := CompleteSetup(context.Background(), CompleteOptions{
+		Config: cfg, ConfigPath: paths.ConfigFile, Paths: paths, Store: store,
+	}, payload)
+	if err != nil {
+		t.Fatalf("complete setup: %v", err)
+	}
+	if result.Config.Protection.Policy.WebAttack != "high" {
+		t.Fatalf("web attack profile = %q, want high", result.Config.Protection.Policy.WebAttack)
+	}
+	if result.Config.Protection.RateLimit.Default.Requests != ProfileDefaults(ProfileHigh).RateLimitRequests {
+		t.Fatalf("rate limit requests = %d, want %d", result.Config.Protection.RateLimit.Default.Requests, ProfileDefaults(ProfileHigh).RateLimitRequests)
 	}
 }
 

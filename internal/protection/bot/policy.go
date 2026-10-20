@@ -357,6 +357,16 @@ func (p *Policy) Evaluate(r *http.Request, clientIP string) *engine.DetectionRes
 }
 
 func (p *Policy) EvaluateForSite(r *http.Request, clientIP, site string) *engine.DetectionResult {
+	return p.evaluateForSite(r, clientIP, site, p != nil && p.waitingRoom)
+}
+
+// EvaluateForSiteWithWaitingRoom applies the site-level waiting-room override
+// without mutating the shared bot policy used by other tenants.
+func (p *Policy) EvaluateForSiteWithWaitingRoom(r *http.Request, clientIP, site string, waitingRoom bool) *engine.DetectionResult {
+	return p.evaluateForSite(r, clientIP, site, waitingRoom)
+}
+
+func (p *Policy) evaluateForSite(r *http.Request, clientIP, site string, waitingRoom bool) *engine.DetectionResult {
 	if p == nil || !p.enabled || r == nil {
 		return nil
 	}
@@ -371,7 +381,10 @@ func (p *Policy) EvaluateForSite(r *http.Request, clientIP, site string) *engine
 	if site == "" {
 		return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "bot policy site binding unavailable", Confidence: 1, Payload: path}
 	}
-	if p.waitingRoom && !p.hasWaitingTicket(r, clientIP) {
+	if p.failureTracker != nil && p.failureTracker.Check(p.failureKey(clientIP, site)).Blocked {
+		return &engine.DetectionResult{Detected: true, Category: "bot", DetectorID: "bot.failure", Action: engine.ActionBlock, Severity: engine.SeverityHigh, Confidence: 1, Message: "verification failure budget exceeded"}
+	}
+	if waitingRoom && !p.hasWaitingTicket(r, clientIP) {
 		return &engine.DetectionResult{
 			Detected:   true,
 			DetectorID: "bot.waiting_room",
@@ -383,7 +396,7 @@ func (p *Policy) EvaluateForSite(r *http.Request, clientIP, site string) *engine
 			Payload:    path,
 		}
 	}
-	if p.allowed(r.UserAgent()) || (p.powAcceptLegacy && p.effectiveCAPTCHAType(r) == "pow" && p.validAltchaHeaderAnswerForSite(r, clientIP, site)) {
+	if p.powAcceptLegacy && p.effectiveCAPTCHAType(r) == "pow" && p.validAltchaHeaderAnswerForSite(r, clientIP, site) {
 		return nil
 	}
 	risk := p.assessRisk(r, clientIP, site)
@@ -428,6 +441,16 @@ func (p *Policy) ServeChallenge(w http.ResponseWriter, r *http.Request, clientIP
 }
 
 func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, clientIP, site string) {
+	p.serveChallengeForSite(w, r, clientIP, site, p != nil && p.waitingRoom)
+}
+
+// ServeChallengeForSiteWithWaitingRoom mirrors EvaluateForSiteWithWaitingRoom
+// and keeps waiting-room behavior scoped to the selected site.
+func (p *Policy) ServeChallengeForSiteWithWaitingRoom(w http.ResponseWriter, r *http.Request, clientIP, site string, waitingRoom bool) {
+	p.serveChallengeForSite(w, r, clientIP, site, waitingRoom)
+}
+
+func (p *Policy) serveChallengeForSite(w http.ResponseWriter, r *http.Request, clientIP, site string, waitingRoom bool) {
 	if p == nil || r == nil || r.URL == nil {
 		http.Error(w, "bot challenge unavailable", http.StatusForbidden)
 		return
@@ -443,7 +466,7 @@ func (p *Policy) ServeChallengeForSite(w http.ResponseWriter, r *http.Request, c
 	}
 	returnURL := safeChallengeReturnURL(r)
 	challengeRequest := challengeRequestForReturnURL(r, returnURL)
-	if p.waitingRoom && !p.hasWaitingTicket(r, clientIP) {
+	if waitingRoom && !p.hasWaitingTicket(r, clientIP) {
 		p.serveWaitingRoom(w, r, clientIP)
 		return
 	}
@@ -783,7 +806,10 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	pending, claimed := p.behaviorPending.Claim(jti, owner)
 	key := p.failureKey(clientIP, site)
 	if !claimed {
-		decision, _ := p.failureTracker.RecordFailure(key)
+		decision, failureErr := p.failureTracker.RecordFailure(key)
+		if failureErr != nil {
+			decision.Blocked = true
+		}
 		p.recordChallengeMetric(ChallengeMetricFailure, site, "behavior", clientIP)
 		if decision.Blocked {
 			p.recordChallengeMetric(ChallengeMetricCAPTCHABlocked, site, "behavior", clientIP)
@@ -795,7 +821,10 @@ func (p *Policy) VerifyBehaviorChallenge(w http.ResponseWriter, r *http.Request,
 	result := captcha.VerifyBehaviorChallenge(opts, response)
 	if !result.Valid {
 		p.behaviorPending.Finalize(jti)
-		decision, _ := p.failureTracker.RecordFailure(key)
+		decision, failureErr := p.failureTracker.RecordFailure(key)
+		if failureErr != nil {
+			decision.Blocked = true
+		}
 		p.recordChallengeMetric(ChallengeMetricFailure, site, string(pending.kind), clientIP)
 		if decision.Blocked {
 			p.recordChallengeMetric(ChallengeMetricCAPTCHABlocked, site, string(pending.kind), clientIP)
@@ -1006,6 +1035,7 @@ func sampleUnitInterval(key string) float64 {
 func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 	score, evidence := 0, 0
 	strongSuspicion := false
+
 	flags := make([]string, 0, 8)
 	ua := strings.ToLower(strings.TrimSpace(r.UserAgent()))
 	if ua == "" {
@@ -1017,6 +1047,7 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 		if marker != "" && strings.Contains(ua, marker) {
 			score += 40
 			evidence++
+
 			strongSuspicion = true
 			flags = append(flags, "suspicious_ua")
 			break
@@ -1026,6 +1057,7 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 		if strings.Contains(ua, marker) {
 			score += 35
 			evidence++
+
 			strongSuspicion = true
 			flags = append(flags, "scanner_ua")
 			break
@@ -1066,20 +1098,30 @@ func (p *Policy) assessRisk(r *http.Request, clientIP, site string) botRisk {
 		score += 10
 		evidence++
 		flags = append(flags, "invalid_ip")
-	} else if (ip.IsLoopback() || ip.IsPrivate()) && !strongSuspicion {
-		score -= 30
+
+	}
+	if hint := r.Header.Get("Sec-CH-UA-Mobile"); hint != "" && ((hint == "?1") != isMobileClient(r)) {
+		score += 10
 		evidence++
-		flags = append(flags, "private_ip_discount")
+		flags = append(flags, "inconsistent_mobile_hint")
 	}
-	if isMobileClient(r) {
-		score -= 5
-		flags = append(flags, "mobile_discount")
+	for _, crawler := range []string{"gptbot", "claudebot", "claude-web", "ccbot", "bytespider", "perplexitybot", "oai-searchbot", "chatgpt-user"} {
+		if uaTokenMatch(ua, crawler) {
+			score += 35
+			evidence++
+			flags = append(flags, "unverified_ai_crawler")
+			break
+		}
 	}
-	if weakNetworkClient(r) {
-		score -= 8
+	if p.allowed(r.UserAgent()) {
+		// An allowlisted UA is only a claim. Keep it as a positive risk signal
+		// until the caller has independently verified the crawler's network
+		// identity (CIDR/rDNS/ASN); it must never be a bypass by itself.
+		score += 35
 		evidence++
-		flags = append(flags, "weak_network_discount")
+		flags = append(flags, "unverified_allowed_ua")
 	}
+
 	if score < 0 {
 		score = 0
 	} else if score > 100 {
@@ -1411,14 +1453,18 @@ func (p *Policy) waitingTicket(r *http.Request, clientIP string) (string, int, b
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	active := len(p.active)
-	if active >= p.waitingRoomMaxActive {
+	key := waitingKey(clientIP, r.UserAgent())
+	_, exists := p.active[key]
+	if !exists && active >= p.waitingRoomMaxActive {
 		return "", int(p.waitingRoomTTL.Seconds()), false, active, p.waitingRoomMaxActive
 	}
 	expires := p.now().Add(p.waitingRoomTTL).Unix()
-	key := waitingKey(clientIP, r.UserAgent())
 	p.active[key] = expires
 	signature := p.signWaiting(r, clientIP, expires)
-	return fmt.Sprintf("%d:%s", expires, signature), int(p.waitingRoomTTL.Seconds()), true, active + 1, p.waitingRoomMaxActive
+	if !exists {
+		active++
+	}
+	return fmt.Sprintf("%d:%s", expires, signature), int(p.waitingRoomTTL.Seconds()), true, active, p.waitingRoomMaxActive
 }
 
 func (p *Policy) purgeWaiting() {
@@ -1434,6 +1480,9 @@ func (p *Policy) purgeWaiting() {
 
 func (p *Policy) allowCAPTCHAAudio(r *http.Request, clientIP, token string) bool {
 	if p == nil || r == nil || strings.TrimSpace(token) == "" {
+		return false
+	}
+	if p.challengeStore.Status(captchaChallengeJTI("image", token)) != ChallengePending {
 		return false
 	}
 	key := p.captchaAttemptKey(r, clientIP, "image-audio", token)
@@ -1469,15 +1518,27 @@ func (p *Policy) captchaLocked(r *http.Request, clientIP, kind, token string) bo
 	defer p.mu.Unlock()
 	p.purgeCAPTCHAAttemptsLocked(now)
 	attempt, ok := p.attempts[key]
-	if !ok && len(p.attempts) >= maxCAPTCHAAttemptEntries {
-		return true
+	if ok {
+		return attempt.expires > now && attempt.failures >= p.captchaMaxAttempts
 	}
-	return ok && attempt.expires > now && attempt.failures >= p.captchaMaxAttempts
+	if len(p.attempts) >= maxCAPTCHAAttemptEntries {
+		// Preserve admission for a real, issued challenge while rejecting
+		// arbitrary tokens under pressure. Invalid tokens never enter attempts.
+		return p.challengeStore.Status(captchaChallengeJTI(kind, token)) != ChallengePending
+	}
+	return false
 }
 
 func (p *Policy) recordCAPTCHAAnswer(r *http.Request, clientIP, kind, token string, success bool) {
 	if p == nil || r == nil || strings.TrimSpace(token) == "" {
 		return
+	}
+	if p.failureTracker != nil {
+		if success {
+			p.failureTracker.Reset(p.failureKey(clientIP, captchaSite(r)))
+		} else {
+			_, _ = p.failureTracker.RecordFailure(p.failureKey(clientIP, captchaSite(r)))
+		}
 	}
 	key := p.captchaAttemptKey(r, clientIP, kind, token)
 	now := p.now().Unix()
@@ -1543,12 +1604,14 @@ func (p *Policy) sign(r *http.Request, clientIP string, expires int64) string {
 }
 
 func (p *Policy) signWaiting(r *http.Request, clientIP string, expires int64) string {
+	// Waiting-room admission is keyed to the client IP. Binding the ticket to
+	// User-Agent lets a client consume one slot per forged UA and makes a valid
+	// ticket unusable after harmless browser UA changes.
 	mac := hmac.New(sha256.New, p.secret)
 	_, _ = mac.Write([]byte("waiting-room"))
 	_, _ = mac.Write([]byte{'\n'})
 	_, _ = mac.Write([]byte(clientIP))
 	_, _ = mac.Write([]byte{'\n'})
-	_, _ = mac.Write([]byte(r.UserAgent()))
 	_, _ = mac.Write([]byte{'\n'})
 	_, _ = mac.Write([]byte(strconv.FormatInt(expires, 10)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -1657,7 +1720,7 @@ func (p *Policy) imageOptionsForSite(r *http.Request, clientIP, site string) cap
 }
 
 func (p *Policy) newImageChallenge(r *http.Request, clientIP string) (captcha.ImageChallenge, error) {
-	return captcha.NewImageChallenge(p.imageOptions(r, clientIP))
+	return p.newImageChallengeForSite(r, clientIP, canonicalSite(r.Host))
 }
 
 func (p *Policy) newImageChallengeForSite(r *http.Request, clientIP, site string) (captcha.ImageChallenge, error) {
@@ -1851,6 +1914,9 @@ func (p *Policy) validImageQueryAnswer(r *http.Request, clientIP string) bool {
 }
 
 func (p *Policy) validImageQueryAnswerForSite(r *http.Request, clientIP, site string) bool {
+	if r != nil {
+		r = r.WithContext(context.WithValue(r.Context(), captchaSiteKey{}, site))
+	}
 	if p == nil || r == nil || !p.captcha || !p.secretReady {
 		return false
 	}
@@ -1860,6 +1926,9 @@ func (p *Policy) validImageQueryAnswerForSite(r *http.Request, clientIP, site st
 		return false
 	}
 	if strings.TrimSpace(token) == "" || strings.TrimSpace(answer) == "" {
+		return false
+	}
+	if p.challengeStore.Status(captchaChallengeJTI("image", token)) != ChallengePending {
 		return false
 	}
 	if p.captchaLocked(r, clientIP, "image", token) {
@@ -1882,6 +1951,9 @@ func (p *Policy) validSliderQueryAnswer(r *http.Request, clientIP string) bool {
 }
 
 func (p *Policy) validSliderQueryAnswerForSite(r *http.Request, clientIP, site string) bool {
+	if r != nil {
+		r = r.WithContext(context.WithValue(r.Context(), captchaSiteKey{}, site))
+	}
 	if p == nil || r == nil || !p.captcha || !p.secretReady {
 		return false
 	}
@@ -1893,6 +1965,9 @@ func (p *Policy) validSliderQueryAnswerForSite(r *http.Request, clientIP, site s
 		return false
 	}
 	if strings.TrimSpace(token) == "" {
+		return false
+	}
+	if p.challengeStore.Status(captchaChallengeJTI("slider", token)) != ChallengePending {
 		return false
 	}
 	if p.captchaLocked(r, clientIP, "slider", token) {
@@ -2422,7 +2497,7 @@ type altchaPayload struct {
 }
 
 func waitingKey(clientIP, userAgent string) string {
-	return clientIP + "\x00" + userAgent
+	return clientIP
 }
 
 func randomToken(size int) (string, error) {
@@ -2836,3 +2911,12 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
   </script>
 </body>
 </html>`))
+
+type captchaSiteKey struct{}
+
+func captchaSite(r *http.Request) string {
+	if s, ok := r.Context().Value(captchaSiteKey{}).(string); ok && s != "" {
+		return s
+	}
+	return canonicalSite(r.Host)
+}

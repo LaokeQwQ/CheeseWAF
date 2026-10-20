@@ -117,8 +117,22 @@ func RunSelfLearning(ctx context.Context, opts SelfLearningOptions) (*SelfLearni
 	} else if opts.Client != nil {
 		reviewOK = true
 	}
-	autoApply := cfg.AutoApply && !cfg.DryRun && reviewOK
+	// Generated rules remain proposals until a person approves them through the
+	// rule management interface; model review is not authorization.
+	autoApply := false
+	_ = reviewOK
 	var writeBlocked string
+	if cfg.AutoApply && !cfg.DryRun {
+		writeBlocked = "human approval is required before applying AI-generated rules"
+		if opts.CanWriteRules != nil {
+			if err := opts.CanWriteRules(); err != nil {
+				writeBlocked = strings.TrimSpace(err.Error())
+				if writeBlocked == "" {
+					writeBlocked = "rule writes are not allowed"
+				}
+			}
+		}
+	}
 	if autoApply && opts.CanWriteRules != nil {
 		if err := opts.CanWriteRules(); err != nil {
 			autoApply = false
@@ -319,6 +333,14 @@ func reviewSelfLearningCandidates(ctx context.Context, client *Client, language 
 	limited := candidates
 	if len(limited) > 12 {
 		limited = limited[:12]
+	}
+	// Self-learning candidates are derived from attacker-controlled log text.
+	// If a candidate contains instruction-like content, do not send it to the
+	// reviewer model; leave AIReviewed=false so AutoApply cannot consume it.
+	for _, candidate := range limited {
+		if ScanPromptInjection(storage.LogEntry{Payload: candidate.Pattern, Message: candidate.Reason}).Suspected {
+			return candidates, nil
+		}
 	}
 	body := mustPromptJSON(map[string]any{
 		"task":     "Review CheeseWAF self-learning rule candidates. Approve only if absolutely malicious and low false-positive risk. Return strict JSON only.",

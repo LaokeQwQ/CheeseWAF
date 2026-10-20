@@ -312,7 +312,9 @@ func TestAuditorMiddlewareRetainsAllDeniedRequests(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	for index := 0; index < 3; index++ {
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/system", nil))
+		r := httptest.NewRequest(http.MethodPost, "/api/system", nil)
+		r = r.WithContext(context.WithValue(r.Context(), UserContextKey, &Claims{Subject: "user-id", Username: "operator", Role: "operator"}))
+		handler.ServeHTTP(httptest.NewRecorder(), r)
 	}
 
 	entries, err := auditor.Query(10)
@@ -321,6 +323,22 @@ func TestAuditorMiddlewareRetainsAllDeniedRequests(t *testing.T) {
 	}
 	if len(entries) != 3 {
 		t.Fatalf("denied audit entries = %d, want 3", len(entries))
+	}
+}
+
+func TestAuditorMiddlewareSkipsUnauthenticatedUnauthorizedRequests(t *testing.T) {
+	auditor := NewAuditor(filepath.Join(t.TempDir(), "audit.jsonl"))
+	handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/system/"+strings.Repeat("x", 2048), nil))
+
+	entries, err := auditor.Query(10)
+	if err != nil {
+		t.Fatalf("query audit entries: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("unauthenticated request reached management audit: %+v", entries)
 	}
 }
 

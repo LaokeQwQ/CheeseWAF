@@ -25,6 +25,7 @@ type Options struct {
 	Listen         string
 	RaftListen     string
 	Mode           nativeraft.StartMode
+	InitialVoters  []nativeraft.Member
 	CAFile         string
 	CertFile       string
 	KeyFile        string
@@ -58,6 +59,9 @@ func ValidateOptions(opts Options) error {
 	}
 	if opts.Mode != nativeraft.ModeBootstrap && opts.Mode != nativeraft.ModeJoin {
 		return fmt.Errorf("raft mode must be explicitly set to bootstrap or join")
+	}
+	if err := nativeraft.ValidateInitialVoters(opts.InitialVoters); err != nil {
+		return err
 	}
 	if strings.TrimSpace(opts.PostgreSQLDSN) == "" {
 		return fmt.Errorf("PostgreSQL DSN is required")

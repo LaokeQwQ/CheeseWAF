@@ -780,22 +780,28 @@ func TestRouterAuditRecordsAuthenticationAndAuthorizationFailures(t *testing.T) 
 	if err := json.NewDecoder(audit.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode audit response: %v", err)
 	}
-	var foundAllowed, foundForbidden, foundUnauthorized bool
+	var foundAllowed, foundForbidden, foundUnauthorized, foundLoginSuccess bool
 	for _, entry := range envelope.Data {
-		if entry.Path != "/api/system" {
-			continue
+		if entry.Path == "/api/system" {
+			switch entry.Status {
+			case http.StatusOK:
+				foundAllowed = true
+			case http.StatusForbidden:
+				foundForbidden = true
+			case http.StatusUnauthorized:
+				foundUnauthorized = true
+			}
 		}
-		switch entry.Status {
-		case http.StatusOK:
-			foundAllowed = true
-		case http.StatusForbidden:
-			foundForbidden = true
-		case http.StatusUnauthorized:
-			foundUnauthorized = true
+		if entry.Path == "/api/auth/login" && entry.Status == http.StatusOK {
+			foundLoginSuccess = true
 		}
 	}
-	if !foundAllowed || !foundForbidden || !foundUnauthorized {
-		t.Fatalf("audit file %s missing expected outcomes (ok=%v forbidden=%v unauthorized=%v): %+v", cfg.APISec.Audit.Path, foundAllowed, foundForbidden, foundUnauthorized, envelope.Data)
+	// Unauthenticated requests are intentionally omitted from the management
+	// audit stream; otherwise an attacker could fill/rotate it without an
+	// authenticated identity. Authenticated success, denial, and login events
+	// remain auditable.
+	if !foundAllowed || !foundForbidden || foundUnauthorized || !foundLoginSuccess {
+		t.Fatalf("audit file %s missing expected outcomes (ok=%v forbidden=%v unauthorized=%v login_ok=%v): %+v", cfg.APISec.Audit.Path, foundAllowed, foundForbidden, foundUnauthorized, foundLoginSuccess, envelope.Data)
 	}
 }
 
@@ -1509,7 +1515,7 @@ func TestRouterUserUpdateRevokesExistingUserSessions(t *testing.T) {
 
 func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai", "write:protection"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
 	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")
@@ -1548,7 +1554,7 @@ func TestRouterAIApprovalRequiresScopedSecondPersonForModifyTool(t *testing.T) {
 
 func TestRouterAIApprovalRecoveryPreservesObjectScope(t *testing.T) {
 	router, _, store, _, _ := newAuthzTestRouterState(t, func(cfg *config.Config) {
-		cfg.APISec.Permissions["operator"] = []string{"use:ai"}
+		cfg.APISec.Permissions["operator"] = []string{"use:ai", "write:protection"}
 		cfg.APISec.Permissions["ai_approver"] = []string{"approve:ai"}
 	})
 	createAuthzUser(t, store, "ai-writer-id", "ai-writer", "writer-password", "operator")

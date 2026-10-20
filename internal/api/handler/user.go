@@ -158,6 +158,10 @@ func (h *Handler) SetupUser2FA(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeUser2FA(w, r, user) {
 		return
 	}
+	if user.TwoFAEnabled {
+		writeError(w, http.StatusConflict, "TWO_FA_ALREADY_ENABLED", "disable existing two-factor authentication with current credentials before enrolling again")
+		return
+	}
 	secret, err := generateTOTPSecret()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "TWO_FA_ERROR", err.Error())
@@ -179,6 +183,10 @@ func (h *Handler) EnableUser2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.authorizeUser2FA(w, r, user) {
+		return
+	}
+	if user.TwoFAEnabled {
+		writeError(w, http.StatusConflict, "TWO_FA_ALREADY_ENABLED", "two-factor authentication is already enabled")
 		return
 	}
 	var req twoFAPayload
@@ -391,6 +399,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		user.Role = req.Role
 	}
 	if req.Password != "" {
+		if !callerIsAdmin(r) {
+			writeError(w, http.StatusForbidden, "PASSWORD_RESET_FORBIDDEN", "only an admin can reset user credentials")
+			return
+		}
 		if err := passpolicy.Validate(req.Password, user.Username); err != nil {
 			writeError(w, http.StatusBadRequest, "PASSWORD_POLICY", err.Error())
 			return

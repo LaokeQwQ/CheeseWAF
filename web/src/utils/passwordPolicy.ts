@@ -41,10 +41,10 @@ export function classifyPassword(password: string): PasswordClassFlags {
   for (const ch of password) {
     if (ch >= 'A' && ch <= 'Z') upper = true;
     else if (ch >= 'a' && ch <= 'z') lower = true;
-    else if (ch >= '0' && ch <= '9') {
+    else if (/\p{Decimal_Number}/u.test(ch)) {
       digitCounts.set(ch, (digitCounts.get(ch) ?? 0) + 1);
       digitRun.push(ch);
-    } else if (ch.trim() !== '') {
+    } else if (!/[\p{Letter}\p{White_Space}]/u.test(ch)) {
       special = true;
     }
   }
@@ -79,7 +79,7 @@ export function passwordPolicyErrorKey(password: string, username = ''): string 
 
 function isWeakPassword(password: string): boolean {
   const lower = password.toLowerCase();
-  const compact = lower.replace(/[^a-z0-9]/g, '');
+  const compact = lower.replace(/[^\p{Letter}\p{Decimal_Number}]/gu, '');
   if (WEAK_EXACT.has(lower) || WEAK_EXACT.has(compact)) return true;
   for (const bad of WEAK_CONTAINS) {
     if (lower.includes(bad) || compact.includes(bad)) return true;
@@ -91,7 +91,7 @@ function isWeakPassword(password: string): boolean {
 }
 
 function digitsOnly(password: string): string[] {
-  return [...password].filter((c) => c >= '0' && c <= '9');
+  return [...password].filter((c) => /\p{Decimal_Number}/u.test(c));
 }
 
 function hasSequentialDigitRun(digits: string[], minLen: number): boolean {
@@ -99,8 +99,8 @@ function hasSequentialDigitRun(digits: string[], minLen: number): boolean {
   let asc = 1;
   let desc = 1;
   for (let i = 1; i < digits.length; i++) {
-    const d0 = digits[i - 1].charCodeAt(0) - 48;
-    const d1 = digits[i].charCodeAt(0) - 48;
+    const d0 = digits[i - 1].codePointAt(0)!;
+    const d1 = digits[i].codePointAt(0)!;
     if (d1 === d0 + 1) {
       asc++;
       desc = 1;

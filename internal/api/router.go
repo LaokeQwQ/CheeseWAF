@@ -44,6 +44,7 @@ type Options struct {
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	OnConfigChanged                     func(*config.Config) error
 	ACMEIssuer                          acme.Issuer
 	AuthState                           *handler.AuthState
 	AssistantApprovals                  *ai.ApprovalStore
@@ -58,6 +59,9 @@ type Options struct {
 	CWEDPDownload                       consumer.Executor
 	CRPActivation                       handler.CRPActivationExecutor
 	ManagementTokenConfirmationVerifier handler.ManagementTokenConfirmationVerifier
+	// AssistantGateApproval is the same durable high-risk boundary used by AI
+	// destructive tools. The composition root must provide it in production.
+	AssistantGateApproval *ai.GateApprovalAdapter
 	// ApprovalHTTP is an optional, fully configured high-risk ApprovalGate
 	// transport. It is mounted only inside the authenticated management API
 	// group; leaving it nil keeps the route absent rather than exposing an
@@ -131,6 +135,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		SetupTokenSource:                    opts.SetupTokenSource,
 		Auditor:                             auditor,
 		AssistantApprovals:                  approvals,
+		AssistantGateApproval:               opts.AssistantGateApproval,
 		Realtime:                            hub,
 		ClusterIdentity:                     opts.ClusterIdentity,
 		ClusterHeartbeats:                   opts.ClusterHeartbeats,
@@ -143,6 +148,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnConfigChanged:                     opts.OnConfigChanged,
 		CAPTCHAAssets:                       opts.CAPTCHAAssets,
 		Clock:                               clock,
 		TimeSync:                            opts.TimeSync,
@@ -152,7 +158,9 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		CWEDPDownload:                       opts.CWEDPDownload,
 		CRPActivation:                       opts.CRPActivation,
 		ManagementTokenConfirmationVerifier: opts.ManagementTokenConfirmationVerifier,
+		ApprovalHTTP:                        opts.ApprovalHTTP,
 	})
+	h.SetClusterApprovalHTTP(opts.ApprovalHTTP)
 	h.StartManagementAPITokenCleanup(opts.ManagementTokenCleanupContext)
 	if opts.AuthState != nil {
 		handler.ApplyAuthState(h, opts.AuthState)
@@ -204,10 +212,11 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		})
 
 		r.Group(func(r chi.Router) {
-			if routerConfig.APISec.Audit.Enabled {
-				r.Use(auditor.Middleware)
-			}
 			r.Use(managementAuth)
+			r.Use(middleware.NoStore)
+			if routerConfig.APISec.Audit.Enabled {
+				r.Use(h.AuditMiddleware)
+			}
 			r.Use(middleware.CSRFMiddleware)
 			r.Use(h.ConfigReadMiddleware)
 			r.With(require("read:realtime"), h.ConfigReadMiddleware).Get("/realtime/events", hub.SSEHandler)
@@ -355,6 +364,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(requireAny("read:ai", "use:ai", "write:ai", "approve:ai"), h.ConfigReadMiddleware).Get("/ai/tools/approvals", h.ListAIApprovals)
 			r.With(requireAny("read:ai", "use:ai", "write:ai", "approve:ai"), h.ConfigReadMiddleware).Get("/ai/tools/approvals/{id}", h.GetAIApproval)
 			r.With(requireAny("use:ai", "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/approve", h.ApproveAIApproval)
+			r.With(require("approve:ai")).Post("/ai/tools/approvals/{id}/confirmation/start", h.StartAIApprovalConfirmation)
+			r.With(require("approve:ai")).Post("/ai/tools/approvals/{id}/confirmation", h.ConfirmAIApproval)
 			r.With(require("use:ai"), aiUseLimit).Post("/ai/tools/approvals/{id}/continue/stream", h.ContinueAIApprovalStream)
 			r.With(requireAny("use:ai", "write:ai", "approve:ai")).Post("/ai/tools/approvals/{id}/reject", h.RejectAIApproval)
 			// The strict ApprovalGate transport is injected by a production

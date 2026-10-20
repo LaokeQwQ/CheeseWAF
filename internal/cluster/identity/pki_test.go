@@ -6,7 +6,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -338,7 +340,8 @@ func TestRotateNodeCertificateWithCSRUpdatesRegistrationWithoutPrivateKey(t *tes
 
 	clock.Advance(30 * 24 * time.Hour)
 	rotationCSR, rotationKey := testIdentityNodeCSR(t, "waf-a")
-	rotated, err := svc.RotateNodeCertificateWithCSR("waf-a", rotationCSR)
+	proof := testIdentityRotationProof(t, "waf-a", enrollment.Node.CertificateSerial, rotationCSR, enrollmentKey)
+	rotated, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", rotationCSR, []byte(proof))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +442,7 @@ func TestRotateNodeCertificateWithCSRRejectsCSRForDifferentNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollmentCSR, _ := testIdentityNodeCSR(t, "waf-a")
+	enrollmentCSR, enrollmentKey := testIdentityNodeCSR(t, "waf-a")
 	enrollment, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{
 		NodeID:        "waf-a",
 		Role:          "waf",
@@ -450,7 +453,8 @@ func TestRotateNodeCertificateWithCSRRejectsCSRForDifferentNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrongCSR, _ := testIdentityNodeCSR(t, "waf-other")
-	if _, err := svc.RotateNodeCertificateWithCSR("waf-a", wrongCSR); err == nil {
+	wrongProof := testIdentityRotationProof(t, "waf-a", enrollment.Node.CertificateSerial, wrongCSR, enrollmentKey)
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", wrongCSR, []byte(wrongProof)); err == nil {
 		t.Fatal("rotation CSR for a different node must be rejected")
 	}
 	nodes := svc.ListNodes()
@@ -485,9 +489,66 @@ func TestRotateNodeCertificateRejectsUnknownOrRevokedNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextCSR, _ := testIdentityNodeCSR(t, "waf-a")
-	if _, err := svc.RotateNodeCertificateWithCSR("waf-a", nextCSR); err == nil {
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", nextCSR, []byte("invalid-proof")); err == nil {
 		t.Fatal("revoked node rotation must be rejected")
 	}
+}
+
+func TestRotateNodeCertificateRequiresCurrentPrivateKeyProof(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentCSR, enrollmentKey := testIdentityNodeCSR(t, "waf-a")
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{NodeID: "waf-a", Role: "waf", ClusterID: "cw-test", AdvertiseAddr: "10.0.0.1:9444"}, enrollmentCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotationCSR, _ := testIdentityNodeCSR(t, "waf-a")
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", rotationCSR, nil); err == nil {
+		t.Fatal("rotation without possession proof must be rejected")
+	}
+	staleSerialProof := testIdentityRotationProof(t, "waf-a", "stale-certificate-serial", rotationCSR, enrollmentKey)
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", rotationCSR, []byte(staleSerialProof)); err == nil {
+		t.Fatal("proof not bound to the current certificate serial must be rejected")
+	}
+	wrongKeyCSR, wrongKey := testIdentityNodeCSR(t, "waf-a")
+	wrongProof := testIdentityRotationProof(t, "waf-a", enrollment.Node.CertificateSerial, wrongKeyCSR, wrongKey)
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", rotationCSR, []byte(wrongProof)); err == nil {
+		t.Fatal("proof signed by a different key must be rejected")
+	}
+	_ = enrollmentKey
+}
+
+func TestRotateNodeCertificateRejectsReplayedProof(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1000, 0))
+	svc, err := NewMemoryIdentityService(ServiceOptions{Clock: clock, ClusterID: "cw-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := svc.CreateJoinToken("waf", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentCSR, enrollmentKey := testIdentityNodeCSR(t, "waf-a")
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, NodeIdentity{NodeID: "waf-a", Role: "waf", ClusterID: "cw-test", AdvertiseAddr: "10.0.0.1:9444"}, enrollmentCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotationCSR, rotationKey := testIdentityNodeCSR(t, "waf-a")
+	proof := testIdentityRotationProof(t, "waf-a", enrollment.Node.CertificateSerial, rotationCSR, enrollmentKey)
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", rotationCSR, []byte(proof)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RotateNodeCertificateWithCSRAndProof("waf-a", rotationCSR, []byte(proof)); err == nil {
+		t.Fatal("a proof from the previous certificate key must not be replayable")
+	}
+	_ = rotationKey
 }
 
 func TestIdentityStateRejectsWeakPermissions(t *testing.T) {
@@ -537,6 +598,16 @@ func testIdentityNodeCSR(t *testing.T, nodeID string) ([]byte, *ecdsa.PrivateKey
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw}), key
+}
+
+func testIdentityRotationProof(t *testing.T, nodeID, currentSerial string, csrPEM []byte, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	digest := sha256.Sum256(NodeRotationProofMessage(nodeID, currentSerial, csrPEM))
+	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func testIdentityRSANodeCSR(t *testing.T, nodeID string, bits int) []byte {

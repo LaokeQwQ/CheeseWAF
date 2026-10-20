@@ -5,11 +5,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +39,7 @@ type clusterJoinOptions struct {
 	AllowInsecureHTTP  bool
 	DryRun             bool
 	Force              bool
+	ApprovalID         string
 }
 
 type clusterJoinLocalIdentity struct {
@@ -87,6 +90,29 @@ type apiEnvelope struct {
 	} `json:"error"`
 }
 
+type clusterJoinApprovalPending struct {
+	ApprovalID string    `json:"approval_id"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+type clusterJoinPendingState struct {
+	ApprovalID string `json:"approval_id"`
+	KeyPEM     []byte `json:"key_pem"`
+	CSRPEM     []byte `json:"csr_pem"`
+}
+
+type clusterJoinApprovalPendingError struct {
+	ApprovalID string
+	ExpiresAt  time.Time
+}
+
+func (e *clusterJoinApprovalPendingError) Error() string {
+	if e == nil || strings.TrimSpace(e.ApprovalID) == "" {
+		return "cluster join is awaiting administrator approval"
+	}
+	return fmt.Sprintf("cluster join is awaiting administrator approval (approval_id=%s); retry with --approval-id %s after approval", e.ApprovalID, e.ApprovalID)
+}
+
 func newClusterJoinCommand() *cobra.Command {
 	var opts clusterJoinOptions
 	cmd := &cobra.Command{
@@ -110,6 +136,7 @@ func newClusterJoinCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.AllowInsecureHTTP, "allow-insecure-http", false, "Allow cleartext HTTP for isolated lab bootstrap only. Join tokens are exposed on the network")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "Validate local join inputs and CSR generation without contacting the controller or consuming the token")
 	cmd.Flags().BoolVar(&opts.Force, "force", false, "Overwrite existing local cluster certificate files")
+	cmd.Flags().StringVar(&opts.ApprovalID, "approval-id", "", "Resume a cluster join after the administrator approves the pending request")
 	_ = cmd.MarkFlagRequired("controller")
 	_ = cmd.MarkFlagRequired("node-id")
 	_ = cmd.MarkFlagRequired("advertise-addr")
@@ -121,9 +148,15 @@ func runClusterJoin(cmd *cobra.Command, opts clusterJoinOptions) error {
 	if err != nil {
 		return err
 	}
-	localIdentity, err := generateClusterJoinLocalIdentity(opts)
+	localIdentity, err := loadClusterJoinPendingIdentity(opts)
 	if err != nil {
 		return err
+	}
+	if len(localIdentity.CSRPEM) == 0 {
+		localIdentity, err = generateClusterJoinLocalIdentity(opts)
+		if err != nil {
+			return err
+		}
 	}
 	reqPayload := map[string]string{
 		"token":          token,
@@ -132,6 +165,7 @@ func runClusterJoin(cmd *cobra.Command, opts clusterJoinOptions) error {
 		"advertise_addr": strings.TrimSpace(opts.AdvertiseAddr),
 		"listen":         strings.TrimSpace(opts.Listen),
 		"csr":            string(localIdentity.CSRPEM),
+		"approval_id":    strings.TrimSpace(opts.ApprovalID),
 	}
 	if reqPayload["listen"] == "" {
 		reqPayload["listen"] = reqPayload["advertise_addr"]
@@ -150,6 +184,15 @@ func runClusterJoin(cmd *cobra.Command, opts clusterJoinOptions) error {
 	}
 	result, err := requestClusterJoin(client, controllerURL, reqPayload)
 	if err != nil {
+		var pending *clusterJoinApprovalPendingError
+		if errors.As(err, &pending) {
+			if saveErr := saveClusterJoinPendingIdentity(opts.NodeID, pending.ApprovalID, localIdentity); saveErr != nil {
+				return fmt.Errorf("%w; unable to save pending join identity: %v", err, saveErr)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Join request is pending administrator approval. Approval ID: %s\n", pending.ApprovalID)
+			fmt.Fprintf(cmd.OutOrStdout(), "After approval, retry with --approval-id %s using the same token.\n", pending.ApprovalID)
+			return nil
+		}
 		return err
 	}
 	if err := validateClusterCertificateMaterial(result.Certificates.CA, result.Certificates.Cert, localIdentity.KeyPEM, result.NodeID); err != nil {
@@ -163,6 +206,7 @@ func runClusterJoin(cmd *cobra.Command, opts clusterJoinOptions) error {
 		cleanupClusterJoinFiles(paths)
 		return clusterJoinConfigApplyError(result, paths, err)
 	}
+	_ = removeClusterJoinPendingIdentity(opts.NodeID)
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Node joined cluster: %s / %s\n", result.ClusterID, result.NodeID)
 	fmt.Fprintf(out, "Certificate files written under: %s\n", filepath.Dir(paths.CertFile))
@@ -296,6 +340,13 @@ func requestClusterJoin(client *http.Client, controllerURL string, payload map[s
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return clusterJoinAPIResponse{}, fmt.Errorf("parse cluster join response: %w", err)
 	}
+	if resp.StatusCode == http.StatusAccepted {
+		var pending clusterJoinApprovalPending
+		if err := json.Unmarshal(envelope.Data, &pending); err != nil || strings.TrimSpace(pending.ApprovalID) == "" {
+			return clusterJoinAPIResponse{}, fmt.Errorf("cluster join is pending approval but response did not include an approval id")
+		}
+		return clusterJoinAPIResponse{}, &clusterJoinApprovalPendingError{ApprovalID: pending.ApprovalID, ExpiresAt: pending.ExpiresAt}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if envelope.Error != nil && envelope.Error.Message != "" {
 			return clusterJoinAPIResponse{}, fmt.Errorf("cluster join rejected: %s", envelope.Error.Message)
@@ -313,6 +364,84 @@ func requestClusterJoin(client *http.Client, controllerURL string, payload map[s
 		return clusterJoinAPIResponse{}, fmt.Errorf("cluster join response unexpectedly included private key material")
 	}
 	return result, nil
+}
+
+func clusterJoinPendingPath(nodeID string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(nodeID)))
+	return filepath.Join(dataDir, "cluster", "pending-join-"+fmt.Sprintf("%x", digest[:8])+".json")
+}
+
+func loadClusterJoinPendingIdentity(opts clusterJoinOptions) (clusterJoinLocalIdentity, error) {
+	if strings.TrimSpace(opts.ApprovalID) == "" {
+		return clusterJoinLocalIdentity{}, nil
+	}
+	path := clusterJoinPendingPath(opts.NodeID)
+	info, err := os.Lstat(path)
+	if err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > 1<<20) {
+		return clusterJoinLocalIdentity{}, fmt.Errorf("pending cluster join identity is not a bounded regular file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return clusterJoinLocalIdentity{}, fmt.Errorf("approval_id %s has no saved pending join identity; rerun the initial join request", opts.ApprovalID)
+		}
+		return clusterJoinLocalIdentity{}, fmt.Errorf("read pending cluster join identity: %w", err)
+	}
+	var state clusterJoinPendingState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return clusterJoinLocalIdentity{}, fmt.Errorf("parse pending cluster join identity: %w", err)
+	}
+	if state.ApprovalID != strings.TrimSpace(opts.ApprovalID) || len(state.KeyPEM) == 0 || len(state.CSRPEM) == 0 {
+		return clusterJoinLocalIdentity{}, fmt.Errorf("approval_id %s does not match the saved pending join identity", opts.ApprovalID)
+	}
+	return clusterJoinLocalIdentity{KeyPEM: state.KeyPEM, CSRPEM: state.CSRPEM}, nil
+}
+
+func saveClusterJoinPendingIdentity(nodeID, approvalID string, identity clusterJoinLocalIdentity) error {
+	if strings.TrimSpace(nodeID) == "" || strings.TrimSpace(approvalID) == "" || len(identity.KeyPEM) == 0 || len(identity.CSRPEM) == 0 {
+		return fmt.Errorf("pending cluster join identity is incomplete")
+	}
+	path := clusterJoinPendingPath(nodeID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(clusterJoinPendingState{ApprovalID: strings.TrimSpace(approvalID), KeyPEM: identity.KeyPEM, CSRPEM: identity.CSRPEM})
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pending-join-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := protectAuthSecretFile(tmpName); err != nil {
+		return fmt.Errorf("protect pending join identity: %w", err)
+	}
+	return os.Rename(tmpName, path)
+}
+
+func removeClusterJoinPendingIdentity(nodeID string) error {
+	err := os.Remove(clusterJoinPendingPath(nodeID))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func validateClusterCertificateMaterial(caPEM string, certPEM string, keyPEM []byte, nodeID string) error {

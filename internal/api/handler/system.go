@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -23,7 +23,8 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/go-chi/chi/v5"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 const maxMapBoundaryBytes = 5 << 20
@@ -204,6 +205,11 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, code, message)
 		return
 	}
+	previous, err := config.Clone(h.currentConfig())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "CONFIG_CLONE_ERROR", err.Error())
+		return
+	}
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		return applySystemPayload(candidate, req)
 	}, func(candidate *config.Config) error {
@@ -230,8 +236,38 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, err.Error())
 		return
 	}
-	_ = committed
-	h.System(w, r)
+	view := systemConfigView(committed)
+	fields := restartRequiredFields(previous, committed)
+	view["restart_required"] = len(fields) > 0
+	view["restart_fields"] = fields
+	view["version"] = version.Current()
+	writeData(w, view)
+}
+
+func restartRequiredFields(before, after *config.Config) []string {
+	if before == nil || after == nil {
+		return nil
+	}
+	fields := make([]string, 0, 8)
+	if before.Server.Listen != after.Server.Listen || before.Server.ListenTLS != after.Server.ListenTLS || before.Server.ListenHTTP3 != after.Server.ListenHTTP3 || before.Server.AdminListen != after.Server.AdminListen || before.Server.AdminPublic != after.Server.AdminPublic || !reflect.DeepEqual(before.Server.AdminTLS, after.Server.AdminTLS) || !reflect.DeepEqual(before.Server.HTTP3, after.Server.HTTP3) {
+		fields = append(fields, "server")
+	}
+	if !reflect.DeepEqual(before.TLS, after.TLS) {
+		fields = append(fields, "tls")
+	}
+	if !reflect.DeepEqual(before.Storage, after.Storage) {
+		fields = append(fields, "storage")
+	}
+	if !reflect.DeepEqual(before.Logging, after.Logging) {
+		fields = append(fields, "logging")
+	}
+	if !reflect.DeepEqual(before.Scheduler, after.Scheduler) {
+		fields = append(fields, "scheduler")
+	}
+	if !reflect.DeepEqual(before.ACME, after.ACME) {
+		fields = append(fields, "acme")
+	}
+	return fields
 }
 
 func unavailableSystemEnablement(req systemPayload) (string, string) {
@@ -392,7 +428,7 @@ func (h *Handler) ChinaMapBoundary(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{
 		"enabled":     true,
 		"source_type": sourceTypeOrDefault(boundary.SourceType),
-		"source":      boundary.Source,
+		"source":      filepath.Base(boundary.Source),
 		"license":     boundary.License,
 		"review_id":   boundary.ReviewID,
 		"attribution": boundary.Attribution,
@@ -421,7 +457,7 @@ func (h *Handler) ChinaMapBoundaryByCode(w http.ResponseWriter, r *http.Request)
 			"enabled":     false,
 			"adcode":      adcode,
 			"source_type": sourceTypeOrDefault(boundary.SourceType),
-			"source":      boundary.Source,
+			"source":      filepath.Base(boundary.Source),
 			"license":     boundary.License,
 			"review_id":   boundary.ReviewID,
 			"attribution": boundary.Attribution,
@@ -442,8 +478,8 @@ func (h *Handler) ChinaMapBoundaryByCode(w http.ResponseWriter, r *http.Request)
 		"enabled":         true,
 		"adcode":          adcode,
 		"source_type":     sourceTypeOrDefault(boundary.SourceType),
-		"source":          boundary.Source,
-		"resolved_source": resolved,
+		"source":          filepath.Base(boundary.Source),
+		"resolved_source": filepath.Base(resolved),
 		"license":         boundary.License,
 		"review_id":       boundary.ReviewID,
 		"attribution":     boundary.Attribution,
@@ -460,7 +496,7 @@ func (h *Handler) readMapBoundary(ctx context.Context, boundary config.MapBounda
 	if sourceType == "url" {
 		return h.readRemoteMapBoundary(ctx, source, boundary)
 	}
-	body, err := os.ReadFile(source)
+	body, err := h.readLocalMapBoundary(source)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +518,7 @@ func (h *Handler) readMapBoundaryByCode(ctx context.Context, boundary config.Map
 		return body, urlSource, err
 	}
 	for _, candidate := range boundaryFileCandidates(source, adcode) {
-		body, err := os.ReadFile(candidate)
+		body, err := h.readLocalMapBoundary(candidate)
 		if err == nil {
 			if len(body) > maxMapBoundaryBytes {
 				return nil, candidate, fmt.Errorf("boundary source exceeds %d bytes", maxMapBoundaryBytes)
@@ -682,10 +718,34 @@ func testStorageWithDataDir(ctx context.Context, backend string, storage config.
 		if err := dialStorageEndpoint(ctx, hostPort, "postgresql endpoint", false); err != nil {
 			return err
 		}
-		db, err := sql.Open("pgx", storage.PostgreSQL.DSN)
+		pgConfig, err := pgx.ParseConfig(storage.PostgreSQL.DSN)
 		if err != nil {
 			return err
 		}
+		pgConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if network != "tcp" && network != "tcp4" && network != "tcp6" {
+				return nil, fmt.Errorf("postgresql test requires a public TCP target")
+			}
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("postgresql target has no addresses")
+			}
+			for _, ip := range ips {
+				if !netguard.IsPublicIP(ip) {
+					return nil, fmt.Errorf("postgresql endpoint must be public")
+				}
+			}
+			dialer := &net.Dialer{Timeout: 5 * time.Second}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		}
+		db := stdlib.OpenDB(*pgConfig)
 		defer db.Close()
 		return db.PingContext(ctx)
 	case "clickhouse":
@@ -822,4 +882,19 @@ func testHTTP(ctx context.Context, endpoint, username, password, apiKey string, 
 		return fmt.Errorf("endpoint returned %s", resp.Status)
 	}
 	return nil
+}
+
+func (h *Handler) readLocalMapBoundary(source string) ([]byte, error) {
+	if h == nil || h.currentConfig() == nil || h.currentConfig().Setup.DataDir == "" {
+		return nil, fmt.Errorf("map boundary managed root is unavailable")
+	}
+	root := filepath.Join(h.currentConfig().Setup.DataDir, "maps")
+	body, err := fsguard.ReadFileUnderRoot(root, source, maxMapBoundaryBytes+1)
+	if err != nil {
+		return nil, fmt.Errorf("map boundary file is unavailable within data_dir/maps")
+	}
+	if len(body) > maxMapBoundaryBytes {
+		return nil, fmt.Errorf("boundary source exceeds limit")
+	}
+	return body, nil
 }

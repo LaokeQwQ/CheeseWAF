@@ -260,7 +260,7 @@ func reviewWhere(f storage.ReviewFilter) (string, []any) {
 		a = append(a, f.End.UTC())
 	}
 	if v := strings.TrimSpace(f.Search); v != "" {
-		c = append(c, "LOWER(CONCAT_WS(' ',id,trace_id,site_id,client_ip,method,uri,category,severity,payload,status,source,param_name,fingerprint,ai_verdict,decision,applied_rule_id,decided_by_name)) LIKE LOWER(?) ESCAPE '\\\\'")
+		c = append(c, "LOWER(CONCAT_WS(' ',id,trace_id,site_id,client_ip,method,uri,category,severity,payload,status,source,param_name,fingerprint,ai_verdict,decision,applied_rule_id,decided_by_name)) LIKE LOWER(?) ESCAPE '\\'")
 		a = append(a, "%"+escapeLike(v)+"%")
 	}
 	add := func(t time.Time, id, op string) {
