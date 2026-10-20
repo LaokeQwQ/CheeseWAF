@@ -134,7 +134,18 @@ export function normalizeSite(input?: Partial<Site>): Site {
       },
       origin: { ...defaultSiteAdvanced.origin, ...advanced.origin },
       health_check: { ...defaultSiteAdvanced.health_check, ...advanced.health_check },
-      protection: { ...defaultSiteAdvanced.protection, ...advanced.protection },
+      protection: {
+        ...defaultSiteAdvanced.protection,
+        ...advanced.protection,
+        // Existing sites can inherit these modules from the global policy.
+        // Only an operator change should turn an omitted value into an override.
+        ...(input?.id ? {
+          bot: input.advanced?.protection?.bot,
+          ratelimit: input.advanced?.protection?.ratelimit,
+          acl: input.advanced?.protection?.acl,
+          apisec: input.advanced?.protection?.apisec,
+        } : {}),
+      },
       semantic_policy: {
         ...defaultSiteAdvanced.semantic_policy,
         ...advanced.semantic_policy,

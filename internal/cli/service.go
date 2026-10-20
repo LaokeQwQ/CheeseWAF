@@ -1074,7 +1074,11 @@ func allowAdminEntranceAt(cfg *config.Config, authSecret, metricsPath string, me
 			writeAdminTeapot(w)
 			return false
 		}
-		http.Redirect(w, r, "/login", http.StatusFound)
+		loginPath := "/login"
+		if r.URL.Query().Get("returnTo") == "/sites" {
+			loginPath += "?returnTo=%2Fsites"
+		}
+		http.Redirect(w, r, loginPath, http.StatusFound)
 		return false
 	}
 	if validAdminEntryCookie(r, entry.CookieName, secret, now) {

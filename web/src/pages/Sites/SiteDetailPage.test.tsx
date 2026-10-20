@@ -19,6 +19,14 @@ const toastMocks = vi.hoisted(() => ({
 }));
 
 const navigateMock = vi.hoisted(() => vi.fn());
+const scrollIntoView = Element.prototype.scrollIntoView;
+
+const inheritedProtectionControls = [
+  ['bot', 'protection.bot'],
+  ['ratelimit', 'protection.ratelimit'],
+  ['acl', 'protection.acl'],
+  ['apisec', 'nav.apisec'],
+] as const;
 
 vi.mock('sonner', () => ({
   toast: toastMocks,
@@ -55,6 +63,26 @@ function makeSite(name: string): Site {
     domains: ['site.example.com'],
     upstreams: ['127.0.0.1:9000'],
   });
+}
+
+function makeInheritedProtectionSite() {
+  const site = makeSite('initial-site');
+  for (const [key] of inheritedProtectionControls) delete site.advanced.protection[key];
+  return site;
+}
+
+async function openProtectionTab() {
+  await screen.findByDisplayValue('initial-site');
+  fireEvent.click(screen.getByText('sites.stepProtection'));
+}
+
+function protectionSelect(label: string) {
+  return screen.getByRole('combobox', { name: new RegExp(label) });
+}
+
+async function selectProtectionValue(label: string, valueLabel: string) {
+  fireEvent.click(protectionSelect(label));
+  fireEvent.click(await screen.findByRole('option', { name: valueLabel }));
 }
 
 function renderSiteDetail() {
@@ -94,12 +122,14 @@ async function renameAndSave(name: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();
   apiMocks.fetchACMEProviders.mockResolvedValue([]);
   apiMocks.fetchSite.mockResolvedValue(makeSite('initial-site'));
 });
 
 afterEach(() => {
   cleanup();
+  Element.prototype.scrollIntoView = scrollIntoView;
 });
 
 describe('SiteDetailPage save failures', () => {
@@ -127,6 +157,101 @@ describe('SiteDetailPage save failures', () => {
 });
 
 describe('SiteDetailPage save success', () => {
+  it('does not turn inherited protection into overrides when only renaming a site', async () => {
+    const initial = makeSite('initial-site');
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec'] as const) delete initial.advanced.protection[key];
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+
+    await renameAndSave('renamed-site');
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    const protection = JSON.parse(JSON.stringify(apiMocks.updateSite.mock.calls[0]?.[1].advanced.protection));
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec']) expect(protection).not.toHaveProperty(key);
+  });
+
+  it('shows inherited modules as inherited instead of guessing their global state', async () => {
+    apiMocks.fetchSite.mockResolvedValue(makeInheritedProtectionSite());
+    renderSiteDetail();
+    await openProtectionTab();
+
+    for (const [, label] of inheritedProtectionControls) {
+      expect(protectionSelect(label).textContent).toBe('sites.levelInherit');
+    }
+    expect(screen.getByRole('switch', { name: 'SQLi' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it.each(inheritedProtectionControls)('keeps inherited selection when keyboard focus moves for %s', async (_key, label) => {
+    apiMocks.fetchSite.mockResolvedValue(makeInheritedProtectionSite());
+    renderSiteDetail();
+    await openProtectionTab();
+    fireEvent.click(protectionSelect(label));
+    const inheritedOption = await screen.findByRole('option', { name: 'sites.levelInherit' });
+    const enabledOption = screen.getByRole('option', { name: 'common.enabled' });
+
+    await waitFor(() => expect(document.activeElement).toBe(inheritedOption));
+    fireEvent.keyDown(inheritedOption, { key: 'ArrowDown' });
+    await waitFor(() => expect(document.activeElement).toBe(enabledOption));
+    expect(inheritedOption.getAttribute('data-state')).toBe('checked');
+    expect(enabledOption.getAttribute('data-state')).toBe('unchecked');
+  });
+
+  it('only makes the protection selection the operator changes explicit', async () => {
+    const initial = makeInheritedProtectionSite();
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+    await openProtectionTab();
+    await selectProtectionValue('protection.acl', 'common.disabled');
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    const protection = JSON.parse(JSON.stringify(apiMocks.updateSite.mock.calls[0]?.[1].advanced.protection));
+    expect(protection.acl).toBe(false);
+    for (const key of ['bot', 'ratelimit', 'apisec']) expect(protection).not.toHaveProperty(key);
+  });
+
+  it.each(inheritedProtectionControls.flatMap(([key, label]) => [
+    { key, label, value: true, valueLabel: 'common.enabled' },
+    { key, label, value: false, valueLabel: 'common.disabled' },
+  ]))('saves an explicit $value override only for $key', async ({ key, label, value, valueLabel }) => {
+    const initial = makeInheritedProtectionSite();
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+    await openProtectionTab();
+    await selectProtectionValue(label, valueLabel);
+    expect(protectionSelect(label).textContent).toBe(valueLabel);
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    const protection = JSON.parse(JSON.stringify(apiMocks.updateSite.mock.calls[0]?.[1].advanced.protection));
+    expect(protection[key]).toBe(value);
+    for (const [untouchedKey] of inheritedProtectionControls) {
+      if (untouchedKey !== key) expect(protection).not.toHaveProperty(untouchedKey);
+    }
+  });
+
+  it.each(inheritedProtectionControls.flatMap(([key, label]) => [
+    { key, label, value: true, valueLabel: 'common.enabled' },
+    { key, label, value: false, valueLabel: 'common.disabled' },
+  ]))('restores inheritance from an explicit $value override for $key', async ({ key, label, value, valueLabel }) => {
+    const initial = makeInheritedProtectionSite();
+    initial.advanced.protection[key] = value;
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+    await openProtectionTab();
+    expect(protectionSelect(label).textContent).toBe(valueLabel);
+    await selectProtectionValue(label, 'sites.levelInherit');
+    expect(protectionSelect(label).textContent).toBe('sites.levelInherit');
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    const protection = JSON.parse(JSON.stringify(apiMocks.updateSite.mock.calls[0]?.[1].advanced.protection));
+    for (const [inheritedKey] of inheritedProtectionControls) expect(protection).not.toHaveProperty(inheritedKey);
+  });
+
   it('invalidates and rereads the persisted site after saving', async () => {
     const initial = makeSite('initial-site');
     const saved = makeSite('edited-site');

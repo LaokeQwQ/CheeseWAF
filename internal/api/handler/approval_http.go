@@ -34,6 +34,8 @@ const (
 	approvalCredentialMaxFailures = 5
 	approvalCredentialLockWindow  = 5 * time.Minute
 	approvalCredentialProofTTL    = time.Minute
+	// Full tables reject new sessions without evicting live failure budgets.
+	approvalCredentialBudgetMaxEntries = 1024
 )
 
 type localApprovalTransportKey struct{}
@@ -184,6 +186,17 @@ type approvalCredentialBudget struct {
 	failures  int
 	verifying bool
 	expiresAt time.Time
+}
+
+// pruneCredentialBudgetsLocked removes expired, inactive session budgets.
+// In-flight verifications and unexpired failure budgets must remain so session
+// churn cannot make room by resetting another session's credential limit.
+func (h *ApprovalHTTPHandler) pruneCredentialBudgetsLocked(now time.Time) {
+	for key, budget := range h.credentialBudgets {
+		if !budget.verifying && !budget.expiresAt.After(now) {
+			delete(h.credentialBudgets, key)
+		}
+	}
 }
 
 func NewApprovalHTTPHandler(opts ApprovalHTTPOptions) *ApprovalHTTPHandler {
@@ -424,6 +437,7 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	local := approvalHTTPRequestIsLocal(r)
 
 	h.mu.Lock()
+	h.pruneCredentialBudgetsLocked(h.now())
 	state, exists := h.challenges[id]
 	if !exists {
 		h.mu.Unlock()
@@ -503,8 +517,15 @@ func (h *ApprovalHTTPHandler) ConfirmApproval(w http.ResponseWriter, r *http.Req
 	h.mu.Lock()
 	current := h.challenges[id]
 	budgetKey := session.Subject + ":" + session.SessionID
-	budget := h.credentialBudgets[budgetKey]
-	if !budget.verifying && !budget.expiresAt.After(now) {
+	budget, exists := h.credentialBudgets[budgetKey]
+	if !exists {
+		if len(h.credentialBudgets) >= approvalCredentialBudgetMaxEntries {
+			h.mu.Unlock()
+			writeError(w, http.StatusTooManyRequests, "APPROVAL_CREDENTIAL_BUDGET_CAPACITY", "approval credential verification is temporarily unavailable")
+			return
+		}
+		budget = approvalCredentialBudget{expiresAt: now.Add(approvalCredentialLockWindow)}
+	} else if !budget.verifying && !budget.expiresAt.After(now) {
 		budget = approvalCredentialBudget{expiresAt: now.Add(approvalCredentialLockWindow)}
 	}
 	if current.verifying || current.failures >= approvalCredentialMaxFailures || budget.verifying || budget.failures >= approvalCredentialMaxFailures {

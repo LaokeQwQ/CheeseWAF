@@ -1,11 +1,155 @@
 package storage
 
 import (
+	"context"
+	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
+
+// The pre-0.4.5 SiteFromConfig writer always persisted false module switches
+// and origin.scheme=http, although SiteToConfig did not read those fields.
+const legacyStoredSiteAdvanced = `{
+	"certificate":{"mode":"file"},
+	"origin":{"scheme":"http","pass_host":true,"proxy_timeout":"30s"},
+	"protection":{"bot":false,"ratelimit":false,"acl":false,"apisec":false,"semantic_sql":true}
+}`
+
+func TestLegacyStoredSiteInheritsProtection(t *testing.T) {
+	site := loadStoredSiteFixture(t, legacyStoredSiteAdvanced, "https://origin.example.test:8443")
+	converted := SiteToConfig(site)
+	for name, value := range map[string]*bool{
+		"bot": converted.WAF.BotEnabled, "ratelimit": converted.WAF.RateLimitEnabled,
+		"acl": converted.WAF.ACLEnabled, "apisec": converted.WAF.APISecurityEnabled,
+	} {
+		if value != nil {
+			t.Errorf("legacy %s override = %v, want nil to inherit either global value", name, *value)
+		}
+	}
+}
+
+func TestLegacyStoredSitePreservesSecureUpstreamTransport(t *testing.T) {
+	site := loadStoredSiteFixture(t, legacyStoredSiteAdvanced, "https://origin.example.test:8443")
+	if got := SiteToConfig(site).OriginScheme; got != "https" {
+		t.Fatalf("legacy secure upstream transport = %q, want https", got)
+	}
+}
+
+func TestLegacyStoredSitePreservesMixedUpstreamTransports(t *testing.T) {
+	for _, insecure := range []string{"http://plain.example.test:8080", "plain.example.test:8080"} {
+		site := loadStoredSiteFixture(t, legacyStoredSiteAdvanced, "https://secure.example.test:8443", insecure)
+		if got := SiteToConfig(site).OriginScheme; got != "" {
+			t.Fatalf("mixed upstream transport override = %q, want empty to retain each URL transport", got)
+		}
+	}
+}
+
+func TestModernStoredSitePreservesExplicitProtectionAndOriginOverrides(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		raw := `{"websocket_enabled":false,"grpc_enabled":false,"origin":{"scheme":"http"},"protection":{"bot":false,"ratelimit":false,"acl":false,"apisec":false}}`
+		if enabled {
+			raw = `{"websocket_enabled":false,"grpc_enabled":false,"origin":{"scheme":"http"},"protection":{"bot":true,"ratelimit":true,"acl":true,"apisec":true}}`
+		}
+		site := loadStoredSiteFixture(t, raw, "https://origin.example.test:8443")
+		converted := SiteToConfig(site)
+		for name, value := range map[string]*bool{
+			"bot": converted.WAF.BotEnabled, "ratelimit": converted.WAF.RateLimitEnabled,
+			"acl": converted.WAF.ACLEnabled, "apisec": converted.WAF.APISecurityEnabled,
+		} {
+			if value == nil || *value != enabled {
+				t.Errorf("modern %s override = %v, want %v", name, value, enabled)
+			}
+		}
+		if converted.OriginScheme != "http" {
+			t.Fatalf("modern explicit origin transport = %q, want http", converted.OriginScheme)
+		}
+	}
+}
+
+func TestVersionedStoredSitePreservesExplicitOverridesWithoutProtocolFields(t *testing.T) {
+	raw := `{"schema_version":1,"origin":{"scheme":"http"},"protection":{"bot":false,"ratelimit":false,"acl":false,"apisec":false}}`
+	converted := SiteToConfig(loadStoredSiteFixture(t, raw, "https://origin.example.test:8443"))
+	if converted.WAF.BotEnabled == nil || *converted.WAF.BotEnabled || converted.OriginScheme != "http" {
+		t.Fatalf("versioned overrides changed: bot=%v scheme=%q", converted.WAF.BotEnabled, converted.OriginScheme)
+	}
+}
+
+func TestStoredSiteWithOneProtocolFieldPreservesModernOverrides(t *testing.T) {
+	for _, protocol := range []string{"websocket_enabled", "grpc_enabled"} {
+		raw := `{"` + protocol + `":false,"origin":{"scheme":"http"},"protection":{"bot":false}}`
+		converted := SiteToConfig(loadStoredSiteFixture(t, raw, "https://origin.example.test:8443"))
+		if converted.WAF.BotEnabled == nil || *converted.WAF.BotEnabled || converted.OriginScheme != "http" {
+			t.Fatalf("modern row with %s changed: bot=%v scheme=%q", protocol, converted.WAF.BotEnabled, converted.OriginScheme)
+		}
+	}
+}
+
+func TestLegacyStoredSiteRetainsInheritanceAfterReserialization(t *testing.T) {
+	site := loadStoredSiteFixture(t, legacyStoredSiteAdvanced, "https://origin.example.test:8443")
+	raw, err := json.Marshal(site.Advanced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site.Advanced = decodeSiteAdvanced(string(raw))
+	converted := SiteToConfig(site)
+	if converted.WAF.BotEnabled != nil || converted.WAF.RateLimitEnabled != nil || converted.WAF.ACLEnabled != nil || converted.WAF.APISecurityEnabled != nil || converted.OriginScheme != "https" {
+		t.Fatalf("reserialization changed legacy runtime behavior: %+v", converted)
+	}
+}
+
+func TestSiteAPIJSONPreservesExplicitOverridesWithoutProtocolFields(t *testing.T) {
+	var site Site
+	if err := json.Unmarshal([]byte(`{"upstreams":["https://origin.example.test:8443"],"advanced":{"origin":{"scheme":"http"},"protection":{"bot":false,"ratelimit":false,"acl":false,"apisec":false}}}`), &site); err != nil {
+		t.Fatal(err)
+	}
+	converted := SiteToConfig(site)
+	if converted.WAF.BotEnabled == nil || *converted.WAF.BotEnabled || converted.OriginScheme != "http" {
+		t.Fatalf("API overrides changed: bot=%v scheme=%q", converted.WAF.BotEnabled, converted.OriginScheme)
+	}
+}
+
+func TestSiteConfigRoundTripPreservesInheritedProtection(t *testing.T) {
+	converted := SiteToConfig(SiteFromConfig(config.SiteConfig{}))
+	for name, value := range map[string]*bool{
+		"bot": converted.WAF.BotEnabled, "ratelimit": converted.WAF.RateLimitEnabled,
+		"acl": converted.WAF.ACLEnabled, "apisec": converted.WAF.APISecurityEnabled,
+	} {
+		if value != nil {
+			t.Errorf("inherited %s override = %v, want nil", name, *value)
+		}
+	}
+}
+
+func loadStoredSiteFixture(t *testing.T, rawAdvanced string, upstreams ...string) Site {
+	t.Helper()
+	store, err := OpenSQLite(filepath.Join(t.TempDir(), "legacy-site.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	site := Site{ID: "legacy-site", Name: "legacy-site", Upstreams: upstreams, WAFEnabled: true, WAFMode: "block"}
+	if err := store.CreateSite(ctx, &site); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE sites SET advanced=? WHERE id=?`, rawAdvanced, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil {
+		t.Fatal("stored site is missing")
+	}
+	return *stored
+}
 
 func TestSiteConfigRoundTripPreservesNoSQLSemanticSwitch(t *testing.T) {
 	original := config.SiteConfig{

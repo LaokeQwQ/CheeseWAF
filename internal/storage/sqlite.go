@@ -860,6 +860,9 @@ func ensureSite(site *Site) {
 }
 
 func ensureSiteDefaults(site *Site) {
+	if site.Advanced.SchemaVersion == 0 {
+		site.Advanced.SchemaVersion = siteAdvancedSchemaVersion
+	}
 	if site.LoadBalance == "" {
 		site.LoadBalance = "round_robin"
 	}
@@ -985,8 +988,7 @@ func decodeStrings(raw string) []string {
 }
 
 func decodeSiteAdvanced(raw string) SiteAdvanced {
-	var value SiteAdvanced
-	_ = json.Unmarshal([]byte(raw), &value)
+	value, _ := DecodeStoredSiteAdvanced([]byte(raw))
 	return value
 }
 

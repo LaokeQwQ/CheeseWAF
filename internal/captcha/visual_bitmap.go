@@ -175,6 +175,26 @@ func populateBitmapShapeSlider(opts BehaviorOptions, tok *behaviorToken, p *Beha
 	return nil
 }
 
+func randomBitmapInitialAngle(opts BehaviorOptions, target int) (int, error) {
+	var candidates [301]int
+	count := 0
+	tolerance := maxBehavior(2, opts.Tolerance/100)
+	for angle := 30; angle <= 330; angle++ {
+		if angularDistance(angle, target) > tolerance {
+			candidates[count] = angle
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("rotation tolerance leaves no unsolved initial angle")
+	}
+	index, err := behaviorRandomInt(opts.Rand, 0, count-1)
+	if err != nil {
+		return 0, err
+	}
+	return candidates[index], nil
+}
+
 func populateBitmapRotate(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPresentation) error {
 	engine := bitmapEngine(opts)
 	background, err := renderBitmapBackground(engine, bitmapWidth, bitmapHeight)
@@ -182,11 +202,12 @@ func populateBitmapRotate(opts BehaviorOptions, tok *behaviorToken, p *BehaviorP
 		return err
 	}
 	drawRotationLandmarks(background, 112)
-	initial, err := behaviorRandomInt(opts.Rand, 30, 330)
+	hiddenRotation, err := behaviorRandomInt(opts.Rand, 30, 330)
 	if err != nil {
 		return err
 	}
-	hiddenRotation, err := behaviorRandomInt(opts.Rand, 30, 330)
+	target := normalizeBehaviorAngle(float64(-hiddenRotation))
+	initial, err := randomBitmapInitialAngle(opts, target)
 	if err != nil {
 		return err
 	}
@@ -197,7 +218,7 @@ func populateBitmapRotate(opts BehaviorOptions, tok *behaviorToken, p *BehaviorP
 	if err != nil {
 		return err
 	}
-	tok.Mode, tok.Angle = "angle", normalizeBehaviorAngle(float64(-hiddenRotation))
+	tok.Mode, tok.Angle = "angle", target
 	p.Kind, p.Image = string(BehaviorRotate), uri
 	p.Prompt = "Rotate the center image until its edges align"
 	p.Width, p.Height, p.PieceSize, p.InitialAngle = bitmapWidth, bitmapHeight, 112, initial
@@ -212,11 +233,12 @@ func populateBitmapAngle(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPr
 		return err
 	}
 	drawRotationLandmarks(background, 164)
-	initial, err := behaviorRandomInt(opts.Rand, 30, 330)
+	hiddenRotation, err := behaviorRandomInt(opts.Rand, 30, 330)
 	if err != nil {
 		return err
 	}
-	hiddenRotation, err := behaviorRandomInt(opts.Rand, 30, 330)
+	target := normalizeBehaviorAngle(float64(-hiddenRotation))
+	initial, err := randomBitmapInitialAngle(opts, target)
 	if err != nil {
 		return err
 	}
@@ -227,7 +249,7 @@ func populateBitmapAngle(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPr
 	if err != nil {
 		return err
 	}
-	tok.Mode, tok.Angle = "angle", normalizeBehaviorAngle(float64(-hiddenRotation))
+	tok.Mode, tok.Angle = "angle", target
 	p.Kind, p.Image = string(BehaviorAngle), uri
 	p.Prompt = "Rotate the image to its upright position"
 	p.Width, p.Height, p.PieceSize, p.InitialAngle = 220, 220, 220, initial

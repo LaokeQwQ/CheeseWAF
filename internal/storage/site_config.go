@@ -36,6 +36,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 		ParanoiaLevel: site.WAF.ParanoiaLevel,
 		Enabled:       site.Enabled,
 		Advanced: SiteAdvanced{
+			SchemaVersion:    siteAdvancedSchemaVersion,
 			WebSocketEnabled: site.WAF.WebSocketEnabled,
 			GRPCEnabled:      site.WAF.GRPCEnabled,
 			Certificate: CertificateConfig{
@@ -70,10 +71,10 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				HostHeader:    site.HostHeader,
 			},
 			Protection: SiteProtectionConfig{
-				Bot:           inheritedBool(site.WAF.BotEnabled),
-				RateLimit:     inheritedBool(site.WAF.RateLimitEnabled),
-				ACL:           inheritedBool(site.WAF.ACLEnabled),
-				APISecurity:   inheritedBool(site.WAF.APISecurityEnabled),
+				Bot:           cloneBoolPtr(site.WAF.BotEnabled),
+				RateLimit:     cloneBoolPtr(site.WAF.RateLimitEnabled),
+				ACL:           cloneBoolPtr(site.WAF.ACLEnabled),
+				APISecurity:   cloneBoolPtr(site.WAF.APISecurityEnabled),
 				SemanticSQL:   site.WAF.SemanticEngines.SQL,
 				SemanticXSS:   site.WAF.SemanticEngines.XSS,
 				SemanticRCE:   site.WAF.SemanticEngines.RCE,
@@ -128,20 +129,33 @@ func SiteFromConfig(site config.SiteConfig) Site {
 	}
 }
 
-// OriginSchemeFromUpstreams infers a safe origin transport when legacy site
-// records omit the explicit scheme. Secure upstreams must never be downgraded.
+// OriginSchemeFromUpstreams infers a shared transport only when upstreams agree.
+// Mixed transports keep an empty override so each URL retains its own scheme.
 func OriginSchemeFromUpstreams(upstreams []string) string {
+	var inferred string
 	for _, address := range upstreams {
-		parsed, err := url.Parse(strings.TrimSpace(address))
-		if err != nil {
-			continue
+		address = strings.TrimSpace(address)
+		scheme := "http"
+		if strings.Contains(address, "://") {
+			parsed, err := url.Parse(address)
+			if err != nil {
+				continue
+			}
+			switch strings.ToLower(parsed.Scheme) {
+			case "https", "wss":
+				scheme = "https"
+			case "http", "ws":
+			default:
+				continue
+			}
 		}
-		switch strings.ToLower(parsed.Scheme) {
-		case "https", "wss":
-			return "https"
-		case "http", "ws":
-			return "http"
+		if inferred != "" && inferred != scheme {
+			return ""
 		}
+		inferred = scheme
+	}
+	if inferred != "" {
+		return inferred
 	}
 	return "http"
 }
@@ -200,10 +214,10 @@ func SiteToConfig(site Site) config.SiteConfig {
 		WAF: config.WAFConfig{
 			WebSocketEnabled:   site.Advanced.WebSocketEnabled,
 			GRPCEnabled:        site.Advanced.GRPCEnabled,
-			BotEnabled:         cloneBoolPtr(&site.Advanced.Protection.Bot),
-			RateLimitEnabled:   cloneBoolPtr(&site.Advanced.Protection.RateLimit),
-			ACLEnabled:         cloneBoolPtr(&site.Advanced.Protection.ACL),
-			APISecurityEnabled: cloneBoolPtr(&site.Advanced.Protection.APISecurity),
+			BotEnabled:         cloneBoolPtr(site.Advanced.Protection.Bot),
+			RateLimitEnabled:   cloneBoolPtr(site.Advanced.Protection.RateLimit),
+			ACLEnabled:         cloneBoolPtr(site.Advanced.Protection.ACL),
+			APISecurityEnabled: cloneBoolPtr(site.Advanced.Protection.APISecurity),
 			Enabled:            site.WAFEnabled,
 			Mode:               mode,
 			ParanoiaLevel:      site.ParanoiaLevel,
@@ -435,5 +449,3 @@ func cloneBoolPtr(value *bool) *bool {
 	copied := *value
 	return &copied
 }
-
-func inheritedBool(v *bool) bool { return v == nil || *v }

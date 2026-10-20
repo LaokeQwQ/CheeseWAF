@@ -41,6 +41,23 @@ type controlledTemporaryNetworkTransport struct {
 	dial    int
 }
 
+type controlledTemporaryNetworkClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *controlledTemporaryNetworkClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *controlledTemporaryNetworkClock) Set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+
 func (t *controlledTemporaryNetworkTransport) Resolve(context.Context, string) ([]netip.Addr, error) {
 	t.mu.Lock()
 	t.resolve++
@@ -190,27 +207,35 @@ func TestProductionTemporaryHTTPProviderCloseWaitsForInFlightRequest(t *testing.
 }
 
 func TestProductionCWEDPAdapterFailsClosedBeforeDNSAfterManagementSessionExpiry(t *testing.T) {
-	provider, store, user, _, _ := newProductionTemporaryNetworkProviderFixture(t)
+	provider, store, user, session, _ := newProductionTemporaryNetworkProviderFixture(t)
 	defer store.Close()
 	defer provider.Close()
-	now := time.Now().UTC()
-	short := storage.Session{ID: "short-management-session", UserID: user.ID, Username: user.Username, Role: user.Role, CredentialEpoch: user.CredentialEpoch, IssuedAt: now, ExpiresAt: now.Add(250 * time.Millisecond)}
-	if err := store.CreateSession(context.Background(), &short); err != nil {
+	clock := &controlledTemporaryNetworkClock{now: session.ExpiresAt.Add(-30 * time.Second)}
+	sessions, err := netlease.NewTemporarySessionManager(netlease.TemporarySessionManagerOptions{
+		Now:           clock.Now,
+		Authenticator: netlease.StoreAdministratorAuthenticator{Store: store},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, target, network, closeEndpoint := controlledCWEDPEndpoint(t, provider)
+	provider.sessions = sessions
+	endpoint, target, network, closeEndpoint := controlledCWEDPEndpointWithClock(t, provider, clock.Now)
 	defer closeEndpoint()
-	request := productionCWEDPLeaseRequest(netlease.AdministratorIdentity{ID: user.ID, ManagementSessionID: short.ID})
+	request := productionCWEDPLeaseRequest(netlease.AdministratorIdentity{ID: user.ID, ManagementSessionID: session.ID})
 	request.Target = target
 	request.TLSFingerprint = endpoint.CertificateFingerprint
 	request.TTL = time.Minute
 	adapter := requireProductionLeaseAdapter(t, provider, context.Background(), request)
 	lease, ok := provider.broker.Lease(adapter.LeaseID)
-	if !ok || lease.ExpiresAt.After(short.ExpiresAt) {
-		t.Fatalf("lease expiry=%s management expiry=%s", lease.ExpiresAt, short.ExpiresAt)
+	if !ok || !lease.ExpiresAt.Equal(session.ExpiresAt) {
+		t.Fatalf("lease expiry=%s management expiry=%s", lease.ExpiresAt, session.ExpiresAt)
 	}
-	time.Sleep(time.Until(short.ExpiresAt) + 25*time.Millisecond)
-	_, err := adapter.Open(context.Background(), endpoint, cwedp.DistributionIntent{Size: 1}, cwedp.Hello{NodeID: "client", Protocol: cwedp.ProtocolVersion}, cwedp.Capabilities{NodeID: "client", ProtocolVersions: []string{cwedp.ProtocolVersion}, Sources: []cwedp.SourceKind{cwedp.SourcePeer}, MaxChunkSize: 1}, 0)
+	clock.Set(session.ExpiresAt)
+	active, err := store.IsSessionActive(context.Background(), session.ID, user.ID, clock.Now())
+	if err != nil || active {
+		t.Fatalf("management session at expiry: active=%v err=%v", active, err)
+	}
+	_, err = adapter.Open(context.Background(), endpoint, cwedp.DistributionIntent{Size: 1}, cwedp.Hello{NodeID: "client", Protocol: cwedp.ProtocolVersion}, cwedp.Capabilities{NodeID: "client", ProtocolVersions: []string{cwedp.ProtocolVersion}, Sources: []cwedp.SourceKind{cwedp.SourcePeer}, MaxChunkSize: 1}, 0)
 	if (!errors.Is(err, netlease.ErrAdministratorSessionDenied) && !errors.Is(err, netlease.ErrConfirmationExpired) && !errors.Is(err, netlease.ErrLeaseExpired)) || !errors.Is(err, netlease.ErrBeforeDial) {
 		t.Fatalf("Open() error=%v, want expired capability pre-dial denial", err)
 	}
@@ -288,6 +313,11 @@ func TestProductionCWEDPAdapterIssueCloseRaceLeavesNoActiveCapability(t *testing
 
 func controlledCWEDPEndpoint(t *testing.T, provider *productionTemporaryNetworkProvider) (transport.Endpoint, netlease.Target, *controlledTemporaryNetworkTransport, func()) {
 	t.Helper()
+	return controlledCWEDPEndpointWithClock(t, provider, time.Now)
+}
+
+func controlledCWEDPEndpointWithClock(t *testing.T, provider *productionTemporaryNetworkProvider, now func() time.Time) (transport.Endpoint, netlease.Target, *controlledTemporaryNetworkTransport, func()) {
+	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "x") }))
 	_, portText, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "https://"))
 	if err != nil {
@@ -308,7 +338,7 @@ func controlledCWEDPEndpoint(t *testing.T, provider *productionTemporaryNetworkP
 	pool.AddCert(certificate)
 	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, Certificates: server.TLS.Certificates}
 	network := &controlledTemporaryNetworkTransport{address: net.JoinHostPort("127.0.0.1", portText)}
-	broker, err := netlease.NewBroker(netlease.BrokerConfig{Enabled: true, Policy: netlease.NewOfflinePolicyWithEpoch(nil, provider.policyEpoch), Sessions: provider.sessions, Transport: network, Addresses: netlease.AddressPolicyFunc(func(netlease.Target, netip.Addr) error { return nil }), Audit: netlease.NewMemoryAuditSinkForTesting(), PreDialGate: provider.preDialGate})
+	broker, err := netlease.NewBroker(netlease.BrokerConfig{Enabled: true, Now: now, Policy: netlease.NewOfflinePolicyWithEpoch(nil, provider.policyEpoch), Sessions: provider.sessions, Transport: network, Addresses: netlease.AddressPolicyFunc(func(netlease.Target, netip.Addr) error { return nil }), Audit: netlease.NewMemoryAuditSinkForTesting(), PreDialGate: provider.preDialGate})
 	if err != nil {
 		server.Close()
 		t.Fatal(err)

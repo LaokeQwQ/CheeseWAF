@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/png"
 	"math"
@@ -505,6 +506,41 @@ func selectionImageComplexity(img image.Image) (int, int) {
 		}
 	}
 	return len(levels), edges
+}
+
+func TestBehaviorChallenge_RotationStartsOutsideAnswerTolerance(t *testing.T) {
+	for _, kind := range []BehaviorType{BehaviorRotate, BehaviorAngle} {
+		for _, value := range []byte{107, 20} {
+			t.Run(fmt.Sprintf("%s/random-byte-%d", kind, value), func(t *testing.T) {
+				opts := behaviorTestOptions(kind, time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC))
+				opts.Rand = bytes.NewReader(bytes.Repeat([]byte{value}, 1<<20))
+				challenge, err := IssueBehaviorChallenge(opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				initial := challenge.Presentation.InitialAngle
+				stationary := BehaviorResponse{Token: challenge.Token, Angle: initial, DurationMS: 500, Track: []BehaviorTrackPoint{{X: 0, Y: 5000, T: 0, Type: "down"}, {X: 0, Y: 5000, T: 500, Type: "up"}}}
+				if VerifyBehaviorChallenge(opts, stationary).Valid {
+					t.Fatal("rotation challenge was already solved at its public initial angle")
+				}
+				if !VerifyBehaviorChallenge(opts, correctBehaviorResponse(t, opts, challenge.Token)).Valid {
+					t.Fatal("correct rotation response rejected")
+				}
+			})
+		}
+	}
+}
+
+func TestBehaviorChallenge_RotationRejectsUnsolvableTolerance(t *testing.T) {
+	for _, kind := range []BehaviorType{BehaviorRotate, BehaviorAngle} {
+		t.Run(string(kind), func(t *testing.T) {
+			opts := behaviorTestOptions(kind, time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC))
+			opts.Tolerance = 18000
+			if _, err := IssueBehaviorChallenge(opts); err == nil {
+				t.Fatal("issued a rotation challenge with no initial angle outside tolerance")
+			}
+		})
+	}
 }
 
 func TestBehaviorChallenge_RotateUsesCorrectionAngle(t *testing.T) {
