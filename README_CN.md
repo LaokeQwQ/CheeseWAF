@@ -260,6 +260,14 @@ cd cheesewaf-*
 sudo ./install-linux.sh
 ```
 
+升级会保留现有配置。若旧管理口公开监听，升级时仍须明确确认；已有的 `server.admin_public: true` 不能代替本次确认。使用以下命令，并保留原安装使用的目录参数：
+
+```bash
+sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
+```
+
+一键安装升级时，将同一变量传给 `sudo` 后的命令：`curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`。未确认时，安装器会在停服前退出。
+
 如需手动配置，需同时复制二进制文件与 Web 管理端静态资源：
 
 ```bash
@@ -526,6 +534,8 @@ cheesewaf crp stage \
 控制台的 capabilities 响应会展示这些边界，不会把未接线的 worker 当作可用功能。
 
 WebSocket、gRPC 和其他流式端点的升级后消息不进入语义 WAF。它们是有边界的连接透传能力，不应理解为协议级消息防护；需要 protobuf/帧级检测时，应在上游部署对应的协议网关。
+
+`ai.knowledge.file` 必须指向可读取的普通文件，不能是符号链接，且大小不超过 2 MiB。加载失败会记录诊断；`ai.knowledge.builtin` 为 `true` 时回退到内置知识，否则使用空知识库。
 
 首次启动时，程序将在数据目录生成 `data/config/cheesewaf.yaml`（模板参考 [configs/cheesewaf.yaml](configs/cheesewaf.yaml)）。主要配置结构如下：
 

@@ -457,6 +457,7 @@ ai:
         builtin: true
         max_snippets: 5
         # Optional administrator-managed JSON snippets. Set to an absolute path on the host.
+        # Must be a readable regular file, not a symlink, no larger than 2 MiB.
         file: ""
 update:
     ota:

@@ -122,7 +122,7 @@ sed() {
 export -f uname id getent groupadd useradd chown install cp mv stat mktemp ip systemctl sed
 
 for scenario in fresh upgrade service_symlink late_symlink dangling_symlink stop_failure \
-  public_reoptin_failure invalid_wait invalid_host invalid_listener invalid_entry \
+  public_reoptin_failure public_upgrade invalid_wait invalid_host invalid_listener invalid_entry \
   binary_install_failure web_copy_failure stop_interrupt binary_interrupt restart_failure \
   root_symlink changed_config restore_failure inactive_failure inactive_restart; do
   export INSTALL_TEST_SCENARIO="$scenario"
@@ -171,9 +171,12 @@ for scenario in fresh upgrade service_symlink late_symlink dangling_symlink stop
     ln -sf "${INSTALL_TEST_CASE}/missing" "${CHEESEWAF_CONFIG_DIR}/cheesewaf.yaml"
   fi
   case "$scenario" in
-    public_reoptin_failure)
-      command sed 's#admin_listen: "127.0.0.1:9443"#admin_listen: "0.0.0.0:9443"#' "${CHEESEWAF_CONFIG_DIR}/cheesewaf.yaml" >"${INSTALL_TEST_CASE}/public.yaml"
-      cp "${INSTALL_TEST_CASE}/public.yaml" "${CHEESEWAF_CONFIG_DIR}/cheesewaf.yaml" ;;
+    public_reoptin_failure|public_upgrade)
+      command sed -e 's#admin_listen: "127.0.0.1:9443"#admin_listen: "0.0.0.0:9443"#' \
+        -e 's#admin_public: false#admin_public: true#' "${CHEESEWAF_CONFIG_DIR}/cheesewaf.yaml" >"${INSTALL_TEST_CASE}/public.yaml"
+      cp "${INSTALL_TEST_CASE}/public.yaml" "${CHEESEWAF_CONFIG_DIR}/cheesewaf.yaml"
+      cp "${INSTALL_TEST_CASE}/public.yaml" "${INSTALL_TEST_CASE}/existing.yaml"
+      if [[ "$scenario" == public_upgrade ]]; then export CHEESEWAF_ADMIN_PUBLIC=1; fi ;;
     invalid_wait) export CHEESEWAF_SETUP_URL_WAIT_SECONDS=invalid ;;
     invalid_host) export CHEESEWAF_ADMIN_PUBLIC_HOST='bad/host' ;;
     invalid_listener) export CHEESEWAF_ADMIN_LISTEN='127.0.0.1:70000' ;;
@@ -185,9 +188,9 @@ for scenario in fresh upgrade service_symlink late_symlink dangling_symlink stop
   esac
   status=0
   (cd "${INSTALL_TEST_CASE}/archive" && bash "$installer") >"${INSTALL_TEST_CASE}/output" 2>&1 || status=$?
-  if [[ "$scenario" == fresh || "$scenario" == upgrade ]]; then
+  if [[ "$scenario" == fresh || "$scenario" == upgrade || "$scenario" == public_upgrade ]]; then
     if ((status != 0)); then command cat "${INSTALL_TEST_CASE}/output"; fail "${scenario} installation failed"; fi
-    if [[ "$scenario" == upgrade ]]; then
+    if [[ "$scenario" != fresh ]]; then
       cmp "${INSTALL_TEST_CASE}/existing.yaml" "${CHEESEWAF_CONFIG_DIR}/cheesewaf.yaml" || fail "upgrade replaced existing configuration"
     fi
     grep -q '^systemctl restart cheesewaf$' "${INSTALL_TEST_CASE}/commands" || fail "service was not restarted"

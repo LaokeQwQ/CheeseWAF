@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -37,7 +38,11 @@ var knowledgeDefaultJSON []byte
 func NewKnowledgeBase(cfg config.AIKnowledgeConfig) *KnowledgeBase {
 	var raw []byte
 	if path := strings.TrimSpace(cfg.File); cfg.Enabled && path != "" {
-		raw, _ = readKnowledgeFile(path)
+		var err error
+		raw, err = readKnowledgeFile(path)
+		if err != nil {
+			logKnowledgeFileFailure()
+		}
 	}
 	return newKnowledgeBase(cfg, raw)
 }
@@ -177,6 +182,12 @@ func knowledgeTerms(query string) []string {
 
 const maxKnowledgeFileBytes = 2 << 20
 
+func logKnowledgeFileFailure() {
+	// OS errors can contain administrator paths; keep diagnostics bounded and
+	// independent of both the configured path and the knowledge contents.
+	log.Print("ai knowledge: custom source could not be loaded; check AI.Knowledge.File is readable, regular, not a symlink, and at most 2 MiB; using configured builtin/empty fallback")
+}
+
 func readKnowledgeFile(path string) ([]byte, error) {
 	f, _, err := openValidatedKnowledgeFile(path)
 	if err != nil {
@@ -232,10 +243,11 @@ func CachedKnowledgeBase(cfg config.AIKnowledgeConfig) *KnowledgeBase {
 	defer knowledgeCache.Unlock()
 	var info os.FileInfo
 	var f *os.File
-	if path := strings.TrimSpace(cfg.File); path != "" {
+	var loadErr error
+	if path := strings.TrimSpace(cfg.File); cfg.Enabled && path != "" {
 		// Stat the open handle: Windows Lstat file IDs are resolved lazily from
 		// the path, which may already name a replacement at the next cache lookup.
-		f, info, _ = openValidatedKnowledgeFile(path)
+		f, info, loadErr = openValidatedKnowledgeFile(path)
 		if f != nil {
 			defer f.Close()
 		}
@@ -247,7 +259,10 @@ func CachedKnowledgeBase(cfg config.AIKnowledgeConfig) *KnowledgeBase {
 	if knowledgeCache.base == nil || knowledgeCache.config != cfg || changed {
 		var raw []byte
 		if cfg.Enabled && f != nil {
-			raw, _ = readOpenedKnowledgeFile(f)
+			raw, loadErr = readOpenedKnowledgeFile(f)
+		}
+		if loadErr != nil {
+			logKnowledgeFileFailure()
 		}
 		knowledgeCache.config = cfg
 		knowledgeCache.base = newKnowledgeBase(cfg, raw)

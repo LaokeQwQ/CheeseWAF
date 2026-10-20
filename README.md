@@ -260,6 +260,14 @@ Use the bundled automated installer:
 sudo ./install-linux.sh
 ```
 
+Upgrades preserve existing configuration. An existing public management listener still requires confirmation for each upgrade, even with `server.admin_public: true`. Keep the original installation's directory overrides and run:
+
+```bash
+sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
+```
+
+For a one-command upgrade, pass the variable after `sudo`: `curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`. Without confirmation, the installer exits before stopping the service.
+
 For manual installation, copy both the binary executable and the Web administration assets:
 
 ```bash
@@ -528,6 +536,8 @@ CheeseWAF provides three administrative interfaces:
 The console exposes these boundaries in its capabilities response so an unavailable worker is not presented as an active feature.
 
 WebSocket, gRPC, and other streaming upgrades do not enter the semantic WAF after the connection is established. They are bounded transport pass-through capabilities, not protocol-level message protection. Deploy a protocol-aware gateway upstream when protobuf or frame-level inspection is required.
+
+`ai.knowledge.file` must name a readable regular file, not a symlink, no larger than 2 MiB. A load failure logs a diagnostic and falls back to builtin knowledge when `ai.knowledge.builtin` is `true`, or an empty knowledge base otherwise.
 
 On first launch, the daemon generates `data/config/cheesewaf.yaml` in the data directory (reference template: [configs/cheesewaf.yaml](configs/cheesewaf.yaml)). Core configuration structure:
 
