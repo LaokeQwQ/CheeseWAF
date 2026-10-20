@@ -397,8 +397,7 @@ func encodeStrings(v []string) []byte {
 }
 func decodeStrings(raw []byte) []string { var v []string; _ = json.Unmarshal(raw, &v); return v }
 func decodeAdvanced(raw []byte) storage.SiteAdvanced {
-	var v storage.SiteAdvanced
-	_ = json.Unmarshal(raw, &v)
+	v, _ := storage.DecodeStoredSiteAdvanced(raw)
 	return v
 }
 func boolValue(v bool) bool { return v }
@@ -420,6 +419,9 @@ func ensureSite(site *storage.Site) {
 	ensureSiteDefaults(site)
 }
 func ensureSiteDefaults(site *storage.Site) {
+	if site.Advanced.SchemaVersion == 0 {
+		site.Advanced.SchemaVersion = 1
+	}
 	if site.LoadBalance == "" {
 		site.LoadBalance = "round_robin"
 	}

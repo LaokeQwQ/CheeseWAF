@@ -187,7 +187,8 @@ func migrateSQLiteLegacyRules(ctx context.Context, tx *sql.Tx) error {
 		}
 		var advanced SiteAdvanced
 		if rawAdvanced != "" && rawAdvanced != "{}" {
-			if err := json.Unmarshal([]byte(rawAdvanced), &advanced); err != nil {
+			var err error
+			if advanced, err = DecodeStoredSiteAdvanced([]byte(rawAdvanced)); err != nil {
 				_ = siteRows.Close()
 				return fmt.Errorf("decode site %s advanced configuration: %w", siteID, err)
 			}

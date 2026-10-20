@@ -344,6 +344,7 @@ type Site struct {
 }
 
 type SiteAdvanced struct {
+	SchemaVersion    int                   `json:"schema_version,omitempty"`
 	WebSocketEnabled bool                  `json:"websocket_enabled"`
 	GRPCEnabled      bool                  `json:"grpc_enabled"`
 	Certificate      CertificateConfig     `json:"certificate"`
@@ -422,18 +423,18 @@ type SiteHealthCheckConfig struct {
 }
 
 type SiteProtectionConfig struct {
-	SemanticSQL   bool `json:"semantic_sql"`
-	SemanticXSS   bool `json:"semantic_xss"`
-	SemanticRCE   bool `json:"semantic_rce"`
-	SemanticLFI   bool `json:"semantic_lfi"`
-	SemanticXXE   bool `json:"semantic_xxe"`
-	SemanticSSRF  bool `json:"semantic_ssrf"`
-	SemanticNoSQL bool `json:"semantic_nosql"`
-	SemanticSSTI  bool `json:"semantic_ssti"`
-	Bot           bool `json:"bot"`
-	RateLimit     bool `json:"ratelimit"`
-	ACL           bool `json:"acl"`
-	APISecurity   bool `json:"apisec"`
+	SemanticSQL   bool  `json:"semantic_sql"`
+	SemanticXSS   bool  `json:"semantic_xss"`
+	SemanticRCE   bool  `json:"semantic_rce"`
+	SemanticLFI   bool  `json:"semantic_lfi"`
+	SemanticXXE   bool  `json:"semantic_xxe"`
+	SemanticSSRF  bool  `json:"semantic_ssrf"`
+	SemanticNoSQL bool  `json:"semantic_nosql"`
+	SemanticSSTI  bool  `json:"semantic_ssti"`
+	Bot           *bool `json:"bot,omitempty"`
+	RateLimit     *bool `json:"ratelimit,omitempty"`
+	ACL           *bool `json:"acl,omitempty"`
+	APISecurity   *bool `json:"apisec,omitempty"`
 }
 
 type SiteProtectionPolicy struct {

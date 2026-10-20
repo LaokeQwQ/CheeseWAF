@@ -21,6 +21,30 @@ func TestConfigurePoolSetsBoundedProductionDefaults(t *testing.T) {
 	}
 }
 
+func TestDecodeAdvancedPreservesLegacySiteRuntimeSemantics(t *testing.T) {
+	legacy := []byte(`{"origin":{"scheme":"http"},"protection":{"bot":false,"ratelimit":false,"acl":false,"apisec":false}}`)
+	site := storage.Site{Upstreams: []string{"https://origin.example.test:8443"}, Advanced: decodeAdvanced(legacy)}
+	converted := storage.SiteToConfig(site)
+	if converted.WAF.BotEnabled != nil || converted.WAF.RateLimitEnabled != nil || converted.WAF.ACLEnabled != nil || converted.WAF.APISecurityEnabled != nil || converted.OriginScheme != "https" {
+		t.Fatalf("PostgreSQL decoder changed legacy runtime behavior: %+v", converted)
+	}
+
+	modern := []byte(`{"websocket_enabled":false,"grpc_enabled":false,"origin":{"scheme":"http"},"protection":{"bot":false,"ratelimit":false,"acl":false,"apisec":false}}`)
+	site.Advanced = decodeAdvanced(modern)
+	converted = storage.SiteToConfig(site)
+	for name, value := range map[string]*bool{
+		"bot": converted.WAF.BotEnabled, "ratelimit": converted.WAF.RateLimitEnabled,
+		"acl": converted.WAF.ACLEnabled, "apisec": converted.WAF.APISecurityEnabled,
+	} {
+		if value == nil || *value {
+			t.Errorf("PostgreSQL decoder changed modern %s override: %v", name, value)
+		}
+	}
+	if converted.OriginScheme != "http" {
+		t.Fatalf("PostgreSQL decoder changed modern origin override: %q", converted.OriginScheme)
+	}
+}
+
 type fixtureScanner struct{ values []any }
 
 func (f fixtureScanner) Scan(dest ...any) error {
