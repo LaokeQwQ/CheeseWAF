@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -220,5 +221,29 @@ func TestWebSocketBridgeStopsOnCancellationAndPeerClose(t *testing.T) {
 				t.Fatal("bridge outlived cancellation or peer close")
 			}
 		})
+	}
+}
+
+func TestWebSocketBridgeKeepsQueuedErrorWhenCanceled(t *testing.T) {
+	for _, cause := range []error{errors.New("WebSocket message rejected"), errors.New("upstream write failed"), io.EOF, context.Canceled} {
+		for range 100 {
+			ctx, cancel := context.WithCancel(context.Background())
+			errs := make(chan error, 1)
+			errs <- cause
+			cancel()
+			got := waitWebSocketBridgeResult(ctx, errs)
+			if cause == io.EOF || cause == context.Canceled {
+				if got != nil {
+					t.Fatalf("ordinary shutdown became an error: %v", got)
+				}
+			} else if got != cause {
+				t.Fatalf("queued connection cause lost to shared cancellation: got %v want %v", got, cause)
+			}
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitWebSocketBridgeResult(ctx, make(chan error)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("external cancellation without worker result changed: %v", err)
 	}
 }

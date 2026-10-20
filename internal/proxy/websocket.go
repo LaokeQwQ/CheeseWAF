@@ -247,15 +247,24 @@ func bridgeWebSocketMessages(ctx context.Context, clientConn, upstreamConn *webs
 	workers.Add(2)
 	go bridge(upstreamConn, clientConn, true)
 	go bridge(clientConn, upstreamConn, false)
+	return waitWebSocketBridgeResult(bridgeCtx, errs)
+}
+
+func waitWebSocketBridgeResult(ctx context.Context, errs <-chan error) error {
+	var err error
 	select {
-	case err := <-errs:
-		if err == context.Canceled || err == io.EOF {
-			return nil
+	case err = <-errs:
+	case <-ctx.Done():
+		select {
+		case err = <-errs:
+		default:
+			return ctx.Err()
 		}
-		return err
-	case <-bridgeCtx.Done():
-		return bridgeCtx.Err()
 	}
+	if err == context.Canceled || err == io.EOF {
+		return nil
+	}
+	return err
 }
 
 func stripWebSocketHopHeaders(header http.Header) {
