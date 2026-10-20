@@ -18,10 +18,11 @@ type Decoded struct {
 const (
 	// DefaultDecodeDepth handles routinely observed nested encodings without
 	// giving an attacker an unbounded decode loop.
-	DefaultDecodeDepth = 6
+	DefaultDecodeDepth = 10
 	// MaxDecodeDepth is the hard ceiling accepted by DecodeWithDepth and the
-	// depth used by DeepDecode.
-	MaxDecodeDepth = 8
+	// depth used by DeepDecode. Raising the ceiling covers the nested-encoding
+	// lengths observed in 2022-2026 WAF evasion without an unbounded loop.
+	MaxDecodeDepth = 12
 )
 
 // queryUnescapeReference and htmlUnescapeReference are the ungated primitives.

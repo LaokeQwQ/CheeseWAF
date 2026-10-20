@@ -14,6 +14,8 @@ func approvalMutationFixture() ApprovalMutation {
 	req.Nonce = nonceForRequest(req)
 	req.IntentDigest = IntentDigestForRequest(req)
 	rec := Record{ID: "req-1", Request: req, Status: StatusApproved, SubmittedAt: now, ExpiresAt: now.Add(time.Minute), Commit: &AuthorizationCommit{RequestID: "req-1", ConfirmationID: "confirm-1", Actor: "op", Scope: "site:a", PolicyEpoch: 7, Risk: RiskMedium, TTL: time.Minute, IssuedAt: now, ExpiresAt: now.Add(time.Minute), WorkflowDigest: "wf-1", SessionID: "session-op", ConfirmationLanguage: "zh-CN", IntentDigest: req.IntentDigest, Nonce: req.Nonce}}
+	phrase, _ := ExpectedConfirmationPhrase(req.ConfirmationLanguage)
+	rec.Confirmation = Confirmation{WarningReadAt: now.Add(-WarningDelay), PasswordConfirmed: true, SecondConfirmation: true, ConfirmationID: "confirm-1", Actor: "op", Scope: req.Scope, PolicyEpoch: 7, TTL: req.TTL, Local: true, SessionID: req.SessionID, ConfirmationLanguage: req.ConfirmationLanguage, ConfirmationPhrase: phrase, IntentDigest: req.IntentDigest, WorkflowDigest: req.WorkflowDigest, Nonce: req.Nonce, ConfirmationStep: 2}
 	return ApprovalMutation{IdempotencyKey: "idem-1", WorkflowDigest: "wf-1", Record: rec, Event: AuditEvent{Sequence: 1, Type: AuditSubmitted, At: now, RequestID: "req-1", Actor: "op", Scope: "site:a", PolicyEpoch: 7}}
 }
 

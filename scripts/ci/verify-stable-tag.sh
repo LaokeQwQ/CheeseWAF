@@ -5,6 +5,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ref_name="${CHEESEWAF_REF_NAME:-${GITHUB_REF_NAME:-}}"
 tag_commit="${CHEESEWAF_TAG_COMMIT:-${GITHUB_SHA:-}}"
 master_ref="${CHEESEWAF_MASTER_REF:-origin/master}"
+ref_protected="${CHEESEWAF_REF_PROTECTED:-${GITHUB_REF_PROTECTED:-}}"
 product_version="$(tr -d '[:space:]' <"${script_dir}/product-version")"
 
 fail() {
@@ -28,5 +29,12 @@ master_commit="$(git rev-parse --verify --end-of-options "${master_ref}^{commit}
   fail "could not resolve protected master ref ${master_ref}"
 [[ "$tag_commit_resolved" == "$master_commit" ]] ||
   fail "stable tag ${ref_name} does not point at ${master_ref} (${tag_commit_resolved} != ${master_commit})"
+
+# A matching commit is necessary but insufficient: signing credentials are
+# only released for tags protected by repository rules. Local regression tests
+# omit this value; CI must pass the GitHub ref-protection signal explicitly.
+if [[ -n "$ref_protected" && "$ref_protected" != "true" ]]; then
+  fail "stable release tag ${ref_name} is not protected by repository rules"
+fi
 
 echo "Stable tag ${ref_name} matches product version and protected master commit ${master_commit}."

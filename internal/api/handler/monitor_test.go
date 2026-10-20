@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,8 +15,8 @@ import (
 func TestMonitorSnapshotUsesQueryTotalsNotSampleLimit(t *testing.T) {
 	sink := &countingLogSink{
 		items: []storage.LogEntry{
-			{ID: "1", Timestamp: time.Now().UTC(), Action: "pass"},
-			{ID: "2", Timestamp: time.Now().UTC(), Action: "block", Category: "sqli"},
+			{ID: "1", Timestamp: time.Now().UTC(), Action: "pass", StatusCode: http.StatusOK},
+			{ID: "2", Timestamp: time.Now().UTC(), Action: "block", Category: "sqli", StatusCode: http.StatusForbidden},
 		},
 		totals: map[string]int64{
 			"":          1500,
@@ -38,11 +40,50 @@ func TestMonitorSnapshotUsesQueryTotalsNotSampleLimit(t *testing.T) {
 	if snapshot.Challenges != 42 {
 		t.Fatalf("expected challenge total 42, got %d", snapshot.Challenges)
 	}
+	if snapshot.StatusCodes[http.StatusOK] != 1 || snapshot.StatusCodes[http.StatusForbidden] != 1 {
+		t.Fatalf("expected sampled status counts, got %+v", snapshot.StatusCodes)
+	}
+	if snapshot.Categories["sqli"] != 1 {
+		t.Fatalf("expected sampled category count, got %+v", snapshot.Categories)
+	}
+}
+
+func TestMetricsUsesExactTotalsAndBoundedSampleDimensions(t *testing.T) {
+	sink := &countingLogSink{
+		items: []storage.LogEntry{
+			{ID: "sample", Timestamp: time.Now().UTC(), Action: "block", Category: "xss", StatusCode: http.StatusForbidden},
+			{ID: "untrusted", Timestamp: time.Now().UTC(), Action: "pass", Category: "tenant-90210", StatusCode: 9001},
+		},
+		totals: map[string]int64{"": 2501, "block": 1200, "challenge": 801},
+	}
+	h := &Handler{Config: &config.Config{}, Sink: sink, StartedAt: time.Now().Add(-time.Minute)}
+	rec := httptest.NewRecorder()
+	h.Metrics(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"cheesewaf_requests_total 2501",
+		"cheesewaf_blocked_total 1200",
+		"cheesewaf_challenges_total 801",
+		`cheesewaf_status_total{code="403"} 1`,
+		`cheesewaf_attack_category_total{category="xss"} 1`,
+		`cheesewaf_attack_category_total{category="other"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "tenant-90210") || strings.Contains(body, `code="9001"`) {
+		t.Fatalf("metrics exposed an unbounded category or invalid status code:\n%s", body)
+	}
+	if len(sink.queries) != 1 || sink.queries[0].Limit != 1000 {
+		t.Fatalf("metrics must use one bounded sample query, got %+v", sink.queries)
+	}
 }
 
 type countingLogSink struct {
-	items  []storage.LogEntry
-	totals map[string]int64
+	items   []storage.LogEntry
+	totals  map[string]int64
+	queries []storage.LogFilter
 }
 
 func (s *countingLogSink) Write(context.Context, *storage.LogEntry) error {
@@ -50,6 +91,7 @@ func (s *countingLogSink) Write(context.Context, *storage.LogEntry) error {
 }
 
 func (s *countingLogSink) Query(_ context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
+	s.queries = append(s.queries, filter)
 	total, ok := s.totals[filter.Action]
 	if !ok {
 		total = int64(len(s.items))
@@ -64,6 +106,13 @@ func (s *countingLogSink) Query(_ context.Context, filter storage.LogFilter) ([]
 		}
 	}
 	return filtered, total, nil
+}
+
+func (s *countingLogSink) Count(_ context.Context, filter storage.LogFilter) (int64, bool, error) {
+	if total, ok := s.totals[filter.Action]; ok {
+		return total, true, nil
+	}
+	return 0, true, nil
 }
 
 func (s *countingLogSink) Flush(context.Context) error {

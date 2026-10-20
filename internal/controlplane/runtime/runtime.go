@@ -113,13 +113,14 @@ func Open(ctx context.Context, opts Options) (*Runtime, error) {
 
 func nativeRaftOptions(opts Options) nativeraft.Options {
 	return nativeraft.Options{
-		Profile:     controlplane.StorageProfileProduction,
-		ClusterID:   opts.ClusterID,
-		NodeID:      opts.NodeID,
-		DataDir:     opts.DataDir,
-		BindAddress: opts.RaftListen,
-		Mode:        opts.Mode,
-		TLS:         &nativeraft.TLSOptions{CAFile: opts.CAFile, CertFile: opts.CertFile, KeyFile: opts.KeyFile},
+		Profile:       controlplane.StorageProfileProduction,
+		ClusterID:     opts.ClusterID,
+		NodeID:        opts.NodeID,
+		DataDir:       opts.DataDir,
+		BindAddress:   opts.RaftListen,
+		Mode:          opts.Mode,
+		InitialVoters: append([]nativeraft.Member(nil), opts.InitialVoters...),
+		TLS:           &nativeraft.TLSOptions{CAFile: opts.CAFile, CertFile: opts.CertFile, KeyFile: opts.KeyFile},
 	}
 }
 

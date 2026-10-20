@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/approval"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/deploy"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
@@ -34,7 +36,7 @@ func (h *Handler) ClusterHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(dto.Response{Data: status})
+	_ = json.NewEncoder(w).Encode(dto.Response{Data: map[string]any{"healthy": code == http.StatusOK}})
 }
 
 type clusterHeartbeatRequest struct {
@@ -646,6 +648,7 @@ type clusterJoinRequest struct {
 	AdvertiseAddr string `json:"advertise_addr"`
 	Listen        string `json:"listen"`
 	CSR           string `json:"csr"`
+	ApprovalID    string `json:"approval_id,omitempty"`
 }
 
 type clusterJoinResponse struct {
@@ -746,6 +749,22 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "CLUSTER_JOIN_INVALID", err.Error())
 		return
 	}
+	if cfg := h.currentConfig(); cfg != nil && cfg.Cluster.Join.RequireApproval {
+		binding, _ := json.Marshal(struct {
+			ClusterID string
+			NodeID    string
+			Role      string
+			Address   string
+			Listen    string
+			CSR       string
+			Token     string
+		}{clusterID, req.NodeID, req.Role, req.AdvertiseAddr, req.Listen, approval.HashBytes([]byte(req.CSR)), approval.HashBytes([]byte(req.Token))})
+		if !h.authorizeClusterOperation(w, r, req.ApprovalID, "cluster:join:"+req.NodeID, approval.HashBytes(binding), "cluster-node:"+req.NodeID, "join:"+approval.HashBytes([]byte(req.Token))) {
+			auditStatus = http.StatusAccepted
+			auditMessage = "node enrollment requires approval"
+			return
+		}
+	}
 	enrollment, err := svc.EnrollNodeWithCSR(req.Token, identity.NodeIdentity{
 		NodeID:        req.NodeID,
 		Role:          req.Role,
@@ -793,16 +812,73 @@ func (h *Handler) ClusterJoin(w http.ResponseWriter, r *http.Request) {
 	writeData(w, resp)
 }
 
+// SetClusterApprovalHTTP shares the durable approval boundary with cluster
+// enrollment and certificate rotation. Composition calls it before serving.
+func (h *Handler) SetClusterApprovalHTTP(boundary *ApprovalHTTPHandler) {
+	h.clusterApproval = boundary
+}
+
+func (h *Handler) authorizeClusterOperation(w http.ResponseWriter, r *http.Request, approvalID, scope, digest, requester, sessionID string) bool {
+	boundary := h.clusterApproval
+	if boundary == nil || boundary.gate == nil {
+		writeError(w, http.StatusServiceUnavailable, "CLUSTER_APPROVAL_UNAVAILABLE", "cluster operation requires the durable approval service")
+		return false
+	}
+	if approvalID == "" {
+		approvalID = "cluster-operation-" + digest[:32]
+	}
+	if approval.ValidateIdentifier(approvalID) != nil {
+		writeError(w, http.StatusBadRequest, "CLUSTER_APPROVAL_INVALID", "invalid approval id")
+		return false
+	}
+	now := boundary.now()
+	record, exists := boundary.gate.Get(approvalID)
+	if !exists {
+		if err := boundary.gate.Restore(r.Context(), now, approvalID); err == nil {
+			record, exists = boundary.gate.Get(approvalID)
+		} else if !errors.Is(err, approval.ErrApprovalNotFound) && !errors.Is(err, approval.ErrInvalidPersistence) {
+			writeError(w, http.StatusServiceUnavailable, "CLUSTER_APPROVAL_UNAVAILABLE", "cluster approval state could not be loaded")
+			return false
+		}
+	}
+	if !exists {
+		var err error
+		record, err = boundary.gate.Submit(now, approval.Request{ID: approvalID, Risk: approval.RiskHigh, Scope: scope, IntentDigest: digest, PolicyEpoch: boundary.PolicyEpoch(), TTL: 5 * time.Minute, Untrusted: true, ClusterOperation: true, Actor: requester, SessionID: sessionID, ConfirmationLanguage: approval.DefaultConfirmationLanguage})
+		if errors.Is(err, approval.ErrDuplicateRequest) {
+			record, exists = boundary.gate.Get(approvalID)
+			err = nil
+		}
+		if err != nil {
+			writeApprovalError(w, err)
+			return false
+		}
+	}
+	if record.Request.Scope != scope || record.Request.IntentDigest != digest || record.Request.Actor != requester || record.Request.SessionID != sessionID || record.Request.PreApproved || record.Request.Risk != approval.RiskHigh {
+		writeError(w, http.StatusForbidden, "CLUSTER_APPROVAL_BINDING", "approval does not match this cluster operation")
+		return false
+	}
+	if record.Status == approval.StatusPending && record.ExpiresAt.After(now) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(dto.Response{Data: map[string]any{"approval_id": record.ID, "status": "pending", "scope": scope, "intent_digest": digest, "expires_at": record.ExpiresAt}})
+		return false
+	}
+	if err := boundary.gate.ConsumeAuthorization(now, record.ID, scope, digest); err != nil {
+		writeError(w, http.StatusForbidden, "CLUSTER_APPROVAL_REJECTED", "a fresh matching interactive approval is required")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) clusterJoinTopology() (string, config.ConsensusConfig, []config.ClusterNodeConfig) {
-	if h == nil || h.Config == nil {
+	cfg := h.currentConfig()
+	if cfg == nil {
 		return "", config.ConsensusConfig{}, nil
 	}
-	h.configMutationMu.Lock()
-	defer h.configMutationMu.Unlock()
-	return h.Config.Cluster.HAMode, config.ConsensusConfig{
-		Provider:      h.Config.Cluster.Consensus.Provider,
-		EtcdEndpoints: append([]string(nil), h.Config.Cluster.Consensus.EtcdEndpoints...),
-	}, append([]config.ClusterNodeConfig(nil), h.Config.Cluster.Nodes...)
+	return cfg.Cluster.HAMode, config.ConsensusConfig{
+		Provider:      cfg.Cluster.Consensus.Provider,
+		EtcdEndpoints: append([]string(nil), cfg.Cluster.Consensus.EtcdEndpoints...),
+	}, append([]config.ClusterNodeConfig(nil), cfg.Cluster.Nodes...)
 }
 
 func writeClusterJoinRejected(w http.ResponseWriter) {
@@ -878,7 +954,8 @@ type clusterRevokeNodeRequest struct {
 }
 
 type clusterRotateNodeCertificateRequest struct {
-	CSR string `json:"csr"`
+	CSR             string `json:"csr"`
+	PossessionProof string `json:"possession_proof"`
 }
 
 type clusterRotateNodeCertificateResponse struct {
@@ -984,6 +1061,10 @@ func (h *Handler) ClusterRevokeNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ClusterRotateNodeCertificate(w http.ResponseWriter, r *http.Request) {
+	if !callerIsAdmin(r) {
+		writeError(w, http.StatusForbidden, "NODE_ROTATION_FORBIDDEN", "node certificate replacement requires a control-plane administrator")
+		return
+	}
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "CLUSTER_NODE_CERTIFICATE_INVALID", "node id is required")
@@ -1003,7 +1084,11 @@ func (h *Handler) ClusterRotateNodeCertificate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusServiceUnavailable, "CLUSTER_IDENTITY_UNAVAILABLE", err.Error())
 		return
 	}
-	rotation, err := svc.RotateNodeCertificateWithCSR(id, []byte(req.CSR))
+	if strings.TrimSpace(req.PossessionProof) == "" {
+		writeError(w, http.StatusBadRequest, "NODE_ROTATION_PROOF_REQUIRED", "current node private-key possession proof is required")
+		return
+	}
+	rotation, err := svc.RotateNodeCertificateWithCSRAndProof(id, []byte(req.CSR), []byte(req.PossessionProof))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "CLUSTER_NODE_CERTIFICATE_INVALID", err.Error())
 		return

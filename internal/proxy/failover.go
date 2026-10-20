@@ -59,3 +59,10 @@ func (s *Server) markUpstream(target *url.URL, healthy bool) {
 	}
 	s.health.Set(upstreamKeyFromURL(target), healthy)
 }
+
+func (s *Server) markUpstreamForSite(siteID string, target *url.URL, healthy bool) {
+	if s == nil || s.health == nil || target == nil {
+		return
+	}
+	s.health.SetForSite(siteID, upstreamKeyFromURL(target), healthy)
+}

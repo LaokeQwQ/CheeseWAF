@@ -97,8 +97,9 @@ func (d *LFIDetector) Detect(ctx context.Context, reqCtx *engine.RequestContext)
 			// command sink.  The standalone detector cannot rely on a parsed
 			// field name, so keep the signature local and apply the same
 			// documentation suppression used by the folded LFI paths below.
-			lowerView := strings.ToLower(view)
-			if matches := lfiSSIDirective.FindAllStringIndex(lowerView, -1); len(matches) > 0 {
+			// The expression is already case-insensitive. Match the original
+			// bytes so its offsets remain valid for the documentation window.
+			if matches := lfiSSIDirective.FindAllStringIndex(view, -1); len(matches) > 0 {
 				for _, match := range matches {
 					if standaloneLFISSIDocumentationContextAt(view, match[0], match[1]) {
 						continue

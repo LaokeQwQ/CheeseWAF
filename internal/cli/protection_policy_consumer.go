@@ -105,6 +105,11 @@ func (c *protectionPolicyCoordinatorConsumer) Preview(ctx context.Context, actor
 		return desiredstate.ProtectionPolicyCoordinationPreview{}, err
 	}
 	c.prunePreviewsLocked()
+	for existingBinding, preview := range c.previews {
+		if preview.actor == actor && preview.epoch == state.Epoch && preview.revision == state.Revision && preview.before == mutation.Before && preview.after == mutation.After {
+			return desiredstate.ProtectionPolicyCoordinationPreview{Mutation: mutation, Binding: existingBinding}, nil
+		}
+	}
 	// Store the normalized value snapshots, not the caller-owned patch. The
 	// approval binding authorizes this exact Before -> After transition only.
 	c.previews[binding] = protectionPolicyPreview{actor: actor, before: mutation.Before, after: mutation.After, epoch: state.Epoch, revision: state.Revision, expires: time.Now().Add(protectionPolicyPreviewTTL)}

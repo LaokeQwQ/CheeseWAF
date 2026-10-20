@@ -76,7 +76,11 @@ export default function SystemPage() {
       queryClient.invalidateQueries({ queryKey: ['system'] });
       queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
-      toast.success(t('system.saved'));
+      if (saved.restart_required) {
+        toast.warning(t('system.savedRestartRequired', { fields: (saved.restart_fields ?? []).join(', ') }));
+      } else {
+        toast.success(t('system.saved'));
+      }
     },
     onError: (error) => toast.error(error.message),
   });

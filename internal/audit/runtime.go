@@ -139,6 +139,9 @@ func (r *Runtime) Append(ctx context.Context, event Event) (Record, error) {
 		return Record{}, ErrInvalidEvent
 	}
 	if event.Class == EventClassCritical {
+		if r.signer == nil {
+			return Record{}, ErrSignerUnavailable
+		}
 		if !r.journal.Durable() && (r.spool == nil || !r.spool.Durable()) {
 			return Record{}, ErrNoDurableChannel
 		}

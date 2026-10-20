@@ -71,13 +71,39 @@ func TestRunHelpIsSuccessful(t *testing.T) {
 		t.Fatalf("help error=%v", err)
 	}
 	help := out.String()
-	for _, flag := range []string{"-ca-file", "-cert-file", "-key-file"} {
+	for _, flag := range []string{"-ca-file", "-cert-file", "-key-file", "-initial-voter"} {
 		if !strings.Contains(help, flag) {
 			t.Fatalf("help output missing %s: %s", flag, help)
 		}
 	}
 	if strings.Contains(help, "InsecureTestMode") || strings.Contains(help, "insecure-test") {
 		t.Fatalf("CLI exposed test-only insecure mode: %s", help)
+	}
+}
+
+func TestParseInitialVoters(t *testing.T) {
+	voters, err := parseInitialVoters([]string{"node-a=raft-a.example:9451", "node-b=[2001:db8::2]:9451"})
+	if err != nil {
+		t.Fatalf("parseInitialVoters error=%v", err)
+	}
+	if len(voters) != 2 || voters[0].ID != "node-a" || voters[0].Address != "raft-a.example:9451" || voters[1].ID != "node-b" || voters[1].Address != "[2001:db8::2]:9451" {
+		t.Fatalf("parsed voters=%+v", voters)
+	}
+}
+
+func TestParseInitialVotersRejectsMalformedOrAmbiguousInput(t *testing.T) {
+	for _, raw := range [][]string{
+		{""},
+		{"node-a"},
+		{"=raft-a.example:9451"},
+		{"node-a="},
+		{"node-a=raft-a.example:0"},
+		{"node-a=raft-a.example:9451", "node-a=raft-b.example:9451"},
+		{"node-a=raft-a.example:9451", "node-b=raft-a.example:9451"},
+	} {
+		if _, err := parseInitialVoters(raw); err == nil {
+			t.Fatalf("parseInitialVoters(%q) unexpectedly succeeded", raw)
+		}
 	}
 }
 

@@ -219,7 +219,7 @@ func TestSQLQuotedAndSelectSubqueryGate(t *testing.T) {
 	}
 	for _, tc := range benign {
 		t.Run(tc.name, func(t *testing.T) {
-			candidate := semanticCandidate{input: InputPoint{Source: "body.json", Name: "text"}, text: tc.text}
+			candidate := semanticCandidate{input: InputPoint{Source: "body.raw", Name: "body"}, text: tc.text}
 			if !sqlQuotedAndSelectInjectionShape(tc.text) {
 				t.Fatal("negative fixture must exercise the narrow shape")
 			}

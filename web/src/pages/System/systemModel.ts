@@ -23,6 +23,17 @@ const fallbackAPIAuth: APISecAuthConfig = {
 
 export const fallbackSystem: SystemConfig = {
   capabilities: {
+    acme_auto_renew: { available: true, reason: 'IN_PROCESS_WORKER' },
+    grpc_proxy: { available: true, reason: 'HTTP2_PASSTHROUGH_ONLY', mode: 'passthrough', message: 'gRPC forwarding is opt-in and does not inspect protobuf messages.' },
+    grpc_message_inspection: { available: false, reason: 'PROTOBUF_INSPECTOR_UNAVAILABLE' },
+    backup: { available: false, reason: 'RESTORABLE_FORMAT_UNAVAILABLE' },
+    storage_cleanup: { available: true, reason: 'AVAILABLE' },
+    diagnostic_upload: { available: false, reason: 'UPLOAD_ADAPTER_UNCONFIGURED' },
+    kms_recovery: { available: false, reason: 'KEY_PROVIDER_UNCONFIGURED' },
+    scoped_api_tokens: { available: false, reason: 'TOKEN_SERVICE_NOT_COMPOSED' },
+    audit_signing: { available: false, reason: 'SIGNER_NOT_CONFIGURED' },
+    control_plane_redis: { available: false, reason: 'CONTROL_PLANE_ONLY', configured: false, scope: 'control_plane' },
+    request_shared_state: { available: false, reason: 'NODE_LOCAL_ONLY' },
     ota_updates: { available: false, reason: 'EXECUTOR_UNAVAILABLE' },
     vulnerability_feeds: { available: false, reason: 'NOT_IMPLEMENTED' },
     bot_challenge_redis: { available: false, reason: 'NOT_IMPLEMENTED' },

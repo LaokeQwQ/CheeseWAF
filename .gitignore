@@ -39,6 +39,7 @@ playwright-report/
 test-results/
 blob-report/
 .playwright/
+.playwright-cli/
 **/playwright/.cache/
 
 # Local runtime state and secrets
@@ -125,9 +126,15 @@ cheesewaf-*-deploy.tar.gz
 !docs/open-corpus-catalog.md
 !docs/architecture/
 !docs/architecture/**/*.md
+# Internal handoff notes are local coordination artifacts, not public docs.
+docs/**/*[Hh]andoff*.md
+docs/**/*[Hh]andover*.md
+docs/**/*交接*.md
 !docs/acceptance-matrix.md
 *.private.md
 *.local.md
+# New documentation stays local; existing tracked documents remain versioned.
+/docs/**
 
 # Frontend dependencies and build cache
 node_modules/

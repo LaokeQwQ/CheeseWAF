@@ -85,6 +85,8 @@ type Request struct {
 	PasswordConfirmed, FinalConfirmation, HighRiskAcknowledged bool
 }
 type Config struct {
+	// VerifyRaw must consume a trusted, actor/intent-bound one-use authorization.
+	VerifyRaw       func(context.Context, Request) error
 	MaxQueueItems   int
 	MaxQueueBytes   int64
 	MaxHistoryItems int
@@ -182,6 +184,14 @@ func (b *Broker) Submit(ctx context.Context, req Request) (Receipt, error) {
 	}
 	if err := validateRequest(req); err != nil {
 		return Receipt{}, err
+	}
+	if req.Package.Kind == KindRaw {
+		if b.cfg.VerifyRaw == nil {
+			return Receipt{}, ErrRawConfirmationRequired
+		}
+		if err := b.cfg.VerifyRaw(ctx, req); err != nil {
+			return Receipt{}, ErrRawConfirmationRequired
+		}
 	}
 	binding, n, err := canonicalBinding(req)
 	if err != nil {

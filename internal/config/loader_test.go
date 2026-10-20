@@ -501,6 +501,26 @@ func TestValidateSchedulerRejectsCleanupOutsideManagedRoots(t *testing.T) {
 	}
 }
 
+func TestValidateSchedulerRejectsSecurityReportOutsideManagedRoots(t *testing.T) {
+	cfg := Default()
+	cfg.Setup.DataDir = filepath.Join(t.TempDir(), "data")
+	cfg.Logging.Output.File.Path = filepath.Join(t.TempDir(), "logs", "access.log")
+	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{ID: "unsafe-report", Type: "security_report", Channel: "file", Recipient: t.TempDir(), Enabled: true}}
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected security report recipient outside managed roots to fail validation")
+	}
+}
+
+func TestValidateSchedulerAcceptsPackagedDataRecipientWithAbsoluteDataDir(t *testing.T) {
+	cfg := Default()
+	cfg.Setup.DataDir = filepath.Join(t.TempDir(), "data")
+	cfg.Logging.Output.File.Path = filepath.Join(t.TempDir(), "logs", "access.log")
+	cfg.Scheduler.Tasks = []ScheduledTaskConfig{{ID: "report", Type: "security_report", Channel: "file", Recipient: "./data/reports", Enabled: true}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("packaged data recipient should validate with absolute data dir: %v", err)
+	}
+}
+
 func TestValidateNotifierEndpointGuard(t *testing.T) {
 	for _, rawURL := range []string{
 		"http://127.0.0.1:8080/hook",
@@ -690,7 +710,7 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 		cfg := Default()
 		cfg.APISec.Auth.Enabled = true
 		cfg.APISec.Auth.JWTAlgorithms = []string{"none"}
-		cfg.APISec.Auth.JWTSharedSecret = "secret"
+		cfg.APISec.Auth.JWTSharedSecret = "test-jwt-signing-secret-with-32-bytes-min"
 
 		if err := Validate(&cfg); err == nil {
 			t.Fatal("expected alg none validation error")
@@ -752,7 +772,7 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 		cfg := Default()
 		cfg.APISec.Auth.Enabled = true
 		cfg.APISec.Auth.JWTAlgorithms = []string{"HS256"}
-		cfg.APISec.Auth.JWTSharedSecret = "secret"
+		cfg.APISec.Auth.JWTSharedSecret = "V7!jwt-signing-key-2026-strong-material#42"
 
 		if err := Validate(&cfg); err != nil {
 			t.Fatalf("expected signed JWT auth config to validate: %v", err)
@@ -777,7 +797,7 @@ func TestValidateAPISecJWTSignatureConfig(t *testing.T) {
 	t.Run("accepts endpoint policy audience override", func(t *testing.T) {
 		cfg := Default()
 		cfg.APISec.Auth.Enabled = true
-		cfg.APISec.Auth.JWTSharedSecret = "test-secret"
+		cfg.APISec.Auth.JWTSharedSecret = "test-jwt-signing-secret-with-32-bytes-min"
 		cfg.APISec.Auth.EndpointPolicies = []APIAuthEndpointPolicyConfig{{
 			ID:             "orders-write",
 			Method:         "POST",

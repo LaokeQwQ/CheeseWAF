@@ -3,6 +3,7 @@ package semantic
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // RESTful path guard: legitimate API paths should not trigger LFI.
@@ -172,7 +173,41 @@ func technicalDocumentationContext(text string) bool {
 // Vulnerability report context guard: content from security advisories, CVE reports, or WooYun should not trigger.
 // Returns true if the text contains vulnerability report structure markers.
 func vulnerabilityReportContext(text string) bool {
+	// An identifier or a vendor/conference name is attacker-controlled content,
+	// not evidence of a report. Require an article-sized, structured document.
+	if len(text) < documentScaleThreshold || (!strings.Contains(text, "\n") && !strings.Contains(text, "\r")) {
+		return false
+	}
 	lower := strings.ToLower(text)
+	// Report markers only establish context when independent sections start
+	// separate lines. A CVE identifier, conference name, or vendor label pasted
+	// onto filler must not silence executable bytes elsewhere in a raw body.
+	sections := 0
+	for _, labels := range [][]string{
+		{"漏洞概要", "漏洞标题", "summary", "title:", "security advisory"},
+		{"缺陷编号", "报告编号", "cve编号", "cve-", "identifier:"},
+		{"漏洞详情", "漏洞简述", "漏洞证明", "proof of concept", "description", "reproduction", "steps to reproduce", "impact"},
+		{"相关厂商", "影响范围", "affected", "修复建议", "解决方案", "remediation", "mitigation", "references"},
+	} {
+		found := false
+		for rest := lower; rest != "" && !found; {
+			line, tail, _ := strings.Cut(rest, "\n")
+			rest = tail
+			line = strings.TrimLeft(line, "# \t\r")
+			for _, label := range labels {
+				if strings.HasPrefix(line, label) {
+					found = true
+					break
+				}
+			}
+		}
+		if found {
+			sections++
+		}
+	}
+	if sections < 2 {
+		return false
+	}
 
 	// Chinese vulnerability report markers (WooYun, security blogs). These name
 	// disclosure-record fields that only exist in a real report body.
@@ -1409,13 +1444,12 @@ func evidenceWindow(text string, indicators []string) string {
 	if len(text) == 0 {
 		return text
 	}
-	lower := strings.ToLower(text)
 	firstPos := -1
 	for _, ind := range indicators {
 		if ind == "" {
 			continue
 		}
-		if idx := strings.Index(lower, strings.ToLower(ind)); idx >= 0 {
+		if idx := indexASCIIFold(text, ind); idx >= 0 {
 			if firstPos < 0 || idx < firstPos {
 				firstPos = idx
 			}
@@ -1434,7 +1468,42 @@ func evidenceWindow(text string, indicators []string) string {
 	if hi > len(text) {
 		hi = len(text)
 	}
+	for lo > 0 && !utf8.RuneStart(text[lo]) {
+		lo--
+	}
+	for hi < len(text) && !utf8.RuneStart(text[hi]) {
+		hi++
+	}
 	return text[lo:hi]
+}
+
+// indexASCIIFold preserves byte offsets into the original UTF-8 string.
+// Unicode case conversion can expand/shrink a rune and makes those offsets
+// unsafe for slicing (for example U+023A lowercases from two to three bytes).
+func indexASCIIFold(text, needle string) int {
+	if needle == "" {
+		return 0
+	}
+	for i := 0; i+len(needle) <= len(text); i++ {
+		matched := true
+		for j := range len(needle) {
+			a, b := text[i+j], needle[j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			if a != b {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return i
+		}
+	}
+	return -1
 }
 
 func evidenceInProseContext(text string, indicators []string) bool {

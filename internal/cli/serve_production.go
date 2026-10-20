@@ -917,6 +917,10 @@ func productionStartupOptionsFromConfig(cfg *config.Config) (ProductionStartupOp
 		return ProductionStartupOptions{}, fmt.Errorf("%w: cluster.node_id must not contain whitespace or invisible characters", config.ErrProductionStorageUnavailable)
 	}
 	raft := cfg.Cluster.Consensus.NativeRaft
+	initialVoters := nativeRaftVotersFromConfig(raft.InitialVoters)
+	if err := nativeraft.ValidateInitialVoters(initialVoters); err != nil {
+		return ProductionStartupOptions{}, fmt.Errorf("%w: cluster.consensus.native_raft.initial_voters: %v", config.ErrProductionStorageUnavailable, err)
+	}
 	raftDir := strings.TrimSpace(raft.DataDir)
 	if raftDir == "" {
 		raftDir = filepath.Join(cfg.Setup.DataDir, "cluster", "native-raft")
@@ -943,6 +947,7 @@ func productionStartupOptionsFromConfig(cfg *config.Config) (ProductionStartupOp
 		NativeRaft: nativeraft.Options{
 			Profile: config.StorageProfileProduction, ClusterID: clusterID, NodeID: nodeID,
 			DataDir: raftDir, BindAddress: raft.Listen, Mode: nativeraft.StartMode(raft.Mode),
+			InitialVoters: initialVoters,
 			TLS: &nativeraft.TLSOptions{
 				CAFile: cfg.Cluster.Interconnect.CAFile, CertFile: cfg.Cluster.Interconnect.CertFile,
 				KeyFile: cfg.Cluster.Interconnect.KeyFile,
@@ -953,4 +958,15 @@ func productionStartupOptionsFromConfig(cfg *config.Config) (ProductionStartupOp
 		DataDir:      cfg.Setup.DataDir,
 		CRP:          ProductionCRPOptions{ClusterID: clusterID, NodeID: nodeID},
 	}, nil
+}
+
+func nativeRaftVotersFromConfig(voters []config.NativeRaftVoter) []nativeraft.Member {
+	if len(voters) == 0 {
+		return nil
+	}
+	result := make([]nativeraft.Member, len(voters))
+	for idx, voter := range voters {
+		result[idx] = nativeraft.Member{ID: voter.ID, Address: voter.Address}
+	}
+	return result
 }

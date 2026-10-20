@@ -57,14 +57,14 @@ func TestAIConfigUsesProviderAndHidesHeader(t *testing.T) {
 			}
 		}
 	}
-	body := []byte(`{"enabled":true,"provider":"openai","api_base":"` + apiBase + `","api_key":"","api_key_header":"x-api-key","model":"local-model","async":true}`)
+	body := []byte(`{"enabled":true,"provider":"openai","api_base":"` + apiBase + `","api_key":"replacement-secret","api_key_header":"x-api-key","model":"local-model","async":true}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/ai/config", bytes.NewReader(body))
 	handler.UpdateAIConfig(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected ai config update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if cfg.AI.Provider != "openai" || cfg.AI.APIKey != "existing-secret" || cfg.AI.APIBase != apiBase {
+	if cfg.AI.Provider != "openai" || cfg.AI.APIKey != "replacement-secret" || cfg.AI.APIBase != apiBase {
 		t.Fatalf("unexpected saved AI config: %+v", cfg.AI)
 	}
 
@@ -181,6 +181,7 @@ func TestHandlerRuntimeAIClientsRecordLocalUsage(t *testing.T) {
 func TestUpdateAIConfigPersistsProviderPathsAndSeparateModelIdentity(t *testing.T) {
 	cfg := config.Default()
 	cfg.AI.APIKey = "existing-secret"
+	cfg.AI.AllowPrivateAPIBase = true
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
 	if err := config.Save(configPath, &cfg); err != nil {
 		t.Fatal(err)
@@ -190,11 +191,13 @@ func TestUpdateAIConfigPersistsProviderPathsAndSeparateModelIdentity(t *testing.
 		"enabled":true,
 		"provider":"openai",
 		"api_base":"http://127.0.0.1:9999/v1",
+		"api_key":"replacement-secret-for-assistant-config",
 		"model":"assistant-invoke",
 		"allow_private_api_base":true,
 		"assistant":{
 			"provider":"openai",
 			"api_base":"http://127.0.0.1:9999/v1",
+			"api_key":"replacement-secret-for-assistant-config",
 			"model":"assistant-invoke",
 			"invocation_model_name":"assistant-invoke",
 			"display_model_name":"Assistant Visible",
@@ -209,6 +212,7 @@ func TestUpdateAIConfigPersistsProviderPathsAndSeparateModelIdentity(t *testing.
 		"reasoning":{
 			"provider":"openai",
 			"api_base":"http://127.0.0.1:9999/v1",
+			"api_key":"replacement-secret-for-reasoning-config",
 			"model":"reasoning-invoke",
 			"invocation_model_name":"reasoning-invoke",
 			"display_model_name":"Reasoning Visible",
@@ -347,6 +351,7 @@ func TestAIModelsCanUseUnsavedOpenAIConfig(t *testing.T) {
 	cfg.AI.Provider = "openai"
 	cfg.AI.APIBase = "https://saved.invalid/v1"
 	cfg.AI.APIKey = "saved-key"
+	cfg.AI.AllowPrivateAPIBase = true
 	handler := New(Options{Config: &cfg})
 
 	raw, _ := json.Marshal(map[string]any{
@@ -404,6 +409,7 @@ func TestAITestConnectionCanUseUnsavedOpenAIConfig(t *testing.T) {
 	cfg.AI.APIBase = "https://saved.invalid/v1"
 	cfg.AI.APIKey = "saved-key"
 	cfg.AI.Model = "saved-model"
+	cfg.AI.AllowPrivateAPIBase = true
 	handler := New(Options{Config: &cfg})
 
 	raw, _ := json.Marshal(map[string]any{
@@ -505,6 +511,7 @@ func TestUpdateAIConfigRejectsPrivateAPIBaseByDefault(t *testing.T) {
 
 func TestUpdateAIConfigAllowsPrivateAPIBaseWhenExplicit(t *testing.T) {
 	cfg := config.Default()
+	cfg.AI.AllowPrivateAPIBase = true
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
 	if err := config.Save(configPath, &cfg); err != nil {
 		t.Fatalf("save config: %v", err)

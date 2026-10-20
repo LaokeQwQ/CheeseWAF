@@ -529,10 +529,12 @@ func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
 	if err := os.WriteFile(cfg.Cluster.Interconnect.CAFile, []byte("old-ca"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg.Cluster.Interconnect.CertFile, []byte("old-cert"), 0o644); err != nil {
+	enrollmentCSR, enrollmentKey := testNodeCSRForCLIRotateWithKey(t, "waf-b")
+	enrollmentKeyDER, err := x509.MarshalECPrivateKey(enrollmentKey)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg.Cluster.Interconnect.KeyFile, []byte("old-key"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.Cluster.Interconnect.KeyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: enrollmentKeyDER}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -544,12 +546,16 @@ func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
+	enrollment, err := svc.EnrollNodeWithCSR(token.Value, identity.NodeIdentity{
 		NodeID:        "waf-b",
 		Role:          "waf",
 		ClusterID:     "cw-test",
 		AdvertiseAddr: "127.0.0.1:9444",
-	}, testNodeCSRForCLIRotate(t, "waf-b")); err != nil {
+	}, enrollmentCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Cluster.Interconnect.CertFile, enrollment.Bundle.CertPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -562,7 +568,8 @@ func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
 			t.Fatalf("unexpected authorization header %q", got)
 		}
 		var payload struct {
-			CSR string `json:"csr"`
+			CSR             string `json:"csr"`
+			PossessionProof string `json:"possession_proof"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
@@ -570,7 +577,10 @@ func TestClusterCertRotateWritesNewCertificateForLocalKey(t *testing.T) {
 		if strings.TrimSpace(payload.CSR) == "" {
 			t.Fatal("rotation request must include csr")
 		}
-		rotation, err := svc.RotateNodeCertificateWithCSR("waf-b", []byte(payload.CSR))
+		if strings.TrimSpace(payload.PossessionProof) == "" {
+			t.Fatal("rotation request must include possession proof")
+		}
+		rotation, err := svc.RotateNodeCertificateWithCSRAndProof("waf-b", []byte(payload.CSR), []byte(payload.PossessionProof))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -714,6 +724,12 @@ sites:
 
 func testNodeCSRForCLIRotate(t *testing.T, nodeID string) []byte {
 	t.Helper()
+	csr, _ := testNodeCSRForCLIRotateWithKey(t, nodeID)
+	return csr
+}
+
+func testNodeCSRForCLIRotateWithKey(t *testing.T, nodeID string) ([]byte, *ecdsa.PrivateKey) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -724,7 +740,7 @@ func testNodeCSRForCLIRotate(t *testing.T, nodeID string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw})
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: raw}), key
 }
 
 func extractCLIValue(out, prefix string) string {

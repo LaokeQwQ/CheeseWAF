@@ -175,6 +175,26 @@ func populateBitmapShapeSlider(opts BehaviorOptions, tok *behaviorToken, p *Beha
 	return nil
 }
 
+func randomBitmapInitialAngle(opts BehaviorOptions, target int) (int, error) {
+	var candidates [301]int
+	count := 0
+	tolerance := maxBehavior(2, opts.Tolerance/100)
+	for angle := 30; angle <= 330; angle++ {
+		if angularDistance(angle, target) > tolerance {
+			candidates[count] = angle
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("rotation tolerance leaves no unsolved initial angle")
+	}
+	index, err := behaviorRandomInt(opts.Rand, 0, count-1)
+	if err != nil {
+		return 0, err
+	}
+	return candidates[index], nil
+}
+
 func populateBitmapRotate(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPresentation) error {
 	engine := bitmapEngine(opts)
 	background, err := renderBitmapBackground(engine, bitmapWidth, bitmapHeight)
@@ -182,15 +202,23 @@ func populateBitmapRotate(opts BehaviorOptions, tok *behaviorToken, p *BehaviorP
 		return err
 	}
 	drawRotationLandmarks(background, 112)
-	initial, err := behaviorRandomInt(opts.Rand, 30, 330)
+	hiddenRotation, err := behaviorRandomInt(opts.Rand, 30, 330)
 	if err != nil {
+		return err
+	}
+	target := normalizeBehaviorAngle(float64(-hiddenRotation))
+	initial, err := randomBitmapInitialAngle(opts, target)
+	if err != nil {
+		return err
+	}
+	if err := rotateBitmapRegion(background, 112, hiddenRotation, engine.Limits); err != nil {
 		return err
 	}
 	uri, err := imageengine.PNGDataURI(background, engine.Limits)
 	if err != nil {
 		return err
 	}
-	tok.Mode, tok.Angle = "angle", 0
+	tok.Mode, tok.Angle = "angle", target
 	p.Kind, p.Image = string(BehaviorRotate), uri
 	p.Prompt = "Rotate the center image until its edges align"
 	p.Width, p.Height, p.PieceSize, p.InitialAngle = bitmapWidth, bitmapHeight, 112, initial
@@ -205,15 +233,23 @@ func populateBitmapAngle(opts BehaviorOptions, tok *behaviorToken, p *BehaviorPr
 		return err
 	}
 	drawRotationLandmarks(background, 164)
-	initial, err := behaviorRandomInt(opts.Rand, 30, 330)
+	hiddenRotation, err := behaviorRandomInt(opts.Rand, 30, 330)
 	if err != nil {
+		return err
+	}
+	target := normalizeBehaviorAngle(float64(-hiddenRotation))
+	initial, err := randomBitmapInitialAngle(opts, target)
+	if err != nil {
+		return err
+	}
+	if err := rotateBitmapRegion(background, 220, hiddenRotation, engine.Limits); err != nil {
 		return err
 	}
 	uri, err := imageengine.PNGDataURI(background, engine.Limits)
 	if err != nil {
 		return err
 	}
-	tok.Mode, tok.Angle = "angle", 0
+	tok.Mode, tok.Angle = "angle", target
 	p.Kind, p.Image = string(BehaviorAngle), uri
 	p.Prompt = "Rotate the image to its upright position"
 	p.Width, p.Height, p.PieceSize, p.InitialAngle = 220, 220, 220, initial
@@ -251,12 +287,20 @@ func populateBitmapRestore(opts BehaviorOptions, tok *behaviorToken, p *Behavior
 	if part == 1 {
 		movingPart = "bottom"
 	}
+	hiddenOffset, err := behaviorRandomInt(opts.Rand, 4, maxOffset/2)
+	if err != nil {
+		return err
+	}
+	if initialOffset > 0 {
+		hiddenOffset = -hiddenOffset
+	}
+	displaceBitmapStrip(background, hiddenOffset)
 	uri, err := imageengine.PNGDataURI(background, engine.Limits)
 	if err != nil {
 		return err
 	}
 	tok.Mode = "restore_offset"
-	tok.Point = BehaviorPoint{X: 0, Y: behaviorCoordinateMax / 2}
+	tok.Point = BehaviorPoint{X: -hiddenOffset * 100, Y: behaviorCoordinateMax / 2}
 	p.Kind, p.Image = string(BehaviorRestoreSlider), uri
 	p.Prompt = "Slide the displaced half until the picture is restored"
 	p.Width, p.Height = bitmapWidth, bitmapHeight
@@ -380,6 +424,40 @@ func drawRotationLandmarks(dst *image.RGBA, diameter int) {
 			if image.Pt(x, arrowTop+y).In(b) {
 				dst.Set(x, arrowTop+y, accent)
 			}
+		}
+	}
+}
+
+func rotateBitmapRegion(dst *image.RGBA, size, angle int, limits imageengine.Limits) error {
+	b := dst.Bounds()
+	rect := image.Rect((b.Dx()-size)/2, (b.Dy()-size)/2, (b.Dx()+size)/2, (b.Dy()+size)/2)
+	crop := image.NewRGBA(image.Rect(0, 0, size, size))
+	draw.Draw(crop, crop.Bounds(), dst, rect.Min, draw.Src)
+	rotated, err := imageengine.RotateScale(crop, float64(angle), 1, limits)
+	if err != nil {
+		return err
+	}
+	offset := image.Pt((rotated.Bounds().Dx()-size)/2, (rotated.Bounds().Dy()-size)/2)
+	draw.Draw(dst, rect, rotated, offset, draw.Src)
+	return nil
+}
+func displaceBitmapStrip(dst *image.RGBA, percent int) {
+	// Match the restore strip's 5%..95% by 35.45%..64.55% crop.
+	b := dst.Bounds()
+	rect := image.Rect(b.Dx()*5/100, b.Dy()*3545/10000, b.Dx()*95/100, b.Dy()*6455/10000)
+	copyImage := image.NewRGBA(b)
+	draw.Draw(copyImage, b, dst, b.Min, draw.Src)
+	shift := rect.Dx() * percent / 100
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			source := x - shift
+			for source < rect.Min.X {
+				source += rect.Dx()
+			}
+			for source >= rect.Max.X {
+				source -= rect.Dx()
+			}
+			dst.Set(x, y, copyImage.At(source, y))
 		}
 	}
 }

@@ -105,7 +105,7 @@ func TestProtectionAndIPRulesRedactSecrets(t *testing.T) {
 
 func TestProtectionSecretUpdatesPreserveExistingValuesWhenEmpty(t *testing.T) {
 	cfg := config.Default()
-	cfg.Protection.Bot.Secret = "existing-bot-secret"
+	cfg.Protection.Bot.Secret = "existing-bot-secret-with-sufficient-entropy-1234"
 	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
 		ID:      "otx",
 		Name:    "OTX",
@@ -128,10 +128,10 @@ func TestProtectionSecretUpdatesPreserveExistingValuesWhenEmpty(t *testing.T) {
 	if botRecorder.Code != http.StatusOK {
 		t.Fatalf("expected bot update ok, code=%d body=%s", botRecorder.Code, botRecorder.Body.String())
 	}
-	if cfg.Protection.Bot.Secret != "existing-bot-secret" {
+	if cfg.Protection.Bot.Secret != "existing-bot-secret-with-sufficient-entropy-1234" {
 		t.Fatalf("empty bot update cleared secret, got %q", cfg.Protection.Bot.Secret)
 	}
-	if strings.Contains(botRecorder.Body.String(), "existing-bot-secret") {
+	if strings.Contains(botRecorder.Body.String(), "existing-bot-secret-with-sufficient-entropy-1234") {
 		t.Fatalf("bot update response leaked secret: %s", botRecorder.Body.String())
 	}
 

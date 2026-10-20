@@ -283,6 +283,14 @@ func tasks() string {
         - "{{ cheesewaf_config_dir }}"
         - "{{ cheesewaf_data_dir }}"
 
+    - name: Create CheeseWAF systemd unit directory
+      ansible.builtin.file:
+        path: "{{ cheesewaf_unit_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Download verified CheeseWAF binary
       ansible.builtin.get_url:
         url: "{{ cheesewaf_binary_url }}"

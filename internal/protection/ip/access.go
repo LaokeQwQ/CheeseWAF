@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 const (
@@ -163,10 +164,33 @@ func (r accessRule) appliesScope(siteID, path string) bool {
 		if prefix == "" {
 			prefix = "/"
 		}
-		return strings.HasPrefix(path, prefix)
+		return pathMatchesPrefix(path, prefix)
 	default:
 		return true
 	}
+}
+
+func pathMatchesPrefix(path, prefix string) bool {
+	cleanPath, ok := engine.NormalizeRequestPath(path)
+	if !ok {
+		return false
+	}
+	cleanPrefix, ok := engine.NormalizeRequestPath(prefix)
+	if !ok {
+		return false
+	}
+	path, prefix = cleanPath, cleanPrefix
+	if prefix == "" {
+		return true
+	}
+	if path == "" {
+		return false
+	}
+	base := strings.TrimRight(prefix, "/")
+	if base == "" {
+		return strings.HasPrefix(path, "/")
+	}
+	return path == base || strings.HasPrefix(path, base+"/")
 }
 
 func (r accessRule) decision() AccessDecision {

@@ -11,13 +11,21 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
+	"github.com/andybalholm/brotli"
 )
 
 const maxDecompressionRatio = 20
+
+// Bound aggregate response-buffer admission as well as each representation.
+// Charge both encoded/decoded buffers and read growth before any body I/O.
+const maxInspectionMemory = 64 << 20
+
+var inspectionMemory atomic.Int64
 
 type Finding struct {
 	Pattern    string `json:"pattern,omitempty"`
@@ -120,7 +128,19 @@ func (i *Inspector) InspectHTTP(resp *http.Response) (*Finding, error) {
 // original transfer bytes. Authenticated snapshots use the public request URL,
 // not the rewritten upstream URL.
 func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Request) (*Finding, error) {
-	if !i.Enabled() || resp == nil || resp.Body == nil {
+	if !i.Enabled() || resp == nil {
+		return nil, nil
+	}
+	for name, values := range resp.Header {
+		for _, value := range values {
+			if finding := i.Inspect([]byte(value)); finding != nil {
+				finding.Message = "sensitive response header matched: " + name
+				finding.Reason = "response_header"
+				return finding, nil
+			}
+		}
+	}
+	if resp.Body == nil {
 		return nil, nil
 	}
 	resourceURL, tamperTarget := i.tamperResourceURL(request)
@@ -134,18 +154,29 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 	if limit <= 0 {
 		limit = 1 << 20
 	}
+	charge := 4 * (limit + 1)
+	for {
+		used := inspectionMemory.Load()
+		if charge > maxInspectionMemory || used+charge > maxInspectionMemory {
+			return inspectionIncompleteFinding("memory_budget"), nil
+		}
+		if inspectionMemory.CompareAndSwap(used, used+charge) {
+			break
+		}
+	}
+	defer inspectionMemory.Add(-charge)
 	originalBody := resp.Body
 	// Read transfer-encoded bytes; keep them for the client.
-	raw, err := io.ReadAll(io.LimitReader(originalBody, limit*maxDecompressionRatio+1))
+	raw, err := io.ReadAll(io.LimitReader(originalBody, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(raw)) > limit*maxDecompressionRatio {
+	if int64(len(raw)) > limit {
 		resp.Body = replayThenClose(raw, originalBody)
 		if tamperTarget {
 			return tamperUnavailableFinding(resourceURL, "size_limit"), nil
 		}
-		return nil, nil
+		return inspectionIncompleteFinding("size_limit"), nil
 	}
 	originalBody.Close()
 	resp.Body = io.NopCloser(newReplayReader(raw))
@@ -161,7 +192,7 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 			if tamperTarget {
 				return tamperUnavailableFinding(resourceURL, "unsupported_encoding"), nil
 			}
-			return nil, nil
+			return inspectionIncompleteFinding("unsupported_or_invalid_encoding"), nil
 		}
 		inspectBody = plain
 		complete = decodedComplete
@@ -185,7 +216,14 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 			}, nil
 		}
 	}
+	if !complete {
+		return inspectionIncompleteFinding("size_limit"), nil
+	}
 	return i.Inspect(inspectBody), nil
+}
+
+func inspectionIncompleteFinding(reason string) *Finding {
+	return &Finding{Message: "response inspection incomplete", DetectorID: "response.inspector", Category: "response", Severity: "high", Reason: reason}
 }
 
 // InspectCaptured applies the same inline checks to an in-memory cache hit.
@@ -268,7 +306,11 @@ func decodeResponseContent(raw []byte, encoding string, maxPlain int64) ([]byte,
 		defer gr.Close()
 		reader = gr
 	case "deflate":
-		reader = flate.NewReader(bytes.NewReader(raw))
+		fr := flate.NewReader(bytes.NewReader(raw))
+		defer fr.Close()
+		reader = fr
+	case "br":
+		reader = brotli.NewReader(bytes.NewReader(raw))
 	default:
 		return nil, false, fmt.Errorf("unsupported content-encoding %q", encoding)
 	}

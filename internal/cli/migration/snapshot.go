@@ -349,10 +349,11 @@ func productionManagementMatchesSnapshotTx(ctx context.Context, tx *sql.Tx, raw 
 		}
 		rowIndex := 0
 		matches := true
+		var mismatchErr error
 		for rows.Next() {
 			if rowIndex >= len(table.Rows) {
 				matches = false
-				err = fmt.Errorf("production management snapshot has extra %s row", table.Name)
+				mismatchErr = fmt.Errorf("production management snapshot has extra %s row", table.Name)
 				break
 			}
 			actualValues := make([]any, len(spec.columns))
@@ -382,7 +383,7 @@ func productionManagementMatchesSnapshotTx(ctx context.Context, tx *sql.Tx, raw 
 				}
 				if !reflect.DeepEqual(actual, expected) {
 					matches = false
-					err = fmt.Errorf("production management snapshot differs at %s row %d column %s", table.Name, rowIndex, column)
+					mismatchErr = fmt.Errorf("production management snapshot differs at %s row %d column %s", table.Name, rowIndex, column)
 					break
 				}
 			}
@@ -400,7 +401,7 @@ func productionManagementMatchesSnapshotTx(ctx context.Context, tx *sql.Tx, raw 
 			return false, closeErr
 		}
 		if !matches {
-			return false, err
+			return false, mismatchErr
 		}
 		if rowIndex != len(table.Rows) {
 			return false, fmt.Errorf("production management snapshot is missing %s rows", table.Name)

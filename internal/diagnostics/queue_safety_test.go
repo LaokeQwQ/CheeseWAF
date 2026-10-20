@@ -123,7 +123,7 @@ func TestRetryByteAccountingReturnsToZeroAfterSuccess(t *testing.T) {
 }
 
 func TestRawDiagnosticAttemptsCannotExceedTwo(t *testing.T) {
-	b, err := NewBroker(Config{MaxAttempts: 3})
+	b, err := NewBroker(Config{MaxAttempts: 3, VerifyRaw: allowRawDiagnosticTest})
 	if err != nil {
 		t.Fatal(err)
 	}

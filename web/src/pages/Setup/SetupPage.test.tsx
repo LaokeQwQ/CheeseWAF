@@ -255,11 +255,25 @@ describe('SetupPage', () => {
     expect(apiMocks.setupAdmin).toHaveBeenCalledWith(
       'root-admin',
       'S3cure-Pass!',
-      expect.any(String),
-      expect.any(String),
+      '',
+      '',
+      'low',
     );
-    await vi.advanceTimersByTimeAsync(900);
+    fireEvent.click(screen.getByRole('button', { name: 'setup.goToLogin' }));
     expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  it.each([
+    ['/AdminEntry123', '/AdminEntry123?returnTo=%2Fsites'],
+    [undefined, '/login?returnTo=%2Fsites'],
+  ])('opens the first-site action through the login entry (%s)', async (securityEntryPath, expectedHref) => {
+    apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true, security_entry_path: securityEntryPath });
+    await advanceToReviewStep();
+    await completeSetup();
+
+    const firstSiteLink = await screen.findByRole('link', { name: 'setup.createFirstSite' });
+    expect(firstSiteLink.getAttribute('href')).toBe(expectedHref);
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it('surfaces setup API failures', async () => {
@@ -305,7 +319,7 @@ describe('SetupPage', () => {
     render(<SetupPage />);
     await waitFor(() => expect(useAppStore.getState().language).toBe('zh-CN'));
 
-    const englishCard = screen.getByText('setup.languageEn').closest('.setup-card-radio');
+    const englishCard = (await screen.findByText('setup.languageEn')).closest('.setup-card-radio');
     expect(englishCard).toBeTruthy();
     fireEvent.click(englishCard!);
     await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
@@ -508,11 +522,11 @@ describe('SetupPage', () => {
     expect(screen.queryByLabelText('setup.adminStrategy')).toBeNull();
   });
 
-  it('uses the backend defaults for the admin listener', async () => {
+  it('preserves the backend admin listener and strategy', async () => {
     apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true });
     await advanceToReviewStep();
     await completeSetup();
-    expect(apiMocks.setupAdmin).toHaveBeenCalledWith('root-admin', 'S3cure-Pass!', '0.0.0.0:9443', 'public_tls');
+    expect(apiMocks.setupAdmin).toHaveBeenCalledWith('root-admin', 'S3cure-Pass!', '', '', 'low');
   });
 
   // 问题 7：review 使用 i18n 标签。
@@ -534,7 +548,7 @@ describe('SetupPage', () => {
     expect(screen.getByText('setup.advancedTitle')).toBeTruthy();
     expect(screen.getByText('setup.adminListen')).toBeTruthy();
     expect(screen.getByText('setup.adminStrategy')).toBeTruthy();
-    expect(screen.getByText('0.0.0.0:9443')).toBeTruthy();
+    expect(screen.getByText('setup.notAvailable')).toBeTruthy();
   });
 
   // 问题 8：成功只提示一次。
@@ -580,6 +594,30 @@ describe('SetupPage', () => {
     const later = typed();
     expect(later).not.toBe(first);
     expect(isOneLanguage(later)).toBe(true);
+  });
+
+  it('shows the full headline when reduced motion is requested', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }),
+    });
+    try {
+      render(<SetupPage />);
+      const headline = await screen.findByTestId('setup-language-typewriter');
+      expect(headline.textContent?.replaceAll('|', '')).toBe('setup.languageTitleZh');
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
   });
 
   // 问题 5（续）：密码复用项目既有的 passwordPolicy。
@@ -646,7 +684,7 @@ describe('SetupPage', () => {
     fireEvent.click(screen.getByTestId('setup-integration-postgres-toggle'));
     fireEvent.change(screen.getByLabelText('setup.integrationsPostgresUsername'), { target: { value: 'cheesewaf' } });
     fireEvent.click(screen.getByRole('button', { name: 'setup.integrationsTestConnection' }));
-    expect(await screen.findByText('setup.integrationsConnected')).toBeTruthy();
+    expect(await screen.findByText('setup.integrationsConnectedTestOnly')).toBeTruthy();
     expect(screen.queryByText('setup.summaryTitle')).toBeNull();
 
     fireEvent.click(screen.getByTestId('setup-integration-victoria-toggle'));
@@ -655,7 +693,7 @@ describe('SetupPage', () => {
       target: { value: 'http://127.0.0.1:9428/insert/jsonline' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'setup.integrationsTestConnection' }));
-    expect(await screen.findByText('setup.integrationsConnected')).toBeTruthy();
+    expect(await screen.findByText('setup.integrationsConnectedTestOnly')).toBeTruthy();
   });
 
   it('rejects a VictoriaLogs endpoint that is not an http URL', async () => {

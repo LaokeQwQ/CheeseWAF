@@ -18,6 +18,46 @@ import (
 type Pipeline struct {
 	mu       sync.Mutex
 	snapshot atomic.Pointer[pipelineSnapshot]
+	budget   atomic.Int64
+}
+
+// SetDetectionBudget sets the CPU analysis budget, excluding body upload time.
+// The bounded ceiling avoids accidentally retaining detector workers forever.
+func (p *Pipeline) SetDetectionBudget(budget time.Duration) {
+	if budget <= 0 {
+		budget = 100 * time.Millisecond
+	}
+	if budget > 5*time.Second {
+		budget = 5 * time.Second
+	}
+	p.budget.Store(int64(budget))
+}
+
+func (p *Pipeline) detectionBudget(reqCtx *RequestContext) time.Duration {
+	budget := time.Duration(p.budget.Load())
+	if reqCtx != nil {
+		switch value := reqCtx.Metadata["detection_budget"].(type) {
+		case time.Duration:
+			budget = value
+		case string:
+			if parsed, err := time.ParseDuration(value); err == nil {
+				budget = parsed
+			}
+		}
+	}
+	if budget <= 0 {
+		budget = 100 * time.Millisecond
+	}
+	if budget > 5*time.Second {
+		budget = 5 * time.Second
+	}
+	return budget
+}
+
+// DetectionBudget returns the effective analysis budget without starting it.
+// Callers inspecting multiple identities can share this same bounded budget.
+func (p *Pipeline) DetectionBudget(reqCtx *RequestContext) time.Duration {
+	return p.detectionBudget(reqCtx)
 }
 
 type pipelineSnapshot struct {
@@ -45,11 +85,24 @@ type semanticJobOut struct {
 }
 
 type semanticJob struct {
-	ctx      context.Context
-	detector Detector
-	reqCtx   *RequestContext
-	index    int
-	done     chan<- semanticJobOut
+	ctx       context.Context
+	detector  Detector
+	reqCtx    *RequestContext
+	index     int
+	done      chan<- semanticJobOut
+	enqueued  time.Time
+	admission siteAdmissionToken
+}
+
+var semanticQueueWaitNanos atomic.Uint64
+var semanticQueueJobs atomic.Uint64
+var semanticQueueOverloads atomic.Uint64
+
+// SemanticQueueStats exposes cumulative queue delay and admission failures.
+// Latency is measured before detector execution, independently of CPU work.
+func SemanticQueueStats() (jobs, waitNanos, overloads uint64, depth int) {
+	queue := semanticJobs()
+	return semanticQueueJobs.Load(), semanticQueueWaitNanos.Load(), semanticQueueOverloads.Load(), len(queue)
 }
 
 var sharedSemanticWorkers struct {
@@ -58,11 +111,21 @@ var sharedSemanticWorkers struct {
 	started atomic.Int64
 }
 
+// A single site may enqueue several detectors per request. Bound the queued
+// and executing jobs together so one tenant cannot monopolize the shared
+// semantic worker queue. The global queue is still the final safety bound.
+const maxSemanticJobsPerSite = 32
+
+var semanticSiteAdmissions = siteAdmission{
+	maxActive: maxSemanticJobsPerSite,
+	maxSites:  1024,
+}
+
 func semanticJobs() chan semanticJob {
 	sharedSemanticWorkers.once.Do(func() {
 		workers := runtime.GOMAXPROCS(0)
-		if workers > 8 {
-			workers = 8
+		if workers > 32 {
+			workers = 32
 		}
 		if workers < 1 {
 			workers = 1
@@ -72,20 +135,40 @@ func semanticJobs() chan semanticJob {
 			go func() {
 				sharedSemanticWorkers.started.Add(1)
 				for job := range sharedSemanticWorkers.jobs {
-					if err := job.ctx.Err(); err != nil {
-						job.done <- semanticJobOut{index: job.index, err: err}
-						continue
-					}
-					fork := forkRequestContextWithContext(job.reqCtx, job.ctx)
-					result, err := GuardContext(job.ctx, func() (*DetectionResult, error) {
-						return job.detector.Detect(job.ctx, fork)
-					})
-					job.done <- semanticJobOut{index: job.index, result: result, fork: fork, err: err}
+					func() {
+						defer job.admission.release()
+						semanticQueueJobs.Add(1)
+						semanticQueueWaitNanos.Add(uint64(time.Since(job.enqueued)))
+						if err := job.ctx.Err(); err != nil {
+							job.done <- semanticJobOut{index: job.index, err: err}
+							return
+						}
+						fork := forkRequestContextWithContext(job.reqCtx, job.ctx)
+						result, err := GuardContext(job.ctx, func() (*DetectionResult, error) {
+							return job.detector.Detect(job.ctx, fork)
+						})
+						job.done <- semanticJobOut{index: job.index, result: result, fork: fork, err: err}
+					}()
 				}
 			}()
 		}
 	})
 	return sharedSemanticWorkers.jobs
+}
+
+// enqueueSemanticJob keeps site permits scoped to queued-or-running work and
+// releases them on both cancellation and global queue saturation.
+func enqueueSemanticJob(ctx context.Context, jobs chan semanticJob, job semanticJob) (submitted, overloaded bool) {
+	select {
+	case jobs <- job:
+		return true, false
+	case <-ctx.Done():
+		job.admission.release()
+		return false, false
+	default:
+		job.admission.release()
+		return false, true
+	}
 }
 
 // detectionBudgetHook is atomically replaceable because service hot reloads
@@ -155,6 +238,7 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		return &DetectionResult{Detected: false, Action: ActionPass, Severity: SeverityInfo}, nil
 	}
 	var firstDetected *DetectionResult
+	inputIncompleteReason := ""
 	preFilters := snapshot.preFilters
 	semanticGroup := snapshot.semanticGroup
 
@@ -187,8 +271,9 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 	}
 
 	// Pipeline-level timeout: 100ms of detector work after body collection.
-	ctx, cancel := context.WithTimeout(parentCtx, 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(parentCtx, p.detectionBudget(reqCtx))
 	defer cancel()
+	ctx = withRequestSite(ctx, reqCtx.SiteID)
 
 	// Phase 1: pre-filters sequential (IP/ACL/Bot/RateLimit — fast, order-sensitive).
 	for _, detector := range preFilters {
@@ -215,7 +300,33 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 				}
 				return finalizeGuardOverload(reqCtx, firstDetected), nil
 			}
-			continue
+			if parentErr := parentCtx.Err(); parentErr != nil {
+				return nil, parentErr
+			}
+			if budgetAnalysisIncomplete(ctx, reqCtx, err) {
+				return finalizeBudgetExhausted(reqCtx, firstDetected), nil
+			}
+			if reason, incomplete := detectorIncompleteReason(err); incomplete {
+				// A completed detector with incomplete input must not prevent later
+				// semantic detectors from examining the request. Preserve its audit
+				// metadata and apply the configured fail-mode after all checks run.
+				mergeRequestContext(reqCtx, fork)
+				if result != nil {
+					reqCtx.Results = append(reqCtx.Results, *result)
+					if result.Detected && result.Action == ActionBlock {
+						return result, nil
+					}
+					if result.Detected && (firstDetected == nil || betterDetectionResult(result, firstDetected)) {
+						snapshot := *result
+						firstDetected = &snapshot
+					}
+				}
+				if inputIncompleteReason == "" {
+					inputIncompleteReason = reason
+				}
+				continue
+			}
+			return finalizeInputIncomplete(reqCtx, firstDetected, "detector_error"), nil
 		}
 		mergeRequestContext(reqCtx, fork)
 		if result == nil {
@@ -282,18 +393,32 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		if parentCtx.Err() == nil && budgetAnalysisIncomplete(ctx, reqCtx, err) {
 			return finalizeBudgetExhausted(reqCtx, firstDetected), nil
 		}
+		if err != nil {
+			return finalizeInputIncomplete(reqCtx, firstDetected, "detector_error"), nil
+		}
 	} else if len(semanticGroup) > 1 {
 		outs := make([]semanticJobOut, len(semanticGroup))
 		done := make(chan semanticJobOut, len(semanticGroup))
 		jobs := semanticJobs()
 		submitted := 0
 		for i, detector := range semanticGroup {
-			job := semanticJob{ctx: ctx, detector: detector, reqCtx: reqCtx, index: i, done: done}
-			select {
-			case jobs <- job:
+			siteToken, admitted := semanticSiteAdmissions.acquire(reqCtx.SiteID)
+			if !admitted {
+				semanticQueueOverloads.Add(1)
+				outs[i] = semanticJobOut{index: i, err: ErrDetectionOverload}
+				continue
+			}
+			job := semanticJob{ctx: ctx, detector: detector, reqCtx: reqCtx, index: i, done: done, enqueued: time.Now(), admission: siteToken}
+			enqueued, overloaded := enqueueSemanticJob(ctx, jobs, job)
+			if enqueued {
 				submitted++
-			case <-ctx.Done():
+			} else if ctx.Err() != nil {
 				outs[i] = semanticJobOut{index: i, err: ctx.Err()}
+			} else if overloaded {
+				// Do not consume a healthy request's entire CPU deadline merely
+				// waiting for admission to a saturated process-wide queue.
+				semanticQueueOverloads.Add(1)
+				outs[i] = semanticJobOut{index: i, err: ErrDetectionOverload}
 			}
 		}
 		for range submitted {
@@ -303,7 +428,6 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 
 		// Merge in priority order for stable Results / Metadata.
 		var detectErr error
-		inputIncompleteReason := ""
 		guardOverloaded := false
 		for i := range outs {
 			out := outs[i]
@@ -354,8 +478,14 @@ func (p *Pipeline) Detect(ctx context.Context, reqCtx *RequestContext) (*Detecti
 		if inputIncompleteReason != "" {
 			return finalizeInputIncomplete(reqCtx, firstDetected, inputIncompleteReason), nil
 		}
+		if detectErr != nil {
+			return finalizeInputIncomplete(reqCtx, firstDetected, "detector_error"), nil
+		}
 	}
 
+	if inputIncompleteReason != "" {
+		return finalizeInputIncomplete(reqCtx, firstDetected, inputIncompleteReason), nil
+	}
 	if firstDetected != nil {
 		return firstDetected, nil
 	}
@@ -532,6 +662,7 @@ func forkRequestContextWithContext(src *RequestContext, detectorCtx context.Cont
 		ClientIP:          src.ClientIP,
 		TraceID:           src.TraceID,
 		SiteID:            src.SiteID,
+		NormalizedPath:    src.NormalizedPath,
 		HostValidated:     src.HostValidated,
 		TrustedProxyCIDRs: append([]string(nil), src.TrustedProxyCIDRs...),
 		DecodedURI:        src.DecodedURI,
@@ -576,6 +707,13 @@ func cloneMetadata(src map[string]any) map[string]any {
 	dst := make(map[string]any, len(src)+4)
 	memo := make(map[metadataCloneVisit]reflect.Value)
 	for key, value := range src {
+		// Most request metadata is immutable scalar policy/identity data. Keep
+		// extension containers isolated while bypassing reflection for this path.
+		switch value.(type) {
+		case nil, string, bool, int, int64, int32, uint, uint64, uint32, float64, float32, time.Duration:
+			dst[key] = value
+			continue
+		}
 		cloned := cloneMetadataReflect(reflect.ValueOf(value), memo)
 		if !cloned.IsValid() || !cloned.CanInterface() {
 			dst[key] = value

@@ -3,20 +3,26 @@ package edge
 import (
 	"bytes"
 	"compress/gzip"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/andybalholm/brotli"
 )
 
 type Compressor struct {
-	enabled bool
-	algos   map[string]struct{}
-	level   int
-	min     int64
-	types   []string
+	enabled                   bool
+	algos                     map[string]struct{}
+	preference                []string
+	gzipPool                  sync.Pool
+	brotliPool                sync.Pool
+	compressAuthenticatedHTML bool
+	level                     int
+	min                       int64
+	types                     []string
 }
 
 func NewCompressor(cfg config.CompressionPolicyConfig) *Compressor {
@@ -27,26 +33,41 @@ func NewCompressor(cfg config.CompressionPolicyConfig) *Compressor {
 		cfg.MinBytes = 1024
 	}
 	if len(cfg.Algorithms) == 0 {
-		cfg.Algorithms = []string{"br", "gzip"}
+		cfg.Algorithms = []string{"gzip", "br"}
 	}
 	if len(cfg.ContentTypes) == 0 {
 		cfg.ContentTypes = []string{"text/", "application/json", "application/javascript", "application/xml", "image/svg+xml"}
 	}
 	algos := map[string]struct{}{}
+	var preference []string
 	for _, algo := range cfg.Algorithms {
 		algo = normalizeAlgorithm(algo)
 		if algo != "" {
+			if _, exists := algos[algo]; !exists {
+				preference = append(preference, algo)
+			}
 			algos[algo] = struct{}{}
 		}
 	}
-	return &Compressor{enabled: cfg.Enabled, algos: algos, level: cfg.Level, min: cfg.MinBytes, types: cfg.ContentTypes}
+	compressor := &Compressor{enabled: cfg.Enabled, algos: algos, preference: preference, level: cfg.Level, min: cfg.MinBytes, types: cfg.ContentTypes}
+	gzipLevel := cfg.Level
+	if gzipLevel < gzip.HuffmanOnly || gzipLevel > gzip.BestCompression {
+		gzipLevel = gzip.DefaultCompression
+	}
+	brotliLevel := cfg.Level
+	if brotliLevel < 0 || brotliLevel > 11 {
+		brotliLevel = 5
+	}
+	compressor.gzipPool.New = func() any { writer, _ := gzip.NewWriterLevel(io.Discard, gzipLevel); return writer }
+	compressor.brotliPool.New = func() any { return brotli.NewWriterLevel(io.Discard, brotliLevel) }
+	return compressor
 }
 
 func (c *Compressor) Apply(r *http.Request, resp *CapturedResponse) {
 	if c == nil || !c.enabled || r == nil || resp == nil {
 		return
 	}
-	if int64(len(resp.Body)) < c.min || resp.Header.Get("Content-Encoding") != "" {
+	if !c.transformAllowed(r, resp.Status, resp.Header) || int64(len(resp.Body)) < c.min || anyNonEmptyHeaderValue(resp.Header, "Content-Encoding") {
 		return
 	}
 	if !c.allowedType(resp.Header.Get("Content-Type")) {
@@ -56,14 +77,19 @@ func (c *Compressor) Apply(r *http.Request, resp *CapturedResponse) {
 	if encoding == "" {
 		return
 	}
-	var buf bytes.Buffer
-	level := c.level
+	buf := compressionBuffers.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 2<<20 {
+			buf.Reset()
+			compressionBuffers.Put(buf)
+		}
+	}()
 	switch encoding {
 	case "br":
-		if level < 0 || level > 11 {
-			level = 5
-		}
-		zw := brotli.NewWriterLevel(&buf, level)
+		zw := c.brotliPool.Get().(*brotli.Writer)
+		zw.Reset(buf)
+		defer func() { zw.Reset(io.Discard); c.brotliPool.Put(zw) }()
 		if _, err := zw.Write(resp.Body); err != nil {
 			_ = zw.Close()
 			return
@@ -72,13 +98,9 @@ func (c *Compressor) Apply(r *http.Request, resp *CapturedResponse) {
 			return
 		}
 	case "gzip":
-		if level < gzip.HuffmanOnly || level > gzip.BestCompression {
-			level = gzip.DefaultCompression
-		}
-		zw, err := gzip.NewWriterLevel(&buf, level)
-		if err != nil {
-			return
-		}
+		zw := c.gzipPool.Get().(*gzip.Writer)
+		zw.Reset(buf)
+		defer func() { zw.Reset(io.Discard); c.gzipPool.Put(zw) }()
 		if _, err := zw.Write(resp.Body); err != nil {
 			_ = zw.Close()
 			return
@@ -89,9 +111,12 @@ func (c *Compressor) Apply(r *http.Request, resp *CapturedResponse) {
 	default:
 		return
 	}
-	resp.Body = buf.Bytes()
+	if buf.Len() >= len(resp.Body) {
+		return
+	}
+	resp.Body = append([]byte(nil), buf.Bytes()...)
 	resp.Header.Set("Content-Encoding", encoding)
-	resp.Header.Set("Vary", appendVary(resp.Header.Get("Vary"), "Accept-Encoding"))
+	appendVaryHeader(resp.Header, "Accept-Encoding")
 	resp.Header.Set("Content-Length", strconv.Itoa(len(resp.Body)))
 	resp.Header.Del("Content-MD5")
 }
@@ -108,20 +133,73 @@ func (c *Compressor) MayApplyResponse(r *http.Request, resp *http.Response) bool
 	if !c.MayApplyRequest(r) || resp == nil {
 		return false
 	}
-	if resp.Header.Get("Content-Encoding") != "" || !c.allowedType(resp.Header.Get("Content-Type")) {
+	if !c.transformAllowed(r, resp.StatusCode, resp.Header) || anyNonEmptyHeaderValue(resp.Header, "Content-Encoding") || !c.allowedType(resp.Header.Get("Content-Type")) {
 		return false
 	}
 	return resp.ContentLength < 0 || resp.ContentLength >= c.min
 }
 
+var compressionBuffers = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+// SetCompressAuthenticatedHTML explicitly opts authenticated HTML into
+// compression; the default avoids coupling attacker text and session secrets.
+func (c *Compressor) SetCompressAuthenticatedHTML(enabled bool) {
+	c.compressAuthenticatedHTML = enabled
+}
+
+func (c *Compressor) transformAllowed(r *http.Request, status int, header http.Header) bool {
+	if status == http.StatusPartialContent || anyNonEmptyHeaderValue(header, "Content-Range") {
+		return false
+	}
+	for _, directive := range cacheDirectives(header) {
+		if directive[0] == "no-transform" {
+			return false
+		}
+	}
+	return c.compressAuthenticatedHTML || !strings.HasPrefix(strings.ToLower(header.Get("Content-Type")), "text/html") ||
+		(!anyNonEmptyHeaderValue(r.Header, "Authorization") && !anyNonEmptyHeaderValue(r.Header, "Cookie"))
+}
+
 func (c *Compressor) negotiateEncoding(acceptEncoding string) string {
-	if _, ok := c.algos["br"]; ok && acceptsEncoding(acceptEncoding, "br") {
-		return "br"
+	best, quality := "", 0.0
+	for _, algorithm := range c.preference {
+		if q := encodingQuality(acceptEncoding, algorithm); q > quality {
+			best, quality = algorithm, q
+		}
 	}
-	if _, ok := c.algos["gzip"]; ok && acceptsEncoding(acceptEncoding, "gzip") {
-		return "gzip"
+	return best
+}
+
+func encodingQuality(header, encoding string) float64 {
+	explicit, wildcard := -1.0, 0.0
+	for _, item := range strings.Split(header, ",") {
+		parts := strings.Split(item, ";")
+		token := strings.ToLower(strings.TrimSpace(parts[0]))
+		if token != encoding && token != "*" {
+			continue
+		}
+		q := 1.0
+		for _, param := range parts[1:] {
+			name, value, _ := strings.Cut(strings.TrimSpace(param), "=")
+			if strings.EqualFold(name, "q") {
+				parsed, err := strconv.ParseFloat(value, 64)
+				if err != nil || parsed < 0 || parsed > 1 {
+					q = 0
+				} else {
+					q = parsed
+				}
+			}
+		}
+		if token == encoding {
+			explicit = q
+		} else {
+			wildcard = q
+		}
 	}
-	return ""
+	if explicit >= 0 {
+		return explicit
+	}
+	return wildcard
 }
 
 func (c *Compressor) allowedType(contentType string) bool {
@@ -141,15 +219,7 @@ func (c *Compressor) allowedType(contentType string) bool {
 	return false
 }
 
-func acceptsEncoding(header, encoding string) bool {
-	for _, item := range strings.Split(header, ",") {
-		token := strings.ToLower(strings.TrimSpace(strings.Split(item, ";")[0]))
-		if token == encoding || token == "*" {
-			return true
-		}
-	}
-	return false
-}
+func acceptsEncoding(header, encoding string) bool { return encodingQuality(header, encoding) > 0 }
 
 func normalizeAlgorithm(algorithm string) string {
 	switch strings.ToLower(strings.TrimSpace(algorithm)) {
@@ -172,4 +242,15 @@ func appendVary(current, token string) string {
 		return token
 	}
 	return current + ", " + token
+}
+
+func appendVaryHeader(header http.Header, token string) {
+	for _, value := range header.Values("Vary") {
+		for _, item := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(item), token) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", token)
 }

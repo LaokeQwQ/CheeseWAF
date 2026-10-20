@@ -204,6 +204,9 @@ func Validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("ai.provider must be openai, openai-responses, openai-chat, or anthropic")
 	}
+	if err := ValidateAIPromptRegistry(cfg.AI); err != nil {
+		return fmt.Errorf("ai prompt registry: %w", err)
+	}
 	if err := validateAILimits(cfg.AI); err != nil {
 		return err
 	}
@@ -235,6 +238,7 @@ func Validate(cfg *Config) error {
 	if err := validateProtectionPolicy("protection.policy", cfg.Protection.Policy, false); err != nil {
 		return err
 	}
+	seenDomains := make(map[string]string)
 	for i := range cfg.Sites {
 		site := &cfg.Sites[i]
 		if !site.Enabled {
@@ -245,6 +249,20 @@ func Validate(cfg *Config) error {
 		}
 		if len(site.Domains) == 0 {
 			return fmt.Errorf("site %q must define at least one domain", site.Name)
+		}
+		for j, domain := range site.Domains {
+			normalized, err := normalizeSiteDomain(domain)
+			if err != nil {
+				return fmt.Errorf("site %q domain %q: %w", site.Name, domain, err)
+			}
+			if owner, duplicate := seenDomains[normalized]; duplicate {
+				return fmt.Errorf("domain %q is duplicated by sites %q and %q", normalized, owner, site.Name)
+			}
+			seenDomains[normalized] = site.Name
+			site.Domains[j] = normalized
+		}
+		if site.WAF.SemanticPolicy.DetectionBudget < 0 || site.WAF.SemanticPolicy.DetectionBudget > 5*time.Second {
+			return fmt.Errorf("site %q detection_budget must be between 0 and 5s", site.Name)
 		}
 		if len(site.Upstreams) == 0 {
 			return fmt.Errorf("site %q must define at least one upstream", site.Name)
@@ -288,10 +306,12 @@ func Validate(cfg *Config) error {
 		if site.WAF.Performance.MaxBodyBytes < 0 {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)
 		}
-		// Cap to avoid configuration-induced OOM (1 GiB hard ceiling).
-		const maxBodyCeiling int64 = 1 << 30
+		// Align the accepted setting with the engine's per-site in-flight body
+		// budget. Larger values could be saved successfully but overload every
+		// body that actually approaches the configured limit.
+		const maxBodyCeiling int64 = 64 << 20
 		if site.WAF.Performance.MaxBodyBytes > maxBodyCeiling {
-			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 1GiB ceiling", site.Name)
+			return fmt.Errorf("site %q waf.performance.max_body_bytes exceeds 64MiB inspection ceiling", site.Name)
 		}
 		if err := validateResponseInspection(site.Name, site.WAF.Response); err != nil {
 			return err
@@ -448,7 +468,7 @@ func Validate(cfg *Config) error {
 		if strings.TrimSpace(indicator.Value) == "" {
 			return fmt.Errorf("threat intel indicator %q must define value", indicator.ID)
 		}
-		if err := validateIPEntry(indicator.Value); err != nil {
+		if err := validateThreatIntelIndicator(indicator); err != nil {
 			return fmt.Errorf("invalid threat intel indicator %q: %w", indicator.Value, err)
 		}
 	}
@@ -615,6 +635,11 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("scheduled task %q target is invalid: %w", normalized.ID, err)
 			}
 		}
+		if strings.EqualFold(strings.TrimSpace(normalized.Type), "security_report") && strings.EqualFold(strings.TrimSpace(normalized.Channel), "file") {
+			if err := validateManagedSchedulerPath(normalized.Recipient, cfg.Setup.DataDir, filepath.Dir(cfg.Logging.Output.File.Path)); err != nil {
+				return fmt.Errorf("scheduled task %q recipient is invalid: %w", normalized.ID, err)
+			}
+		}
 	}
 	for _, schema := range cfg.APISec.Validation.Schemas {
 		if !schema.Enabled {
@@ -660,6 +685,9 @@ func Validate(cfg *Config) error {
 			if err := validateDedicatedManagedPath(cacheFile, filepath.Join(cfg.Setup.DataDir, "apisec")); err != nil {
 				return fmt.Errorf("api auth jwks_cache_file is invalid: %w", err)
 			}
+		}
+		if cfg.APISec.Auth.JWTSharedSecret != "" && IsWeakBotSecret(cfg.APISec.Auth.JWTSharedSecret) {
+			return fmt.Errorf("api auth jwt_shared_secret must contain at least 32 bytes of high-entropy key material")
 		}
 		// Fail closed: auth enabled without verification material is an auth bypass.
 		if strings.TrimSpace(cfg.APISec.Auth.JWTSharedSecret) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWTPublicKeyPEM) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSFile) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSJSON) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSURL) == "" && strings.TrimSpace(cfg.APISec.Auth.JWKSCacheFile) == "" {
@@ -776,6 +804,9 @@ func ValidateStorageProfile(cfg *Config) error {
 		if strings.TrimSpace(raft.DataDir) == "" || strings.TrimSpace(raft.Listen) == "" || strings.TrimSpace(raft.Mode) == "" {
 			return fmt.Errorf("%w: cluster.consensus.native_raft data_dir, listen and explicit mode are required", ErrProductionStorageUnavailable)
 		}
+		if err := validateNativeRaftVoters(raft.InitialVoters); err != nil {
+			return fmt.Errorf("%w: %v", ErrProductionStorageUnavailable, err)
+		}
 		if !cfg.Storage.Redis.Enabled || strings.TrimSpace(cfg.Storage.Redis.Address) == "" {
 			return fmt.Errorf("%w: Redis must be enabled with storage.redis.address for storage.profile=production", ErrProductionStorageUnavailable)
 		}
@@ -789,6 +820,35 @@ func ValidateStorageProfile(cfg *Config) error {
 	default:
 		return fmt.Errorf("storage.profile must be temporary or production (got %q)", cfg.Storage.Profile)
 	}
+}
+
+func validateNativeRaftVoters(voters []NativeRaftVoter) error {
+	ids := make(map[string]struct{}, len(voters))
+	addresses := make(map[string]struct{}, len(voters))
+	for _, voter := range voters {
+		if !controlplaneIdentity(strings.TrimSpace(voter.ID)) || strings.TrimSpace(voter.ID) != voter.ID {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains an invalid id")
+		}
+		host, rawPort, err := net.SplitHostPort(voter.Address)
+		port, portErr := strconv.Atoi(rawPort)
+		if err != nil || host == "" || strings.TrimSpace(voter.Address) != voter.Address || portErr != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains an invalid address")
+		}
+		for _, r := range host {
+			if unicode.IsSpace(r) || unicode.IsControl(r) || r == '/' || r == '\\' {
+				return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains an invalid address")
+			}
+		}
+		if _, exists := ids[voter.ID]; exists {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains duplicate ids")
+		}
+		if _, exists := addresses[voter.Address]; exists {
+			return fmt.Errorf("cluster.consensus.native_raft.initial_voters contains duplicate addresses")
+		}
+		ids[voter.ID] = struct{}{}
+		addresses[voter.Address] = struct{}{}
+	}
+	return nil
 }
 
 func controlplaneIdentity(value string) bool {
@@ -1057,33 +1117,86 @@ func validateCAPTCHAAssets(cfg CAPTCHAAssetsConfig) error {
 }
 
 func validateManagedSchedulerPath(target string, roots ...string) error {
+	_, err := ResolveManagedSchedulerPath(target, roots...)
+	return err
+}
+
+// ResolveManagedSchedulerPath applies the same root-relative path rules during
+// configuration validation and scheduler execution. Missing output directories
+// are allowed, but existing symlinks under a managed root are rejected.
+func ResolveManagedSchedulerPath(target string, roots ...string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("managed scheduler path is required")
+	}
 	cleanTarget := filepath.Clean(strings.TrimSpace(target))
 	if !filepath.IsAbs(cleanTarget) {
-		matchedRoot := false
-		for _, root := range roots {
-			cleanRoot := filepath.Clean(strings.TrimSpace(root))
-			if cleanRoot != "." && cleanRoot != "" && strings.EqualFold(cleanTarget, filepath.Base(cleanRoot)) {
-				cleanTarget = cleanRoot
-				matchedRoot = true
-				break
+		// Prefer a configured relative path that already resolves under one of
+		// the roots (for example ./data/reports or ./logs). Joining it with the
+		// first root would otherwise create data/data/reports.
+		resolvedUnderRoot := false
+		if candidateAbs, absErr := filepath.Abs(cleanTarget); absErr == nil {
+			for _, root := range roots {
+				root = strings.TrimSpace(root)
+				if root == "" || root == "." {
+					continue
+				}
+				rootAbs, rootErr := filepath.Abs(filepath.Clean(root))
+				if rootErr != nil {
+					continue
+				}
+				rel, relErr := filepath.Rel(rootAbs, candidateAbs)
+				if relErr == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+					cleanTarget = candidateAbs
+					resolvedUnderRoot = true
+					break
+				}
 			}
 		}
-		if !matchedRoot {
+		if !resolvedUnderRoot {
 			for _, root := range roots {
 				cleanRoot := filepath.Clean(strings.TrimSpace(root))
-				if cleanRoot != "." && cleanRoot != "" {
-					cleanTarget = filepath.Join(cleanRoot, cleanTarget)
+				base := filepath.Base(cleanRoot)
+				prefix := base + string(filepath.Separator)
+				if cleanRoot != "." && cleanRoot != "" && cleanTarget == base {
+					cleanTarget = cleanRoot
+					resolvedUnderRoot = true
 					break
+				}
+				if cleanRoot != "." && cleanRoot != "" && strings.HasPrefix(cleanTarget, prefix) {
+					cleanTarget = filepath.Join(cleanRoot, strings.TrimPrefix(cleanTarget, prefix))
+					resolvedUnderRoot = true
+					break
+				}
+			}
+		}
+		if !resolvedUnderRoot {
+			matchedRoot := false
+			for _, root := range roots {
+				cleanRoot := filepath.Clean(strings.TrimSpace(root))
+				if cleanRoot != "." && cleanRoot != "" && strings.EqualFold(cleanTarget, filepath.Base(cleanRoot)) {
+					cleanTarget = cleanRoot
+					matchedRoot = true
+					break
+				}
+			}
+			if !matchedRoot {
+				for _, root := range roots {
+					cleanRoot := filepath.Clean(strings.TrimSpace(root))
+					if cleanRoot != "." && cleanRoot != "" {
+						cleanTarget = filepath.Join(cleanRoot, cleanTarget)
+						break
+					}
 				}
 			}
 		}
 	}
 	targetAbs, err := filepath.Abs(cleanTarget)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, root := range roots {
-		if strings.TrimSpace(root) == "" {
+		root = strings.TrimSpace(root)
+		if root == "" || root == "." {
 			continue
 		}
 		rootAbs, err := filepath.Abs(filepath.Clean(root))
@@ -1092,10 +1205,13 @@ func validateManagedSchedulerPath(target string, roots ...string) error {
 		}
 		rel, err := filepath.Rel(rootAbs, targetAbs)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil
+			if err := fsguard.ValidateDirectoryUnderRoot(rootAbs, targetAbs); err != nil {
+				return "", fmt.Errorf("managed scheduler path is invalid: %w", err)
+			}
+			return targetAbs, nil
 		}
 	}
-	return fmt.Errorf("must be inside the configured data or log directory")
+	return "", fmt.Errorf("must be inside the configured data or log directory")
 }
 
 func validateDedicatedManagedPath(target, root string) error {
@@ -1562,9 +1678,9 @@ func ValidateCustomRule(rule CustomRuleConfig) error {
 		return fmt.Errorf("pattern compiled program exceeds %d instructions", maxCustomRuleProgramInsts)
 	}
 	switch strings.ToLower(strings.TrimSpace(rule.Location)) {
-	case "uri", "query", "header", "body", "cookie":
+	case "uri", "request_uri", "query", "args", "header", "body", "cookie":
 	default:
-		return fmt.Errorf("location must be uri, query, header, body, or cookie")
+		return fmt.Errorf("location must be uri, request_uri, query, args, header, body, or cookie")
 	}
 	switch strings.ToLower(strings.TrimSpace(rule.Action)) {
 	case "block", "log", "challenge":
@@ -1829,6 +1945,9 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {
+	if bot.Enabled && bot.Secret != "" && bot.Secret != BotSecretPlaceholder && IsWeakBotSecret(bot.Secret) {
+		return fmt.Errorf("protection.bot.secret must contain at least 32 bytes of high-entropy key material")
+	}
 	if err := ValidateBotChallengeBackend(bot.ChallengeBackend); err != nil {
 		return err
 	}
@@ -2051,6 +2170,82 @@ func validateIPEntry(entry string) error {
 		return fmt.Errorf("not an IP or CIDR")
 	}
 	return nil
+}
+
+func validateThreatIntelIndicator(indicator ThreatIntelConfig) error {
+	typ := strings.ToLower(strings.TrimSpace(indicator.Type))
+	value := strings.TrimSpace(indicator.Value)
+	switch typ {
+	case "", "ip", "ipv4-addr", "ipv6-addr", "ip-src", "ip-dst", "cidr":
+		if strings.Contains(value, "/") {
+			parsed, network, err := net.ParseCIDR(value)
+			if err != nil {
+				return err
+			}
+			ones, bits := network.Mask.Size()
+			if bits == 128 && parsed.To4() != nil {
+				ones, bits = ones-96, 32
+			}
+			if ones < 0 || (bits == 32 && ones < 8) || (bits == 128 && ones < 16) {
+				return fmt.Errorf("CIDR prefix is too broad")
+			}
+			if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
+				return fmt.Errorf("private or local CIDR is not allowed")
+			}
+			return nil
+		}
+		parsed := net.ParseIP(value)
+		if parsed == nil {
+			return fmt.Errorf("not an IP or CIDR")
+		}
+		if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
+			return fmt.Errorf("private or local IP is not allowed")
+		}
+		return nil
+	case "domain", "domain-name", "hostname":
+		if !strings.Contains(value, ".") {
+			return fmt.Errorf("domain must contain a dot")
+		}
+		_, err := normalizeSiteDomain(value)
+		return err
+	case "url":
+		parsed, err := url.Parse(value)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+			return fmt.Errorf("invalid HTTP(S) URL")
+		}
+		if ip := net.ParseIP(parsed.Hostname()); ip == nil {
+			if _, err := normalizeSiteDomain(parsed.Hostname()); err != nil {
+				return err
+			}
+		}
+		return nil
+	case "sha256", "sha-256", "md5", "ja3":
+		want := 32
+		if typ == "sha256" || typ == "sha-256" {
+			want = 64
+		}
+		if len(value) != want {
+			return fmt.Errorf("invalid %s length", typ)
+		}
+		if _, err := hex.DecodeString(value); err != nil {
+			return fmt.Errorf("invalid %s encoding", typ)
+		}
+		return nil
+	case "asn", "autonomous-system":
+		value = strings.TrimPrefix(strings.ToUpper(value), "AS")
+		number, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || number == 0 {
+			return fmt.Errorf("invalid ASN")
+		}
+		return nil
+	case "ja4":
+		if !regexp.MustCompile(`^[tq][a-z0-9]{9}_[a-f0-9]{12}_[a-f0-9]{12}$`).MatchString(value) {
+			return fmt.Errorf("invalid JA4 fingerprint")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported indicator type %q", indicator.Type)
+	}
 }
 
 func validateResponseInspection(siteName string, cfg ResponseInspectionConfig) error {

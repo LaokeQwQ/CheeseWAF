@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
@@ -28,6 +29,8 @@ const (
 	reportExactIPLimit        = 4096
 	reportHLLPrecision        = 10
 	reportRecentRiskLimit     = 10
+	reportMaxScanBytes        = 64 << 20
+	reportMaxScanLines        = 500_000
 )
 
 var reportHTTPClient = netguard.NewHTTPClient(netguard.HTTPClientOptions{
@@ -56,6 +59,7 @@ type ReportSummary struct {
 	TopURIs        map[string]int `json:"top_uris"`
 	TopDetectors   map[string]int `json:"top_detectors"`
 	RecentHighRisk []ReportEvent  `json:"recent_high_risk"`
+	Partial        bool           `json:"partial,omitempty"`
 }
 
 type ReportEvent struct {
@@ -291,7 +295,11 @@ func SecurityReport(logPath, dataDir string) TaskFunc {
 		case "webhook":
 			return postReport(ctx, task.Recipient, task.Format, report)
 		default:
-			return writeReport(task.Recipient, task.ID, task.Format, report)
+			recipient, err := validateReportDir(task.Recipient, task.ManagedRoots, dataDir)
+			if err != nil {
+				return err
+			}
+			return writeReport(recipient, task.ID, task.Format, report)
 		}
 	}
 }
@@ -341,7 +349,15 @@ func SummarizeSecurityLogsContext(ctx context.Context, logPath, period string, n
 	topIPs := newBoundedCounter(reportTopKCapacity)
 	topURIs := newBoundedCounter(reportTopKCapacity)
 	topDetectors := newBoundedCounter(reportTopKCapacity)
+	var scannedBytes int64
+	var scannedLines int
 	for scanner.Scan() {
+		scannedLines++
+		scannedBytes += int64(len(scanner.Bytes())) + 1
+		if scannedLines > reportMaxScanLines || scannedBytes > reportMaxScanBytes {
+			summary.Partial = true
+			break
+		}
 		if ctx.Err() != nil {
 			return summary, ctx.Err()
 		}
@@ -511,8 +527,45 @@ func writeReport(dir, taskID, format string, report []byte) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("security report directory must be a non-symlink directory")
+	}
 	name := fmt.Sprintf("%s-%s%s", safeReportID(taskID), time.Now().UTC().Format("20060102-150405"), reportExtension(format))
-	return os.WriteFile(filepath.Join(dir, name), report, 0o640)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("open security report directory: %w", err)
+	}
+	defer root.Close()
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(report); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func validateReportDir(target string, roots []string, fallbackRoot string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("security report directory is required")
+	}
+	if len(roots) == 0 && strings.TrimSpace(fallbackRoot) != "" {
+		roots = []string{fallbackRoot}
+	}
+	if len(roots) == 0 {
+		return "", fmt.Errorf("security report managed roots are not configured")
+	}
+	targetAbs, err := config.ResolveManagedSchedulerPath(target, roots...)
+	if err != nil {
+		return "", fmt.Errorf("security report directory %q is outside CheeseWAF managed directories or unsafe: %w", target, err)
+	}
+	return targetAbs, nil
 }
 
 func postReport(ctx context.Context, endpoint, format string, report []byte) error {

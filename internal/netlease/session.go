@@ -158,6 +158,11 @@ func (m *TemporarySessionManager) Begin(ctx context.Context, req BeginTemporaryS
 		ExpiresAt:           expiresAt,
 	}
 	m.mu.Lock()
+	m.pruneLocked(now)
+	if len(m.sessions) >= 65536 {
+		m.mu.Unlock()
+		return TemporarySession{}, ErrUsageLimit
+	}
 	m.sessions[session.ID] = session
 	m.mu.Unlock()
 	return session, nil
@@ -212,6 +217,11 @@ func (m *TemporarySessionManager) Confirm(ctx context.Context, input Confirmatio
 	if _, err := m.activeSessionLocked(input.SessionID, now); err != nil {
 		m.mu.Unlock()
 		return TemporaryConfirmation{}, err
+	}
+	m.pruneLocked(now)
+	if len(m.confirmations) >= 65536 {
+		m.mu.Unlock()
+		return TemporaryConfirmation{}, ErrUsageLimit
 	}
 	m.confirmations[id] = temporaryConfirmationRecord{confirmation: confirmation, identity: identity}
 	m.mu.Unlock()
@@ -417,4 +427,27 @@ func wrapAdministratorPasswordError(err error) error {
 		return nil
 	}
 	return ErrAdministratorPasswordDenied
+}
+
+func (m *TemporarySessionManager) pruneLocked(now time.Time) {
+	budget := 128
+	for id, session := range m.sessions {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		if !now.Before(session.ExpiresAt.Add(MaxLeaseTTL)) {
+			delete(m.sessions, id)
+		}
+	}
+	budget = 128
+	for id, record := range m.confirmations {
+		if budget <= 0 {
+			break
+		}
+		budget--
+		if !now.Before(record.confirmation.ExpiresAt.Add(MaxLeaseTTL)) {
+			delete(m.confirmations, id)
+		}
+	}
 }

@@ -29,45 +29,77 @@ func NewHealthRegistry(sites []config.SiteConfig) *HealthRegistry {
 	registry := &HealthRegistry{states: map[string]upstreamHealthState{}}
 	for _, site := range sites {
 		for _, upstream := range site.Upstreams {
-			registry.addUpstream(upstream.Address, site.WAF.HealthCheck)
+			registry.addUpstream(siteHealthKey(site.ID, upstream.Address), site.WAF.HealthCheck)
 		}
 	}
 	return registry
 }
 
+func siteHealthKey(siteID, address string) string {
+	return siteID + "\x00" + normalizeUpstream(address)
+}
 func (r *HealthRegistry) Healthy(address string) bool {
 	if r == nil {
 		return true
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	state, ok := r.states[normalizeUpstream(address)]
+	for key, state := range r.states {
+		if key == normalizeUpstream(address) || strings.HasSuffix(key, "\x00"+normalizeUpstream(address)) {
+			if !state.healthy {
+				return false
+			}
+		}
+	}
+	return true
+}
+func (r *HealthRegistry) HealthyForSite(siteID, address string) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.states[siteHealthKey(siteID, address)]
 	return !ok || state.healthy
 }
-
+func updateHealth(state upstreamHealthState, healthy bool) upstreamHealthState {
+	if healthy {
+		state.consecutiveFailure = 0
+		state.consecutiveSuccess++
+		if state.consecutiveSuccess >= state.healthyThreshold {
+			state.healthy = true
+		}
+	} else {
+		state.consecutiveSuccess = 0
+		state.consecutiveFailure++
+		if state.consecutiveFailure >= state.unhealthyThreshold {
+			state.healthy = false
+		}
+	}
+	return state
+}
+func (r *HealthRegistry) SetForSite(siteID, address string, healthy bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := siteHealthKey(siteID, address)
+	if state, ok := r.states[key]; ok {
+		r.states[key] = updateHealth(state, healthy)
+	}
+}
 func (r *HealthRegistry) Set(address string, healthy bool) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	key := normalizeUpstream(address)
-	if state, ok := r.states[key]; ok {
-		if healthy {
-			state.consecutiveFailure = 0
-			state.consecutiveSuccess++
-			if state.consecutiveSuccess >= state.healthyThreshold {
-				state.healthy = true
-			}
-		} else {
-			state.consecutiveSuccess = 0
-			state.consecutiveFailure++
-			if state.consecutiveFailure >= state.unhealthyThreshold {
-				state.healthy = false
-			}
+	defer r.mu.Unlock()
+	for key, state := range r.states {
+		if key == normalizeUpstream(address) || strings.HasSuffix(key, "\x00"+normalizeUpstream(address)) {
+			r.states[key] = updateHealth(state, healthy)
 		}
-		r.states[key] = state
 	}
-	r.mu.Unlock()
 }
 
 // UpdateSites updates the registry in place so users retain one source of truth.
@@ -111,13 +143,17 @@ func (r *HealthRegistry) Snapshot() map[string]bool {
 }
 
 type HealthChecker struct {
-	mu       sync.Mutex
-	registry *HealthRegistry
-	sites    []config.SiteConfig
-	client   *http.Client
-	parent   context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	mu         sync.Mutex
+	registry   *HealthRegistry
+	sites      []config.SiteConfig
+	client     *http.Client
+	parent     context.Context
+	generation *healthGeneration
+}
+
+type healthGeneration struct {
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func NewHealthChecker(sites []config.SiteConfig, registry *HealthRegistry) *HealthChecker {
@@ -139,10 +175,14 @@ func (h *HealthChecker) Start(ctx context.Context) {
 	if h == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	h.mu.Lock()
 	h.parent = ctx
-	h.restartLocked()
+	old := h.restartLocked()
 	h.mu.Unlock()
+	waitHealthGeneration(old)
 }
 
 // UpdateSites replaces the checker generation after the previous loops exit.
@@ -152,30 +192,39 @@ func (h *HealthChecker) UpdateSites(sites []config.SiteConfig) {
 	}
 	h.mu.Lock()
 	h.sites = append([]config.SiteConfig(nil), sites...)
+	var old *healthGeneration
 	if h.parent != nil {
-		h.restartLocked()
+		old = h.restartLocked()
 	}
 	h.mu.Unlock()
+	waitHealthGeneration(old)
 }
 
-func (h *HealthChecker) restartLocked() {
-	if h.cancel != nil {
-		h.cancel()
-		h.wg.Wait()
-	}
+func (h *HealthChecker) restartLocked() *healthGeneration {
+	old := h.generation
 	ctx, cancel := context.WithCancel(h.parent)
-	h.cancel = cancel
+	next := &healthGeneration{cancel: cancel}
 	for _, site := range h.sites {
 		if !site.WAF.HealthCheck.Enabled {
 			continue
 		}
 		site := site
-		h.wg.Add(1)
+		next.wg.Add(1)
 		go func() {
-			defer h.wg.Done()
+			defer next.wg.Done()
 			h.loop(ctx, site)
 		}()
 	}
+	h.generation = next
+	return old
+}
+
+func waitHealthGeneration(generation *healthGeneration) {
+	if generation == nil {
+		return
+	}
+	generation.cancel()
+	generation.wg.Wait()
 }
 
 func (h *HealthChecker) loop(ctx context.Context, site config.SiteConfig) {
@@ -185,18 +234,19 @@ func (h *HealthChecker) loop(ctx context.Context, site config.SiteConfig) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	h.check(site)
+	h.checkContext(ctx, site)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			h.check(site)
+			h.checkContext(ctx, site)
 		}
 	}
 }
 
-func (h *HealthChecker) check(site config.SiteConfig) {
+func (h *HealthChecker) check(site config.SiteConfig) { h.checkContext(context.Background(), site) }
+func (h *HealthChecker) checkContext(ctx context.Context, site config.SiteConfig) {
 	path := site.WAF.HealthCheck.Path
 	if path == "" {
 		path = "/"
@@ -207,45 +257,71 @@ func (h *HealthChecker) check(site config.SiteConfig) {
 	}
 	client := *h.client
 	client.Timeout = timeout
+	var checks sync.WaitGroup
+	slots := make(chan struct{}, 8)
 	for _, upstream := range site.Upstreams {
-		rawURL, _ := url.Parse(strings.TrimSpace(upstream.Address))
-		target := normalizeUpstream(upstream.Address)
-		u, err := url.Parse(target)
-		if err != nil {
-			h.registry.Set(upstream.Address, false)
-			continue
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			checks.Wait()
+			return
 		}
-		u.Path = path
-		var resp *http.Response
-		if rawURL != nil && (strings.EqualFold(rawURL.Scheme, "ws") || strings.EqualFold(rawURL.Scheme, "wss")) {
-			request, requestErr := http.NewRequest(http.MethodGet, u.String(), nil)
-			if requestErr != nil {
-				h.registry.Set(upstream.Address, false)
-				continue
+		checks.Add(1)
+		go func(upstream config.UpstreamConfig) {
+			defer checks.Done()
+			defer func() { <-slots }()
+			rawURL, _ := url.Parse(strings.TrimSpace(upstream.Address))
+			target := normalizeUpstream(upstream.Address)
+			u, err := url.Parse(target)
+			if err != nil {
+				if ctx.Err() == nil {
+					h.registry.SetForSite(site.ID, upstream.Address, false)
+				}
+				return
 			}
-			request.Header.Set("Connection", "Upgrade")
-			request.Header.Set("Upgrade", "websocket")
-			request.Header.Set("Sec-WebSocket-Version", "13")
-			request.Header.Set("Sec-WebSocket-Key", "Y2hlZXNld2FmLWhlYWx0aA==")
-			resp, err = client.Do(request)
-		} else {
-			resp, err = client.Get(u.String())
-		}
-		if err != nil {
-			h.registry.Set(upstream.Address, false)
-			continue
-		}
-		_ = netguard.DrainAndClose(resp.Body)
-		healthy := resp.StatusCode >= 200 && resp.StatusCode < 400
-		if rawURL != nil && (strings.EqualFold(rawURL.Scheme, "ws") || strings.EqualFold(rawURL.Scheme, "wss")) {
-			healthy = resp.StatusCode == http.StatusSwitchingProtocols
-		}
-		h.registry.Set(upstream.Address, healthy)
+			u.Path = path
+			var resp *http.Response
+			if rawURL != nil && (strings.EqualFold(rawURL.Scheme, "ws") || strings.EqualFold(rawURL.Scheme, "wss")) {
+				request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+				if requestErr != nil {
+					if ctx.Err() == nil {
+						h.registry.SetForSite(site.ID, upstream.Address, false)
+					}
+					return
+				}
+				request.Header.Set("Connection", "Upgrade")
+				request.Header.Set("Upgrade", "websocket")
+				request.Header.Set("Sec-WebSocket-Version", "13")
+				request.Header.Set("Sec-WebSocket-Key", "Y2hlZXNld2FmLWhlYWx0aA==")
+				resp, err = client.Do(request)
+			} else {
+				request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+				if requestErr != nil {
+					return
+				}
+				resp, err = client.Do(request)
+			}
+			if err != nil {
+				if ctx.Err() == nil {
+					h.registry.SetForSite(site.ID, upstream.Address, false)
+				}
+				return
+			}
+			_ = netguard.DrainAndClose(resp.Body)
+			healthy := resp.StatusCode >= 200 && resp.StatusCode < 400
+			if rawURL != nil && (strings.EqualFold(rawURL.Scheme, "ws") || strings.EqualFold(rawURL.Scheme, "wss")) {
+				healthy = resp.StatusCode == http.StatusSwitchingProtocols
+			}
+			if ctx.Err() == nil {
+				h.registry.SetForSite(site.ID, upstream.Address, healthy)
+			}
+		}(upstream)
 	}
+	checks.Wait()
 }
 
 func (r *HealthRegistry) addUpstream(address string, cfg config.HealthCheckConfig) {
-	key := normalizeUpstream(address)
+	key := address
 	healthyThreshold := cfg.HealthyThreshold
 	if healthyThreshold <= 0 {
 		healthyThreshold = 1

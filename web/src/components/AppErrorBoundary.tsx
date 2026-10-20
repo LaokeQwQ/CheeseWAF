@@ -127,14 +127,19 @@ function newUITraceID() {
   return `cw-${Array.from(bytes, (item) => item.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
+export function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
   // Gate on cookie CSRF presence (session cookie is HttpOnly). Never put secrets in body.
   const hasSession = document.cookie.includes("cheesewaf_csrf=") || sessionStorage.getItem("cheesewaf-authed") === "1";
   if (!hasSession) {
     return;
   }
-  const csrfMatch = document.cookie.match(/(?:^|;\s*)cheesewaf_csrf=([^;]+)/);
-  const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
+  const csrfMatch = document.cookie.match(/(?:^|;\s*)(?:__Host-)?cheesewaf_csrf=([^;]+)/);
+  let csrf = "";
+  try {
+    csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : "";
+  } catch {
+    // A malformed cookie must not throw from the error boundary itself.
+  }
   const payload = {
     trace_id: traceID || newUITraceID(),
     name: error.name,
@@ -158,6 +163,8 @@ function reportUIError(traceID: string, error: Error, info: ErrorInfo) {
       ...(csrf ? { "X-CSRF-Token": csrf } : {}),
     },
     body: JSON.stringify(payload),
+  }).then((response) => {
+    if (!response.ok) throw new Error(`UI error report returned HTTP ${response.status}`);
   }).catch((reportError) => {
     console.error(
       "[CheeseWAF UI error report failed]",

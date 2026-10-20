@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -198,6 +199,126 @@ func TestImportCustomRulesKeepsOldOnInvalid(t *testing.T) {
 	}
 	if len(updated.Advanced.CustomRules) != 1 || updated.Advanced.CustomRules[0].ID != "old" {
 		t.Fatalf("old rules must remain: %+v", updated.Advanced.CustomRules)
+	}
+}
+
+func TestImportCustomRulesPreservesMissingIDMergeSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"json", `{"custom_rules":[{"name":"renamed","pattern":"probe","location":"request_uri","action":"log","enabled":true},{"name":"keep","pattern":"new-token","location":"request_uri","action":"block","enabled":true}]}`},
+		{"yaml", "custom_rules:\n  - name: renamed\n    pattern: probe\n    location: request_uri\n    action: log\n    enabled: true\n  - name: keep\n    pattern: new-token\n    location: request_uri\n    action: block\n    enabled: true\n"},
+		{"modsecurity", "SecRule REQUEST_URI \"@contains probe\" \"msg:'renamed',log\"\nSecRule REQUEST_URI \"@contains new-token\" \"msg:'keep',deny\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, site := newSiteTestHandler(t)
+			h.OnSitesChanged = func([]config.SiteConfig) error { return nil }
+			site.Advanced.CustomRules = []storage.SiteCustomRule{
+				{ID: "keep", Name: "keep", Pattern: "keep-token", Location: "request_uri", Action: "block", Severity: "low", Enabled: true},
+				{ID: "stable", Name: "old", Pattern: "probe", Location: "request_uri", Action: "block", Severity: "low", Enabled: true},
+			}
+			if err := store.UpdateSite(t.Context(), &site); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				rec := httptest.NewRecorder()
+				h.ImportCustomRules(rec, httptest.NewRequest(http.MethodPost, "/rules/import?site_id="+site.ID, strings.NewReader(tc.body)))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("attempt %d status = %d: %s", attempt, rec.Code, rec.Body.String())
+				}
+				var response struct {
+					Data struct {
+						Imported int                       `json:"imported"`
+						Count    int                       `json:"count"`
+						Rules    []config.CustomRuleConfig `json:"custom_rules"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				if response.Data.Imported != 2 || response.Data.Count != 3 {
+					t.Fatalf("import counts must distinguish input and merged rules: %s", rec.Body.String())
+				}
+				updated, err := store.GetSite(t.Context(), site.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, rules := range [][]config.CustomRuleConfig{response.Data.Rules, storage.SiteCustomRulesToConfig(updated.Advanced.CustomRules)} {
+					if len(rules) != 3 || rules[0].ID != "keep" || rules[0].Pattern != "keep-token" || rules[1].ID != "stable" || rules[1].Name != "renamed" || rules[1].Action != "log" || rules[2].ID != "keep-2" || rules[2].Pattern != "new-token" {
+						t.Fatalf("missing IDs must preserve matched identities and append unrelated rules: %+v", rules)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestImportCustomRulesRejectsInvalidMergedSet(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		existing []config.CustomRuleConfig
+		imported []config.CustomRuleConfig
+	}{
+		{
+			name: "duplicate match after ID update",
+			existing: []config.CustomRuleConfig{
+				{ID: "first", Pattern: "one", Enabled: true},
+				{ID: "second", Pattern: "two", Enabled: true},
+			},
+			imported: []config.CustomRuleConfig{{ID: "first", Pattern: "two", Enabled: true}},
+		},
+		{
+			name: "merged count exceeds maximum",
+			existing: func() []config.CustomRuleConfig {
+				rules := make([]config.CustomRuleConfig, 256)
+				for index := range rules {
+					rules[index] = config.CustomRuleConfig{ID: fmt.Sprintf("r-%d", index), Pattern: fmt.Sprintf("p-%d", index), Enabled: true}
+				}
+				return rules
+			}(),
+			imported: []config.CustomRuleConfig{{Pattern: "new", Enabled: true}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, store, site := newSiteTestHandler(t)
+			h.OnSitesChanged = func([]config.SiteConfig) error {
+				t.Fatal("invalid merged rules must not hot reload")
+				return nil
+			}
+			before, err := config.PrepareCustomRules(tc.existing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			site.Advanced.CustomRules = storage.SiteCustomRulesFromConfig(before)
+			if err := store.UpdateSite(t.Context(), &site); err != nil {
+				t.Fatal(err)
+			}
+			body, err := config.EncodeCustomRules(tc.imported, "json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			h.ImportCustomRules(rec, httptest.NewRequest(http.MethodPost, "/rules/import?site_id="+site.ID, bytes.NewReader(body)))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "RULES_IMPORT_INVALID") {
+				t.Fatalf("invalid merged set must return import validation error: %d %s", rec.Code, rec.Body.String())
+			}
+			updated, err := store.GetSite(t.Context(), site.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := config.EncodeCustomRules(storage.SiteCustomRulesToConfig(updated.Advanced.CustomRules), "json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := config.EncodeCustomRules(before, "json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("invalid merged set changed stored rules: %s", got)
+			}
+		})
 	}
 }
 

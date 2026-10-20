@@ -278,7 +278,22 @@ func nativeRaftOptionsFromConfig(cfg *config.Config) (nativeraft.Options, error)
 	if strings.TrimSpace(interconnect.CAFile) == "" || strings.TrimSpace(interconnect.CertFile) == "" || strings.TrimSpace(interconnect.KeyFile) == "" {
 		return nativeraft.Options{}, setupmigration.ErrPrerequisiteUnavailable
 	}
-	return nativeraft.Options{Profile: config.StorageProfileProduction, ClusterID: cfg.Cluster.ClusterID, NodeID: cfg.Cluster.NodeID, DataDir: dataDir, BindAddress: raft.Listen, Mode: nativeraft.StartMode(raft.Mode), TLS: &nativeraft.TLSOptions{CAFile: interconnect.CAFile, CertFile: interconnect.CertFile, KeyFile: interconnect.KeyFile}}, nil
+	initialVoters := migrationNativeRaftVoters(raft.InitialVoters)
+	if err := nativeraft.ValidateInitialVoters(initialVoters); err != nil {
+		return nativeraft.Options{}, setupmigration.ErrPrerequisiteUnavailable
+	}
+	return nativeraft.Options{Profile: config.StorageProfileProduction, ClusterID: cfg.Cluster.ClusterID, NodeID: cfg.Cluster.NodeID, DataDir: dataDir, BindAddress: raft.Listen, Mode: nativeraft.StartMode(raft.Mode), InitialVoters: initialVoters, TLS: &nativeraft.TLSOptions{CAFile: interconnect.CAFile, CertFile: interconnect.CertFile, KeyFile: interconnect.KeyFile}}, nil
+}
+
+func migrationNativeRaftVoters(voters []config.NativeRaftVoter) []nativeraft.Member {
+	if len(voters) == 0 {
+		return nil
+	}
+	result := make([]nativeraft.Member, len(voters))
+	for idx, voter := range voters {
+		result[idx] = nativeraft.Member{ID: voter.ID, Address: voter.Address}
+	}
+	return result
 }
 
 func (t *runtimeProductionTarget) Begin(ctx context.Context, snapshot setupmigration.Snapshot) (setupmigration.ProductionTransaction, error) {

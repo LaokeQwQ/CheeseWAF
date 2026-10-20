@@ -188,9 +188,19 @@ type ConsensusConfig struct {
 // used by the production serve startup unit. The mode is intentionally not
 // inferred: bootstrap and join have different safety properties.
 type NativeRaftConfig struct {
-	DataDir string `yaml:"data_dir" json:"data_dir"`
-	Listen  string `yaml:"listen" json:"listen"`
-	Mode    string `yaml:"mode" json:"mode"`
+	DataDir       string            `yaml:"data_dir" json:"data_dir"`
+	Listen        string            `yaml:"listen" json:"listen"`
+	Mode          string            `yaml:"mode" json:"mode"`
+	InitialVoters []NativeRaftVoter `yaml:"initial_voters" json:"initial_voters"`
+}
+
+// NativeRaftVoter identifies a trusted seed voter for a fresh TLS join. The
+// address is the native-raft peer address, not the WAF interconnect address.
+// It is intentionally explicit so an operator cannot accidentally widen the
+// trust boundary by deriving voters from an unrelated node inventory.
+type NativeRaftVoter struct {
+	ID      string `yaml:"id" json:"id"`
+	Address string `yaml:"address" json:"address"`
 }
 
 type JoinConfig struct {
@@ -345,10 +355,13 @@ type MapBoundaryConfig struct {
 }
 
 type SiteConfig struct {
-	ID        string           `yaml:"id" json:"id"`
-	Name      string           `yaml:"name" json:"name"`
-	Domains   []string         `yaml:"domains" json:"domains"`
-	Upstreams []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
+	OriginScheme string           `yaml:"origin_scheme" json:"origin_scheme"`
+	PassHost     *bool            `yaml:"pass_host,omitempty" json:"pass_host,omitempty"`
+	HostHeader   string           `yaml:"host_header,omitempty" json:"host_header,omitempty"`
+	ID           string           `yaml:"id" json:"id"`
+	Name         string           `yaml:"name" json:"name"`
+	Domains      []string         `yaml:"domains" json:"domains"`
+	Upstreams    []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
 	// ListenPort is stored for nginx import and the admin UI. The process
 	// binds Server.Listen (and ListenTLS / ListenHTTP3) only; requests are
 	// routed by Host / site domains, not by opening this port per site.
@@ -394,8 +407,15 @@ type UpstreamConfig struct {
 }
 
 type WAFConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Mode    string `yaml:"mode" json:"mode"`
+	BotEnabled         *bool  `yaml:"bot_enabled,omitempty" json:"bot_enabled,omitempty"`
+	RateLimitEnabled   *bool  `yaml:"ratelimit_enabled,omitempty" json:"ratelimit_enabled,omitempty"`
+	ACLEnabled         *bool  `yaml:"acl_enabled,omitempty" json:"acl_enabled,omitempty"`
+	APISecurityEnabled *bool  `yaml:"api_security_enabled,omitempty" json:"api_security_enabled,omitempty"`
+	Enabled            bool   `yaml:"enabled" json:"enabled"`
+	Mode               string `yaml:"mode" json:"mode"`
+	// Tunnels require explicit consent: HTTP inspection cannot inspect frames.
+	WebSocketEnabled bool `yaml:"websocket_enabled" json:"websocket_enabled"`
+	GRPCEnabled      bool `yaml:"grpc_enabled" json:"grpc_enabled"`
 	// AccessLogEnabled controls whether normal pass/cache/redirect traffic is written.
 	// Security events (block/challenge/log with detections) are always recorded.
 	// Nil means default on (preserve historical full-access logging).
@@ -455,6 +475,7 @@ func (w *WAFConfig) UnmarshalYAML(value *yaml.Node) error {
 // SemanticPolicyConfig holds commercial operational knobs for the staged analyzer.
 // BudgetExhaustedPolicy defaults to "auto" (follow web_attack protection level).
 type SemanticPolicyConfig struct {
+	DetectionBudget time.Duration `yaml:"detection_budget" json:"detection_budget"`
 	// BudgetExhaustedPolicy: auto|open|observe|closed. Empty/auto derives from web_attack.
 	BudgetExhaustedPolicy string `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
 	// DecodeDepth is the bounded number of nested encoding transformations (1-8).
@@ -910,6 +931,8 @@ type ACMEDNSProviderConfig struct {
 }
 
 type AIConfig struct {
+	Prompts             []AIPromptConfig      `yaml:"prompts" json:"prompts"`
+	Skills              []AISkillConfig       `yaml:"skills" json:"skills"`
 	Enabled             bool                  `yaml:"enabled" json:"enabled"`
 	Provider            string                `yaml:"provider" json:"provider"`
 	APIBase             string                `yaml:"api_base" json:"api_base"`

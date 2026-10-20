@@ -21,6 +21,29 @@ func TestIntelMatchesCIDR(t *testing.T) {
 	}
 }
 
+func TestIntelMatchesIPTypeAliases(t *testing.T) {
+	items := []config.ThreatIntelConfig{
+		{ID: "cidr-alias", Type: " CIDR ", Value: "203.0.113.0/24", Enabled: true},
+		{ID: "ipv4-alias", Type: "IPv4-Addr", Value: "198.51.100.8", Enabled: true},
+		{ID: "ipv6-alias", Type: "ipv6-addr", Value: "2001:db8::8", Enabled: true},
+	}
+	intel, err := NewIntel(items)
+	if err != nil {
+		t.Fatalf("new intel: %v", err)
+	}
+	for _, raw := range []string{"203.0.113.42", "198.51.100.8", "2001:db8::8"} {
+		t.Run(raw, func(t *testing.T) {
+			matches := intel.Match(raw)
+			if len(matches) != 1 {
+				t.Fatalf("expected alias indicator to match %s, got %+v", raw, matches)
+			}
+			if matches[0].Type != "ip" {
+				t.Fatalf("expected canonical ip type, got %q", matches[0].Type)
+			}
+		})
+	}
+}
+
 func TestIntelEvaluatePolicyLevels(t *testing.T) {
 	intel, err := NewIntel([]config.ThreatIntelConfig{
 		{ID: "feed-1", Value: "203.0.113.10", Severity: "high", Source: "feed-a", Action: "challenge", Confidence: 0.9, Enabled: true},

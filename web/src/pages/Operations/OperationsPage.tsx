@@ -33,6 +33,7 @@ import {
   cleanupStorage,
   exportBackup,
   fetchStorageStats,
+  fetchSystemConfig,
   fetchTaskHistory,
   fetchTasks,
   updateTasks,
@@ -53,6 +54,7 @@ type ReportFormValues = {
   at: string;
   channel: string;
   recipient: string;
+  recipient_configured?: boolean;
   period: string;
 };
 
@@ -66,10 +68,16 @@ export default function OperationsPage() {
   const queryClient = useQueryClient();
   const tasksQuery = useQuery({ queryKey: ['tasks'], queryFn: fetchTasks, retry: false });
   const storageQuery = useQuery({ queryKey: ['storage'], queryFn: fetchStorageStats, retry: false });
+  const systemQuery = useQuery({ queryKey: ['system'], queryFn: fetchSystemConfig, retry: false });
   const historyQuery = useQuery({ queryKey: ['taskHistory'], queryFn: fetchTaskHistory, retry: false });
   const tasks = tasksQuery.data ?? [];
   const storage = storageQuery.data;
   const history = historyQuery.data ?? [];
+  // The backend advertises this capability explicitly. Keep the action hidden
+  // while capability data is unavailable so the page never exposes a known
+  // 501 endpoint after a transient system-config failure.
+  const backupAvailable = systemQuery.data?.capabilities?.backup?.available === true;
+  const cleanupUnavailable = systemQuery.data?.capabilities?.storage_cleanup?.available === false;
   const taskNames = useMemo(
     () => new Map((tasksQuery.data ?? []).map((task) => [task.id, task.name])),
     [tasksQuery.data],
@@ -175,6 +183,14 @@ export default function OperationsPage() {
     if (reportFormDirty.current.has('at')) submittedForm.at = reportForm.at;
     if (reportFormDirty.current.has('channel')) submittedForm.channel = reportForm.channel;
     if (reportFormDirty.current.has('recipient')) submittedForm.recipient = reportForm.recipient;
+    if (reportFormDirty.current.has('recipient')) {
+      submittedForm.recipient_configured = Boolean(reportForm.recipient.trim());
+    } else if (reportTask.recipient_configured) {
+      // The API redacts configured destinations. Keep the marker so a save of
+      // another field does not replace the hidden webhook/path with a default.
+      submittedForm.recipient = '';
+      submittedForm.recipient_configured = true;
+    }
     if (reportFormDirty.current.has('period')) submittedForm.period = reportForm.period;
     tasksMutation.mutate(upsertReportTask(latest, { ...reportTask, ...submittedForm }, t));
   };
@@ -192,10 +208,10 @@ export default function OperationsPage() {
           <h1>{t('ops.title')}</h1>
           <p>{t('ops.subtitle')}</p>
         </div>
-        <Button onClick={() => backup.mutate()} loading={backup.isPending}>
+        {backupAvailable && <Button onClick={() => backup.mutate()} loading={backup.isPending}>
           <Archive size={16} />
           {t('ops.backup')}
-        </Button>
+        </Button>}
       </header>
 
       <div className="ops-grid">
@@ -218,7 +234,7 @@ export default function OperationsPage() {
                 </div>
               </div>
               <div className="panel-actions">
-                <Button variant="outline" onClick={() => cleanup.mutate()} loading={cleanup.isPending}>
+                <Button variant="outline" onClick={() => cleanup.mutate()} loading={cleanup.isPending} disabled={cleanupUnavailable}>
                   <RotateCcw size={16} />
                   {t('ops.cleanup')}
                 </Button>
@@ -610,7 +626,8 @@ function reportFormFromTask(task: ScheduledTask): ReportFormValues {
     frequency: task.frequency ?? 'daily',
     at: task.at ?? '08:00',
     channel: task.channel ?? 'file',
-    recipient: task.recipient ?? './data/reports',
+    recipient: task.recipient ?? (task.recipient_configured ? '' : './data/reports'),
+    recipient_configured: task.recipient_configured,
     period: task.period ?? 'daily',
   };
 }
@@ -688,6 +705,9 @@ function normalizeTaskFormValues(base: ScheduledTask, values: TaskFormValues): P
     target: values.target || base.target || '',
     channel: values.channel || '',
     recipient: values.recipient || '',
+    recipient_configured: base.recipient_configured && !values.recipient?.trim()
+      ? true
+      : Boolean(values.recipient?.trim()),
     keep: Number(values.keep || 7),
     enabled: values.enabled,
   };

@@ -245,6 +245,56 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 	})
 }
 
+func TestPipelineUsesRequestDetectionBudgetWithBounds(t *testing.T) {
+	pipeline := NewPipeline()
+	tests := []struct {
+		name  string
+		value any
+		want  time.Duration
+	}{
+		{name: "duration", value: 25 * time.Millisecond, want: 25 * time.Millisecond},
+		{name: "duration string", value: "40ms", want: 40 * time.Millisecond},
+		{name: "invalid string", value: "not-a-duration", want: 100 * time.Millisecond},
+		{name: "negative", value: -time.Second, want: 100 * time.Millisecond},
+		{name: "over maximum", value: 10 * time.Second, want: 5 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &RequestContext{Metadata: map[string]any{"detection_budget": tc.value}}
+			if got := pipeline.detectionBudget(reqCtx); got != tc.want {
+				t.Fatalf("detection budget=%s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPipelineRequestDetectionBudgetControlsDeadline(t *testing.T) {
+	slow := &countingDetector{
+		id: "budget-observer", priority: 10,
+		fn: func(ctx context.Context, _ *RequestContext) (*DetectionResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	const budget = 20 * time.Millisecond
+	reqCtx := &RequestContext{Metadata: map[string]any{
+		"detection_budget":        budget,
+		"budget_exhausted_policy": "closed",
+	}}
+	started := time.Now()
+	result, err := NewPipeline(slow).Detect(context.Background(), reqCtx)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed < budget/2 || elapsed >= 100*time.Millisecond {
+		t.Fatalf("configured deadline elapsed %s, expected near %s and below default 100ms", elapsed, budget)
+	}
+	if result == nil || result.Category != "detection_budget" || result.Action != ActionChallenge {
+		t.Fatalf("configured deadline did not apply closed fail-mode: %#v", result)
+	}
+}
+
 func TestPipelineSemanticGroupConcurrentMerge(t *testing.T) {
 	var started atomic.Int32
 	slow := &countingDetector{
@@ -542,13 +592,13 @@ func TestPipelineDeferredBodyReadHonorsParentCancellation(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("pipeline did not return after parent cancellation")
 	}
-	if !body.closed.Load() {
-		t.Fatal("parent cancellation did not signal cancellation to deferred body reader")
-	}
 	select {
 	case <-body.finished:
 	case <-time.After(time.Second):
 		t.Fatal("deferred body reader did not unwind after cancellation")
+	}
+	if !body.closed.Load() {
+		t.Fatal("parent cancellation did not signal cancellation to deferred body reader")
 	}
 	if req.Body != originalBody || req.ContentLength != -1 || req.GetBody != nil {
 		t.Fatalf("canceled read changed request replay state: body_changed=%v length=%d get_body=%v", req.Body != originalBody, req.ContentLength, req.GetBody != nil)
@@ -638,7 +688,7 @@ func TestEnsureBodyCancellationCannotLateWriteRequestOrPartialSnapshot(t *testin
 	release := make(chan struct{})
 	secondRead := make(chan struct{}, 1)
 	body := &partialBlockingBody{
-		prefix: []byte("partial"), release: release, secondRead: secondRead,
+		prefix: []byte("partial"), release: release, secondRead: secondRead, closeSignaled: make(chan struct{}),
 	}
 	req := httptest.NewRequest(http.MethodPost, "http://example.test/cancel-partial", body)
 	req.ContentLength = -1
@@ -664,7 +714,9 @@ func TestEnsureBodyCancellationCannotLateWriteRequestOrPartialSnapshot(t *testin
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("EnsureBodyContext did not return after cancellation")
 	}
-	if !body.closed.Load() {
+	select {
+	case <-body.closeSignaled:
+	case <-time.After(time.Second):
 		t.Fatal("cancellation did not signal the live reader")
 	}
 
@@ -892,8 +944,8 @@ func TestPipelineStopsStartingPrefiltersAfterContextCancellation(t *testing.T) {
 
 func TestPipelineReusesSharedSemanticWorkers(t *testing.T) {
 	workers := runtime.GOMAXPROCS(0)
-	if workers > 8 {
-		workers = 8
+	if workers > 32 {
+		workers = 32
 	}
 	if workers < 1 {
 		workers = 1
@@ -1184,11 +1236,12 @@ func (r *partialErrorBody) Read(p []byte) (int, error) {
 func (*partialErrorBody) Close() error { return nil }
 
 type partialBlockingBody struct {
-	prefix     []byte
-	release    <-chan struct{}
-	secondRead chan<- struct{}
-	emitted    bool
-	closed     atomic.Bool
+	prefix        []byte
+	release       <-chan struct{}
+	secondRead    chan<- struct{}
+	closeSignaled chan struct{}
+	emitted       bool
+	closed        atomic.Bool
 }
 
 type closeCountingBody struct {
@@ -1219,6 +1272,9 @@ func (r *partialBlockingBody) Read(p []byte) (int, error) {
 
 func (r *partialBlockingBody) Close() error {
 	r.closed.Store(true)
+	if r.closeSignaled != nil {
+		close(r.closeSignaled)
+	}
 	return nil
 }
 
