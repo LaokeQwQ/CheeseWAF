@@ -302,6 +302,54 @@ func TestParseModSecurityRejectsFieldSelectors(t *testing.T) {
 	}
 }
 
+func TestParseModSecurityRejectsHeaderAndCookieCollectionsAtomically(t *testing.T) {
+	for _, variable := range []string{"REQUEST_HEADERS", "REQUEST_COOKIES"} {
+		for _, operator := range []string{"rx", "contains", "streq"} {
+			t.Run(variable+"/"+operator, func(t *testing.T) {
+				body := fmt.Sprintf("SecRule REQUEST_URI \"@contains safe\" \"id:safe,deny\"\nSecRule %s \"@%s probe\" \"id:unsupported,deny\"", variable, operator)
+				rules, err := ParseCustomRules([]byte(body))
+				if err == nil || !strings.Contains(err.Error(), "line 2: unsupported variable") {
+					t.Fatalf("collection semantics cannot use native combined text: rules=%+v err=%v", rules, err)
+				}
+				if rules != nil {
+					t.Fatalf("unsupported collection must reject the complete import, got %+v", rules)
+				}
+			})
+		}
+	}
+}
+
+func TestParseCustomRulesPreservesNativeHeaderAndCookieLocations(t *testing.T) {
+	for _, format := range []string{CustomRulesFormatJSON, CustomRulesFormatYAML} {
+		t.Run(format, func(t *testing.T) {
+			original := []CustomRuleConfig{
+				{ID: "native-header", Pattern: `(?m)^X-Probe:probe$`, Location: "header", Action: "block", Enabled: true},
+				{ID: "native-cookie", Pattern: `session=probe;`, Location: "cookie", Action: "block", Enabled: true},
+			}
+			body, err := EncodeCustomRules(original, format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := ParseCustomRules(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := PrepareCustomRules(parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(prepared) != len(original) {
+				t.Fatalf("native rules lost during import: %+v", prepared)
+			}
+			for index, rule := range original {
+				if prepared[index].Location != rule.Location || prepared[index].Pattern != rule.Pattern {
+					t.Fatalf("native combined-text semantics changed: got %+v want %+v", prepared[index], rule)
+				}
+			}
+		})
+	}
+}
+
 func TestMergeCustomRulesRefreshesReplacementIndexes(t *testing.T) {
 	existing := []CustomRuleConfig{
 		{ID: "first", Name: "first", Pattern: "one", Location: "uri", Action: "block", Enabled: true},

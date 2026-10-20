@@ -148,11 +148,13 @@ func modSecurityLocation(variable string) (string, bool) {
 	case variable == "REQUEST_BODY":
 		return "body", true
 	case variable == "REQUEST_COOKIES":
-		return "cookie", true
+		// Native cookie rules inspect combined name=value text, not each value.
+		return "", false
 	case strings.HasPrefix(variable, "REQUEST_COOKIES:"):
 		return "", false
 	case variable == "REQUEST_HEADERS":
-		return "header", true
+		// Native header rules inspect combined name:value text, not each value.
+		return "", false
 	case strings.HasPrefix(variable, "REQUEST_HEADERS:"):
 		return "", false
 	default:

@@ -89,6 +89,46 @@ func NewRequestContextDeferredBody(r *http.Request, siteID string, trustedCIDRs 
 	return newRequestContext(r, siteID, ClientIPWithTrustedProxies(r, trustedCIDRs), maxBodyBytes, false, trustedCIDRs)
 }
 
+// DetectionView isolates one request identity while replaying this context's
+// bounded immutable body snapshots. The identity's Body is never consumed.
+func (c *RequestContext) DetectionView(identity *http.Request) (*RequestContext, error) {
+	if c == nil || identity == nil || identity.URL == nil {
+		return nil, errors.New("request identity is required")
+	}
+	path, ok := NormalizeRequestPath(identity.URL.Path)
+	if !ok {
+		return nil, errors.New("invalid request identity path")
+	}
+	if err := c.EnsureBodyContext(identity.Context()); err != nil {
+		return nil, err
+	}
+	view := forkRequestContextWithContext(c, identity.Context())
+	if view.Request == nil {
+		return nil, errors.New("request body owner is required")
+	}
+	urlCopy := *identity.URL
+	view.Request.URL = &urlCopy
+	view.Request.RequestURI = identity.URL.RequestURI()
+	// A view is another pipeline input, not a detector's semantic request.
+	// Keep wire headers/body consistent so its later detector forks decode the
+	// immutable snapshot exactly as they do for the original body owner.
+	view.Request.Header = c.Request.Header.Clone()
+	raw := view.rawBody
+	view.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	view.Request.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(raw)), nil }
+	view.Request.ContentLength = int64(len(raw))
+	view.Request.Form = nil
+	view.Request.PostForm = nil
+	view.Request.MultipartForm = nil
+	view.NormalizedPath = path
+	view.DecodedURI = identity.URL.RequestURI()
+	if view.Metadata == nil {
+		view.Metadata = map[string]any{}
+	}
+	view.Metadata["normalized_path"] = path
+	return view, nil
+}
+
 // TrustedProxyPolicy is an immutable compiled client-IP trust policy.
 type TrustedProxyPolicy = proxytrust.Policy
 

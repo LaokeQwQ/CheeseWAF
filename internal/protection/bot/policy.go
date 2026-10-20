@@ -366,7 +366,13 @@ func (p *Policy) EvaluateForSiteWithWaitingRoom(r *http.Request, clientIP, site 
 	return p.evaluateForSite(r, clientIP, site, waitingRoom)
 }
 
-func (p *Policy) evaluateForSite(r *http.Request, clientIP, site string, waitingRoom bool) *engine.DetectionResult {
+// EvaluateForSiteWithWaitingRoomAndPaths applies protection when any request
+// path is in scope. Challenge, clearance, and waiting-room state use r only.
+func (p *Policy) EvaluateForSiteWithWaitingRoomAndPaths(r *http.Request, clientIP, site string, waitingRoom bool, additionalPaths ...string) *engine.DetectionResult {
+	return p.evaluateForSite(r, clientIP, site, waitingRoom, additionalPaths...)
+}
+
+func (p *Policy) evaluateForSite(r *http.Request, clientIP, site string, waitingRoom bool, additionalPaths ...string) *engine.DetectionResult {
 	if p == nil || !p.enabled || r == nil {
 		return nil
 	}
@@ -374,7 +380,15 @@ func (p *Policy) evaluateForSite(r *http.Request, clientIP, site string, waiting
 	if !ok {
 		return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "invalid request path", Confidence: 1, Payload: r.URL.Path}
 	}
-	if !p.applies(path) {
+	applies := p.applies(path)
+	for _, extra := range additionalPaths {
+		policyPath, ok := engine.NormalizeRequestPath(extra)
+		if !ok {
+			return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "invalid request path", Confidence: 1, Payload: extra}
+		}
+		applies = applies || p.applies(policyPath)
+	}
+	if !applies {
 		return nil
 	}
 	site = strings.TrimSpace(site)

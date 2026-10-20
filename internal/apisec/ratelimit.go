@@ -63,26 +63,30 @@ func NewRateLimiter(cfg []config.APIEndpointLimitConfig) (*RateLimiter, error) {
 }
 
 func (l *RateLimiter) Allow(r *http.Request, key string) bool {
-	if l == nil || r == nil {
+	return l.AllowRequests([]*http.Request{r}, key)
+}
+
+// AllowRequests checks the public and upstream identities of one request. A
+// matching rule consumes its budget once even when several identities match it.
+func (l *RateLimiter) AllowRequests(requests []*http.Request, key string) bool {
+	if l == nil {
 		return true
 	}
 	// Apply every matching rule; deny if any rule denies.
-	matched := false
 	allowAll := true
 	for _, rule := range l.rules {
-		if rule.cfg.Method != "" && !strings.EqualFold(rule.cfg.Method, r.Method) {
-			continue
+		for _, r := range requests {
+			if r == nil || (rule.cfg.Method != "" && !strings.EqualFold(rule.cfg.Method, r.Method)) {
+				continue
+			}
+			if !rule.pattern.MatchString(r.URL.Path) {
+				continue
+			}
+			if !l.allow(rule.cfg, key) {
+				allowAll = false
+			}
+			break
 		}
-		if !rule.pattern.MatchString(r.URL.Path) {
-			continue
-		}
-		matched = true
-		if !l.allow(rule.cfg, key) {
-			allowAll = false
-		}
-	}
-	if !matched {
-		return true
 	}
 	return allowAll
 }

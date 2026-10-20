@@ -551,6 +551,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if rewritten {
 		policyRequests = append(policyRequests, publicRequest)
 	}
+	publicPolicyRequest := func() *http.Request {
+		request := publicRequest.Clone(r.Context())
+		// The public identity was saved before the body limit and deferred read.
+		// Challenge form parsing must use the current capped or replayed body.
+		request.Body = r.Body
+		request.GetBody = r.GetBody
+		request.ContentLength = r.ContentLength
+		request.Form = r.Form
+		request.PostForm = r.PostForm
+		return request
+	}
 
 	maxRequestBody := site.WAF.Performance.MaxBodyBytes
 	if maxRequestBody <= 0 {
@@ -590,11 +601,25 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	reqCtx.Metadata["original_uri"] = publicRequest.URL.RequestURI()
 	reqCtx.Metadata["upstream_uri"] = r.URL.RequestURI()
 	reqCtx.Metadata["normalized_path"] = requestPath
-	accessDecision := s.access.Evaluate(reqCtx.ClientIP, site.ID, requestPath)
+	accessDecision := ip.AccessDecision{Action: "none"}
+	ipAllowed := true
+	for _, policyRequest := range policyRequests {
+		decision := s.access.Evaluate(reqCtx.ClientIP, site.ID, policyRequest.URL.Path)
+		if decision.Matched {
+			accessDecision = decision
+		}
+		// Rewriting cannot remove a path block or let one path's allow rule
+		// exempt protections belonging to the other request identity.
+		if decision.Action != ip.AccessActionAllow {
+			ipAllowed = false
+		}
+		if decision.Action == ip.AccessActionBlock {
+			break
+		}
+	}
 	if accessDecision.Matched {
 		reqCtx.Metadata["ip_access_decision"] = accessDecision
 	}
-	ipAllowed := accessDecision.Action == ip.AccessActionAllow
 	if accessDecision.Action == ip.AccessActionBlock {
 		message := "IP access rule blocked the request"
 		if accessDecision.RuleName != "" {
@@ -640,7 +665,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				s.blockThreatIntel(w, reqCtx, decision, http.StatusForbidden, start)
 				return
 			case engine.ActionChallenge.String():
-				s.challengeThreatIntel(w, r, reqCtx, decision, start)
+				s.challengeThreatIntel(w, publicPolicyRequest(), reqCtx, decision, start)
 				return
 			}
 		}
@@ -654,20 +679,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 					s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
 					return
 				case engine.ActionChallenge:
-					s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+					s.challenge(w, publicPolicyRequest(), reqCtx, result.Category, result.Message, start)
 					return
 				}
 			}
 		}
 	}
 	if botEnabled && policy.BotCC != config.ProtectionLevelOff {
-		if result := s.bot.EvaluateForSiteWithWaitingRoom(r, reqCtx.ClientIP, site.ID, siteWaitingRoomEnabled(site, s.protectionConfig.Bot.WaitingRoom)); result != nil && result.Detected && !ipAllowed {
+		if result := s.bot.EvaluateForSiteWithWaitingRoomAndPaths(publicPolicyRequest(), reqCtx.ClientIP, site.ID, siteWaitingRoomEnabled(site, s.protectionConfig.Bot.WaitingRoom), r.URL.Path); result != nil && result.Detected && !ipAllowed {
 			decision := evaluateBotCCPolicy(policy.BotCC, result)
 			reqCtx.Metadata["bot_cc_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
 			switch decision.Action {
 			case engine.ActionChallenge.String():
-				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+				s.challenge(w, publicPolicyRequest(), reqCtx, result.Category, result.Message, start)
 				return
 			case engine.ActionBlock.String():
 				s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
@@ -685,7 +710,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			s.blockDetection(w, reqCtx, result, http.StatusTooManyRequests, start)
 			return
 		case engine.ActionChallenge.String():
-			s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+			s.challenge(w, publicPolicyRequest(), reqCtx, result.Category, result.Message, start)
 			return
 		}
 	}
@@ -693,19 +718,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// them before any body admission or read so unauthenticated large uploads
 	// cannot consume the bounded body-reader slots and byte budget.
 	if apiSecurityEnabled && policy.APISecurity != config.ProtectionLevelOff {
-		if finding := s.apiAuth.Evaluate(r); finding != nil && !ipAllowed {
-			result := apiAuthDetection(*finding)
-			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
-			decision.Field = finding.Field
-			reqCtx.Metadata["api_security_policy_decision"] = decision
-			reqCtx.Metadata["api_security_auth_finding"] = finding
-			reqCtx.Metadata["detection"] = result
-			if decision.Action == engine.ActionBlock.String() {
-				s.blockDetection(w, reqCtx, result, apiAuthStatus(*finding), start)
-				return
+		for _, policyRequest := range policyRequests {
+			if finding := s.apiAuth.Evaluate(policyRequest); finding != nil && !ipAllowed {
+				result := apiAuthDetection(*finding)
+				decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
+				decision.Field = finding.Field
+				reqCtx.Metadata["api_security_policy_decision"] = decision
+				reqCtx.Metadata["api_security_auth_finding"] = finding
+				reqCtx.Metadata["detection"] = result
+				if decision.Action == engine.ActionBlock.String() {
+					s.blockDetection(w, reqCtx, result, apiAuthStatus(*finding), start)
+					return
+				}
 			}
 		}
-		if !s.apiLimit.Allow(r, reqCtx.ClientIP) && !ipAllowed {
+		if !s.apiLimit.AllowRequests(policyRequests, reqCtx.ClientIP) && !ipAllowed {
 			result := apiRateLimitDetection(reqCtx)
 			decision := evaluateAPISecurityPolicy(policy.APISecurity, result)
 			reqCtx.Metadata["api_security_policy_decision"] = decision
@@ -769,7 +796,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		)
 		reqCtx.Metadata["budget_exhausted_policy"] = budgetPolicy
 
-		result, err := pipeline.Detect(r.Context(), reqCtx)
+		result, err := s.detectRequestIdentities(r.Context(), pipeline, reqCtx, publicRequest, rewritten, policy, site)
 		if err != nil {
 			if requestBodyTooLarge(err) {
 				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
@@ -802,7 +829,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				s.blockDetection(w, reqCtx, result, http.StatusForbidden, start)
 				return
 			case engine.ActionChallenge.String():
-				s.challenge(w, r, reqCtx, result.Category, result.Message, start)
+				s.challenge(w, publicPolicyRequest(), reqCtx, result.Category, result.Message, start)
 				return
 			case engine.ActionLog.String():
 				// Explicit pass-through. Most of the time this is the intended
@@ -1498,7 +1525,10 @@ func (s *Server) inspectWebSocketMessage(r *http.Request, site config.SiteConfig
 	if result == nil || !result.Detected || !strings.EqualFold(site.WAF.Mode, "block") {
 		return nil
 	}
-	policy := config.EffectiveProtectionPolicy(s.protectionPolicy, site.WAF.ProtectionPolicy)
+	s.runtimeMu.RLock()
+	globalPolicy := s.protectionPolicy
+	s.runtimeMu.RUnlock()
+	policy := config.EffectiveProtectionPolicy(globalPolicy, site.WAF.ProtectionPolicy)
 	decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, ctx.Results, site.WAF.ParanoiaLevel)
 	if decision.Action == engine.ActionBlock.String() || decision.Action == engine.ActionChallenge.String() {
 		return fmt.Errorf("WebSocket message rejected: %s", result.Message)
