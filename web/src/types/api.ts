@@ -196,10 +196,10 @@ export type SiteProtectionConfig = {
   semantic_ssrf: boolean;
   semantic_nosql: boolean;
   semantic_ssti: boolean;
-  bot: boolean;
-  ratelimit: boolean;
-  acl: boolean;
-  apisec: boolean;
+  bot?: boolean;
+  ratelimit?: boolean;
+  acl?: boolean;
+  apisec?: boolean;
 };
 
 export type SiteResponseConfig = {

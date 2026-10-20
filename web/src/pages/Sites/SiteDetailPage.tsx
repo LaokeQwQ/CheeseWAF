@@ -25,7 +25,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { APIRequestError, deleteSite, fetchACMEProviders, fetchSite, issueSiteACMECertificate, updateSite } from '../../api/client';
 import { useServerDraft } from '../../hooks/useServerDraft';
 import type { ACMEDNSProvider, ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
-import { asCSV, normalizeSite, splitList } from './siteModel';
+import { asCSV, defaultSiteAdvanced, normalizeSite, splitList } from './siteModel';
 import './SiteDetailPage.css';
 
 type EnvRow = { id: string; key: string; value: string };
@@ -623,7 +623,7 @@ export default function SiteDetailPage() {
                   <label className="switch-line" key={String(key)}>
                     <span>{label}</span>
                     <Switch
-                      checked={Boolean(site.advanced.protection[key as keyof Site['advanced']['protection']])}
+                      checked={site.advanced.protection[key as keyof Site['advanced']['protection']] ?? defaultSiteAdvanced.protection[key as keyof Site['advanced']['protection']] ?? false}
                       onCheckedChange={(value) => updateAdvanced('protection', { [key]: value } as Partial<Site['advanced']['protection']>)}
                     />
                   </label>

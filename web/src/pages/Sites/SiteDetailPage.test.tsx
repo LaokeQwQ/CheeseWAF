@@ -127,6 +127,36 @@ describe('SiteDetailPage save failures', () => {
 });
 
 describe('SiteDetailPage save success', () => {
+  it('does not turn inherited protection into overrides when only renaming a site', async () => {
+    const initial = makeSite('initial-site');
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec'] as const) delete initial.advanced.protection[key];
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+
+    await renameAndSave('renamed-site');
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    const protection = JSON.parse(JSON.stringify(apiMocks.updateSite.mock.calls[0]?.[1].advanced.protection));
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec']) expect(protection).not.toHaveProperty(key);
+  });
+
+  it('only makes the protection switch the operator changes explicit', async () => {
+    const initial = makeSite('initial-site');
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec'] as const) delete initial.advanced.protection[key];
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+    await screen.findByDisplayValue('initial-site');
+    fireEvent.click(screen.getByText('sites.stepProtection'));
+    fireEvent.click(screen.getByRole('switch', { name: 'protection.acl' }));
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    const protection = JSON.parse(JSON.stringify(apiMocks.updateSite.mock.calls[0]?.[1].advanced.protection));
+    expect(protection.acl).toBe(false);
+    for (const key of ['bot', 'ratelimit', 'apisec']) expect(protection).not.toHaveProperty(key);
+  });
+
   it('invalidates and rereads the persisted site after saving', async () => {
     const initial = makeSite('initial-site');
     const saved = makeSite('edited-site');

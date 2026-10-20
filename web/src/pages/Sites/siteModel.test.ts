@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeParanoiaLevel, normalizeSite } from './siteModel';
+import { defaultSiteAdvanced, normalizeParanoiaLevel, normalizeSite } from './siteModel';
 
 describe('normalizeParanoiaLevel', () => {
   it('keeps 0-5 and maps everything else to the default', () => {
@@ -13,6 +13,26 @@ describe('normalizeParanoiaLevel', () => {
 });
 
 describe('normalizeSite', () => {
+  it('preserves inherited protection when an existing site is normalized again for saving', () => {
+    const site = normalizeSite({ id: 'existing-site' });
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec'] as const) delete site.advanced.protection[key];
+    const saved = normalizeSite({ ...site, name: 'renamed' });
+    const protection = JSON.parse(JSON.stringify(saved.advanced.protection));
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec']) expect(protection).not.toHaveProperty(key);
+  });
+
+  it('preserves explicit false protection overrides', () => {
+    const site = normalizeSite({ id: 'existing-site', advanced: {
+      ...defaultSiteAdvanced,
+      protection: { ...defaultSiteAdvanced.protection, bot: false, ratelimit: false, acl: false, apisec: false },
+    } });
+    for (const key of ['bot', 'ratelimit', 'acl', 'apisec'] as const) expect(site.advanced.protection[key]).toBe(false);
+  });
+
+  it('keeps the existing defaults for newly created sites', () => {
+    expect(normalizeSite().advanced.protection).toEqual(defaultSiteAdvanced.protection);
+  });
+
   it('defaults a missing paranoia level to 3', () => {
     expect(normalizeSite({ id: 's1' }).paranoia_level).toBe(3);
   });
