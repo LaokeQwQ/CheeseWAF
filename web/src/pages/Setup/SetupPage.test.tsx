@@ -263,6 +263,19 @@ describe('SetupPage', () => {
     expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true });
   });
 
+  it.each([
+    ['/AdminEntry123', '/AdminEntry123?returnTo=%2Fsites'],
+    [undefined, '/login?returnTo=%2Fsites'],
+  ])('opens the first-site action through the login entry (%s)', async (securityEntryPath, expectedHref) => {
+    apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true, security_entry_path: securityEntryPath });
+    await advanceToReviewStep();
+    await completeSetup();
+
+    const firstSiteLink = await screen.findByRole('link', { name: 'setup.createFirstSite' });
+    expect(firstSiteLink.getAttribute('href')).toBe(expectedHref);
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
   it('surfaces setup API failures', async () => {
     apiMocks.setupAdmin.mockRejectedValue(new Error('username already exists'));
     await advanceToReviewStep();

@@ -25,6 +25,7 @@ import {
 import {
   Badge,
   Button,
+  buttonVariants,
   Checkbox,
   Input,
   Label,
@@ -1659,7 +1660,7 @@ export default function SetupPage() {
             <h2 className="m-0 text-lg font-semibold">{t('setup.completeTitle')}</h2>
             <p className="form-success">{t('setup.success')}</p>
             <div className="setup-action-row mt-2">
-              <Button className="setup-btn-primary" onClick={() => navigate('/sites', { replace: true })}>{t('setup.createFirstSite')}</Button>
+              <a className={buttonVariants({ className: 'setup-btn-primary w-full min-w-0' })} href={`${securityEntryPath !== '/' ? securityEntryPath : '/login'}?returnTo=%2Fsites`}>{t('setup.createFirstSite')}</a>
               <Button className="setup-btn-secondary" variant="outline" onClick={() => {
                 if (securityEntryPath !== '/') window.location.assign(securityEntryPath);
                 else navigate('/login', { replace: true });
