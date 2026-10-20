@@ -16,6 +16,75 @@ import (
 	"time"
 )
 
+func TestBodyReadEmptyReads(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		steps     []bodyEmptyReadStep
+		limit     int64
+		want      string
+		wantErr   error
+		wantReads int
+	}{
+		{name: "empty-then-data", steps: []bodyEmptyReadStep{{empty: 1}, {data: "ok"}}, limit: 4, want: "ok", wantReads: 3},
+		{name: "bounded-empty", steps: []bodyEmptyReadStep{{empty: 101}}, limit: 4, wantErr: io.ErrNoProgress, wantReads: 100},
+		{name: "data-resets-empty-count", steps: []bodyEmptyReadStep{{empty: 99}, {data: "a"}, {empty: 99}, {data: "b"}, {empty: 99}}, limit: 2, want: "ab", wantReads: 300},
+		{name: "probe-empty-then-eof", steps: []bodyEmptyReadStep{{data: "ok"}, {empty: 1}}, limit: 2, want: "ok", wantReads: 3},
+		{name: "probe-empty-then-extra-byte", steps: []bodyEmptyReadStep{{data: "ok"}, {empty: 1}, {data: "x", err: io.EOF}}, limit: 2, wantErr: ErrRequestBodyTooLarge, wantReads: 3},
+		{name: "bounded-empty-probe", steps: []bodyEmptyReadStep{{data: "ok"}, {empty: 101}}, limit: 2, want: "ok", wantErr: io.ErrNoProgress, wantReads: 101},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &RequestContext{SiteID: "empty-read-" + tc.name}
+			defer func() {
+				c.bodyMu.Lock()
+				defer c.bodyMu.Unlock()
+				c.releaseBodyBudgetLocked()
+			}()
+			reader := &bodyEmptyReadReader{steps: append([]bodyEmptyReadStep(nil), tc.steps...)}
+			got, err := c.readBodyWithBudget(reader, tc.limit)
+			if !errors.Is(err, tc.wantErr) || string(got) != tc.want {
+				t.Fatalf("read = %q, %v; want %q, %v", got, err, tc.want, tc.wantErr)
+			}
+			if reader.reads != tc.wantReads {
+				t.Fatalf("reads = %d, want %d", reader.reads, tc.wantReads)
+			}
+		})
+	}
+}
+
+type bodyEmptyReadStep struct {
+	empty int
+	data  string
+	err   error
+}
+
+type bodyEmptyReadReader struct {
+	steps []bodyEmptyReadStep
+	reads int
+}
+
+func (r *bodyEmptyReadReader) Read(p []byte) (int, error) {
+	r.reads++
+	if len(r.steps) == 0 {
+		return 0, io.EOF
+	}
+	step := &r.steps[0]
+	if step.empty > 0 {
+		step.empty--
+		if step.empty == 0 {
+			r.steps = r.steps[1:]
+		}
+		return 0, nil
+	}
+	n := copy(p, step.data)
+	step.data = step.data[n:]
+	if step.data != "" {
+		return n, nil
+	}
+	err := step.err
+	r.steps = r.steps[1:]
+	return n, err
+}
+
 func TestBodyReadSmallBodyWithLargeConfiguredCeiling(t *testing.T) {
 	body := &budgetProbeBody{Reader: strings.NewReader("small")}
 	req := httptest.NewRequest(http.MethodPost, "/upload", body)

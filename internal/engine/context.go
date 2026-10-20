@@ -469,6 +469,9 @@ func (c *RequestContext) readBodyWorker(originalBody io.ReadCloser, done chan st
 }
 
 func (c *RequestContext) readBodyWithBudget(body io.Reader, maxBodyBytes int64) ([]byte, error) {
+	// Match bufio's tolerance for Readers that temporarily return (0, nil).
+	const maxConsecutiveEmptyReads = 100
+	emptyReads := 0
 	var buffer []byte
 	for {
 		c.bodyMu.Lock()
@@ -489,7 +492,11 @@ func (c *RequestContext) readBodyWithBudget(body io.Reader, maxBodyBytes int64) 
 			if err != nil {
 				return nil, err
 			}
-			return buffer, io.ErrNoProgress
+			emptyReads++
+			if emptyReads >= maxConsecutiveEmptyReads {
+				return buffer, io.ErrNoProgress
+			}
+			continue
 		}
 		if len(buffer) == cap(buffer) {
 			capacity := max(bodyReadChunkBytes, 2*cap(buffer))
@@ -510,6 +517,7 @@ func (c *RequestContext) readBodyWithBudget(body io.Reader, maxBodyBytes int64) 
 		readBuffer := buffer[len(buffer):int(end)]
 		n, err := body.Read(readBuffer)
 		if n > 0 {
+			emptyReads = 0
 			buffer = buffer[:len(buffer)+n]
 			c.bodyMu.Lock()
 			c.bodyReadProgress = time.Now()
@@ -522,7 +530,10 @@ func (c *RequestContext) readBodyWithBudget(body io.Reader, maxBodyBytes int64) 
 			return nil, err
 		}
 		if n == 0 {
-			return buffer, io.ErrNoProgress
+			emptyReads++
+			if emptyReads >= maxConsecutiveEmptyReads {
+				return buffer, io.ErrNoProgress
+			}
 		}
 	}
 }

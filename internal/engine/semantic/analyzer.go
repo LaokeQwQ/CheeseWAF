@@ -2813,7 +2813,7 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 		scores["rce"] += 2
 	}
 	if hints&hintLFI != 0 {
-		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
+		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "zip://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
 			lfiHexPathEscapeCandidate(foldedRaw, inputSource, inputName) ||
 			// RFI-shaped remote includes: http(s) value often only scores SSRF unless LFI is also opened.
 			((strings.Contains(text, "http://") || strings.Contains(text, "https://")) && (strings.Contains(text, ".php") || strings.Contains(text, "shell") || strings.Contains(text, "passwd") || strings.HasSuffix(text, "?"))) {
@@ -3433,7 +3433,7 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, ".aws") || strings.Contains(lower, ".git") ||
 		strings.Contains(lower, ".ssh") || strings.Contains(lower, "boot.ini") ||
 		strings.Contains(lower, "win.ini") || strings.Contains(lower, "passwd") ||
-		strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") ||
+		strings.Contains(lower, "phar://") || strings.Contains(lower, "zip://") || strings.Contains(lower, "expect://") ||
 		// Windows drive-absolute paths. ":\" is the marker rather than ":/"
 		// because ":/" is in every URL. Without this, a Windows LFI target
 		// scored no hint at all and analyzeLFI was never called.

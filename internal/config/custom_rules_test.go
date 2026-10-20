@@ -194,6 +194,41 @@ func TestParseModSecurityPreservesBlockingActionAndStrictStringEquals(t *testing
 	}
 }
 
+func TestParseModSecurityActionDefaultsAndOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		actions string
+		want    string
+	}{
+		{"id:one", "log"},
+		{"id:one,msg:'observe',phase:2,severity:4,tag:'probe',capture,status:403", "log"},
+		{"id:one,nolog", "log"},
+		{"id:one,log", "log"},
+		{"id:one,deny", "block"},
+		{"id:one,drop", "block"},
+		{"id:one,block", "block"},
+		{"id:one,deny,log", "block"},
+		{"id:one,log,deny", "block"},
+		{"id:one,drop,log", "block"},
+		{"id:one,log,drop", "block"},
+		{"id:one,block,log", "block"},
+		{"id:one,log,block", "block"},
+	} {
+		t.Run(tc.actions, func(t *testing.T) {
+			rules, err := ParseCustomRules([]byte(fmt.Sprintf(`SecRule REQUEST_URI "@contains /admin" "%s"`, tc.actions)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			merged, err := MergeCustomRules(nil, rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(merged) != 1 || merged[0].Action != tc.want {
+				t.Fatalf("imported action = %+v, want %q", merged, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseModSecurityKeepsDenyWhenLogAlsoPresent(t *testing.T) {
 	rules, err := ParseCustomRules([]byte(`SecRule REQUEST_URI "@contains /admin" "id:one,deny,log"`))
 	if err != nil {

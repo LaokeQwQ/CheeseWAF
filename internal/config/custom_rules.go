@@ -89,7 +89,8 @@ func parseModSecurityRules(data []byte) ([]CustomRuleConfig, error) {
 		} else if operator == "contains" {
 			pattern = regexp.QuoteMeta(pattern)
 		}
-		rule := CustomRuleConfig{Pattern: pattern, Location: location, Action: "block", Severity: "medium", Enabled: true}
+		// Without an explicit disruptive action, preserve detection-only behavior.
+		rule := CustomRuleConfig{Pattern: pattern, Location: location, Action: "log", Severity: "medium", Enabled: true}
 		blockAction, logAction := false, false
 		for _, action := range strings.Split(actionText, ",") {
 			parts := strings.SplitN(strings.TrimSpace(action), ":", 2)

@@ -97,8 +97,8 @@ func lfiWrapperPathShape(lower string) bool {
 				if strings.ContainsAny(rest, "/\\") {
 					return true
 				}
-			default:
-				if strings.Contains(rest, "/") {
+			case "zip://", "phar://":
+				if strings.ContainsAny(rest, "/\\#") || strings.Contains(rest, "%23") {
 					return true
 				}
 			}
