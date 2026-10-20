@@ -843,11 +843,26 @@ func TestServiceTickerEventsTriggerSyncAndReselection(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	t.Cleanup(service.Stop)
-	waitFor(t, time.Second, func() bool {
-		client.mu.Lock()
-		defer client.mu.Unlock()
-		return service.Status().Offset == 10*time.Millisecond && client.active == 0
-	})
+	waitForScheduledOffset := func(offset time.Duration) {
+		t.Helper()
+		waitFor(t, time.Second, func() bool {
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			return service.Status().Offset == offset && client.active == 0
+		})
+		// Status is published before scheduled cleanup permits the next tick.
+		service.scheduledMu.Lock()
+		done := service.scheduledDone
+		service.scheduledMu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("scheduled synchronization did not finish")
+			}
+		}
+	}
+	waitForScheduledOffset(10 * time.Millisecond)
 	created, _ := tickers.Snapshot()
 	if len(created) != 2 {
 		t.Fatalf("created ticker count = %d, want 2", len(created))
@@ -855,19 +870,11 @@ func TestServiceTickerEventsTriggerSyncAndReselection(t *testing.T) {
 
 	raw.Set(now.Add(time.Minute))
 	created[1].ch <- raw.Now()
-	waitFor(t, time.Second, func() bool {
-		client.mu.Lock()
-		defer client.mu.Unlock()
-		return service.Status().Offset == 20*time.Millisecond && client.active == 0
-	})
+	waitForScheduledOffset(20 * time.Millisecond)
 
 	raw.Set(now.Add(2 * time.Minute))
 	created[0].ch <- raw.Now()
-	waitFor(t, time.Second, func() bool {
-		client.mu.Lock()
-		defer client.mu.Unlock()
-		return service.Status().Offset == 30*time.Millisecond && client.active == 0
-	})
+	waitForScheduledOffset(30 * time.Millisecond)
 	status := service.Status()
 	if status.Primary != "a" || status.Backup != "b" || !status.LastAttempt.Equal(raw.Now()) {
 		t.Fatalf("unexpected status after ticker events: %+v", status)
