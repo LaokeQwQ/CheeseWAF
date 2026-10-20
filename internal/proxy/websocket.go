@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/bot"
 	"nhooyr.io/websocket"
@@ -170,21 +171,58 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 	}
 	clientConn.SetReadLimit(limit)
 	upstreamConn.SetReadLimit(limit)
+	return bridgeWebSocketMessages(ctx, clientConn, upstreamConn, webSocketIdleTimeout, inspect)
+}
 
+func bridgeWebSocketMessages(ctx context.Context, clientConn, upstreamConn *websocket.Conn, idleTimeout time.Duration, inspect func(bool, byte, []byte) error) error {
 	bridgeCtx, cancel := context.WithTimeout(ctx, webSocketLifetime)
-	defer cancel()
+	var timerMu sync.Mutex
+	lastActivity := time.Now()
+	closed := false
+	var idle *time.Timer
+	idle = time.AfterFunc(idleTimeout, func() {
+		timerMu.Lock()
+		defer timerMu.Unlock()
+		if closed {
+			return
+		}
+		// A callback may already be waiting for the lock when activity resets
+		// the timer. Check the latest activity before closing the whole bridge.
+		if remaining := idleTimeout - time.Since(lastActivity); remaining > 0 {
+			idle.Reset(remaining)
+			return
+		}
+		closed = true
+		cancel()
+	})
+	touch := func() {
+		timerMu.Lock()
+		defer timerMu.Unlock()
+		if !closed {
+			lastActivity = time.Now()
+			idle.Reset(idleTimeout)
+		}
+	}
+	var workers sync.WaitGroup
+	defer func() {
+		timerMu.Lock()
+		closed = true
+		idle.Stop()
+		timerMu.Unlock()
+		cancel()
+		workers.Wait()
+	}()
 	errs := make(chan error, 2)
-	var once sync.Once
 	bridge := func(dst, src *websocket.Conn, fromClient bool) {
-		defer func() { once.Do(cancel) }()
+		defer workers.Done()
+		defer cancel()
 		for {
-			readCtx, readCancel := context.WithTimeout(bridgeCtx, webSocketIdleTimeout)
-			typ, payload, readErr := src.Read(readCtx)
-			readCancel()
+			typ, payload, readErr := src.Read(bridgeCtx)
 			if readErr != nil {
 				errs <- readErr
 				return
 			}
+			touch()
 			if inspect != nil && typ != websocket.MessageBinary && typ != websocket.MessageText {
 				errs <- fmt.Errorf("unsupported WebSocket message type %v", typ)
 				return
@@ -195,12 +233,18 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 					return
 				}
 			}
-			if writeErr := dst.Write(bridgeCtx, typ, payload); writeErr != nil {
+			// Activity in the reverse direction must not keep a blocked write alive.
+			writeCtx, writeCancel := context.WithTimeout(bridgeCtx, idleTimeout)
+			writeErr := dst.Write(writeCtx, typ, payload)
+			writeCancel()
+			if writeErr != nil {
 				errs <- writeErr
 				return
 			}
+			touch()
 		}
 	}
+	workers.Add(2)
 	go bridge(upstreamConn, clientConn, true)
 	go bridge(clientConn, upstreamConn, false)
 	select {
@@ -209,8 +253,8 @@ func proxyWebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 			return nil
 		}
 		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-bridgeCtx.Done():
+		return bridgeCtx.Err()
 	}
 }
 
