@@ -87,8 +87,8 @@ func TestReviewLFIWrapperScansOccurrencesWithinToken(t *testing.T) {
 
 func TestReviewDuplicateKeyCheckerHasResourceLimits(t *testing.T) {
 	deep := strings.Repeat("[", maxJSONDepth+2) + `{"x":1,"x":2}` + strings.Repeat("]", maxJSONDepth+2)
-	if jsonHasDuplicateKeys([]byte(deep)) {
-		t.Fatal("duplicate checker continued past its nesting budget")
+	if duplicate, status := jsonHasDuplicateKeys([]byte(deep)); duplicate || !status.omitted || status.reason != jsonDuplicateScanLimitReason {
+		t.Fatalf("duplicate checker must report its nesting budget independently: duplicate=%t status=%+v", duplicate, status)
 	}
 	var wide strings.Builder
 	wide.WriteByte('{')
@@ -96,11 +96,18 @@ func TestReviewDuplicateKeyCheckerHasResourceLimits(t *testing.T) {
 		fmt.Fprintf(&wide, `"k%d":null,`, i)
 	}
 	wide.WriteString(`"x":1,"x":2}`)
-	if jsonHasDuplicateKeys([]byte(wide.String())) {
-		t.Fatal("duplicate checker continued past its token budget")
+	if duplicate, status := jsonHasDuplicateKeys([]byte(wide.String())); duplicate || !status.omitted || status.reason != jsonDuplicateScanLimitReason {
+		t.Fatalf("duplicate checker must report its key budget independently: duplicate=%t status=%+v", duplicate, status)
 	}
-	if !jsonHasDuplicateKeys([]byte(`{"a":{"x":1,"\u0078":2}}`)) {
-		t.Fatal("bounded checker missed an ordinary escaped duplicate key")
+	tokens := `[` + strings.Repeat(`null,`, maxJSONNodes*4) + `null]`
+	if duplicate, status := jsonHasDuplicateKeys([]byte(tokens)); duplicate || !status.omitted || status.reason != jsonDuplicateScanLimitReason {
+		t.Fatalf("duplicate checker must report its token budget independently: duplicate=%t status=%+v", duplicate, status)
+	}
+	if duplicate, status := jsonHasDuplicateKeys([]byte(`{"a":{"x":1,"\u0078":2}}`)); !duplicate || status.omitted {
+		t.Fatalf("bounded checker missed an ordinary escaped duplicate key: duplicate=%t status=%+v", duplicate, status)
+	}
+	if duplicate, status := jsonHasDuplicateKeys([]byte(`{"a":{"x":1},"b":{"\u0078":2}}`)); duplicate || status.omitted {
+		t.Fatalf("complete duplicate-free scan must remain complete: duplicate=%t status=%+v", duplicate, status)
 	}
 	// Stay below the byte budget so this exercises the nesting bound itself.
 	raw := []byte(strings.Repeat("[", maxJSONTreeDecodeBytes/2))

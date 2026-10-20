@@ -81,6 +81,7 @@ const (
 	jsonNodeLimitIncompleteReason     = "json_node_limit"
 	jsonDepthLimitIncompleteReason    = "json_depth_limit"
 	jsonDuplicateKeyReason            = "json_duplicate_key"
+	jsonDuplicateScanLimitReason      = "json_duplicate_scan_limit"
 	jsonCollectorLimitReason          = "json_collector_limit"
 	jsonVariantLimitReason            = "decode_variant_limit"
 	jsonRawClippedReason              = "raw_body_clipped"
@@ -1707,11 +1708,15 @@ func bodyInputsWithTraversalStatus(r *http.Request, body []byte) ([]InputPoint, 
 	case "application/json":
 		jsonStatus := flattenJSONInputsWithStatus("body.json", "", body, &inputs)
 		status.merge(jsonStatus)
-		if jsonHasDuplicateKeys(body) {
+		duplicate, duplicateStatus := jsonHasDuplicateKeys(body)
+		status.merge(duplicateStatus)
+		if duplicate || duplicateStatus.omitted {
 			// The decoder walk is last-wins. Keep an explicit raw-body candidate so
-			// a first-occurrence payload is inspected too, and surface the parser
-			// ambiguity instead of silently choosing one value.
-			status.mark(jsonDuplicateKeyReason)
+			// a first-occurrence payload is inspected even when duplicate scanning
+			// stops before it can establish whether keys repeat.
+			if duplicate {
+				status.mark(jsonDuplicateKeyReason)
+			}
 			inputs = append(inputs, InputPoint{Source: "body.json.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
 		}
 		if len(inputs) > 0 {
@@ -1740,11 +1745,15 @@ func bodyInputsWithTraversalStatus(r *http.Request, body []byte) ([]InputPoint, 
 	}
 	if json.Valid(body) {
 		status.merge(flattenJSONInputsWithStatus("body.json", "", body, &inputs))
-		if jsonHasDuplicateKeys(body) {
+		duplicate, duplicateStatus := jsonHasDuplicateKeys(body)
+		status.merge(duplicateStatus)
+		if duplicate || duplicateStatus.omitted {
 			// The decoder walk is last-wins. Preserve an explicit raw-body
-			// candidate so a first-occurrence payload is inspected too, and
-			// surface the parser ambiguity for JSON served under other media types.
-			status.mark(jsonDuplicateKeyReason)
+			// candidate for duplicates and incomplete duplicate scans under other
+			// media types, too.
+			if duplicate {
+				status.mark(jsonDuplicateKeyReason)
+			}
 			inputs = append(inputs, InputPoint{Source: "body.json.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
 		}
 	}

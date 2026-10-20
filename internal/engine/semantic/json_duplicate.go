@@ -9,12 +9,14 @@ import (
 // jsonHasDuplicateKeys reports whether a syntactically valid JSON document
 // repeats an object key. WAF and upstream commonly disagree on first-vs-last
 // value selection; the caller emits a raw-body candidate so both values are
-// inspected instead of silently trusting encoding/json's map collapse. Stop at
-// the extraction budgets: those documents already have incomplete raw coverage,
-// and large documents use a streaming walk that retains duplicate occurrences.
-func jsonHasDuplicateKeys(raw []byte) bool {
+// inspected instead of silently trusting encoding/json's map collapse. Budget
+// exhaustion is reported separately: map decoding may collapse the subtree that
+// spent the budget, so extraction alone cannot establish complete coverage.
+// Large documents use a streaming walk that retains duplicate occurrences.
+func jsonHasDuplicateKeys(raw []byte) (bool, traversalStatus) {
+	var status traversalStatus
 	if len(raw) > maxJSONTreeDecodeBytes {
-		return false
+		return false, status
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
@@ -37,22 +39,24 @@ func jsonHasDuplicateKeys(raw []byte) bool {
 	for tokens := 0; tokens < maxJSONNodes*4; tokens++ {
 		token, err := decoder.Token()
 		if err == io.EOF {
-			return false
+			return false, status
 		}
 		if err != nil {
-			return false
+			return false, status
 		}
 		switch typed := token.(type) {
 		case json.Delim:
 			switch typed {
 			case '{':
 				if len(stack) > maxJSONDepth {
-					return false
+					status.mark(jsonDuplicateScanLimitReason)
+					return false, status
 				}
 				stack = append(stack, frame{object: true, expectKey: true, keys: map[string]struct{}{}})
 			case '[':
 				if len(stack) > maxJSONDepth {
-					return false
+					status.mark(jsonDuplicateScanLimitReason)
+					return false, status
 				}
 				stack = append(stack, frame{})
 			case '}', ']':
@@ -66,10 +70,11 @@ func jsonHasDuplicateKeys(raw []byte) bool {
 				top := &stack[len(stack)-1]
 				if top.object && top.expectKey {
 					if _, ok := top.keys[typed]; ok {
-						return true
+						return true, status
 					}
 					if keysSeen >= maxJSONNodes {
-						return false
+						status.mark(jsonDuplicateScanLimitReason)
+						return false, status
 					}
 					keysSeen++
 					top.keys[typed] = struct{}{}
@@ -82,5 +87,6 @@ func jsonHasDuplicateKeys(raw []byte) bool {
 			valueDone()
 		}
 	}
-	return false
+	status.mark(jsonDuplicateScanLimitReason)
+	return false, status
 }
