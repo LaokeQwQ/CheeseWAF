@@ -25,7 +25,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { APIRequestError, deleteSite, fetchACMEProviders, fetchSite, issueSiteACMECertificate, updateSite } from '../../api/client';
 import { useServerDraft } from '../../hooks/useServerDraft';
 import type { ACMEDNSProvider, ACMEEvent, ACMEIssueRequest, Site, SiteAdvanced, SiteRewriteRule } from '../../types/api';
-import { asCSV, defaultSiteAdvanced, normalizeSite, splitList } from './siteModel';
+import { asCSV, normalizeSite, splitList } from './siteModel';
 import './SiteDetailPage.css';
 
 type EnvRow = { id: string; key: string; value: string };
@@ -34,6 +34,7 @@ type ByteUnit = 'KB' | 'MB' | 'GB';
 
 const acmeStepOrder = ['validate', 'prepare', 'account', 'dns_create', 'issue', 'deploy', 'dns_cleanup', 'notify'];
 const CUSTOM_ACME_SERVER = 'custom';
+const protectionOverrideOptionClassName = 'data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground focus:ring-1 focus:ring-inset focus:ring-ring';
 
 export default function SiteDetailPage() {
   const { t } = useTranslation();
@@ -615,17 +616,36 @@ export default function SiteDetailPage() {
                   ['semantic_ssrf', 'SSRF'],
                   ['semantic_nosql', 'NoSQLi'],
                   ['semantic_ssti', 'SSTI'],
-                  ['bot', t('protection.bot')],
-                  ['ratelimit', t('protection.ratelimit')],
-                  ['acl', t('protection.acl')],
-                  ['apisec', t('nav.apisec')],
                 ].map(([key, label]) => (
                   <label className="switch-line" key={String(key)}>
                     <span>{label}</span>
                     <Switch
-                      checked={site.advanced.protection[key as keyof Site['advanced']['protection']] ?? defaultSiteAdvanced.protection[key as keyof Site['advanced']['protection']] ?? false}
+                      checked={site.advanced.protection[key as keyof Site['advanced']['protection']] ?? true}
                       onCheckedChange={(value) => updateAdvanced('protection', { [key]: value } as Partial<Site['advanced']['protection']>)}
                     />
+                  </label>
+                ))}
+              </div>
+              <div className="site-detail-grid mt-4">
+                {([
+                  ['bot', t('protection.bot')],
+                  ['ratelimit', t('protection.ratelimit')],
+                  ['acl', t('protection.acl')],
+                  ['apisec', t('nav.apisec')],
+                ] as const).map(([key, label]) => (
+                  <label key={key}>
+                    <span>{label}</span>
+                    <Select
+                      value={site.advanced.protection[key] === undefined ? '__inherit__' : site.advanced.protection[key] ? 'enabled' : 'disabled'}
+                      onValueChange={(value) => updateAdvanced('protection', { [key]: value === '__inherit__' ? undefined : value === 'enabled' })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem className={protectionOverrideOptionClassName} value="__inherit__">{t('sites.levelInherit')}</SelectItem>
+                        <SelectItem className={protectionOverrideOptionClassName} value="enabled">{t('common.enabled')}</SelectItem>
+                        <SelectItem className={protectionOverrideOptionClassName} value="disabled">{t('common.disabled')}</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </label>
                 ))}
               </div>
