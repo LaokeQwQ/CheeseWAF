@@ -54,6 +54,12 @@ func (p *Pipeline) detectionBudget(reqCtx *RequestContext) time.Duration {
 	return budget
 }
 
+// DetectionBudget returns the effective analysis budget without starting it.
+// Callers inspecting multiple identities can share this same bounded budget.
+func (p *Pipeline) DetectionBudget(reqCtx *RequestContext) time.Duration {
+	return p.detectionBudget(reqCtx)
+}
+
 type pipelineSnapshot struct {
 	detectors     []Detector
 	preFilters    []Detector

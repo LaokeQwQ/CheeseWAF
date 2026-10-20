@@ -15,6 +15,8 @@ type ReviewQueue interface {
 	Enqueue(ctx context.Context, item *storage.ReviewItem)
 }
 
+const selectedInspectionURIKey = "waf_inspection_uri"
+
 func (s *Server) SetReviewQueue(queue ReviewQueue) {
 	if s == nil {
 		return
@@ -112,6 +114,9 @@ func reviewItemFromContext(reqCtx *engine.RequestContext) *storage.ReviewItem {
 		Method:   reqCtx.Request.Method,
 		URI:      reqCtx.Request.URL.RequestURI(),
 		Status:   "pending",
+	}
+	if uri, ok := reqCtx.Metadata[selectedInspectionURIKey].(string); ok && uri != "" {
+		item.URI = uri
 	}
 	if cand, ok := reqCtx.Metadata["review_candidate"].(map[string]any); ok && cand != nil {
 		item.Category = anyString(cand["category"])

@@ -796,7 +796,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		)
 		reqCtx.Metadata["budget_exhausted_policy"] = budgetPolicy
 
-		result, err := pipeline.Detect(r.Context(), reqCtx)
+		result, err := s.detectRequestIdentities(r.Context(), pipeline, reqCtx, publicRequest, rewritten, policy, site)
 		if err != nil {
 			if requestBodyTooLarge(err) {
 				s.proxyError(w, r, site, reqCtx, "request_too_large", "request body exceeds site limit", http.StatusRequestEntityTooLarge, start, err)
