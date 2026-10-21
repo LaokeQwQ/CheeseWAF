@@ -117,11 +117,13 @@ func newAccessRule(item config.IPAccessRuleConfig) (accessRule, error) {
 }
 
 func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
-	if p == nil {
+	if p == nil || len(p.rules) == 0 {
 		return AccessDecision{Action: "none"}
 	}
-	var best AccessDecision
-	var bestScore int
+	views, valid := engine.SecurityPathViews(path)
+	if !valid {
+		return AccessDecision{Action: "none"}
+	}
 	addr, err := netip.ParseAddr(strings.TrimSpace(clientIP))
 	if err != nil {
 		return AccessDecision{Action: "none"}
@@ -130,6 +132,26 @@ func (p *AccessPolicy) Evaluate(clientIP, siteID, path string) AccessDecision {
 	indices := append([]int(nil), p.exact[addr]...)
 	indices = append(indices, p.networks.match(addr)...)
 	sort.Ints(indices)
+	var selected AccessDecision
+	for i, view := range views {
+		decision := p.evaluatePath(addr, siteID, view, indices)
+		if decision.Action == AccessActionBlock {
+			return decision
+		}
+		// Resolve the existing scope/IP specificity separately in every view.
+		// A newly understood route may add a block, but must never grant an
+		// exemption to an identity that the existing rules did not allow.
+		if i == 0 || (decision.Action != AccessActionAllow &&
+			(selected.Action == AccessActionAllow || !selected.Matched || decision.Action == AccessActionMonitor)) {
+			selected = decision
+		}
+	}
+	return selected
+}
+
+func (p *AccessPolicy) evaluatePath(addr netip.Addr, siteID, path string, indices []int) AccessDecision {
+	var best AccessDecision
+	var bestScore int
 	previous := -1
 	for _, index := range indices {
 		if index == previous {

@@ -1,6 +1,7 @@
 package apisec
 
 import (
+	"container/heap"
 	"net/http"
 	"regexp"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 const (
@@ -16,11 +18,12 @@ const (
 )
 
 type RateLimiter struct {
-	rules   []limitRule
-	now     func() time.Time
-	mu      sync.Mutex
-	hits    map[string]*bucket
-	maxKeys int
+	rules       []limitRule
+	now         func() time.Time
+	mu          sync.Mutex
+	hits        map[string]*bucket
+	expirations bucketExpiryHeap
+	maxKeys     int
 }
 
 type limitRule struct {
@@ -30,9 +33,35 @@ type limitRule struct {
 }
 
 type bucket struct {
-	start      time.Time
-	lastAccess time.Time
-	count      int
+	key       string
+	start     time.Time
+	expiresAt time.Time
+	count     int
+	heapIndex int
+}
+
+type bucketExpiryHeap []*bucket
+
+func (h bucketExpiryHeap) Len() int           { return len(h) }
+func (h bucketExpiryHeap) Less(i, j int) bool { return h[i].expiresAt.Before(h[j].expiresAt) }
+func (h bucketExpiryHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+func (h *bucketExpiryHeap) Push(value any) {
+	b := value.(*bucket)
+	b.heapIndex = len(*h)
+	*h = append(*h, b)
+}
+func (h *bucketExpiryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	b := old[last]
+	old[last] = nil
+	b.heapIndex = -1
+	*h = old[:last]
+	return b
 }
 
 func NewRateLimiter(cfg []config.APIEndpointLimitConfig) (*RateLimiter, error) {
@@ -72,14 +101,28 @@ func (l *RateLimiter) AllowRequests(requests []*http.Request, key string) bool {
 	if l == nil {
 		return true
 	}
+	requestPaths := make([][]string, len(requests))
+	for i, r := range requests {
+		if r == nil {
+			continue
+		}
+		if r.URL == nil {
+			return false
+		}
+		paths, valid := engine.SecurityPathViews(r.URL.Path)
+		if !valid {
+			return false
+		}
+		requestPaths[i] = paths
+	}
 	// Apply every matching rule; deny if any rule denies.
 	allowAll := true
 	for _, rule := range l.rules {
-		for _, r := range requests {
+		for i, r := range requests {
 			if r == nil || (rule.cfg.Method != "" && !strings.EqualFold(rule.cfg.Method, r.Method)) {
 				continue
 			}
-			if !rule.pattern.MatchString(r.URL.Path) {
+			if !matchesEndpointPath(rule.pattern, requestPaths[i]) {
 				continue
 			}
 			if !l.allow(rule.cfg, key) {
@@ -103,52 +146,38 @@ func (l *RateLimiter) allow(rule config.APIEndpointLimitConfig, key string) bool
 	b := l.hits[mapKey]
 	if b == nil || now.Sub(b.start) >= rule.Window {
 		if b == nil && len(l.hits) >= l.maxKeys {
-			l.evictOldestLocked()
+			// An active quota must outlive capacity pressure from new identities.
+			return false
 		}
-		if b == nil && len(l.hits) >= l.maxKeys {
-			for k := range l.hits {
-				delete(l.hits, k)
-				break
-			}
+		if b == nil {
+			b = &bucket{key: mapKey, start: now, expiresAt: now.Add(rule.Window), count: 1}
+			l.hits[mapKey] = b
+			heap.Push(&l.expirations, b)
+		} else {
+			// An expired key can remain after bounded cleanup. Renew its one
+			// heap record in place so repeated windows cannot grow stale entries.
+			b.start, b.expiresAt, b.count = now, now.Add(rule.Window), 1
+			heap.Fix(&l.expirations, b.heapIndex)
 		}
-		l.hits[mapKey] = &bucket{start: now, lastAccess: now, count: 1}
 		return true
 	}
 	if b.count >= rule.Requests {
-		b.lastAccess = now
 		return false
 	}
 	b.count++
-	b.lastAccess = now
 	return true
 }
 
 func (l *RateLimiter) expireLocked(now time.Time) {
-	budget := evictionBudget
-	for key, b := range l.hits {
-		if budget <= 0 {
+	// Expiry order makes reclamation independent of how many long-lived
+	// endpoint buckets surround a due key, without scanning the full map.
+	for n := 0; n < evictionBudget && len(l.expirations) > 0; n++ {
+		b := l.expirations[0]
+		if now.Before(b.expiresAt) {
 			break
 		}
-		budget--
-		if now.Sub(b.start) >= time.Hour || now.Sub(b.lastAccess) >= time.Hour {
-			delete(l.hits, key)
-		}
-	}
-}
-
-func (l *RateLimiter) evictOldestLocked() {
-	var oldestKey string
-	var oldest time.Time
-	first := true
-	for key, b := range l.hits {
-		if first || b.lastAccess.Before(oldest) {
-			oldest = b.lastAccess
-			oldestKey = key
-			first = false
-		}
-	}
-	if oldestKey != "" {
-		delete(l.hits, oldestKey)
+		heap.Pop(&l.expirations)
+		delete(l.hits, b.key)
 	}
 }
 

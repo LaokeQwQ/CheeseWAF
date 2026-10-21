@@ -479,6 +479,12 @@ export default function SetupPage() {
   }, []);
 
   useEffect(() => {
+    if (step === STEP_LANGUAGE) {
+      void ensureLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
+    }
+  }, [step, language]);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       await ensureLanguage(language);
@@ -842,7 +848,7 @@ export default function SetupPage() {
         />
         <button
           type="button"
-          className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+          className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors duration-[var(--motion-duration-fast)] ease-[var(--motion-ease-standard)] hover:text-foreground"
           aria-label={shown ? t('setup.hidePassword') : t('setup.showPassword')}
           title={shown ? t('setup.hidePassword') : t('setup.showPassword')}
           onClick={onToggle}
@@ -966,9 +972,10 @@ export default function SetupPage() {
                     onChange={(event) => { setSetupTokenInput(event.target.value); }}
                     placeholder={t('setup.tokenPlaceholder')}
                     aria-invalid={setupTokenError ? true : undefined}
+                    aria-describedby={setupTokenError ? 'setup-token-error' : undefined}
                   />
                   {setupTokenError ? (
-                    <div className="setup-token-error" role="alert" aria-live="assertive">
+                    <div id="setup-token-error" className="setup-token-error" role="alert" aria-live="assertive">
                       <AlertTriangle size={15} aria-hidden="true" />
                       <span>{t(setupTokenError)}</span>
                     </div>
@@ -1016,7 +1023,7 @@ export default function SetupPage() {
                 })}
               </span>
               <span className="setup-progress-mobile-track" aria-hidden="true">
-                <span style={{ width: `${((step + 1) / steps.length) * 100}%` }} />
+                <span style={{ transform: `scaleX(${(step + 1) / steps.length})` }} />
               </span>
             </p>
           </>
@@ -1049,26 +1056,55 @@ export default function SetupPage() {
               onValueChange={(value) => setLanguage(value as Language)}
               className="mt-2 grid gap-2"
             >
-              {LANGUAGE_OPTIONS.map((option) => {
+              {LANGUAGE_OPTIONS.map((option, optionIndex) => {
                 const id = `setup-language-${option.value}`;
                 return (
                   <div
                     key={option.value}
+                    id={`${id}-card`}
                     className={[
                       'setup-card-radio flex items-start gap-3 p-5',
                       language === option.value ? 'setup-card-radio-selected' : '',
                     ].join(' ')}
+                    role="radio"
+                    tabIndex={0}
+                    aria-checked={language === option.value}
+                    aria-labelledby={`${id}-label`}
+                    aria-describedby={`${id}-note`}
                     onClick={() => setLanguage(option.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setLanguage(option.value);
+                        return;
+                      }
+                      let nextIndex = optionIndex;
+                      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (optionIndex + 1) % LANGUAGE_OPTIONS.length;
+                      else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (optionIndex - 1 + LANGUAGE_OPTIONS.length) % LANGUAGE_OPTIONS.length;
+                      else if (event.key === 'Home') nextIndex = 0;
+                      else if (event.key === 'End') nextIndex = LANGUAGE_OPTIONS.length - 1;
+                      else return;
+                      event.preventDefault();
+                      const next = LANGUAGE_OPTIONS[nextIndex];
+                      setLanguage(next.value);
+                      document.getElementById(`setup-language-${next.value}-card`)?.focus();
+                    }}
                   >
-                    <RadioGroupItem value={option.value} id={id} className="mt-0.5" />
-                    <Label htmlFor={id} className="grid cursor-pointer gap-0.5 font-normal leading-snug">
+                    <RadioGroupItem
+                      value={option.value}
+                      id={id}
+                      className="mt-0.5"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    />
+                    <Label htmlFor={id} id={`${id}-label`} className="grid cursor-pointer gap-0.5 font-normal leading-snug">
                       <span className="setup-language-title flex items-center gap-2 text-sm font-medium">
                         {t(option.titleKey)}
                         {browserLanguage === option.value ? (
                           <Badge variant="secondary">{t('setup.languageBrowserDefault')}</Badge>
                         ) : null}
                       </span>
-                      <span className="setup-language-note text-xs text-muted-foreground" title={t(option.noteKey)}>{t(option.noteKey)}</span>
+                      <span id={`${id}-note`} className="setup-language-note text-xs text-muted-foreground" title={t(option.noteKey)}>{t(option.noteKey)}</span>
                     </Label>
                   </div>
                 );
@@ -1309,7 +1345,7 @@ export default function SetupPage() {
               >
                 <span
                   className={`setup-password-strength-fill ${STRENGTH_BAR_STYLES[score] ?? 'bg-muted'}`}
-                  style={{ width: `${score * 25}%` }}
+                  style={{ transform: `scaleX(${score / 4})` }}
                   aria-hidden="true"
                 />
               </div>
@@ -1394,7 +1430,7 @@ export default function SetupPage() {
                       />
                       <button
                         type="button"
-                        className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                        className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors duration-[var(--motion-duration-fast)] ease-[var(--motion-ease-standard)] hover:text-foreground"
                         aria-label={showPostgresPassword ? t('setup.hidePassword') : t('setup.showPassword')}
                         title={showPostgresPassword ? t('setup.hidePassword') : t('setup.showPassword')}
                         onClick={() => setShowPostgresPassword((visible) => !visible)}

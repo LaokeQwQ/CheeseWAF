@@ -19,6 +19,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { TFunction } from 'i18next';
 import { Activity, ArrowRight, Bot, CheckCircle2, FlaskConical, Image, RefreshCw, Settings2, ShieldAlert, ShieldX, Users } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { currentAccount, hasScope } from '../../authProfile';
@@ -138,7 +139,7 @@ export function TrendChart({ points, locale, t }: { points: BotChallengeMetricPo
           }
         }}
       >
-      <i className={styles.issuedBar} style={{ height: `${point.issued / max * 100}%` }}/><i className={styles.successBar} style={{ height: `${point.successes / max * 100}%` }}/><i className={styles.blockedBar} style={{ height: `${(point.failures + point.blocks) / max * 100}%` }}/>
+      <i className={styles.issuedBar} style={{ '--bar-scale': point.issued / max } as CSSProperties}/><i className={styles.successBar} style={{ '--bar-scale': point.successes / max } as CSSProperties}/><i className={styles.blockedBar} style={{ '--bar-scale': (point.failures + point.blocks) / max } as CSSProperties}/>
       {(index === 0 || index === grouped.length - 1 || index === Math.floor(grouped.length / 2)) && <small>{formatBucketTime(point.time, locale, grouped.length)}</small>}
       <span id={tooltipID} role={'tooltip'} data-open={open} className={styles.bucketTip}>{t('botChallenge.bucketDetail', { challenged: point.issued, passed: point.successes, failed: point.failures, blocked: point.blocks })}</span>
     </button>;
@@ -150,7 +151,7 @@ function TrendLegend({ t }: { t: TFunction }) { return <div className={styles.le
 
 function TypeEffectPanel({ points, t }: { points: BotChallengeMetricPoint[]; t: TFunction }) {
   const effects = useMemo(() => aggregateEffects(points), [points]);
-  return <section className={`panel ${styles.effectPanel}`}><div className={'panel-heading'}><h2>{t('botChallenge.typeEffect')}</h2><span>{t('botChallenge.typeEffectHint')}</span></div>{effects.length ? <div className={styles.effectList}>{effects.map((item) => <div key={item.type}><div><strong>{typeLabel(item.type, t)}</strong><span>{t('botChallenge.issuedCount', { count: item.issued })}</span></div><b>{item.passRate == null ? t('botChallenge.noOutcomeData') : `${(item.passRate * 100).toFixed(1)}%`}</b><div className={styles.rateTrack}><i style={{ width: `${(item.passRate ?? 0) * 100}%` }}/></div></div>)}</div> : <Empty description={t('botChallenge.noTypeData')}/>}</section>;
+  return <section className={`panel ${styles.effectPanel}`}><div className={'panel-heading'}><h2>{t('botChallenge.typeEffect')}</h2><span>{t('botChallenge.typeEffectHint')}</span></div>{effects.length ? <div className={styles.effectList}>{effects.map((item) => <div key={item.type}><div><strong>{typeLabel(item.type, t)}</strong><span>{t('botChallenge.issuedCount', { count: item.issued })}</span></div><b>{item.passRate == null ? t('botChallenge.noOutcomeData') : `${(item.passRate * 100).toFixed(1)}%`}</b><div className={styles.rateTrack}><i style={{ '--rate-scale': item.passRate ?? 0 } as CSSProperties}/></div></div>)}</div> : <Empty description={t('botChallenge.noTypeData')}/>}</section>;
 }
 
 function EventTable({ events, loading, forbidden, error, retry, locale, navigate, t, page, setPage }: { events: BotChallengeEvent[]; loading: boolean; forbidden: boolean; error?: unknown; retry: () => void; locale: string; navigate: (path: string) => void; t: TFunction; page: number; setPage: (page: number) => void }) {

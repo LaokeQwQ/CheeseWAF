@@ -30,6 +30,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	climigration "github.com/LaokeQwQ/CheeseWAF/internal/cli/migration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
@@ -408,6 +409,7 @@ func runServe(ctx context.Context) error {
 		OnSitesChanged:                     reloadSites,
 		OnEdgeChanged:                      proxyServer.UpdateEdge,
 		OnProtectionChanged:                proxyServer.UpdateProtection,
+		OnCAPTCHAProvidersChanged:          proxyServer.UpdateCAPTCHAProviders,
 		RequireProtectionPolicyCoordinator: productionDeps != nil,
 		OnAPISecChanged:                    proxyServer.UpdateAPISec,
 		OnBlockPageChanged:                 proxyServer.UpdateBlockPage,
@@ -859,10 +861,16 @@ func adminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, a
 	withRecovery := func(next http.Handler) http.Handler {
 		return middleware.Recovery(panicAuditor)(next)
 	}
+	securityConfigSource := func() *config.Config {
+		if current := configSource(); current != nil {
+			return current
+		}
+		return cfg
+	}
 	uiFS, _ := resolveAdminUIFS()
 	if uiFS == nil {
 		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
-		return adminSecurityHeaders(withRecovery(adminEntranceGateWithConfigSource(cfg, authSecret, apiHandler, clock, configSource)))
+		return adminSecurityHeaders(withRecovery(adminEntranceGateWithConfigSource(cfg, authSecret, apiHandler, clock, configSource)), securityConfigSource)
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -902,7 +910,7 @@ func adminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, a
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
-	return adminSecurityHeaders(withRecovery(adminGzip(handler, metricsPath)))
+	return adminSecurityHeaders(withRecovery(adminGzip(handler, metricsPath)), securityConfigSource)
 }
 
 func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name string) bool {
@@ -997,9 +1005,13 @@ func adminEntranceGateWithConfigSource(cfg *config.Config, authSecret string, ne
 	})
 }
 
-func adminSecurityHeaders(next http.Handler) http.Handler {
+func adminSecurityHeaders(next http.Handler, sources ...func() *config.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", adminContentSecurityPolicy())
+		var cfg *config.Config
+		if len(sources) > 0 && sources[0] != nil {
+			cfg = sources[0]()
+		}
+		w.Header().Set("Content-Security-Policy", adminContentSecurityPolicy(cfg))
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -1271,18 +1283,38 @@ func adminShouldGzip(r *http.Request, metricsPath string) bool {
 	}
 }
 
-func adminContentSecurityPolicy() string {
+func adminContentSecurityPolicy(configs ...*config.Config) string {
+	scriptSources := "script-src 'self'"
+	connectSources := []string{"'self'", "ws:", "wss:"}
+	if len(configs) > 0 && configs[0] != nil {
+		cfg := configs[0]
+		if cfg.Console.Login.CAPTCHA.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Provider), "cap") {
+			scriptSources += " 'wasm-unsafe-eval'"
+			capConfig := cfg.CAPTCHAProviders.Cap
+			for _, resource := range []string{capConfig.APIEndpoint, capConfig.WASMURL, capConfig.HashWXURL} {
+				if origin := captcha.CapResourceOrigin(resource); origin != "" {
+					duplicate := false
+					for _, source := range connectSources {
+						duplicate = duplicate || source == origin
+					}
+					if !duplicate {
+						connectSources = append(connectSources, origin)
+					}
+				}
+			}
+		}
+	}
 	return strings.Join([]string{
 		"default-src 'self'",
 		"base-uri 'none'",
 		"object-src 'none'",
 		"frame-ancestors 'none'",
 		"form-action 'self'",
-		"script-src 'self'",
+		scriptSources,
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob: https: http:",
 		"font-src 'self' data:",
-		"connect-src 'self' ws: wss:",
+		"connect-src " + strings.Join(connectSources, " "),
 		"worker-src 'self' blob:",
 		"manifest-src 'self'",
 		"media-src 'self' data: blob: https: http:",

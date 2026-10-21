@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -103,6 +104,21 @@ func (v *requestViews) variants(rule Rule, reqCtx *engine.RequestContext) []stri
 	rawValues := []string{v.match(rule, reqCtx)}
 	if rule.Location == "args" {
 		rawValues = v.argumentValues(reqCtx)
+	} else if (rule.Location == "uri" || rule.Location == "path") && reqCtx != nil && reqCtx.Request != nil && reqCtx.Request.URL != nil && strings.ContainsAny(reqCtx.Request.URL.Path, ";%") {
+		wirePath := reqCtx.Request.URL.Path
+		if paths, valid := engine.SecurityPathViews(wirePath); valid {
+			// Keep the historical context view. Matrix interpretation adds
+			// protection without replacing semicolon rules or changing the
+			// existing meaning of non-matrix dot/encoded paths.
+			for _, path := range paths {
+				if path == wirePath && path != rawValues[0] {
+					continue
+				}
+				if !slices.Contains(rawValues, path) {
+					rawValues = append(rawValues, path)
+				}
+			}
+		}
 	}
 	out := make([]string, 0, len(rawValues)*2)
 	for _, raw := range rawValues {

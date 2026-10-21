@@ -24,12 +24,15 @@
   --accent-warning: #e89a3c;
   --accent-info: #62b6d8;
   --accent-purple: #b88de6;
-  --shadow: 0 20px 70px rgba(0, 0, 0, 0.36);
+  --shadow-offset-y: 20px;
+  --shadow-blur: 70px;
   --shadow-color: rgba(0, 0, 0, 0.38);
   --highlight-color: rgba(255, 242, 196, 0.18);
   --map-canvas-3d-bg: linear-gradient(180deg, #18140c 0%, #121009 54%, #0a0906 100%);
   --auth-media-bg: #14100a;
-  --auth-shade: linear-gradient(90deg, rgba(10, 8, 5, 0.78), rgba(10, 8, 5, 0.5) 42%, rgba(10, 8, 5, 0.76));
+  --auth-shade-start: rgba(10, 8, 5, 0.78);
+  --auth-shade-mid: rgba(10, 8, 5, 0.5);
+  --auth-shade-end: rgba(10, 8, 5, 0.76);
   --preview-page-bg: #ffffff;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   --mono-font: var(--font-mono);
@@ -38,4 +41,5 @@
   --color-bg-2: #1d1a14;
   --color-text-1: #f7f1df;
   --color-text-2: #dacda7;
+  --destructive-foreground: #1d1607;
 }

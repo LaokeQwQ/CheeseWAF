@@ -221,9 +221,10 @@ func Guard[T any](fn func() (T, error)) (result T, err error) {
 	return GuardContext(context.Background(), fn)
 }
 
-// GuardContext runs a detector with panic recovery, a hard upper bound, and
-// caller cancellation. The detector runs in a bounded goroutine so a function
-// that ignores ctx cannot hold the request path past its budget. When the
+// GuardContext runs a detector with panic recovery, a caller deadline (or a
+// compatibility timeout when none is set), and caller cancellation. The detector
+// runs in a bounded goroutine so a function that ignores ctx cannot hold the
+// request path past its budget. When the
 // caller returns early, the guard slot remains occupied until the detector
 // exits; this preserves the leak bound enforced by guardSlots.
 //
@@ -299,11 +300,12 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 		}
 	}()
 
-	// Pipeline invocations already share one deadline timer. Allocate the
-	// compatibility hard-stop timer only when the caller has no shorter budget.
+	// Pipeline invocations already share their configured deadline timer. Do not
+	// shorten that budget with a second timeout; callers without a deadline still
+	// get the compatibility hard stop.
 	var timer *time.Timer
 	var timeout <-chan time.Time
-	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Second {
+	if _, ok := ctx.Deadline(); !ok {
 		timer = time.NewTimer(2 * time.Second)
 		timeout = timer.C
 		defer timer.Stop()
@@ -314,7 +316,7 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	case <-timeout:
-		return zero, fmt.Errorf("detection deadline exceeded (2s)")
+		return zero, fmt.Errorf("detection deadline exceeded (2s): %w", context.DeadlineExceeded)
 	}
 }
 

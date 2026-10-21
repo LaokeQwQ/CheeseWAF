@@ -144,6 +144,93 @@ func TestSystemExposesUnavailableUpdateCapabilitiesAndEffectiveDisabledState(t *
 	}
 }
 
+func TestSystemCapProviderRedactsSecretPathAndPreservesItOnUpdate(t *testing.T) {
+	cfg := config.Default()
+	secretPath := filepath.Join(t.TempDir(), "private-cap-secret")
+	if err := os.WriteFile(secretPath, []byte("cap-siteverify-secret"), 0o600); err != nil {
+		t.Fatalf("write Cap secret: %v", err)
+	}
+	cfg.CAPTCHAProviders.Cap = config.CapStandaloneConfig{
+		APIEndpoint: "https://cap.example/site-key/",
+		WidgetURL:   "https://cap.example/assets/widget.js",
+		WASMURL:     "https://cap.example/assets/cap_wasm_bg.wasm",
+		HashWXURL:   "https://cap.example/assets/hashwx.wasm",
+		SecretFile:  secretPath,
+		Timeout:     5 * time.Second,
+	}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	h := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	get := httptest.NewRecorder()
+	h.System(get, httptest.NewRequest(http.MethodGet, "/api/system", nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET system status=%d body=%s", get.Code, get.Body.String())
+	}
+	if strings.Contains(get.Body.String(), secretPath) || strings.Contains(get.Body.String(), "private-cap-secret") {
+		t.Fatalf("system response leaked Cap secret path: %s", get.Body.String())
+	}
+	var view struct {
+		Data struct {
+			CAPTCHAProviders struct {
+				Cap struct {
+					SecretSet bool `json:"secret_set"`
+				} `json:"cap"`
+			} `json:"captcha_providers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode system response: %v", err)
+	}
+	if !view.Data.CAPTCHAProviders.Cap.SecretSet {
+		t.Fatal("system response did not report the configured Cap secret")
+	}
+
+	updateBody := []byte(`{"captcha_providers":{"cap":{"api_endpoint":"https://new-cap.example/site-key/","widget_url":"https://new-cap.example/assets/widget.js","wasm_url":"https://new-cap.example/assets/cap_wasm_bg.wasm","hashwx_url":"https://new-cap.example/assets/hashwx.wasm","timeout":7000000000}}}`)
+	update := httptest.NewRecorder()
+	h.UpdateSystem(update, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(updateBody)))
+	if update.Code != http.StatusOK {
+		t.Fatalf("update Cap provider status=%d body=%s", update.Code, update.Body.String())
+	}
+	if cfg.CAPTCHAProviders.Cap.SecretFile != secretPath {
+		t.Fatalf("Cap secret path changed to %q, want preserved path", cfg.CAPTCHAProviders.Cap.SecretFile)
+	}
+	if strings.Contains(update.Body.String(), secretPath) {
+		t.Fatalf("update response leaked Cap secret path: %s", update.Body.String())
+	}
+}
+
+func TestReadableSecretFileRequiresExistingRegularFile(t *testing.T) {
+	root := t.TempDir()
+	secretPath := filepath.Join(root, "secret")
+	if readableSecretFile(secretPath) {
+		t.Fatal("missing secret file reported as configured")
+	}
+	if readableSecretFile(root) {
+		t.Fatal("secret directory reported as configured")
+	}
+	if err := os.WriteFile(secretPath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if !readableSecretFile(secretPath) {
+		t.Fatal("existing regular secret file was not reported as configured")
+	}
+	if err := os.WriteFile(secretPath, []byte(" \n\t"), 0o600); err != nil {
+		t.Fatalf("write blank secret: %v", err)
+	}
+	if readableSecretFile(secretPath) {
+		t.Fatal("blank secret file reported as configured")
+	}
+	if err := os.WriteFile(secretPath, bytes.Repeat([]byte{'x'}, 4<<10+1), 0o600); err != nil {
+		t.Fatalf("write oversized secret: %v", err)
+	}
+	if readableSecretFile(secretPath) {
+		t.Fatal("oversized secret file reported as configured")
+	}
+}
+
 func TestUpdateSystemRejectsUnavailableFeatureEnablementBeforeMutation(t *testing.T) {
 	cfg := config.Default()
 	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")

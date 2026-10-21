@@ -61,7 +61,7 @@ import {
   ChevronRight,
   type LucideIcon,
 } from 'lucide-react';
-import i18n from '../i18n';
+import i18n, { ensureLanguage } from '../i18n';
 import { clearNotifications, fetchAuditEntries, fetchHealth, fetchLogs, fetchNotifications, fetchUsers, fetchVersion, isSessionInvalidAuthFailure, logout, markAllNotificationsRead as markAllNotificationsReadAPI, sanitizeInternalReturnPath, updateNotification } from '../api/client';
 import AIAssistantEntry from '../components/AIAssistant/AIAssistantEntry';
 import BrandLogo from '../components/BrandLogo';
@@ -813,7 +813,13 @@ export default function MainLayout() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
+              <Select
+                value={language}
+                onValueChange={(value) => setLanguage(value as Language)}
+                onOpenChange={(open) => {
+                  if (open) void ensureLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
+                }}
+              >
                 <SelectTrigger className="language-select" aria-label={t('system.language')}>
                   <span className="flex min-w-0 items-center gap-1.5">
                     <Languages size={15} className="shrink-0" />

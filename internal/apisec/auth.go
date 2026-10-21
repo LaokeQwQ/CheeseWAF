@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
 )
 
@@ -150,8 +151,20 @@ func (a *Authenticator) Evaluate(r *http.Request) *AuthFinding {
 	if a == nil || !a.enabled || r == nil {
 		return nil
 	}
-	requirement, applies := a.requirementFor(r)
-	if !applies {
+	if r.URL == nil {
+		return &AuthFinding{Kind: "invalid", Field: "path", Message: "API request path is invalid", Severity: "high"}
+	}
+	paths, valid := engine.SecurityPathViews(r.URL.Path)
+	if !valid {
+		return &AuthFinding{Kind: "invalid", Field: "path", Message: "API request path is invalid", Severity: "high"}
+	}
+	var requirements []authRequirement
+	for _, path := range paths {
+		if requirement, applies := a.requirementFor(r.Method, path); applies {
+			requirements = append(requirements, requirement)
+		}
+	}
+	if len(requirements) == 0 {
 		return nil
 	}
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -188,36 +201,41 @@ func (a *Authenticator) Evaluate(r *http.Request) *AuthFinding {
 	if nbf, hasNBF := numericClaim(claims["nbf"]); hasNBF && int64(nbf)-clockSkew > nowUnix {
 		return &AuthFinding{Kind: "invalid", Field: "nbf", Message: "API authorization token is not yet valid", Severity: "high"}
 	}
-	if len(requirement.issuers) > 0 {
-		issuer, _ := stringClaim(claims["iss"])
-		if _, ok := requirement.issuers[issuer]; !ok {
-			return &AuthFinding{Kind: "issuer", Field: "iss", Message: "API authorization issuer is not allowed", Severity: "medium", Payload: issuer}
+	// Keep endpoint specificity and overrides within each view, but require the
+	// token to satisfy every interpretation. Unioning issuer/audience allowlists
+	// or choosing one view's policy could weaken another view's protection.
+	for _, requirement := range requirements {
+		if len(requirement.issuers) > 0 {
+			issuer, _ := stringClaim(claims["iss"])
+			if _, ok := requirement.issuers[issuer]; !ok {
+				return &AuthFinding{Kind: "issuer", Field: "iss", Message: "API authorization issuer is not allowed", Severity: "medium", Payload: issuer}
+			}
 		}
-	}
-	if len(requirement.audiences) > 0 {
-		audiences := audienceClaims(claims)
-		if !setsIntersect(audiences, requirement.audiences) {
-			return &AuthFinding{Kind: "audience", Field: "aud", Message: "API authorization audience is not allowed", Severity: "medium", Payload: strings.Join(setKeys(audiences), ",")}
+		if len(requirement.audiences) > 0 {
+			audiences := audienceClaims(claims)
+			if !setsIntersect(audiences, requirement.audiences) {
+				return &AuthFinding{Kind: "audience", Field: "aud", Message: "API authorization audience is not allowed", Severity: "medium", Payload: strings.Join(setKeys(audiences), ",")}
+			}
 		}
-	}
-	if len(requirement.requiredScopes) > 0 {
-		scopes := scopeClaims(claims)
-		for _, required := range requirement.requiredScopes {
-			if _, ok := scopes[required]; !ok {
-				return &AuthFinding{Kind: "scope", Field: "scope", Message: "API authorization scope is missing", Severity: "medium", Payload: required}
+		if len(requirement.requiredScopes) > 0 {
+			scopes := scopeClaims(claims)
+			for _, required := range requirement.requiredScopes {
+				if _, ok := scopes[required]; !ok {
+					return &AuthFinding{Kind: "scope", Field: "scope", Message: "API authorization scope is missing", Severity: "medium", Payload: required}
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func (a *Authenticator) requirementFor(r *http.Request) (authRequirement, bool) {
+func (a *Authenticator) requirementFor(method, path string) (authRequirement, bool) {
 	// Prefer the most specific matching endpoint policy (longest path pattern).
 	// Policy-local issuers, audiences, and scopes override globals when set.
 	var best *authEndpointPolicy
 	bestLen := -1
 	for i := range a.endpoints {
-		if !a.endpoints[i].matches(r) {
+		if !a.endpoints[i].matches(method, path) {
 			continue
 		}
 		n := len(a.endpoints[i].pattern.String())
@@ -233,12 +251,11 @@ func (a *Authenticator) requirementFor(r *http.Request) (authRequirement, bool) 
 			requiredScopes: firstList(best.requiredScopes, a.requiredScopes),
 		}, true
 	}
-	path := r.URL.Path
 	if strings.HasPrefix(path, "/api/") || path == "/api" {
 		return a.globalRequirement(), true
 	}
 	for _, matcher := range a.matchers {
-		if matcher.method != "" && !strings.EqualFold(matcher.method, r.Method) {
+		if matcher.method != "" && !strings.EqualFold(matcher.method, method) {
 			continue
 		}
 		if matcher.pattern.MatchString(path) {
@@ -256,11 +273,11 @@ func (a *Authenticator) globalRequirement() authRequirement {
 	}
 }
 
-func (p authEndpointPolicy) matches(r *http.Request) bool {
-	if p.method != "" && !strings.EqualFold(p.method, r.Method) {
+func (p authEndpointPolicy) matches(method, path string) bool {
+	if p.method != "" && !strings.EqualFold(p.method, method) {
 		return false
 	}
-	return p.pattern != nil && p.pattern.MatchString(r.URL.Path)
+	return p.pattern != nil && p.pattern.MatchString(path)
 }
 
 func stringClaim(value any) (string, bool) {

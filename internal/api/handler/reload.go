@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -115,10 +116,8 @@ func (h *Handler) applyLiveRuntime(candidate *config.Config) error {
 			return err
 		}
 	}
-	if h.OnProtectionChanged != nil {
-		if err := h.OnProtectionChanged(candidate.Protection); err != nil {
-			return err
-		}
+	if err := h.applyCAPTCHAProtectionRuntime(candidate, true, true); err != nil {
+		return err
 	}
 	if h.OnAPISecChanged != nil {
 		if err := h.OnAPISecChanged(candidate.APISec); err != nil {
@@ -136,6 +135,38 @@ func (h *Handler) applyLiveRuntime(candidate *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// Apply the candidate's Bot/provider pair in a safe order in either direction.
+// Enabling Cap needs its provider first; disabling it must stop using the old
+// provider before a valid candidate can clear that provider's settings.
+func (h *Handler) applyCAPTCHAProtectionRuntime(candidate *config.Config, providersChanged, protectionChanged bool) error {
+	applyProviders := func() error {
+		if providersChanged && h.OnCAPTCHAProvidersChanged != nil {
+			if err := h.OnCAPTCHAProvidersChanged(candidate.CAPTCHAProviders); err != nil {
+				return fmt.Errorf("captcha provider runtime: %w", err)
+			}
+		}
+		return nil
+	}
+	applyProtection := func() error {
+		if protectionChanged {
+			return h.notifyProtectionConfigChanged(candidate.Protection)
+		}
+		return nil
+	}
+	bot := candidate.Protection.Bot
+	usesCap := bot.Enabled && bot.CAPTCHA && strings.EqualFold(strings.TrimSpace(bot.CAPTCHAProvider), "cap")
+	if usesCap {
+		if err := applyProviders(); err != nil {
+			return err
+		}
+		return applyProtection()
+	}
+	if err := applyProtection(); err != nil {
+		return err
+	}
+	return applyProviders()
 }
 
 func (h *Handler) replaceStoreSites(ctx context.Context, sites []config.SiteConfig) error {
