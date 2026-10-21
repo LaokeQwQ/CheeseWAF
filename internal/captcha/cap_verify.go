@@ -88,17 +88,11 @@ func NewCapVerifierFromFile(endpoint, secretFile string, timeout time.Duration) 
 	if strings.TrimSpace(secretFile) == "" {
 		return nil, errCapSecretFile
 	}
-	file, err := os.Open(secretFile)
-	if err != nil {
+	before, err := statCapSecretFile(secretFile)
+	if err != nil || !before.Mode().IsRegular() || before.Size() > maxCapSecretFileSize {
 		return nil, errCapSecretFile
 	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || info.Size() > maxCapSecretFileSize {
-		return nil, errCapSecretFile
-	}
-
-	contents, err := io.ReadAll(io.LimitReader(file, maxCapSecretFileSize))
+	contents, err := readCapSecretFile(secretFile, before)
 	if err != nil {
 		return nil, errCapSecretFile
 	}
@@ -107,6 +101,29 @@ func NewCapVerifierFromFile(endpoint, secretFile string, timeout time.Duration) 
 		return nil, errCapSecretFile
 	}
 	return NewCapVerifier(endpoint, secret, timeout)
+}
+
+func readCapSecretFile(path string, before os.FileInfo) ([]byte, error) {
+	file, err := openCapSecretFile(path)
+	if err != nil {
+		return nil, errCapSecretFile
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxCapSecretFileSize || !os.SameFile(before, info) {
+		return nil, errCapSecretFile
+	}
+	current, err := statCapSecretFile(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(current, info) {
+		return nil, errCapSecretFile
+	}
+	// A file may grow after Stat. Read one extra byte so growth cannot silently
+	// truncate a secret into an accepted verifier configuration.
+	contents, err := io.ReadAll(io.LimitReader(file, maxCapSecretFileSize+1))
+	if err != nil || len(contents) > maxCapSecretFileSize {
+		return nil, errCapSecretFile
+	}
+	return contents, nil
 }
 
 func validCapEndpoint(endpoint *url.URL) bool {

@@ -365,6 +365,30 @@ func TestNewCapVerifierFromFileRejectsEmptyMissingAndOversizedWithoutLeaking(t *
 	}
 }
 
+func TestCapSecretReadRejectsReplacedIdentity(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "secret")
+	if err := os.WriteFile(path, []byte("original-private-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := statCapSecretFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement")
+	if err := os.WriteFile(replacement, []byte("replacement-private-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCapSecretFile(path, before); !errors.Is(err, errCapSecretFile) {
+		t.Fatalf("changed file identity returned %v, want secret-file rejection", err)
+	} else {
+		assertDoesNotLeakCredentials(t, err, path, "replacement-private-secret")
+	}
+}
+
 func TestCapVerifierHonorsTimeout(t *testing.T) {
 	verifier := newTestCapVerifier(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)

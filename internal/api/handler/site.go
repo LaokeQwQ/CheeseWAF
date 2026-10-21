@@ -564,6 +564,9 @@ func (h *Handler) commitConfigMutation(mutate func(*config.Config) error, applyR
 	if err := config.Validate(candidate); err != nil {
 		return nil, err
 	}
+	if err := validateCapLoginReadiness(previous, candidate); err != nil {
+		return nil, err
+	}
 	if applyRuntime != nil {
 		if err := applyRuntime(candidate); err != nil {
 			if rollbackErr := applyRuntime(previous); rollbackErr != nil {
