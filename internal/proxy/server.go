@@ -19,6 +19,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -143,6 +144,12 @@ func NewServer(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSi
 func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink storage.LogSink, clock timekeeper.Clock) (*Server, error) {
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
+	}
+	if cfg.Console.Login.CAPTCHA.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Provider), "cap") {
+		provider := cfg.CAPTCHAProviders.Cap
+		if _, err := captcha.NewCapVerifierFromFile(provider.SiteVerifyEndpoint(), provider.SecretFile, provider.Timeout); err != nil {
+			return nil, fmt.Errorf("console login CAPTCHA provider is invalid: %w", err)
+		}
 	}
 	siteRuntimes, err := newSiteRuntimeSet(cfg.Sites)
 	if err != nil {

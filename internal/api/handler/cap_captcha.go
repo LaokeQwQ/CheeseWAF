@@ -3,7 +3,9 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
@@ -106,6 +108,27 @@ func (h *Handler) verifyLoginCapProof(r *http.Request, login config.LoginCAPTCHA
 
 func newConfiguredCapVerifier(cfg config.CapStandaloneConfig) (*captcha.CapVerifier, error) {
 	return captcha.NewCapVerifierFromFile(cfg.SiteVerifyEndpoint(), cfg.SecretFile, cfg.Timeout)
+}
+
+// Runtime readiness belongs at activation boundaries, not structural config
+// validation. A stale optional provider must not block unrelated config writes
+// or prevent disabling a broken login integration.
+func validateCapLoginReadiness(previous, candidate *config.Config) error {
+	if candidate == nil {
+		return fmt.Errorf("configuration is unavailable")
+	}
+	login := candidate.Console.Login.CAPTCHA
+	if !login.Enabled || loginCaptchaProvider(login) != "cap" {
+		return nil
+	}
+	if previous != nil && reflect.DeepEqual(previous.Console.Login.CAPTCHA, login) &&
+		reflect.DeepEqual(previous.CAPTCHAProviders, candidate.CAPTCHAProviders) {
+		return nil
+	}
+	if _, err := newConfiguredCapVerifier(candidate.CAPTCHAProviders.Cap); err != nil {
+		return fmt.Errorf("console login CAPTCHA provider is invalid: %w", err)
+	}
+	return nil
 }
 
 func newCapChallengeID() (string, error) {
