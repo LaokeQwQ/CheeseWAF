@@ -31,14 +31,14 @@
 .chartGrid b { position: absolute; right: calc(100% + 8px); top: -8px; color: var(--text-muted); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .plot { position: relative; height: 100%; display: flex; align-items: flex-end; gap: clamp(4px, 1vw, 11px); }
 .bucket { position: relative; flex: 1; height: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 2px; min-width: 6px; margin: 0; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; cursor: pointer; }
-.bucket > i { width: min(10px, 30%); min-height: 2px; border-radius: 2px 2px 0 0; transition: height 260ms ease; }
+.bucket > i { width: min(10px, 30%); height: 100%; min-height: 0; border-radius: 2px 2px 0 0; transform: scaleY(var(--bar-scale, 0)); transform-origin: center bottom; transition: transform var(--motion-duration-standard) var(--motion-ease-standard); }
 .bucket > small { position: absolute; top: calc(100% + 9px); left: 50%; transform: translateX(-50%); color: var(--text-muted); white-space: nowrap; font-size: 11px; }
 .bucket:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
-.bucketTip { position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 3; max-width: 220px; padding: 7px 9px; border-radius: 5px; background: var(--text-primary); color: var(--surface); font-size: 11px; line-height: 1.45; white-space: nowrap; opacity: 0; pointer-events: none; transform: translate(-50%, 4px); transition: opacity 140ms ease, transform 140ms ease; }
+.bucketTip { position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 3; max-width: 220px; padding: 7px 9px; border-radius: 5px; background: var(--text-primary); color: var(--surface); font-size: 11px; line-height: 1.45; white-space: nowrap; opacity: 0; pointer-events: none; transform: translate(-50%, 4px); transition: opacity var(--motion-duration-fast) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard); }
 .bucket:hover .bucketTip, .bucket:focus-visible .bucketTip, .bucketActive .bucketTip { opacity: .96; transform: translate(-50%, 0); }
 .empty { min-height: 244px; display: grid; place-content: center; }
 .quickPanel { display: flex; flex-direction: column; }
-.quickPanel button { appearance: none; border: 0; border-top: 1px solid var(--border-color); background: transparent; padding: 16px; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; text-align: left; align-items: center; color: var(--text-primary); cursor: pointer; transition: background-color 150ms ease; }
+.quickPanel button { appearance: none; border: 0; border-top: 1px solid var(--border-color); background: transparent; padding: 16px; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; text-align: left; align-items: center; color: var(--text-primary); cursor: pointer; transition: background-color var(--motion-duration-fast) var(--motion-ease-standard); }
 .quickPanel button:hover { background: var(--surface-soft); }
 .quickPanel button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .quickPanel button > svg:first-child { width: 18px; height: 18px; margin: 0 8px; color: var(--accent); }
@@ -52,7 +52,7 @@
 .effectList span { color: var(--text-secondary); font-size: 12px; }
 .effectList b { align-self: center; font-size: 18px; font-variant-numeric: tabular-nums; }
 .rateTrack { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--surface-soft); overflow: hidden; }
-.rateTrack i { display: block; height: 100%; border-radius: inherit; background: var(--color-success-6); transition: width 260ms ease; }
+.rateTrack i { display: block; width: 100%; height: 100%; border-radius: inherit; background: var(--color-success-6); transform: scaleX(var(--rate-scale, 0)); transform-origin: left center; transition: transform var(--motion-duration-standard) var(--motion-ease-standard); }
 .trace { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .eventTable { border-radius: 0 0 8px 8px; overflow: auto; }
 .eventCards { display: none; }

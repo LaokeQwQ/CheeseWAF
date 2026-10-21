@@ -10,6 +10,8 @@ const themeStyleLoaders: Record<ResolvedThemeName, () => Promise<unknown>> = {
 };
 
 const loadedThemes = new Set<ResolvedThemeName>();
+let themeTransitionTimer: number | undefined;
+const themeTransitionDurationMs = 280;
 
 function isThemeName(value: unknown): value is ThemeName {
   return themeOptions.some((option) => option.value === value);
@@ -50,10 +52,27 @@ export async function loadThemeStyles(theme: ThemeName) {
   loadedThemes.add(resolvedTheme);
 }
 
-export function applyTheme(theme: ThemeName) {
+export function applyTheme(theme: ThemeName, animate = false) {
   const resolvedTheme = resolveTheme(theme);
   const root = document.documentElement;
-  root.dataset.theme = themeAttribute[resolvedTheme];
+  const nextTheme = themeAttribute[resolvedTheme];
+  const reducedMotion = typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const shouldAnimate = animate && Boolean(root.dataset.theme) && root.dataset.theme !== nextTheme && !reducedMotion;
+
+  if (themeTransitionTimer !== undefined) {
+    window.clearTimeout(themeTransitionTimer);
+    themeTransitionTimer = undefined;
+  }
+
+  if (shouldAnimate) {
+    root.classList.add('theme-transitioning');
+    window.getComputedStyle(root).getPropertyValue('--app-bg');
+  } else {
+    root.classList.remove('theme-transitioning');
+  }
+
+  root.dataset.theme = nextTheme;
   root.style.colorScheme = themeMeta[resolvedTheme].colorScheme;
 
   const dark = resolvedTheme === 'dark' || resolvedTheme === 'blackGold';
@@ -66,4 +85,11 @@ export function applyTheme(theme: ThemeName) {
     document.head.appendChild(meta);
   }
   meta.content = themeMeta[resolvedTheme].themeColor;
+
+  if (shouldAnimate) {
+    themeTransitionTimer = window.setTimeout(() => {
+      root.classList.remove('theme-transitioning');
+      themeTransitionTimer = undefined;
+    }, themeTransitionDurationMs + 40);
+  }
 }

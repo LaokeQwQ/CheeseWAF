@@ -24,6 +24,7 @@ vi.mock('sonner', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
@@ -187,6 +188,27 @@ describe('ProtectionPage query and ACL interactions', () => {
 });
 
 describe('ProtectionPage bot form integrity', () => {
+  it('persists the selected Bot CAPTCHA provider without changing challenge types', async () => {
+    if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = vi.fn();
+    apiMocks.updateBotProtection.mockImplementation(async (payload) => payload);
+    renderProtection();
+    await screen.findAllByText('ACL fixture');
+    const botPanel = document.querySelector('.protection-bot-panel') as HTMLElement;
+    const providerField = within(botPanel).getByText('protection.captchaProvider').closest('.field-stack');
+    const providerSelect = providerField?.querySelector('[role="combobox"]');
+    expect(providerSelect).toBeTruthy();
+    fireEvent.click(providerSelect as HTMLElement);
+    fireEvent.click(await screen.findByRole('option', { name: 'Cap Standalone' }));
+    fireEvent.click(within(botPanel).getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateBotProtection).toHaveBeenCalledTimes(1));
+    expect(apiMocks.updateBotProtection.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      captcha_provider: 'cap',
+      captcha_type: 'pow',
+      captcha_types: ['pow'],
+    }));
+  });
+
   it('preserves an unsaved bot draft when another section invalidates protection', async () => {
     renderProtection();
     await screen.findAllByText('ACL fixture');

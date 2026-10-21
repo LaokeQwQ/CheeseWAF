@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 type ValidationFinding struct {
@@ -54,15 +55,21 @@ func (v *Validator) ValidateWithBodySize(r *http.Request, bodyBytes int64) []Val
 	if v == nil || !v.enabled || r == nil {
 		return nil
 	}
+	if r.URL == nil {
+		return []ValidationFinding{finding("", "path", "API request path is invalid")}
+	}
+	paths, valid := engine.SecurityPathViews(r.URL.Path)
+	if !valid {
+		return []ValidationFinding{finding("", "path", "API request path is invalid")}
+	}
 	var findings []ValidationFinding
-	path := r.URL.Path
 	measuredBodyBytes := int64(-1)
 	bodyMeasured := false
 	for _, item := range v.schemas {
 		if item.cfg.Method != "" && !strings.EqualFold(item.cfg.Method, r.Method) {
 			continue
 		}
-		if !item.pattern.MatchString(path) {
+		if !matchesEndpointPath(item.pattern, paths) {
 			continue
 		}
 		query := r.URL.Query()
