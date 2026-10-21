@@ -77,6 +77,12 @@ func (h *handler) handleImportURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", "could not record the import job")
 		return
 	}
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			intel.RecordImport(false)
+		}
+	}()
 	fail := func(status int, code, message string) {
 		h.failImportJob(ctx, job, code)
 		writeError(w, status, code, message)
@@ -195,6 +201,8 @@ func (h *handler) handleImportURL(w http.ResponseWriter, r *http.Request) {
 	if candidateCreated {
 		status = http.StatusCreated
 	}
+	succeeded = true
+	intel.RecordImport(true)
 	writeJSON(w, status, importResponse{
 		JobID:            job.ID,
 		Item:             storedItem,

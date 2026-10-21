@@ -6,6 +6,11 @@ const apiMocks = vi.hoisted(() => ({
   fetchMonitorSummary: vi.fn(),
 }));
 
+const notifierMocks = vi.hoisted(() => ({
+  fetchNotifierProviders: vi.fn(),
+  testNotifierProvider: vi.fn(),
+}));
+
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({ t: (key: string) => key }),
@@ -15,6 +20,8 @@ vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>();
   return { ...actual, ...apiMocks };
 });
+
+vi.mock('../../api/notifiers', () => notifierMocks);
 
 import MonitorPage from './MonitorPage';
 
@@ -29,6 +36,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  notifierMocks.fetchNotifierProviders.mockResolvedValue({ providers: [], count: 0 });
 });
 
 afterEach(() => {
@@ -56,6 +64,18 @@ describe('MonitorPage', () => {
     expect(screen.getByText('High block rate')).toBeTruthy();
     expect(screen.getByText('blocked spike')).toBeTruthy();
     expect(screen.getByText('40 / 20')).toBeTruthy();
+  });
+
+  it('lists configured notifier providers without secrets', async () => {
+    apiMocks.fetchMonitorSummary.mockResolvedValue({ snapshot: { requests: 0, blocked: 0, disk_usage: {} }, alerts: [] });
+    notifierMocks.fetchNotifierProviders.mockResolvedValue({
+      providers: [{ id: 'ops', name: 'Ops', type: 'webhook', enabled: true, configured: true }],
+      count: 1,
+    });
+    renderPage();
+    expect(await screen.findByText('Ops')).toBeTruthy();
+    expect(screen.getByText('webhook')).toBeTruthy();
+    expect(screen.getByText('monitor.notifierTest')).toBeTruthy();
   });
 
   it('shows loading placeholders before data arrives', async () => {

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestPHP2ShellDefaultsEnabled(t *testing.T) {
 	cfg := Default()
@@ -66,5 +69,21 @@ func TestPasskeyConfigRequiresHTTPSOrigin(t *testing.T) {
 	cfg.Console.Login.Passkey.RPOrigins = []string{"https://waf.example.com"}
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("valid passkey config rejected: %v", err)
+	}
+}
+
+func TestIntelPollIntervalDefaultsAndBounds(t *testing.T) {
+	cfg := Default()
+	if cfg.Intel.PollInterval != 15*time.Minute {
+		t.Fatalf("intel.poll_interval default = %s", cfg.Intel.PollInterval)
+	}
+	cfg.Intel.Enabled = true
+	cfg.Intel.PollInterval = 5 * time.Second
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("expected short intel poll interval to be rejected")
+	}
+	cfg.Intel.PollInterval = 15 * time.Minute
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("default intel poll interval rejected: %v", err)
 	}
 }

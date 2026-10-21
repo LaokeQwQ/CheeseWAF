@@ -258,6 +258,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(require("read:apisec"), h.ConfigReadMiddleware).Get("/apisec/endpoints", h.APIEndpoints)
 			r.With(require("read:apisec")).Post("/apisec/validate", h.ValidateAPIRequest)
 			r.With(require("read:audit"), h.ConfigReadMiddleware).Get("/audit", h.AuditEntries)
+			r.With(require("read:monitor"), h.ConfigReadMiddleware).Get("/monitor/notifiers", h.ListNotifierProviders)
+			r.With(require("write:monitor")).Post("/monitor/notifiers/test", h.TestNotifierProvider)
 			r.With(require("read:monitor"), h.ConfigReadMiddleware).Get("/notifications", h.ListNotifications)
 			r.With(require("write:monitor")).Patch("/notifications/{id}", h.UpdateNotification)
 			r.With(require("write:monitor")).Post("/notifications/read-all", h.MarkAllNotificationsRead)

@@ -106,3 +106,16 @@ func TestAlerterStateIsSafeForConcurrentEvaluation(t *testing.T) {
 		<-done
 	}
 }
+
+func TestRenderPrometheusIncludesIntelMetrics(t *testing.T) {
+	out := string(RenderPrometheus(Snapshot{}))
+	for _, name := range []string{
+		"cheesewaf_intel_imports_total",
+		"cheesewaf_intel_feed_items_stored_total",
+		"cheesewaf_intel_candidates_reviewed_total",
+	} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("missing %s in metrics output", name)
+		}
+	}
+}

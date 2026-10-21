@@ -286,6 +286,7 @@ func (h *handler) handleApproveCandidate(w http.ResponseWriter, r *http.Request)
 	}
 
 	assessment.CandidateID = updated.ID
+	intel.RecordCandidateReview(true)
 	writeJSON(w, http.StatusOK, candidateResponse{Candidate: updated, Plan: nextPlan, Impact: &assessment})
 }
 
@@ -336,6 +337,7 @@ func (h *handler) handleRejectCandidate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "storage_error", "could not persist the rejection")
 		return
 	}
+	intel.RecordCandidateReview(false)
 	writeJSON(w, http.StatusOK, candidateResponse{Candidate: updated})
 }
 
