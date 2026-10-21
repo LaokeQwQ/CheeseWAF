@@ -584,7 +584,14 @@ func (p *Policy) serveChallengeForSite(w http.ResponseWriter, r *http.Request, c
 			}
 			selection = p.adaptiveCAPTCHASelection(r, clientIP, site)
 			if p.usesBehaviorChallenge(selection, clientIP, site) {
-				p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
+				fallbackRequest := r
+				if method != "" {
+					// Restore only the receipt-bound method, without changing the
+					// submitted POST or trusting an invalid/replayed form field.
+					fallbackRequest = r.Clone(r.Context())
+					fallbackRequest.Method = method
+				}
+				p.serveBehaviorChallenge(w, fallbackRequest, clientIP, site, selection.kind)
 				return
 			}
 		}

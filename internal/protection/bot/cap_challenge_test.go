@@ -15,10 +15,118 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
 var capFieldPattern = regexp.MustCompile(`name="(cw_cap_[a-z_]+)" value="([^"]*)"`)
+
+func TestCapBotNativeFallbackPreservesVerifiedOriginalMethod(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			p, _ := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"success":false}`))
+			}, "pow", func(cfg *config.BotProtectionConfig) { cfg.CAPTCHAEscalationTypes = []string{"pow"} })
+			// Keep real native issuance and verification, with a cheap test puzzle.
+			p.issueBehaviorChallenge = func(opts captcha.BehaviorOptions) (captcha.BehaviorChallenge, error) {
+				opts.Intensity = 1
+				return captcha.IssueBehaviorChallenge(opts)
+			}
+			const ip, site, ua = "203.0.113.95", "site-a", "Mozilla/5.0"
+			_, fields := capChallengePage(t, p, method, "https://site-a/private?return=1", ip, site, ua)
+			values := url.Values{
+				"cw_cap_challenge_id": {fields.ChallengeID}, "cw_cap_context": {fields.Context},
+				"cw_cap_method": {fields.Method}, "cw_cap_token": {"provider-rejected-token"},
+			}
+			req := httptest.NewRequest(http.MethodPost, "https://site-a/private?return=1", strings.NewReader(values.Encode()))
+			req.Host = site
+			req.Header.Set("User-Agent", ua)
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			p.ServeChallengeForSite(rec, req, ip, site)
+			state, ownerCookie := capFallbackBehaviorState(t, p, rec, method)
+			if state.ReturnURL != "/private?return=1" || strings.Contains(state.ReturnURL, "cw_cap_") {
+				t.Fatalf("native fallback changed the safe return URL: %q", state.ReturnURL)
+			}
+			if req.Method != http.MethodPost || req.PostForm.Get("cw_cap_method") != method {
+				t.Fatalf("fallback mutated submitted request: method=%q form=%v", req.Method, req.PostForm)
+			}
+			proof, solved := captcha.SolveBehaviorPOW(state.Challenge.Presentation.POWSalt, state.Challenge.Presentation.POWDifficulty, 1<<24)
+			if !solved {
+				t.Fatal("could not solve the real native fallback puzzle")
+			}
+			verified := verifyBehavior(t, p, captcha.BehaviorResponse{Token: state.Challenge.Token, Proof: proof}, ip, site, ua, ownerCookie)
+			if verified.Code != http.StatusOK || len(verified.Result().Cookies()) == 0 {
+				t.Fatalf("native fallback verification failed: status=%d body=%s", verified.Code, verified.Body.String())
+			}
+			clearance := verified.Result().Cookies()[0]
+			for _, candidate := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+				request := httptest.NewRequest(candidate, "https://site-a/private", nil)
+				request.Host = site
+				request.Header.Set("User-Agent", ua)
+				request.AddCookie(clearance)
+				if got, want := p.hasClearanceForSite(request, ip, site), candidate == method; got != want {
+					t.Errorf("original=%s candidate=%s clearance=%v want=%v", method, candidate, got, want)
+				}
+			}
+			request := httptest.NewRequest(method, "https://site-a/private", nil)
+			request.Host = site
+			request.Header.Set("User-Agent", ua)
+			request.AddCookie(clearance)
+			if result := p.EvaluateForSite(request, ip, site); result != nil {
+				t.Fatalf("original method was challenged after native success: %+v", result)
+			}
+		})
+	}
+}
+
+func TestCapBotNativeFallbackDoesNotTrustReplayedMethod(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}, "pow", func(cfg *config.BotProtectionConfig) { cfg.CAPTCHAEscalationTypes = []string{"pow"} })
+	const ip, site, ua = "203.0.113.96", "site-a", "Mozilla/5.0"
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	first := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	capFallbackBehaviorState(t, p, first, http.MethodGet)
+	for _, forged := range []capChallengeFields{fields, {ChallengeID: fields.ChallengeID, Context: "invalid", Method: http.MethodPut}} {
+		replay := postCapAnswer(p, "https://site-a/private", ip, site, ua, forged)
+		capFallbackBehaviorState(t, p, replay, http.MethodPost)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("replayed method reached Cap: calls=%d", calls.Load())
+	}
+}
+
+func capFallbackBehaviorState(t *testing.T, p *Policy, response *httptest.ResponseRecorder, wantMethod string) (behaviorPageTestState, *http.Cookie) {
+	t.Helper()
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("native fallback status=%d body=%s", response.Code, response.Body.String())
+	}
+	match := behaviorStatePattern.FindStringSubmatch(response.Body.String())
+	if len(match) != 2 {
+		t.Fatal("native fallback state missing")
+	}
+	var state behaviorPageTestState
+	if err := json.Unmarshal([]byte(match[1]), &state); err != nil {
+		t.Fatal(err)
+	}
+	p.behaviorPending.mu.Lock()
+	pending, exists := p.behaviorPending.entries[behaviorTokenJTI(state.Challenge.Token)]
+	p.behaviorPending.mu.Unlock()
+	if !exists || pending.pending.method != wantMethod {
+		t.Fatalf("native fallback pending method=%q exists=%v want=%q", pending.pending.method, exists, wantMethod)
+	}
+	if state.Idempotent != (wantMethod == http.MethodGet || wantMethod == http.MethodHead) {
+		t.Fatalf("native page idempotence does not match original method %s: %+v", wantMethod, state)
+	}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == p.cookieName+behaviorOwnerCookieSuffix {
+			return state, cookie
+		}
+	}
+	t.Fatal("native owner cookie missing")
+	return state, nil
+}
 
 func TestCapBotVerificationBoundsTrustedPeerAndKeepsProofSingleUse(t *testing.T) {
 	const capacity = 4
