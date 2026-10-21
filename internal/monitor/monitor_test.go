@@ -119,3 +119,24 @@ func TestRenderPrometheusIncludesIntelMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestIntelMetricMetadataIsEmittedOnce(t *testing.T) {
+	out := string(RenderPrometheus(Snapshot{}))
+	for _, name := range []string{"cheesewaf_intel_imports_total", "cheesewaf_intel_candidates_reviewed_total"} {
+		if got := strings.Count(out, "# HELP "+name+" "); got != 1 {
+			t.Fatalf("%s HELP count=%d, want 1", name, got)
+		}
+	}
+}
+
+func TestIntelValuesPreserveResultLabel(t *testing.T) {
+	values := Values(Snapshot{})
+	for _, key := range []string{
+		"cheesewaf_intel_imports_total:result=ok",
+		"cheesewaf_intel_candidates_reviewed_total:result=approved",
+	} {
+		if _, ok := values[key]; !ok {
+			t.Fatalf("missing key %q", key)
+		}
+	}
+}

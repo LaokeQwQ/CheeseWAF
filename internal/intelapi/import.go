@@ -72,17 +72,17 @@ func (h *handler) handleImportURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := h.now().UTC()
-	job := intelstore.NewImportJob(newID("job"), rawURL, now)
-	if err := h.store.InsertImportJob(ctx, job); err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", "could not record the import job")
-		return
-	}
 	succeeded := false
 	defer func() {
 		if !succeeded {
 			intel.RecordImport(false)
 		}
 	}()
+	job := intelstore.NewImportJob(newID("job"), rawURL, now)
+	if err := h.store.InsertImportJob(ctx, job); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "could not record the import job")
+		return
+	}
 	fail := func(status int, code, message string) {
 		h.failImportJob(ctx, job, code)
 		writeError(w, status, code, message)

@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/intel"
@@ -69,19 +70,24 @@ func startIntelScheduler(ctx context.Context, cfg config.IntelConfig, store inte
 			}, nil
 		}),
 		Sink: scheduler.SinkFunc(func(ctx context.Context, source feed.Source, items []feed.FeedItem) error {
-			stored := 0
 			for _, item := range items {
 				created, err := storeFeedItem(ctx, store, source, item)
 				if err != nil {
 					return err
 				}
 				if created {
-					stored++
+					intel.RecordFeedItemsStored(1)
 				}
 			}
-			intel.RecordFeedItemsStored(stored)
 			return nil
 		}),
+		OnReport: func(report scheduler.Report) {
+			for _, result := range report.Results {
+				if result.Err != nil {
+					log.Printf("intel scheduler: source %q poll failed", result.Source.ID)
+				}
+			}
+		},
 	})
 	if err != nil {
 		log.Printf("intel scheduler: %v", err)
@@ -92,6 +98,19 @@ func startIntelScheduler(ctx context.Context, cfg config.IntelConfig, store inte
 			log.Printf("intel scheduler stopped: %v", err)
 		}
 	}()
+}
+
+const maxStoredExcerptBytes = 16 << 10
+
+func boundExcerpt(value string) string {
+	if len(value) <= maxStoredExcerptBytes {
+		return value
+	}
+	cut := value[:maxStoredExcerptBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 func feedSourceType(raw string) bool {
@@ -122,7 +141,7 @@ func storeFeedItem(ctx context.Context, store intelstore.Store, source feed.Sour
 	ids = append(ids, item.AVDIDs...)
 	ids = append(ids, item.GHSAIDs...)
 	intelItem := intel.Item{
-		ID:          "feed-" + hash[:16],
+		ID:          "feed-" + source.ID + "-" + hash[:16],
 		SourceID:    source.ID,
 		ExternalIDs: ids,
 		Title:       item.Title,
@@ -130,7 +149,7 @@ func storeFeedItem(ctx context.Context, store intelstore.Store, source feed.Sour
 		PublishedAt: item.Published,
 		Products:    item.Products,
 		References:  item.References,
-		RawExcerpt:  item.Summary,
+		RawExcerpt:  boundExcerpt(item.Summary),
 	}
 	_, created, err := store.InsertItem(ctx, intelItem)
 	if err != nil {

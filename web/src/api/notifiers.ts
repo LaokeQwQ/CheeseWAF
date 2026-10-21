@@ -6,5 +6,6 @@ export function fetchNotifierProviders() {
 }
 
 export function testNotifierProvider(id: string) {
-  return unwrap<NotifierTestResult>(apiClient.post('/monitor/notifiers/test', { id }));
+  // Server delivery budget is 15s plus provider retries; don't cancel early.
+  return unwrap<NotifierTestResult>(apiClient.post('/monitor/notifiers/test', { id }, { timeout: 30_000 }));
 }
