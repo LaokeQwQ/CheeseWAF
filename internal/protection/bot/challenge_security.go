@@ -307,6 +307,19 @@ func (s *ChallengeStore) Rollback(reservation *ChallengeReservation) bool {
 	return s.rollbackReservationLocked(reservation)
 }
 func (s *ChallengeStore) Consume(j string) (ChallengeStatus, bool) {
+	return s.consume(j, "", "", false)
+}
+
+// ConsumeScoped consumes a pending challenge only when its original owner and
+// peer match. A failed scope check leaves the pending challenge untouched.
+func (s *ChallengeStore) ConsumeScoped(j, owner, peer string) (ChallengeStatus, bool) {
+	return s.consume(j, owner, peer, true)
+}
+
+func (s *ChallengeStore) consume(j, owner, peer string, scoped bool) (ChallengeStatus, bool) {
+	if s == nil {
+		return ChallengeExpired, false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := s.now()
@@ -318,6 +331,9 @@ func (s *ChallengeStore) Consume(j string) (ChallengeStatus, bool) {
 	if !n.Before(e.expires) {
 		s.deleteEntryLocked(j, e)
 		return ChallengeExpired, false
+	}
+	if scoped && (e.owner != owner || e.peer != peer) {
+		return ChallengePending, false
 	}
 	if e.status != ChallengePending {
 		return e.status, false
@@ -564,19 +580,20 @@ const (
 )
 
 type ClearanceClaims struct {
-	Version       int    `json:"v"`
-	JTI           string `json:"jti"`
-	Site          string `json:"site"`
-	Policy        string `json:"policy"`
-	PolicyVersion string `json:"policy_version"`
-	Level         int    `json:"level"`
-	Method        string `json:"method"`
-	Path          string `json:"path"`
-	RequestMethod string `json:"request_method,omitempty"`
-	Binding       string `json:"binding"`
-	IssuedAt      int64  `json:"iat"`
-	ExpiresAt     int64  `json:"exp"`
-	KeyID         string `json:"key_id"`
+	Version        int      `json:"v"`
+	JTI            string   `json:"jti"`
+	Site           string   `json:"site"`
+	Policy         string   `json:"policy"`
+	PolicyVersion  string   `json:"policy_version"`
+	Level          int      `json:"level"`
+	Method         string   `json:"method"`
+	Path           string   `json:"path"`
+	RequestMethod  string   `json:"request_method,omitempty"`
+	RequestMethods []string `json:"request_methods,omitempty"`
+	Binding        string   `json:"binding"`
+	IssuedAt       int64    `json:"iat"`
+	ExpiresAt      int64    `json:"exp"`
+	KeyID          string   `json:"key_id"`
 }
 type ClearanceContext struct {
 	Site, Policy, PolicyVersion, ClientIP, UserAgent string
@@ -660,7 +677,7 @@ func (s *ClearanceSigner) Verify(tok string, x ClearanceContext) (ClearanceClaim
 	if c.Site != x.Site || c.Policy != x.Policy || c.PolicyVersion != x.PolicyVersion {
 		return c, errors.New("scope mismatch")
 	}
-	if !pathWithinScope(x.Path, c.Path) || (c.RequestMethod != "" && !strings.EqualFold(c.RequestMethod, x.RequestMethod)) {
+	if !pathWithinScope(x.Path, c.Path) || !clearanceRequestMethodMatches(c, x.RequestMethod) {
 		return c, errors.New("request scope mismatch")
 	}
 	want, e := ComputeClearanceBinding(x.BindingMode, x.ClientIP, x.UserAgent)
@@ -704,6 +721,14 @@ func (s *ClearanceSigner) valid(c ClearanceClaims, n time.Time) error {
 	if c.Version != 1 || c.JTI == "" || c.Site == "" || c.Policy == "" || c.PolicyVersion == "" || c.Method == "" || c.Path == "" || c.Binding == "" || c.KeyID == "" {
 		return errors.New("incomplete claims")
 	}
+	if len(c.RequestMethods) > 4 || (c.RequestMethod != "" && !validClearanceRequestMethod(c.RequestMethod)) {
+		return errors.New("invalid request method scope")
+	}
+	for _, method := range c.RequestMethods {
+		if !validClearanceRequestMethod(method) {
+			return errors.New("invalid request method scope")
+		}
+	}
 	iat, exp := time.Unix(c.IssuedAt, 0), time.Unix(c.ExpiresAt, 0)
 	if c.ExpiresAt <= c.IssuedAt || exp.Sub(iat) > s.ttl {
 		return errors.New("invalid lifetime")
@@ -715,6 +740,33 @@ func (s *ClearanceSigner) valid(c ClearanceClaims, n time.Time) error {
 		return errors.New("expired token")
 	}
 	return nil
+}
+
+func clearanceRequestMethodMatches(claims ClearanceClaims, requestMethod string) bool {
+	if claims.RequestMethod == "" && len(claims.RequestMethods) == 0 {
+		return true
+	}
+	if strings.EqualFold(claims.RequestMethod, requestMethod) {
+		return true
+	}
+	for _, method := range claims.RequestMethods {
+		if strings.EqualFold(method, requestMethod) {
+			return true
+		}
+	}
+	return false
+}
+
+func validClearanceRequestMethod(method string) bool {
+	if method == "" || len(method) > 16 {
+		return false
+	}
+	for _, r := range method {
+		if !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func pathWithinScope(path, scope string) bool {

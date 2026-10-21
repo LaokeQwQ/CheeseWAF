@@ -126,23 +126,24 @@ func otaStatusReason(err error) string {
 }
 
 type systemPayload struct {
-	Server        *config.ServerConfig        `json:"server"`
-	TimeSync      *timeSyncPayload            `json:"time_sync"`
-	TLS           *config.TLSConfig           `json:"tls"`
-	Setup         *config.SetupConfig         `json:"setup"`
-	Storage       *config.StorageConfig       `json:"storage"`
-	Logging       *config.LoggingConfig       `json:"logging"`
-	Console       *config.ConsoleConfig       `json:"console"`
-	ACME          *config.ACMEConfig          `json:"acme"`
-	Protection    *config.ProtectionConfig    `json:"protection"`
-	Scheduler     *config.SchedulerConfig     `json:"scheduler"`
-	Edge          *config.EdgeConfig          `json:"edge"`
-	AI            *config.AIConfig            `json:"ai"`
-	Update        *config.UpdateConfig        `json:"update"`
-	Vulnerability *config.VulnerabilityConfig `json:"vulnerability"`
-	Monitor       *config.MonitorConfig       `json:"monitor"`
-	APISec        *config.APISecConfig        `json:"apisec"`
-	BlockPage     *config.BlockPageConfig     `json:"block_page"`
+	Server           *config.ServerConfig           `json:"server"`
+	TimeSync         *timeSyncPayload               `json:"time_sync"`
+	TLS              *config.TLSConfig              `json:"tls"`
+	Setup            *config.SetupConfig            `json:"setup"`
+	Storage          *config.StorageConfig          `json:"storage"`
+	Logging          *config.LoggingConfig          `json:"logging"`
+	Console          *config.ConsoleConfig          `json:"console"`
+	CAPTCHAProviders *config.CAPTCHAProvidersConfig `json:"captcha_providers"`
+	ACME             *config.ACMEConfig             `json:"acme"`
+	Protection       *config.ProtectionConfig       `json:"protection"`
+	Scheduler        *config.SchedulerConfig        `json:"scheduler"`
+	Edge             *config.EdgeConfig             `json:"edge"`
+	AI               *config.AIConfig               `json:"ai"`
+	Update           *config.UpdateConfig           `json:"update"`
+	Vulnerability    *config.VulnerabilityConfig    `json:"vulnerability"`
+	Monitor          *config.MonitorConfig          `json:"monitor"`
+	APISec           *config.APISecConfig           `json:"apisec"`
+	BlockPage        *config.BlockPageConfig        `json:"block_page"`
 }
 
 // timeSyncPayload is a field-presence-aware patch so partial JSON updates cannot
@@ -314,6 +315,13 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 	if req.Console != nil {
 		next.Console = *req.Console
 	}
+	if req.CAPTCHAProviders != nil {
+		next.CAPTCHAProviders = *req.CAPTCHAProviders
+		next.CAPTCHAProviders.Cap.SecretFile = previous.CAPTCHAProviders.Cap.SecretFile
+		if next.CAPTCHAProviders.Cap.Timeout == 0 {
+			next.CAPTCHAProviders.Cap.Timeout = previous.CAPTCHAProviders.Cap.Timeout
+		}
+	}
 	if req.ACME != nil {
 		next.ACME = *req.ACME
 	}
@@ -374,6 +382,9 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 }
 
 func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config) error {
+	if err := h.applyCAPTCHAProtectionRuntime(candidate, req.CAPTCHAProviders != nil, req.Protection != nil); err != nil {
+		return err
+	}
 	if req.TimeSync != nil && h.OnTimeSyncChanged != nil {
 		if err := h.OnTimeSyncChanged(candidate.TimeSync); err != nil {
 			return err
@@ -381,11 +392,6 @@ func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config
 	}
 	if (req.Server != nil || req.TLS != nil) && h.OnSitesChanged != nil {
 		if err := h.OnSitesChanged(candidate.Sites); err != nil {
-			return err
-		}
-	}
-	if req.Protection != nil {
-		if err := h.notifyProtectionConfigChanged(candidate.Protection); err != nil {
 			return err
 		}
 	}

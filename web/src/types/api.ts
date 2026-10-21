@@ -311,6 +311,7 @@ export type ProtectionConfig = {
   bot: {
     enabled: boolean;
     challenge_backend?: 'memory' | 'redis' | string;
+    captcha_provider?: 'builtin' | 'cap' | string;
     risk_level?: number;
     risk_low_threshold?: number;
     risk_medium_threshold?: number;
@@ -1008,10 +1009,24 @@ export type TOTPSetup = {
 
 export type LoginCAPTCHAConfig = {
   enabled: boolean;
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   max_number: number;
   ttl: number | string;
   slider: LoginSliderCAPTCHAConfig;
+};
+
+export type CapStandaloneProviderConfig = {
+  api_endpoint: string;
+  widget_url: string;
+  wasm_url: string;
+  hashwx_url: string;
+  timeout: number | string;
+  secret_set?: boolean;
+};
+
+export type CAPTCHAProvidersConfig = {
+  cap: CapStandaloneProviderConfig;
 };
 
 export type LoginSliderCAPTCHAConfig = {
@@ -1043,9 +1058,12 @@ export type LoginBranding = {
 };
 
 export type LoginCAPTCHAPayload = {
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   receipt?: string;
   username?: string;
+  challenge_id?: string;
+  token?: string;
   algorithm?: string;
   challenge?: string;
   number?: number;
@@ -1087,6 +1105,7 @@ export type LoginSliderCAPTCHAChallenge = {
 export type LoginOptions = {
   captcha: {
     enabled: boolean;
+    provider?: 'builtin' | 'cap' | string;
     mode?: 'slider' | 'pow' | string;
     algorithm?: string;
     max_number?: number;
@@ -1106,9 +1125,18 @@ export type LoginOptions = {
 
 export type LoginCAPTCHAResponse = {
   enabled: boolean;
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   challenge?: LoginCAPTCHAChallenge;
   slider?: LoginSliderCAPTCHAChallenge;
+  cap?: LoginCapCAPTCHAChallenge;
+};
+
+export type LoginCapCAPTCHAChallenge = {
+  challenge_id: string;
+  api_endpoint: string;
+  wasm_url: string;
+  hashwx_url: string;
 };
 
 export type APISecAuthConfig = {
@@ -1252,6 +1280,7 @@ export type SystemConfig = {
       china_boundary: MapBoundaryConfig;
     };
   };
+  captcha_providers: CAPTCHAProvidersConfig;
   server: {
     listen: string;
     listen_tls: string;

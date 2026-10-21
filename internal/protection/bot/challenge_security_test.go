@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,34 @@ func TestChallengeStoreConcurrentConsumeOnce(t *testing.T) {
 	}
 	if s.Status("j") != ChallengeExpired || s.Len() != 0 {
 		t.Fatal("consumed challenge tombstone was retained")
+	}
+}
+
+func TestChallengeStoreScopedConsumeRejectsOtherOwnerWithoutBurningChallenge(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := NewChallengeStore(ChallengeStoreConfig{Capacity: 2, Now: func() time.Time { return now }})
+	expires := now.Add(time.Minute)
+	reservation, err := store.ReserveScoped("owner-a", "peer-a", expires)
+	if err != nil {
+		t.Fatalf("ReserveScoped() error = %v", err)
+	}
+	if err := store.Start(reservation); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := store.Commit(reservation, "cap-challenge", expires); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if _, consumed := store.ConsumeScoped("cap-challenge", "owner-b", "peer-a"); consumed {
+		t.Fatal("different owner consumed challenge")
+	}
+	if _, consumed := store.ConsumeScoped("cap-challenge", "owner-a", "peer-b"); consumed {
+		t.Fatal("different peer consumed challenge")
+	}
+	if status, consumed := store.ConsumeScoped("cap-challenge", "owner-a", "peer-a"); !consumed || status != ChallengeUsed {
+		t.Fatalf("valid scoped consume = (%v, %v), want consumed", status, consumed)
+	}
+	if _, consumed := store.ConsumeScoped("cap-challenge", "owner-a", "peer-a"); consumed {
+		t.Fatal("challenge was consumed more than once")
 	}
 }
 
@@ -194,6 +223,28 @@ func TestClearanceScopeAndRevocation(t *testing.T) {
 	}
 	if !state.Revoke(c.JTI) || state.Valid(c.JTI) {
 		t.Fatal("revocation failed")
+	}
+}
+
+func TestClearanceMethodScopeAllowsOnlyOriginalMethodAndCapRedirectGET(t *testing.T) {
+	now := time.Unix(200, 0)
+	signer, ctx, claims := signerFixture(t, &now)
+	claims.RequestMethod = http.MethodPost
+	claims.RequestMethods = []string{http.MethodGet}
+	token, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		ctx.RequestMethod = method
+		if _, err := signer.Verify(token, ctx); err != nil {
+			t.Errorf("Verify(%s) error = %v, want allowed", method, err)
+		}
+	}
+	ctx.RequestMethod = http.MethodPut
+	if _, err := signer.Verify(token, ctx); err == nil {
+		t.Fatal("Verify(PUT) succeeded, want method scope rejection")
 	}
 }
 

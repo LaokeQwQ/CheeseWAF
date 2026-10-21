@@ -118,6 +118,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if cfg.Console.Login.CAPTCHA.Enabled {
+		if err := validateCAPTCHAProvider("console.login.captcha.provider", cfg.Console.Login.CAPTCHA.Provider); err != nil {
+			return err
+		}
 		switch strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Mode)) {
 		case "", "slider", "pow":
 		default:
@@ -152,6 +155,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if err := validateBotProtection(cfg.Protection.Bot); err != nil {
+		return err
+	}
+	if err := validateCAPTCHAProviders(cfg); err != nil {
 		return err
 	}
 	if err := validateACME(cfg.ACME); err != nil {
@@ -1942,6 +1948,79 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 		return fmt.Errorf("console.login.captcha.slider.pow_max_number is required when slider auxiliary PoW is enabled")
 	}
 	return nil
+}
+
+func validateCAPTCHAProviders(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	loginProvider := strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Provider))
+	if loginProvider == "" {
+		loginProvider = "builtin"
+	}
+	if err := validateCAPTCHAProvider("console.login.captcha.provider", loginProvider); err != nil {
+		return err
+	}
+	botProvider := strings.ToLower(strings.TrimSpace(cfg.Protection.Bot.CAPTCHAProvider))
+	if botProvider == "" {
+		botProvider = "builtin"
+	}
+	if err := validateCAPTCHAProvider("protection.bot.captcha_provider", botProvider); err != nil {
+		return err
+	}
+	if !(cfg.Console.Login.CAPTCHA.Enabled && loginProvider == "cap") &&
+		!(cfg.Protection.Bot.Enabled && cfg.Protection.Bot.CAPTCHA && botProvider == "cap") {
+		return nil
+	}
+
+	capConfig := cfg.CAPTCHAProviders.Cap
+	if strings.TrimSpace(capConfig.SecretFile) == "" {
+		return fmt.Errorf("captcha_providers.cap.secret_file is required when Cap is enabled")
+	}
+	if capConfig.Timeout < 100*time.Millisecond || capConfig.Timeout > 30*time.Second {
+		return fmt.Errorf("captcha_providers.cap.timeout must be between 100ms and 30s")
+	}
+	if err := validateCAPublicURL("captcha_providers.cap.api_endpoint", capConfig.APIEndpoint, true); err != nil {
+		return err
+	}
+	if err := validateCAPublicURL("captcha_providers.cap.widget_url", capConfig.WidgetURL, false); err != nil {
+		return err
+	}
+	if err := validateCAPublicURL("captcha_providers.cap.wasm_url", capConfig.WASMURL, false); err != nil {
+		return err
+	}
+	return validateCAPublicURL("captcha_providers.cap.hashwx_url", capConfig.HashWXURL, false)
+}
+
+func validateCAPTCHAProvider(field, value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "builtin", "cap":
+		return nil
+	default:
+		return fmt.Errorf("%s must be builtin or cap", field)
+	}
+}
+
+func validateCAPublicURL(field, raw string, trailingSlash bool) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s must be an absolute HTTPS URL without credentials, query, or fragment", field)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackCAPHost(u.Hostname())) {
+		return fmt.Errorf("%s must use HTTPS (HTTP is allowed only for loopback)", field)
+	}
+	if trailingSlash && (!strings.HasSuffix(u.Path, "/") || strings.Trim(u.Path, "/") == "") {
+		return fmt.Errorf("%s must include a Cap site key and end with a slash", field)
+	}
+	return nil
+}
+
+func isLoopbackCAPHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validateBotProtection(bot BotProtectionConfig) error {

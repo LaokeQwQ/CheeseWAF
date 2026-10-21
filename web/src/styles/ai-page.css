@@ -54,8 +54,8 @@
   border-top: 1px solid var(--border-subtle);
   cursor: pointer;
   transition:
-    background 140ms ease,
-    box-shadow 140ms ease;
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .ai-page .ai-events-list-row:first-child {
   border-top: 0;
@@ -63,9 +63,6 @@
 .ai-page .ai-events-list-row:hover,
 .ai-page .ai-events-list-row-active {
   background: color-mix(in srgb, var(--accent-soft) 36%, var(--surface));
-}
-.ai-page .ai-events-list-row-active {
-  box-shadow: inset 3px 0 0 var(--accent);
 }
 .ai-page .ai-events-row-actions {
   justify-content: flex-end;
@@ -347,13 +344,7 @@
   border-top-color: var(--border-subtle);
 }
 .ai-page .ai-events-list-row-active {
-  background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--accent) 11%, transparent),
-      transparent 58%
-    ),
-    color-mix(in srgb, var(--accent-soft) 34%, var(--surface));
+  background: color-mix(in srgb, var(--accent-soft) 34%, var(--surface));
 }
 .ai-page .ai-detail-grid {
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
@@ -1940,23 +1931,15 @@
   gap: 10px 12px !important;
   padding: 13px 14px 13px 16px !important;
   transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease,
-    background 160ms ease !important;
+    border-color var(--motion-duration-standard) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-standard) var(--motion-ease-standard),
+    transform var(--motion-duration-standard) var(--motion-ease-standard),
+    background var(--motion-duration-standard) var(--motion-ease-standard) !important;
 }
 .ai-page .ai-events-list-row:hover {
   transform: translateY(-1px) !important;
   border-color: color-mix(in srgb, var(--accent) 32%, var(--border)) !important;
   box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 9%, transparent) !important;
-}
-.ai-page .ai-events-list-row-active::before {
-  position: absolute !important;
-  inset: 12px auto 12px 0 !important;
-  width: 3px !important;
-  content: "" !important;
-  background: var(--accent) !important;
-  border-radius: 0 999px 999px 0 !important;
 }
 .ai-page .security-event-cell::before {
   content: attr(data-label) !important;
@@ -2198,9 +2181,9 @@
   ) !important;
   cursor: pointer !important;
   transition:
-    border-color 160ms ease,
-    background 160ms ease,
-    transform 160ms ease !important;
+    border-color var(--motion-duration-standard) var(--motion-ease-standard),
+    background var(--motion-duration-standard) var(--motion-ease-standard),
+    transform var(--motion-duration-standard) var(--motion-ease-standard) !important;
 }
 .ai-page .ai-advanced-toggle:hover {
   border-color: color-mix(
@@ -2785,18 +2768,10 @@
   background: var(--surface) !important;
   box-shadow: none !important;
   transition:
-    border-color 160ms ease,
-    background 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease !important;
-}
-.ai-page .ai-events-list-row::before {
-  content: "" !important;
-  position: absolute !important;
-  inset: 12px auto 12px 0 !important;
-  width: 3px !important;
-  border-radius: 999px !important;
-  background: transparent !important;
+    border-color var(--motion-duration-standard) var(--motion-ease-standard),
+    background var(--motion-duration-standard) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-standard) var(--motion-ease-standard),
+    transform var(--motion-duration-standard) var(--motion-ease-standard) !important;
 }
 .ai-page .ai-events-list-row:hover {
   transform: translateY(-1px) !important;
@@ -2810,16 +2785,7 @@
 }
 .ai-page .ai-events-list-row-active {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border)) !important;
-  background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--accent) 10%, transparent),
-      transparent 58%
-    ),
-    var(--surface) !important;
-}
-.ai-page .ai-events-list-row-active::before {
-  background: var(--accent) !important;
+  background: color-mix(in srgb, var(--accent-soft) 18%, var(--surface)) !important;
 }
 .ai-page .ai-event-row-head,
 .ai-page .ai-event-row-identity,
@@ -2984,8 +2950,7 @@
 }
 .ai-page .analysis-live-trace section {
   padding: 12px 14px !important;
-  border: 0 !important;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 38%, var(--border)) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border)) !important;
   border-radius: 9px !important;
   background: color-mix(in srgb, var(--surface) 84%, transparent) !important;
 }

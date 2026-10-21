@@ -223,7 +223,10 @@ describe('SetupPage', () => {
 
     await waitFor(() => expect(screen.getByLabelText('setup.tokenLabel')).toBeTruthy());
     expect(screen.queryByRole('radio', { name: /setup.languageZh/ })).toBeNull();
-    expect(screen.getByRole('alert').textContent).toContain('setup.tokenInvalid');
+    const tokenInput = screen.getByLabelText('setup.tokenLabel');
+    const tokenError = screen.getByRole('alert');
+    expect(tokenError.textContent).toContain('setup.tokenInvalid');
+    expect(tokenInput.getAttribute('aria-describedby')).toBe(tokenError.id);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
@@ -307,6 +310,19 @@ describe('SetupPage', () => {
     );
   });
 
+  it('supports standard radio-group arrow navigation for language cards', async () => {
+    render(<SetupPage />);
+    const zh = await screen.findByRole('radio', { name: /setup.languageZh/ });
+    const en = screen.getByRole('radio', { name: /setup.languageEn/ });
+    zh.focus();
+    fireEvent.keyDown(zh, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(en);
+    expect(en.getAttribute('aria-checked')).toBe('true');
+    fireEvent.keyDown(en, { key: 'Home' });
+    expect(document.activeElement).toBe(zh);
+    expect(zh.getAttribute('aria-checked')).toBe('true');
+  });
+
   it('keeps English preselected when the browser reports English', async () => {
     render(<SetupPage />);
     await waitFor(() =>
@@ -322,6 +338,18 @@ describe('SetupPage', () => {
     const englishCard = (await screen.findByText('setup.languageEn')).closest('.setup-card-radio');
     expect(englishCard).toBeTruthy();
     fireEvent.click(englishCard!);
+    await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
+  });
+
+  it('lets the operator activate a language card with the keyboard', async () => {
+    setBrowserLanguage('zh-CN');
+    render(<SetupPage />);
+    await waitFor(() => expect(useAppStore.getState().language).toBe('zh-CN'));
+
+    const englishCard = screen.getByText('setup.languageEn').closest('.setup-card-radio');
+    expect(englishCard?.getAttribute('role')).toBe('radio');
+    expect(englishCard?.getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(englishCard!, { key: 'Enter' });
     await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
   });
 
@@ -496,22 +524,22 @@ describe('SetupPage', () => {
 
     expect(fill).toBeTruthy();
     expect(meter.getAttribute('aria-valuenow')).toBe('0');
-    expect(fill.style.width).toBe('0%');
+    expect(fill.style.transform).toBe('scaleX(0)');
     expect(fill.classList.contains('bg-muted')).toBe(true);
 
     fireEvent.change(passwordInput, { target: { value: 'abc' } });
     expect(meter.getAttribute('aria-valuenow')).toBe('1');
-    expect(fill.style.width).toBe('25%');
+    expect(fill.style.transform).toBe('scaleX(0.25)');
     expect(fill.classList.contains('bg-red-500')).toBe(true);
 
     fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass!' } });
     expect(meter.getAttribute('aria-valuenow')).toBe('3');
-    expect(fill.style.width).toBe('75%');
+    expect(fill.style.transform).toBe('scaleX(0.75)');
     expect(fill.classList.contains('bg-yellow-400')).toBe(true);
 
     fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass-2026!' } });
     expect(meter.getAttribute('aria-valuenow')).toBe('4');
-    expect(fill.style.width).toBe('100%');
+    expect(fill.style.transform).toBe('scaleX(1)');
     expect(fill.classList.contains('bg-emerald-500')).toBe(true);
   });
 

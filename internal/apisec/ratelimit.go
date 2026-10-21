@@ -1,6 +1,7 @@
 package apisec
 
 import (
+	"container/heap"
 	"net/http"
 	"regexp"
 	"strings"
@@ -17,11 +18,12 @@ const (
 )
 
 type RateLimiter struct {
-	rules   []limitRule
-	now     func() time.Time
-	mu      sync.Mutex
-	hits    map[string]*bucket
-	maxKeys int
+	rules       []limitRule
+	now         func() time.Time
+	mu          sync.Mutex
+	hits        map[string]*bucket
+	expirations bucketExpiryHeap
+	maxKeys     int
 }
 
 type limitRule struct {
@@ -31,9 +33,35 @@ type limitRule struct {
 }
 
 type bucket struct {
+	key       string
 	start     time.Time
 	expiresAt time.Time
 	count     int
+	heapIndex int
+}
+
+type bucketExpiryHeap []*bucket
+
+func (h bucketExpiryHeap) Len() int           { return len(h) }
+func (h bucketExpiryHeap) Less(i, j int) bool { return h[i].expiresAt.Before(h[j].expiresAt) }
+func (h bucketExpiryHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+func (h *bucketExpiryHeap) Push(value any) {
+	b := value.(*bucket)
+	b.heapIndex = len(*h)
+	*h = append(*h, b)
+}
+func (h *bucketExpiryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	b := old[last]
+	old[last] = nil
+	b.heapIndex = -1
+	*h = old[:last]
+	return b
 }
 
 func NewRateLimiter(cfg []config.APIEndpointLimitConfig) (*RateLimiter, error) {
@@ -121,7 +149,16 @@ func (l *RateLimiter) allow(rule config.APIEndpointLimitConfig, key string) bool
 			// An active quota must outlive capacity pressure from new identities.
 			return false
 		}
-		l.hits[mapKey] = &bucket{start: now, expiresAt: now.Add(rule.Window), count: 1}
+		if b == nil {
+			b = &bucket{key: mapKey, start: now, expiresAt: now.Add(rule.Window), count: 1}
+			l.hits[mapKey] = b
+			heap.Push(&l.expirations, b)
+		} else {
+			// An expired key can remain after bounded cleanup. Renew its one
+			// heap record in place so repeated windows cannot grow stale entries.
+			b.start, b.expiresAt, b.count = now, now.Add(rule.Window), 1
+			heap.Fix(&l.expirations, b.heapIndex)
+		}
 		return true
 	}
 	if b.count >= rule.Requests {
@@ -132,17 +169,15 @@ func (l *RateLimiter) allow(rule config.APIEndpointLimitConfig, key string) bool
 }
 
 func (l *RateLimiter) expireLocked(now time.Time) {
-	// Keep cleanup bounded even at capacity. Different endpoint rules can have
-	// different windows; a shared idle TTL must not reset a still-live quota.
-	budget := evictionBudget
-	for key, b := range l.hits {
-		if budget <= 0 {
+	// Expiry order makes reclamation independent of how many long-lived
+	// endpoint buckets surround a due key, without scanning the full map.
+	for n := 0; n < evictionBudget && len(l.expirations) > 0; n++ {
+		b := l.expirations[0]
+		if now.Before(b.expiresAt) {
 			break
 		}
-		budget--
-		if !now.Before(b.expiresAt) {
-			delete(l.hits, key)
-		}
+		heap.Pop(&l.expirations)
+		delete(l.hits, b.key)
 	}
 }
 

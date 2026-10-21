@@ -18,6 +18,7 @@ const DYNAMIC_PREFIXES = [
   'geo.countries.',
   'geo.continents.',
   'login.captchaState.',
+  'login.optionsError.',
   'protection.captchaTypes.',
   'protection.policyLevels.',
   'blockPages.templateNames.',

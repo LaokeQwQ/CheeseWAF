@@ -16,6 +16,7 @@ const loaders: Record<Exclude<Language, 'zh-CN'>, () => Promise<{ default: unkno
 };
 
 const ready = new Set<Language>(['zh-CN']);
+const pendingLoads = new Map<Language, Promise<void>>();
 
 /** Returns the language the operator explicitly picked, or null when unset. */
 export function readPersistedLanguage(): Language | null {
@@ -38,17 +39,28 @@ export function readInitialLanguage(): Language {
 }
 
 /** Resolves once the resources for `language` are available. */
-export async function ensureLanguage(language: Language): Promise<void> {
+export function ensureLanguage(language: Language): Promise<void> {
   if (ready.has(language)) {
-    return;
+    return Promise.resolve();
+  }
+  const pending = pendingLoads.get(language);
+  if (pending) {
+    return pending;
   }
   const load = loaders[language as Exclude<Language, 'zh-CN'>];
   if (!load) {
-    return;
+    return Promise.resolve();
   }
-  const module = await load();
-  i18n.addResourceBundle(language, 'translation', module.default, true, true);
-  ready.add(language);
+  const request = load()
+    .then((module) => {
+      i18n.addResourceBundle(language, 'translation', module.default, true, true);
+      ready.add(language);
+    })
+    .finally(() => {
+      pendingLoads.delete(language);
+    });
+  pendingLoads.set(language, request);
+  return request;
 }
 
 i18n.use(initReactI18next).init({

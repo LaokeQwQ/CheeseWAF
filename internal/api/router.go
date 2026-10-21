@@ -39,6 +39,7 @@ type Options struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged           func(config.CAPTCHAProvidersConfig) error
 	ProtectionPolicyCoordinator         handler.ProtectionPolicyCoordinatorConsumer
 	RequireProtectionPolicyCoordinator  bool
 	OnAPISecChanged                     func(config.APISecConfig) error
@@ -143,6 +144,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		OnCAPTCHAProvidersChanged:           opts.OnCAPTCHAProvidersChanged,
 		ProtectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
 		RequireProtectionPolicyCoordinator:  opts.RequireProtectionPolicyCoordinator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,

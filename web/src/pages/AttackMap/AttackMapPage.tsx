@@ -666,7 +666,7 @@ function AttackRegionTable({
                         setExpandedKey((current) => (current === record.key ? null : record.key));
                       }}
                     >
-                      <ChevronDown size={14} className={expanded ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                      <ChevronDown size={14} className={expanded ? 'rotate-180 transition-transform duration-[var(--motion-duration-standard)] ease-[var(--motion-ease-standard)] motion-reduce:transition-none' : 'transition-transform duration-[var(--motion-duration-standard)] ease-[var(--motion-ease-standard)] motion-reduce:transition-none'} />
                     </Button>
                   </TableCell>
                   <TableCell>{displayCountry(record.countryCode, t)}</TableCell>

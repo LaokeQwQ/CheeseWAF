@@ -146,6 +146,7 @@ type Handler struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged           func(config.CAPTCHAProvidersConfig) error
 	// Both policy seams are intentionally supplied only by the process that
 	// owns control-plane coordination and node-local materialization. A nil
 	// consumer is fail-closed; HTTP and AI policy writes never fall back to a
@@ -389,6 +390,7 @@ type Options struct {
 	OnSitesChanged              func([]config.SiteConfig) error
 	OnEdgeChanged               func(config.EdgeConfig) error
 	OnProtectionChanged         func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged   func(config.CAPTCHAProvidersConfig) error
 	ProtectionPolicyMutator     desiredstate.ProtectionPolicyMutator
 	ProtectionPolicyCoordinator ProtectionPolicyCoordinatorConsumer
 	// RequireProtectionPolicyCoordinator is set only by the production
@@ -506,6 +508,7 @@ func New(opts Options) *Handler {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		OnCAPTCHAProvidersChanged:           opts.OnCAPTCHAProvidersChanged,
 		protectionPolicyMutator:             opts.ProtectionPolicyMutator,
 		protectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
 		requireProtectionPolicyCoordinator:  opts.RequireProtectionPolicyCoordinator,
@@ -752,7 +755,8 @@ func (h *Handler) LoginOptions(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, map[string]any{
 		"captcha": map[string]any{
 			"enabled":    login.CAPTCHA.Enabled,
-			"mode":       login.CAPTCHA.Mode,
+			"provider":   loginCaptchaProvider(login.CAPTCHA),
+			"mode":       loginCaptchaPayloadMode(login.CAPTCHA, login.CAPTCHA.Mode),
 			"algorithm":  captcha.AlgorithmSHA256,
 			"max_number": loginCAPTCHAPowMax(login.CAPTCHA),
 			"slider": map[string]any{
@@ -784,6 +788,10 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	}
 	var req dto.CAPTCHAChallengeRequest
 	if !decodeOptional(w, r, &req, loginCAPTCHAJSONBodyLimit, "invalid captcha request") {
+		return
+	}
+	if loginCaptchaProvider(login.CAPTCHA) == "cap" {
+		h.issueCapLoginCAPTCHA(w, r, login)
 		return
 	}
 	mode := loginCaptchaRequestedMode(login.CAPTCHA, req.Mode)
@@ -885,13 +893,29 @@ func (h *Handler) VerifyLoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	login := h.loginConfig()
+	provider := loginCaptchaProvider(login.CAPTCHA)
+	if (provider == "cap" && strings.ToLower(strings.TrimSpace(payload.Provider)) != "cap") ||
+		(provider != "cap" && strings.EqualFold(strings.TrimSpace(payload.Provider), "cap")) {
+		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
+		return
+	}
 	mode := loginCaptchaPayloadMode(login.CAPTCHA, payload.Mode)
 	owner, peer, ok := h.loginCaptchaExistingQuotaIdentity(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
-	if !h.verifyLoginCAPTCHAProof(r, login, mode, &payload) {
+	if mode == "cap" {
+		valid, err := h.verifyLoginCapProof(r, login.CAPTCHA, &payload)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "CAPTCHA_UNAVAILABLE", "captcha verification is temporarily unavailable")
+			return
+		}
+		if !valid {
+			writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
+			return
+		}
+	} else if !h.verifyLoginCAPTCHAProof(r, login, mode, &payload) {
 		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
@@ -1059,11 +1083,16 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 	if payload == nil {
 		return false
 	}
+	provider := loginCaptchaProvider(login.CAPTCHA)
+	if (provider == "cap" && strings.ToLower(strings.TrimSpace(payload.Provider)) != "cap") ||
+		(provider != "cap" && strings.EqualFold(strings.TrimSpace(payload.Provider), "cap")) {
+		return false
+	}
 	mode := loginCaptchaPayloadMode(login.CAPTCHA, payload.Mode)
 	if payload.Receipt != "" {
 		return h.consumeLoginCAPTCHAReceipt(r, login, mode, payload.Receipt, payload.Username)
 	}
-	if mode == "slider" {
+	if mode == "slider" || mode == "cap" {
 		return false
 	}
 	return h.verifyLoginCAPTCHAProof(r, login, mode, payload)
@@ -1150,7 +1179,8 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 
 func loginCAPTCHAPayloadSizeAllowed(payload *dto.CAPTCHAPayload) bool {
 	if payload == nil || len(payload.Algorithm) > loginCAPTCHAMaxFieldLength || len(payload.Challenge) > loginCAPTCHAMaxFieldLength ||
-		len(payload.Salt) > loginCAPTCHAMaxFieldLength || len(payload.Signature) > loginCAPTCHAMaxFieldLength || len(payload.Receipt) > loginCAPTCHAMaxTokenLength {
+		len(payload.Salt) > loginCAPTCHAMaxFieldLength || len(payload.Signature) > loginCAPTCHAMaxFieldLength || len(payload.Receipt) > loginCAPTCHAMaxTokenLength ||
+		len(payload.ChallengeID) > loginCAPTCHAMaxFieldLength || len(payload.Token) > loginCAPTCHAMaxTokenLength {
 		return false
 	}
 	if payload.Slider == nil {
@@ -1293,6 +1323,9 @@ func loginCaptchaPayloadMode(cfg config.LoginCAPTCHAConfig, requested string) st
 }
 
 func loginCaptchaEffectiveMode(cfg config.LoginCAPTCHAConfig, requested string) string {
+	if loginCaptchaProvider(cfg) == "cap" {
+		return "cap"
+	}
 	configured := loginCaptchaMode(cfg)
 	requested = strings.ToLower(strings.TrimSpace(requested))
 	// Mobile clients may select the server-supported PoW fallback when the
@@ -1302,6 +1335,14 @@ func loginCaptchaEffectiveMode(cfg config.LoginCAPTCHAConfig, requested string) 
 		return "pow"
 	}
 	return configured
+}
+
+func loginCaptchaProvider(cfg config.LoginCAPTCHAConfig) string {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" {
+		return "builtin"
+	}
+	return provider
 }
 
 func (h *Handler) loginCaptchaSecret() string {
