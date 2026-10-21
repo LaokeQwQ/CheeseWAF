@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,12 +47,18 @@ func TestGuardSiteAdmissionLeavesGlobalCapacityForOtherSites(t *testing.T) {
 }
 
 func TestGuardContextReturnsOnCancellationWhileDetectorIgnoresContext(t *testing.T) {
-	baselineSlots := len(guardSlots)
+	waitGuardSlotsIdle(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var releaseOnce sync.Once
+	releaseDetector := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		cancel()
+		releaseDetector()
+		waitGuardSlotsIdle(t)
+	})
 
 	done := make(chan error, 1)
 	go func() {
@@ -85,22 +92,20 @@ func TestGuardContextReturnsOnCancellationWhileDetectorIgnoresContext(t *testing
 
 	// The detector is deliberately released after the caller returns. This
 	// proves the bounded guard slot remains owned until the abandoned work exits.
-	close(release)
+	if got := len(guardSlots); got != 1 {
+		t.Fatalf("running detector must retain its guard slot after cancellation: got %d, want 1", got)
+	}
+	releaseDetector()
 	select {
 	case <-finished:
 	case <-time.After(time.Second):
 		t.Fatal("abandoned detector did not finish after release")
 	}
-	deadline := time.Now().Add(time.Second)
-	for len(guardSlots) > baselineSlots && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := len(guardSlots); got > baselineSlots {
-		t.Fatalf("guard slot leaked after detector exit: baseline=%d current=%d", baselineSlots, got)
-	}
+	waitGuardSlotsIdle(t)
 }
 
 func TestGuardContextHonorsCallerBudgetBeyondCompatibilityTimeout(t *testing.T) {
+	t.Cleanup(func() { waitGuardSlotsIdle(t) })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := GuardContext(ctx, func() (string, error) {
@@ -121,14 +126,16 @@ func TestGuardContextHonorsCallerBudgetBeyondCompatibilityTimeout(t *testing.T) 
 func TestGuardContextWithoutDeadlinePreservesClassifiedCompatibilityTimeout(t *testing.T) {
 	release := make(chan struct{})
 	finished := make(chan struct{})
-	defer func() {
+	t.Cleanup(func() {
 		close(release)
 		select {
 		case <-finished:
 		case <-time.After(time.Second):
 			t.Error("guarded detector did not finish after release")
 		}
-	}()
+		// Function completion precedes the Guard worker's release defers.
+		waitGuardSlotsIdle(t)
+	})
 	_, err := GuardContext(context.Background(), func() (string, error) {
 		defer close(finished)
 		<-release
@@ -145,8 +152,14 @@ func TestGuardContextWithoutDeadlinePreservesClassifiedCompatibilityTimeout(t *t
 }
 
 func TestGuardContextHoldsSitePermitUntilDetectorExit(t *testing.T) {
+	waitGuardSlotsIdle(t)
 	const siteID = "guard-site-hold"
 	reserved := make([]siteAdmissionToken, 0, maxInflightGuardsPerSite-1)
+	t.Cleanup(func() {
+		for _, token := range reserved {
+			token.release()
+		}
+	})
 	for i := 0; i < maxInflightGuardsPerSite-1; i++ {
 		token, admitted := guardSiteAdmissions.acquire(siteID)
 		if !admitted {
@@ -154,17 +167,17 @@ func TestGuardContextHoldsSitePermitUntilDetectorExit(t *testing.T) {
 		}
 		reserved = append(reserved, token)
 	}
-	defer func() {
-		for _, token := range reserved {
-			token.release()
-		}
-	}()
-
 	started := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
 	ctx, cancel := context.WithCancel(withRequestSite(context.Background(), siteID))
-	defer cancel()
+	var releaseOnce sync.Once
+	releaseDetector := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		cancel()
+		releaseDetector()
+		waitGuardSlotsIdle(t)
+	})
 	done := make(chan error, 1)
 	go func() {
 		_, err := GuardContext(ctx, func() (*DetectionResult, error) {
@@ -190,11 +203,12 @@ func TestGuardContextHoldsSitePermitUntilDetectorExit(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("GuardContext did not return after cancellation")
 	}
-	if _, admitted := guardSiteAdmissions.acquire(siteID); admitted {
+	if token, admitted := guardSiteAdmissions.acquire(siteID); admitted {
+		token.release()
 		t.Fatal("guard site permit was released before detector exit")
 	}
 
-	close(release)
+	releaseDetector()
 	select {
 	case <-finished:
 	case <-time.After(time.Second):
@@ -215,24 +229,41 @@ func TestGuardContextHoldsSitePermitUntilDetectorExit(t *testing.T) {
 }
 
 func TestGuardContextDoesNotLeakWhenLateDetectorPanics(t *testing.T) {
-	baselineSlots := len(guardSlots)
+	waitGuardSlotsIdle(t)
+	const siteID = "guard-late-panic"
+	started := make(chan struct{})
 	release := make(chan struct{})
-	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	ctx, cancel := context.WithCancel(withRequestSite(context.Background(), siteID))
+	var releaseOnce sync.Once
+	releaseDetector := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		cancel()
+		releaseDetector()
+		waitGuardSlotsIdle(t)
+		guardSiteAdmissions.mu.Lock()
+		active := guardSiteAdmissions.bySite[siteID]
+		guardSiteAdmissions.mu.Unlock()
+		if active != 0 {
+			t.Errorf("guard site permit leaked after late panic: active=%d", active)
+		}
+	})
 	done := make(chan error, 1)
 	go func() {
 		_, err := GuardContext(ctx, func() (*DetectionResult, error) {
+			defer close(finished)
+			close(started)
 			<-release
 			panic("late detector panic")
 		})
 		done <- err
 	}()
-	// Let the guarded goroutine acquire its slot before cancellation.
-	deadline := time.Now().Add(time.Second)
-	for len(guardSlots) <= baselineSlots && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if len(guardSlots) <= baselineSlots {
-		t.Fatal("guarded detector did not acquire a slot")
+	// Global occupancy can stay unchanged while a previous worker exits. The
+	// detector handshake proves this worker acquired its own slot and started.
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("guarded detector did not start")
 	}
 	cancel()
 	select {
@@ -243,14 +274,17 @@ func TestGuardContextDoesNotLeakWhenLateDetectorPanics(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("GuardContext did not return after cancellation")
 	}
-	close(release)
-	deadline = time.Now().Add(time.Second)
-	for len(guardSlots) > baselineSlots && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	if got := len(guardSlots); got != 1 {
+		t.Fatalf("late detector must retain its guard slot before panic: got %d, want 1", got)
 	}
-	if got := len(guardSlots); got > baselineSlots {
-		t.Fatalf("guard slot leaked after late panic: baseline=%d current=%d", baselineSlots, got)
+	releaseDetector()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("late detector did not panic after release")
 	}
+	// finished closes inside fn, before recovery and both permit-release defers.
+	waitGuardSlotsIdle(t)
 }
 
 // RegexComplexityScore is a heuristic budget over the pattern text, not a
