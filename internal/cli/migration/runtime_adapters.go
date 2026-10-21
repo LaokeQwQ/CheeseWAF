@@ -505,10 +505,14 @@ func pgSnapshotValues(table snapshotTable, row []snapshotCell) ([]any, error) {
 		}
 		column := table.Columns[i]
 		if value == nil {
+			if table.Name == "passkey_credentials" && column == "last_used_at" {
+				values[i] = time.Unix(0, 0).UTC()
+				continue
+			}
 			values[i] = nil
 			continue
 		}
-		if column == "enable_ssl" || column == "waf_enabled" || column == "enabled" || column == "two_fa_enabled" || column == "is_read" || column == "is_pinned" {
+		if column == "enable_ssl" || column == "waf_enabled" || column == "enabled" || column == "two_fa_enabled" || column == "backup_eligible" || column == "is_read" || column == "is_pinned" {
 			integer, ok := value.(int64)
 			if !ok {
 				return nil, errors.New("boolean snapshot value is invalid")

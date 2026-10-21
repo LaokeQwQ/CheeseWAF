@@ -2,6 +2,7 @@ package feed
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -197,5 +198,22 @@ func TestDedupeParsedFeed(t *testing.T) {
 	}
 	if !errors.Is(rejected[0].Err, ErrDuplicate) {
 		t.Fatalf("err = %v, want %v", rejected[0].Err, ErrDuplicate)
+	}
+}
+
+func TestDedupeBoundsRetainedEntries(t *testing.T) {
+	d := NewDedupe()
+	for i := 0; i < maxDedupeEntries+100; i++ {
+		item := FeedItem{ExternalID: fmt.Sprintf("id-%d", i), Title: fmt.Sprintf("item %d", i), Link: fmt.Sprintf("https://example.test/%d", i)}
+		if err := d.Accept("source", uint64(i+1), item); err != nil {
+			t.Fatalf("accept %d: %v", i, err)
+		}
+	}
+	state := d.sources["source"]
+	if state == nil {
+		t.Fatal("source state missing")
+	}
+	if len(state.ids) > maxDedupeEntries || len(state.hashes) > maxDedupeEntries || len(state.order) > maxDedupeEntries {
+		t.Fatalf("retained state grew past bound: ids=%d hashes=%d order=%d", len(state.ids), len(state.hashes), len(state.order))
 	}
 }

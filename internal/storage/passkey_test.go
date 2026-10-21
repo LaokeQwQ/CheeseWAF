@@ -65,11 +65,21 @@ func TestSQLitePasskeyStoreContract(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("ListByUser() returned %d records, want 2", len(records))
 	}
-	if records[0].Transports[0] != "internal" || !bytes.Equal(records[0].AAGUID, first.AAGUID) {
-		t.Fatalf("round-trip lost transports or AAGUID: %+v", records[0])
+	var firstRecord *passkey.Credential
+	for i := range records {
+		if records[i].ID == first.ID {
+			firstRecord = records[i]
+			break
+		}
 	}
-	if !records[0].LastUsedAt.IsZero() {
-		t.Fatalf("new credential LastUsedAt = %s, want zero", records[0].LastUsedAt)
+	if firstRecord == nil {
+		t.Fatalf("ListByUser() dropped the first credential: %+v", records)
+	}
+	if firstRecord.Transports[0] != "internal" || !bytes.Equal(firstRecord.AAGUID, first.AAGUID) {
+		t.Fatalf("round-trip lost transports or AAGUID: %+v", firstRecord)
+	}
+	if !firstRecord.LastUsedAt.IsZero() {
+		t.Fatalf("new credential LastUsedAt = %s, want zero", firstRecord.LastUsedAt)
 	}
 
 	got, err := store.GetByCredentialID(ctx, first.CredentialID)

@@ -18,7 +18,7 @@ const (
 	ContractVersion = "v1"
 	// DefaultMaxBodyBytes bounds a single adapter body.
 	DefaultMaxBodyBytes int64 = 8 << 20
-	maxJSONBodyBytes    int64 = DefaultMaxBodyBytes + (1 << 20)
+	maxJSONBodyBytes    int64 = DefaultMaxBodyBytes/3*4 + (2 << 20)
 )
 
 // Request is the subset of the adapter inspection contract consumed here.

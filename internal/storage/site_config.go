@@ -116,6 +116,15 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				HealthyThreshold:   site.WAF.HealthCheck.HealthyThreshold,
 				UnhealthyThreshold: site.WAF.HealthCheck.UnhealthyThreshold,
 			},
+			PHP2Shell: SitePHP2ShellConfig{
+				Enabled:               cloneBoolPtr(site.WAF.PHP2Shell.Enabled),
+				BlockUploadProgress:   site.WAF.PHP2Shell.BlockUploadProgress,
+				BlockAllMultipart:     site.WAF.PHP2Shell.BlockAllMultipart,
+				MaxParts:              site.WAF.PHP2Shell.MaxParts,
+				MaxArrayDepth:         site.WAF.PHP2Shell.MaxArrayDepth,
+				MaxEmptyFilenameParts: site.WAF.PHP2Shell.MaxEmptyFilenameParts,
+				AllowPaths:            cloneStrings(site.WAF.PHP2Shell.AllowPaths),
+			},
 			AccessControl: SiteAccessControl{
 				AuthEnabled:           site.WAF.AccessControl.AuthEnabled,
 				WaitingRoom:           site.WAF.AccessControl.WaitingRoom,
@@ -212,6 +221,15 @@ func SiteToConfig(site Site) config.SiteConfig {
 			},
 		},
 		WAF: config.WAFConfig{
+			PHP2Shell: config.PHP2ShellConfig{
+				Enabled:               cloneBoolPtr(site.Advanced.PHP2Shell.Enabled),
+				BlockUploadProgress:   site.Advanced.PHP2Shell.BlockUploadProgress,
+				BlockAllMultipart:     site.Advanced.PHP2Shell.BlockAllMultipart,
+				MaxParts:              site.Advanced.PHP2Shell.MaxParts,
+				MaxArrayDepth:         site.Advanced.PHP2Shell.MaxArrayDepth,
+				MaxEmptyFilenameParts: site.Advanced.PHP2Shell.MaxEmptyFilenameParts,
+				AllowPaths:            cloneStrings(site.Advanced.PHP2Shell.AllowPaths),
+			},
 			WebSocketEnabled:   site.Advanced.WebSocketEnabled,
 			GRPCEnabled:        site.Advanced.GRPCEnabled,
 			BotEnabled:         cloneBoolPtr(site.Advanced.Protection.Bot),

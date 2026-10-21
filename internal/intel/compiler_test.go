@@ -110,26 +110,16 @@ func TestCompilePHPMarkers(t *testing.T) {
 	}
 }
 
-func TestCompileOversizedSessionCookie(t *testing.T) {
+func TestCompileResponseOnlyEvidenceHasNoSafeRule(t *testing.T) {
 	extraction := Extraction{
 		CVEIDs:     []string{"CVE-2026-20003"},
 		Confidence: 0.7,
-		Request: RequestShape{
-			Method:           "POST",
-			Path:             "/login",
-			SessionParameter: "PHPSESSID",
-		},
-		Response: ResponseEvidence{OversizedSessionCookie: true},
+		Request:    RequestShape{Method: "POST", Path: "/login", SessionParameter: "PHPSESSID"},
+		Response:   ResponseEvidence{OversizedSessionCookie: true},
 	}
-	compiled, err := NewRuleCompiler().Compile(extraction, Scope{SiteID: "site-d"})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.Rule.Location != "cookie" {
-		t.Fatalf("expected cookie location, got %q", compiled.Rule.Location)
-	}
-	if !strings.Contains(compiled.Rule.Pattern, "PHPSESSID") {
-		t.Fatalf("expected session parameter in pattern: %q", compiled.Rule.Pattern)
+	_, err := NewRuleCompiler().Compile(extraction, Scope{SiteID: "site-d"})
+	if !errors.Is(err, ErrNoSafeRule) {
+		t.Fatalf("expected ErrNoSafeRule for response-only evidence, got %v", err)
 	}
 }
 
@@ -146,26 +136,6 @@ func TestCompiledMultipartRuleMatchesOnlyTheTargetShape(t *testing.T) {
 	benign := "------boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"photo.jpg\"\r\n\r\njpeg\r\n"
 	if re.MatchString(benign) {
 		t.Fatalf("rule matches a benign multipart upload: %q", compiled.Rule.Pattern)
-	}
-}
-
-func TestCompiledCookieRuleMatchesOnlyOversizedValues(t *testing.T) {
-	extraction := Extraction{
-		CVEIDs:     []string{"CVE-2026-20003"},
-		Confidence: 0.7,
-		Request:    RequestShape{Path: "/login", SessionParameter: "PHPSESSID"},
-		Response:   ResponseEvidence{OversizedSessionCookie: true},
-	}
-	compiled, err := NewRuleCompiler().Compile(extraction, Scope{SiteID: "site-d"})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	re := regexp.MustCompile(compiled.Rule.Pattern)
-	if !re.MatchString("PHPSESSID=" + strings.Repeat("a", 300)) {
-		t.Fatalf("rule does not match an oversized session cookie: %q", compiled.Rule.Pattern)
-	}
-	if re.MatchString("PHPSESSID=" + strings.Repeat("a", 26)) {
-		t.Fatalf("rule matches a normal session cookie: %q", compiled.Rule.Pattern)
 	}
 }
 

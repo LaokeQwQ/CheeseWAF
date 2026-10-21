@@ -82,7 +82,7 @@ var managementTableSpecs = []managementTableSpec{
 	{name: "intel_items", columns: []string{"id", "source_id", "external_ids", "title", "content_hash", "published_at", "products", "affected_versions", "attack_vector", "exploit_status", "references_json", "raw_excerpt", "created_at"}, orderBy: []string{"id"}, importToPG: true},
 	{name: "rule_candidates", columns: []string{"id", "item_id", "site_id", "rule_json", "action", "state", "confidence", "provenance_json", "expires_at", "created_at", "updated_at"}, orderBy: []string{"id"}, importToPG: true},
 	{name: "intel_import_jobs", columns: []string{"id", "url", "content_hash", "status", "extraction_json", "error", "created_at", "updated_at"}, orderBy: []string{"id"}, importToPG: true},
-	{name: "passkey_credentials", columns: []string{"id", "user_id", "credential_id", "public_key", "sign_count", "transports", "aaguid", "backup_eligible", "name", "created_at", "last_used_at"}, orderBy: []string{"id"}, importToPG: true, booleans: stringSet("backup_eligible")},
+	{name: "passkey_credentials", columns: []string{"id", "user_id", "credential_id", "public_key", "sign_count", "transports", "aaguid", "backup_eligible", "name", "created_at", "last_used_at"}, orderBy: []string{"id"}, importToPG: true, booleans: stringSet("backup_eligible"), nullEmpty: stringSet("last_used_at")},
 	{name: "passkey_recovery_codes", columns: []string{"id", "user_id", "code_hash", "used_at", "created_at"}, orderBy: []string{"id"}, importToPG: true, nullEmpty: stringSet("used_at")},
 	{name: "passkey_audit_events", columns: []string{"id", "type", "user_id", "actor", "reason", "created_at"}, orderBy: []string{"id"}, importToPG: true},
 }

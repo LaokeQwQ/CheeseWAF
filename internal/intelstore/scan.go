@@ -161,10 +161,11 @@ func scanCandidate(row rowScanner) (intel.Candidate, error) {
 		provenance any
 		expiresAt  any
 		createdAt  any
+		updatedAt  any
 	)
 	if err := row.Scan(
 		&candidate.ID, &candidate.ItemID, &candidate.SiteID, &ruleJSON, &candidate.Action,
-		&rawState, &confidence, &provenance, &expiresAt, &createdAt,
+		&rawState, &confidence, &provenance, &expiresAt, &createdAt, &updatedAt,
 	); err != nil {
 		return intel.Candidate{}, err
 	}
@@ -185,6 +186,9 @@ func scanCandidate(row rowScanner) (intel.Candidate, error) {
 		return intel.Candidate{}, err
 	}
 	candidate.CreatedAt = created
+	if candidate.UpdatedAt, err = asTime(updatedAt); err != nil {
+		return intel.Candidate{}, err
+	}
 	if !created.IsZero() && !expiry.IsZero() {
 		ttl := expiry.Sub(created)
 		if ttl <= 0 || ttl > intel.MaxCandidateTTL {
@@ -221,6 +225,6 @@ func scanJob(row rowScanner) (ImportJob, error) {
 const (
 	sourceColumns    = `id, type, url, trust, enabled, etag, last_modified`
 	itemColumns      = `id, source_id, external_ids, title, content_hash, published_at, products, affected_versions, attack_vector, exploit_status, references_json, raw_excerpt`
-	candidateColumns = `id, item_id, site_id, rule_json, action, state, confidence, provenance_json, expires_at, created_at`
+	candidateColumns = `id, item_id, site_id, rule_json, action, state, confidence, provenance_json, expires_at, created_at, updated_at`
 	jobColumns       = `id, url, content_hash, status, extraction_json, error, created_at, updated_at`
 )

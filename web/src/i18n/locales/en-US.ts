@@ -1266,6 +1266,10 @@ const enUS = {
     intelConfirmApproval: 'Confirm approval',
     intelApproveHint: 'Approval records your name. Choosing block also requires impact evidence and a completed shadow stage.',
     intelNoBlockDefault: 'Approval defaults to the log action; block must be chosen deliberately and is never automatic.',
+    intelDetailLocation: 'Location',
+    intelDetailScope: 'Method / path scope',
+    intelDetailPattern: 'Pattern',
+    intelDetailEvidence: 'Source evidence',
     intelReadOnly: 'Your scope allows review only. Import, approval, and rejection require write:protection or write:rules.',
   },
   monitor: {

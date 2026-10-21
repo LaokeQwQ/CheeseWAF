@@ -192,6 +192,7 @@ type Candidate struct {
 	Provenance Provenance     `json:"provenance"`
 	TTL        time.Duration  `json:"ttl"`
 	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
 }
 
 // ExpiresAt returns the candidate expiry, or the zero time when TTL is unset.

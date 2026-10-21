@@ -50,9 +50,13 @@ type dingTalkPayload struct {
 	Text    textContent `json:"text"`
 }
 
+type feishuContent struct {
+	Text string `json:"text"`
+}
+
 type feishuPayload struct {
-	MsgType string      `json:"msg_type"`
-	Content textContent `json:"content"`
+	MsgType string        `json:"msg_type"`
+	Content feishuContent `json:"content"`
 }
 
 type weComPayload struct {
@@ -82,7 +86,7 @@ func newFeishuNotifier(cfg config.NotifierConfig, client *http.Client) *textProv
 		client:   notifierHTTPClient(cfg, client),
 		endpoint: func() (string, error) { return requiredHTTPSEndpoint(cfg.Endpoint) },
 		payload: func(alert monitor.Alert) any {
-			return feishuPayload{MsgType: "text", Content: textContent{Content: alertText(alert)}}
+			return feishuPayload{MsgType: "text", Content: feishuContent{Text: alertText(alert)}}
 		},
 	}
 }

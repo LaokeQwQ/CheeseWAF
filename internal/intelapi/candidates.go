@@ -224,12 +224,16 @@ func (h *handler) handleApproveCandidate(w http.ResponseWriter, r *http.Request)
 		case intel.CandidateCanary, intel.CandidateActive:
 			// Already enforcing: record the approval without changing rollout.
 		case intel.CandidateShadow:
-			if now.Sub(candidate.CreatedAt) < policy.MinShadowDuration {
+			shadowStarted := candidate.UpdatedAt
+			if shadowStarted.IsZero() {
+				shadowStarted = candidate.CreatedAt
+			}
+			if now.Sub(shadowStarted) < policy.MinShadowDuration {
 				writeError(w, http.StatusConflict, "shadow_too_short",
 					"block promotion requires at least one shadow observation window")
 				return
 			}
-			plan, err = plan.StartShadow(candidate.CreatedAt, policy)
+			plan, err = plan.StartShadow(shadowStarted, policy)
 			if err != nil {
 				writeErrorReasons(w, http.StatusConflict, "promotion_rejected", "rollout gates rejected the candidate", []string{err.Error()})
 				return
@@ -258,12 +262,17 @@ func (h *handler) handleApproveCandidate(w http.ResponseWriter, r *http.Request)
 
 	state := promotedState
 	updated, err := h.store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{
-		State:      &state,
-		Action:     &targetAction,
-		ApprovedBy: approver,
-		ExpiresAt:  request.ExpiresAt,
+		State:         &state,
+		Action:        &targetAction,
+		ApprovedBy:    approver,
+		ExpiresAt:     request.ExpiresAt,
+		ExpectedState: &candidate.State,
 	})
 	if err != nil {
+		if errors.Is(err, intelstore.ErrConflict) {
+			writeError(w, http.StatusConflict, "stale_candidate", "candidate changed while it was being approved; reload and retry")
+			return
+		}
 		if errors.Is(err, intelstore.ErrNotFound) {
 			writeCandidateStoreError(w, err)
 			return
@@ -314,8 +323,12 @@ func (h *handler) handleRejectCandidate(w http.ResponseWriter, r *http.Request) 
 	}
 	state := intel.CandidateRejected
 	action := intel.ActionLog
-	updated, err := h.store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{State: &state, Action: &action, ApprovedBy: actor})
+	updated, err := h.store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{State: &state, Action: &action, ApprovedBy: actor, ExpectedState: &candidate.State})
 	if err != nil {
+		if errors.Is(err, intelstore.ErrConflict) {
+			writeError(w, http.StatusConflict, "stale_candidate", "candidate changed while it was being rejected; reload and retry")
+			return
+		}
 		if errors.Is(err, intelstore.ErrNotFound) {
 			writeCandidateStoreError(w, err)
 			return

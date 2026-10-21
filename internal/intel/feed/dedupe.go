@@ -13,11 +13,19 @@ type Dedupe struct {
 	sources map[string]*dedupeState
 }
 
+const maxDedupeEntries = 4096
+
 type dedupeState struct {
 	started      bool
 	lastSequence uint64
 	ids          map[string]struct{}
 	hashes       map[string]struct{}
+	order        []dedupeEntry
+}
+
+type dedupeEntry struct {
+	id   string
+	hash string
 }
 
 // Rejection records an item rejected by Filter.
@@ -125,6 +133,13 @@ func (d *Dedupe) acceptLocked(item FeedItem, sequence uint64) error {
 	}
 	state.ids[item.ExternalID] = struct{}{}
 	state.hashes[item.ContentHash] = struct{}{}
+	state.order = append(state.order, dedupeEntry{id: item.ExternalID, hash: item.ContentHash})
+	if len(state.order) > maxDedupeEntries {
+		oldest := state.order[0]
+		state.order = state.order[1:]
+		delete(state.ids, oldest.id)
+		delete(state.hashes, oldest.hash)
+	}
 	state.lastSequence = sequence
 	state.started = true
 	return nil

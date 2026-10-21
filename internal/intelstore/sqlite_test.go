@@ -240,3 +240,31 @@ func TestSQLiteStoreRejectsInvalidInput(t *testing.T) {
 		t.Fatalf("expected invalid job status, got %v", err)
 	}
 }
+
+func TestUpdateCandidateRejectsStaleExpectedState(t *testing.T) {
+	ctx := context.Background()
+	_, store := newSQLiteIntelStore(t)
+	if _, _, err := store.InsertItem(ctx, testItem()); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	candidate := testCandidate(t)
+	if _, _, err := store.InsertCandidate(ctx, candidate); err != nil {
+		t.Fatalf("insert candidate: %v", err)
+	}
+	shadow := intel.CandidateShadow
+	if _, err := store.UpdateCandidateState(ctx, candidate.ID, shadow, "alice"); err != nil {
+		t.Fatalf("transition to shadow: %v", err)
+	}
+	draft := intel.CandidateDraft
+	canary := intel.CandidateCanary
+	if _, err := store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{State: &canary, ExpectedState: &draft}); !errors.Is(err, intelstore.ErrConflict) {
+		t.Fatalf("stale update error = %v, want ErrConflict", err)
+	}
+	stored, err := store.GetCandidate(ctx, candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != shadow {
+		t.Fatalf("state=%s, want shadow", stored.State)
+	}
+}

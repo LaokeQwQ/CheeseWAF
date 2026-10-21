@@ -317,13 +317,20 @@ func (s *SQLiteStore) UpdateCandidate(ctx context.Context, id string, update Can
 	if err != nil {
 		return intel.Candidate{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `
+	updatedAt := time.Now().UTC()
+	query := `
 UPDATE rule_candidates
 SET rule_json = ?, action = ?, state = ?, confidence = ?, provenance_json = ?, expires_at = ?, updated_at = ?
-WHERE id = ?`,
+WHERE id = ?`
+	args := []any{
 		normalized.RuleJSON, normalized.Action, string(normalized.State), normalized.Confidence, provenance,
-		formatSQLiteTime(normalized.CreatedAt.Add(normalized.TTL)), formatSQLiteTime(time.Now().UTC()), normalized.ID,
-	)
+		formatSQLiteTime(normalized.CreatedAt.Add(normalized.TTL)), formatSQLiteTime(updatedAt), normalized.ID,
+	}
+	if update.ExpectedState != nil {
+		query += ` AND state = ?`
+		args = append(args, string(*update.ExpectedState))
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return intel.Candidate{}, fmt.Errorf("intelstore: update candidate: %w", err)
 	}
@@ -332,8 +339,12 @@ WHERE id = ?`,
 		return intel.Candidate{}, fmt.Errorf("intelstore: update candidate: %w", err)
 	}
 	if affected == 0 {
+		if update.ExpectedState != nil {
+			return intel.Candidate{}, ErrConflict
+		}
 		return intel.Candidate{}, ErrNotFound
 	}
+	normalized.UpdatedAt = updatedAt
 	return normalized, nil
 }
 

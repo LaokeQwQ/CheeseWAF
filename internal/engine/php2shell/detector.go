@@ -335,10 +335,10 @@ func (d *Detector) detectURLEncoded(body []byte) *engine.DetectionResult {
 		body = body[:1<<20]
 	}
 	values, err := url.ParseQuery(string(body))
-	if err != nil || len(values) == 0 {
+	if len(values) == 0 {
 		return nil
 	}
-	state := parseState{urlEncoded: true}
+	state := parseState{urlEncoded: true, parseIncomplete: err != nil}
 	for name, entries := range values {
 		state.observeField(name, d.sessionFields)
 		for _, value := range entries {

@@ -81,6 +81,9 @@ type CandidateUpdate struct {
 	Action     *string
 	ApprovedBy string
 	ExpiresAt  *time.Time
+	// ExpectedState makes the update conditional. A concurrent transition
+	// returns ErrConflict instead of overwriting another reviewer's decision.
+	ExpectedState *intel.CandidateState
 }
 
 // ImportJob records one URL import attempt. URL is stored without query or

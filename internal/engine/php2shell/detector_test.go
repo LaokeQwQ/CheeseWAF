@@ -488,3 +488,15 @@ func TestEmergencyAllowPathStillBlocksHardSignal(t *testing.T) {
 		t.Fatalf("allowlisted hard signal result=%+v err=%v", result, err)
 	}
 }
+
+func TestURLEncodedMalformedPeerFieldDoesNotHideProgress(t *testing.T) {
+	cfg := Config{Enabled: true, BlockUploadProgress: true}
+	ctx := newRequestContext(t, "application/x-www-form-urlencoded", "", []byte("PHP_SESSION_UPLOAD_PROGRESS=x&junk=%zz"))
+	result, err := New(cfg).Detect(context.Background(), ctx)
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if result == nil || result.Action != engine.ActionBlock {
+		t.Fatalf("malformed peer field hid the upload-progress signal: %+v", result)
+	}
+}

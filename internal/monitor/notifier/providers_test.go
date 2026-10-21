@@ -128,7 +128,7 @@ func TestFeishuPayload(t *testing.T) {
 	if err := provider.Notify(context.Background(), alert); err != nil {
 		t.Fatalf("deliver Feishu alert: %v", err)
 	}
-	if received.MsgType != "text" || received.Content.Content != alertText(alert) {
+	if received.MsgType != "text" || received.Content.Text != alertText(alert) {
 		t.Fatalf("unexpected Feishu payload: %+v", received)
 	}
 }

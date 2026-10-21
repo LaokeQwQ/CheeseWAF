@@ -95,23 +95,42 @@ export function canSubmitIntelApproval(confirm: boolean, approvedBy: string) {
 export type IntelRuleSummary = {
   cve: string;
   step: string;
+  location: string;
+  pattern: string;
+  method: string;
+  path: string;
+};
+
+type IntelRulePayload = {
+  rule?: { id?: unknown; name?: unknown; description?: unknown; location?: unknown; pattern?: unknown };
+  scope?: { path_prefix?: unknown; methods?: unknown };
 };
 
 /** Reads the display-only parts of the compiled rule; candidate fields stay authoritative. */
 export function summarizeIntelRule(ruleJSON: string): IntelRuleSummary {
   try {
-    const decoded = JSON.parse(ruleJSON) as { rule?: { id?: unknown; name?: unknown; description?: unknown } };
-    const name = typeof decoded.rule?.name === 'string' ? decoded.rule.name : '';
-    const description = typeof decoded.rule?.description === 'string' ? decoded.rule.description : '';
+    const decoded = JSON.parse(ruleJSON) as IntelRulePayload;
+    const rule = decoded.rule ?? {};
+    const scope = decoded.scope ?? {};
+    const name = typeof rule.name === 'string' ? rule.name : '';
+    const description = typeof rule.description === 'string' ? rule.description : '';
     const matches = `${name} ${description}`.match(/CVE-\d{4}-\d{4,}/gi) ?? [];
     const cves = matches
       .map((value) => value.toUpperCase())
       .filter((value, index, all) => all.indexOf(value) === index);
     const classMatch = description.match(/\bclass=([a-z0-9-]+)/i);
-    const step = classMatch?.[1] ?? (typeof decoded.rule?.id === 'string' ? decoded.rule.id : '');
-    return { cve: cves.join(', '), step };
+    const step = classMatch?.[1] ?? (typeof rule.id === 'string' ? rule.id : '');
+    const methods = Array.isArray(scope.methods) ? scope.methods.filter((value) => typeof value === 'string') : [];
+    return {
+      cve: cves.join(', '),
+      step,
+      location: typeof rule.location === 'string' ? rule.location : '',
+      pattern: typeof rule.pattern === 'string' ? rule.pattern : '',
+      method: methods.join(', '),
+      path: typeof scope.path_prefix === 'string' ? scope.path_prefix : '',
+    };
   } catch {
-    return { cve: '', step: '' };
+    return { cve: '', step: '', location: '', pattern: '', method: '', path: '' };
   }
 }
 
@@ -457,6 +476,12 @@ function IntelCandidateRows({
                 <strong className="text-sm">{t('ai.intelApprovalTitle', { id: rowLabel })}</strong>
                 <p className="text-xs text-muted-foreground">{t('ai.intelApproveHint')}</p>
               </div>
+              <dl className="grid gap-2 rounded-md border bg-background p-2 text-xs md:grid-cols-2">
+                <div><dt className="font-medium">{t('ai.intelDetailLocation')}</dt><dd className="font-mono break-all">{summary.location || '-'}</dd></div>
+                <div><dt className="font-medium">{t('ai.intelDetailScope')}</dt><dd className="font-mono break-all">{summary.method || '-'} {summary.path || '-'}</dd></div>
+                <div className="md:col-span-2"><dt className="font-medium">{t('ai.intelDetailPattern')}</dt><dd className="font-mono break-all">{summary.pattern || '-'}</dd></div>
+                <div className="md:col-span-2"><dt className="font-medium">{t('ai.intelDetailEvidence')}</dt><dd className="break-all">{candidate.provenance.source_id || '-'} / {candidate.provenance.item_id || '-'}</dd></div>
+              </dl>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <div className="space-y-1.5">
                   <Label htmlFor={`intel-approver-${candidate.id}`}>{t('ai.intelApprovedBy')}</Label>

@@ -316,13 +316,20 @@ func (s *PostgresStore) UpdateCandidate(ctx context.Context, id string, update C
 	if err != nil {
 		return intel.Candidate{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `
+	updatedAt := time.Now().UTC()
+	query := `
 UPDATE rule_candidates
 SET rule_json = $1::jsonb, action = $2, state = $3, confidence = $4, provenance_json = $5::jsonb, expires_at = $6, updated_at = $7
-WHERE id = $8`,
+WHERE id = $8`
+	args := []any{
 		normalized.RuleJSON, normalized.Action, string(normalized.State), normalized.Confidence, provenance,
-		normalized.CreatedAt.Add(normalized.TTL), time.Now().UTC(), normalized.ID,
-	)
+		normalized.CreatedAt.Add(normalized.TTL), updatedAt, normalized.ID,
+	}
+	if update.ExpectedState != nil {
+		query += ` AND state = $9`
+		args = append(args, string(*update.ExpectedState))
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return intel.Candidate{}, fmt.Errorf("intelstore: update candidate: %w", err)
 	}
@@ -331,8 +338,12 @@ WHERE id = $8`,
 		return intel.Candidate{}, fmt.Errorf("intelstore: update candidate: %w", err)
 	}
 	if affected == 0 {
+		if update.ExpectedState != nil {
+			return intel.Candidate{}, ErrConflict
+		}
 		return intel.Candidate{}, ErrNotFound
 	}
+	normalized.UpdatedAt = updatedAt
 	return normalized, nil
 }
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -138,9 +137,9 @@ func compileNestedArrays(extraction Extraction) (RuleClass, string, string, bool
 }
 
 func compilePHPMarker(extraction Extraction) (RuleClass, string, string, bool) {
-	markers := make([]string, 0, len(extraction.Request.Markers)+len(extraction.Response.BodyMarkers))
-	markers = append(markers, extraction.Request.Markers...)
-	markers = append(markers, extraction.Response.BodyMarkers...)
+	// Current rule locations are request-only. Response body markers cannot be
+	// enforced by the request pipeline, so never compile them into a body rule.
+	markers := extraction.Request.Markers
 	fragments := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
 	for _, marker := range markers {
@@ -164,16 +163,11 @@ func compilePHPMarker(extraction Extraction) (RuleClass, string, string, bool) {
 	return RuleClassPHPMarker, "body", pattern, true
 }
 
-func compileOversizedSessionCookie(extraction Extraction) (RuleClass, string, string, bool) {
-	if !extraction.Response.OversizedSessionCookie {
-		return "", "", "", false
-	}
-	session := extraction.Request.SessionParameter
-	if session == "" {
-		session = DefaultSessionParameter
-	}
-	pattern := `(?i)(?:^|;\s*)` + regexp.QuoteMeta(session) + `=[^;\s]{` + strconv.Itoa(OversizedSessionCookieValueBytes) + `,}`
-	return RuleClassSessionCookieLeak, "cookie", pattern, true
+func compileOversizedSessionCookie(Extraction) (RuleClass, string, string, bool) {
+	// Response Set-Cookie evidence needs a response inspection location. The
+	// rule engine only evaluates request headers/body today, so compiling it as
+	// a request cookie rule would silently never match the evidence.
+	return "", "", "", false
 }
 
 func markerFragment(marker string) (string, bool) {

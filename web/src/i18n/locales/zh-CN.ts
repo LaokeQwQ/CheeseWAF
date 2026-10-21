@@ -1266,6 +1266,10 @@ const zhCN = {
     intelConfirmApproval: '确认通过',
     intelApproveHint: '审批会记录你的名字。选择拦截还需要影响面评估证据和已完成的影子观察阶段。',
     intelNoBlockDefault: '审批默认使用记录日志动作；拦截必须手动选择，不会自动启用。',
+    intelDetailLocation: '位置',
+    intelDetailScope: '方法与路径范围',
+    intelDetailPattern: '匹配模式',
+    intelDetailEvidence: '来源证据',
     intelReadOnly: '当前权限只能查看。导入、通过和拒绝需要 write:protection 或 write:rules。',
   },
   monitor: {
