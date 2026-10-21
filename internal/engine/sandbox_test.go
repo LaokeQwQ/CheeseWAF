@@ -100,6 +100,50 @@ func TestGuardContextReturnsOnCancellationWhileDetectorIgnoresContext(t *testing
 	}
 }
 
+func TestGuardContextHonorsCallerBudgetBeyondCompatibilityTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := GuardContext(ctx, func() (string, error) {
+		timer := time.NewTimer(2050 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return "completed", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
+	if err != nil || result != "completed" {
+		t.Fatalf("GuardContext = (%q, %v), want completed within the caller's 5s budget", result, err)
+	}
+}
+
+func TestGuardContextWithoutDeadlinePreservesClassifiedCompatibilityTimeout(t *testing.T) {
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	defer func() {
+		close(release)
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Error("guarded detector did not finish after release")
+		}
+	}()
+	_, err := GuardContext(context.Background(), func() (string, error) {
+		defer close(finished)
+		<-release
+		return "completed", nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GuardContext error = %v, want context.DeadlineExceeded", err)
+	}
+	select {
+	case <-finished:
+		t.Fatal("compatibility timeout must not pretend the detector has stopped")
+	default:
+	}
+}
+
 func TestGuardContextHoldsSitePermitUntilDetectorExit(t *testing.T) {
 	const siteID = "guard-site-hold"
 	reserved := make([]siteAdmissionToken, 0, maxInflightGuardsPerSite-1)

@@ -18,6 +18,9 @@ func NormalizeRequestPath(raw string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	if hasMatrixParentSegment(decoded) {
+		return "", false
+	}
 	cleaned := path.Clean(decoded)
 	if cleaned == "" || cleaned == "." {
 		return "", false
@@ -37,6 +40,70 @@ func NormalizeRequestPath(raw string) (string, bool) {
 		return "", false
 	}
 	return cleaned, true
+}
+
+// SecurityPathViews preserves existing raw/clean policy meanings and adds the
+// routing interpretation used by backends that strip matrix parameters. Use
+// every view for protective requirements, not to broaden allowlist exemptions.
+func SecurityPathViews(raw string) ([]string, bool) {
+	cleaned, ok := NormalizeRequestPath(raw)
+	if !ok {
+		return nil, false
+	}
+	views := []string{raw}
+	if cleaned != raw {
+		views = append(views, cleaned)
+	}
+	if !strings.ContainsAny(raw, ";%") {
+		return views, true
+	}
+	decoded, ok := fullyDecodePath(raw, 5)
+	if !ok || !strings.ContainsRune(decoded, ';') {
+		return views, ok
+	}
+	var stripped strings.Builder
+	stripped.Grow(len(decoded))
+	inParameter := false
+	for i := 0; i < len(decoded); i++ {
+		switch decoded[i] {
+		case '/':
+			inParameter = false
+			stripped.WriteByte('/')
+		case ';':
+			inParameter = true
+		default:
+			if !inParameter {
+				stripped.WriteByte(decoded[i])
+			}
+		}
+	}
+	matrixPath := path.Clean(stripped.String())
+	if !strings.HasPrefix(matrixPath, "/") {
+		matrixPath = path.Clean("/" + matrixPath)
+	}
+	for _, view := range views {
+		if view == matrixPath {
+			return views, true
+		}
+	}
+	return append(views, matrixPath), true
+}
+
+func hasMatrixParentSegment(decoded string) bool {
+	if !strings.ContainsRune(decoded, ';') {
+		return false
+	}
+	for start := 0; start < len(decoded); {
+		if strings.HasPrefix(decoded[start:], "..;") {
+			return true
+		}
+		end := strings.IndexByte(decoded[start:], '/')
+		if end < 0 {
+			return false
+		}
+		start += end + 1
+	}
+	return false
 }
 
 // fullyDecodePath repeatedly PathUnescapes until stable or maxRounds.

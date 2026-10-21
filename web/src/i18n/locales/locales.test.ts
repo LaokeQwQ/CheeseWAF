@@ -147,6 +147,16 @@ function keyReferenced(key: string, blobs: string[]): boolean {
 }
 
 describe('locale dictionaries', () => {
+  it('describes the automatic detection-budget policy without stale observe mappings', () => {
+    // BudgetExhaustedPolicyFromWebAttack maps every level above low to closed.
+    expect(enUS.sites.budgetExhaustedPolicyHint).toContain('low→open');
+    expect(enUS.sites.budgetExhaustedPolicyHint).toContain('smart/high/strict→challenge');
+    expect(enUS.sites.budgetExhaustedPolicyHint).not.toContain('→observe');
+    expect(zhCN.sites.budgetExhaustedPolicyHint).toContain('低→放行');
+    expect(zhCN.sites.budgetExhaustedPolicyHint).toContain('智能/增强/严格→挑战');
+    expect(zhCN.sites.budgetExhaustedPolicyHint).not.toContain('→观察');
+  });
+
   it('keep English and Simplified Chinese key sets identical', () => {
     expect(leafKeys(zhCN)).toEqual(leafKeys(enUS));
   });

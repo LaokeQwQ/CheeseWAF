@@ -380,13 +380,13 @@ func (p *Policy) evaluateForSite(r *http.Request, clientIP, site string, waiting
 	if !ok {
 		return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "invalid request path", Confidence: 1, Payload: r.URL.Path}
 	}
-	applies := p.applies(path)
+	applies := p.applies(path, r.URL.Path)
 	for _, extra := range additionalPaths {
 		policyPath, ok := engine.NormalizeRequestPath(extra)
 		if !ok {
 			return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "invalid request path", Confidence: 1, Payload: extra}
 		}
-		applies = applies || p.applies(policyPath)
+		applies = applies || p.applies(policyPath, extra)
 	}
 	if !applies {
 		return nil
@@ -2136,18 +2136,44 @@ func (p *Policy) effectiveCAPTCHAType(r *http.Request) string {
 	return captchaType
 }
 
-func (p *Policy) applies(path string) bool {
-	for _, prefix := range p.exemptPathPrefixes {
-		if prefix != "" && engine.PathMatchesPrefix(path, prefix) {
+func (p *Policy) applies(path string, original ...string) bool {
+	// A new path interpretation can add a protected scope, never grant an
+	// exemption that the original normalized identity did not already have.
+	views := []string{path}
+	wirePath := path
+	if len(original) > 0 {
+		wirePath = original[0]
+	}
+	if strings.ContainsAny(wirePath, ";%") {
+		var ok bool
+		views, ok = engine.SecurityPathViews(wirePath)
+		if !ok {
 			return false
 		}
-	}
-	for _, prefix := range p.pathPrefixes {
-		if prefix == "" || engine.PathMatchesPrefix(path, prefix) {
-			return true
+		// Matrix stripping precedes Clean for routing, while existing raw
+		// dot-path spellings must not acquire new scope or exemption meaning.
+		if wirePath != path {
+			views = views[1:]
 		}
 	}
-	return false
+	protected, exempt := false, true
+	for _, view := range views {
+		viewExempt := false
+		for _, prefix := range p.exemptPathPrefixes {
+			if prefix != "" && engine.PathMatchesPrefix(view, prefix) {
+				viewExempt = true
+				break
+			}
+		}
+		exempt = exempt && viewExempt
+		for _, prefix := range p.pathPrefixes {
+			if prefix == "" || engine.PathMatchesPrefix(view, prefix) {
+				protected = true
+				break
+			}
+		}
+	}
+	return protected && !exempt
 }
 
 // requestPath returns the cleaned absolute request path used for bot policy,

@@ -1,6 +1,48 @@
 package engine
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestSecurityPathViewsPreserveExistingSpellings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{"/admin", []string{"/admin"}},
+		{"//admin/panel", []string{"//admin/panel", "/admin/panel"}},
+		{"/admin;v=1/panel", []string{"/admin;v=1/panel", "/admin/panel"}},
+		{"/admin%253bv=1/panel", []string{"/admin%253bv=1/panel", "/admin;v=1/panel", "/admin/panel"}},
+		{"/;jsessionid=A/admin", []string{"/;jsessionid=A/admin", "/admin"}},
+		{"/a/;/b", []string{"/a/;/b", "/a/b"}},
+		{"/..foo;bar/z", []string{"/..foo;bar/z", "/..foo/z"}},
+	} {
+		got, ok := SecurityPathViews(tc.path)
+		if !ok || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("SecurityPathViews(%q) = (%q, %v), want %q", tc.path, got, ok, tc.want)
+		}
+	}
+	for _, invalid := range []string{"", "/a/..;/b", "/a/%252e%252e%253b/b", "/%zz", "/a\x00b"} {
+		if got, ok := SecurityPathViews(invalid); ok || got != nil {
+			t.Errorf("invalid path %q returned (%q, %v)", invalid, got, ok)
+		}
+	}
+}
+
+func BenchmarkNormalizeRequestPath(b *testing.B) {
+	for _, input := range []string{"/api/users/42", "/api/users;v=1/42"} {
+		b.Run(input, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, ok := NormalizeRequestPath(input); !ok {
+					b.Fatal("valid path rejected")
+				}
+			}
+		})
+	}
+}
 
 func TestNormalizeRequestPath(t *testing.T) {
 	t.Parallel()
@@ -23,6 +65,12 @@ func TestNormalizeRequestPath(t *testing.T) {
 		{"/..%252fetc%252fpasswd", "/etc/passwd", true},
 		{"/%2e%2e/%2e%2e/etc/passwd", "/etc/passwd", true},
 		{"/api%2Fusers", "/api/users", true},
+		// Matrix parent segments have ambiguous routing semantics. Ordinary
+		// semicolon paths keep their existing spelling for allowlist matching.
+		{"/a/..;/b", "", false},
+		{"/a/%2e%2e%3bmode=1/b", "", false},
+		{"/admin;v=1/panel", "/admin;v=1/panel", true},
+		{"/..foo;bar/z", "/..foo;bar/z", true},
 		// Invalid percent sequences fail closed.
 		{"/%zz", "", false},
 	}

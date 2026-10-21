@@ -455,7 +455,7 @@ const zhCN = {
     semanticPolicy: '语义运维策略',
     semanticPolicyHint: '检测超时失败模式与误报放行列表。默认超时策略跟随 Web 攻击等级。',
     budgetExhaustedPolicy: '检测超时策略',
-    budgetExhaustedPolicyHint: 'auto：跟随 Web 攻击等级（低→放行，智能/增强→观察，严格→挑战）。',
+    budgetExhaustedPolicyHint: 'auto：跟随 Web 攻击等级（低→放行，智能/增强/严格→挑战）。',
     budgetPolicyAuto: '自动（跟随等级）',
     budgetPolicyOpen: '开放（放行 + 记指标）',
     budgetPolicyObserve: '观察（仅记录）',

@@ -115,9 +115,10 @@ func TestLoadTimeSyncPreservesExplicitDisableAndBackfillsOmittedFields(t *testin
 }
 
 func TestTimeSyncConfigRoundTrip(t *testing.T) {
+	// Public-address syntax fixtures: config validation never connects to them.
 	want := TimeSyncConfig{
 		Enabled:            true,
-		Sources:            []string{"ntp1.example.com", "192.0.2.10:123", "[2001:db8::10]:123"},
+		Sources:            []string{"ntp1.example.com", "1.1.1.1:123", "[2606:4700:4700::1111]:123"},
 		SelectionInterval:  36 * time.Hour,
 		SyncInterval:       45 * time.Minute,
 		Timeout:            1500 * time.Millisecond,
@@ -228,7 +229,7 @@ func TestValidateTimeSyncAcceptsBoundaries(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Default()
-			cfg.TimeSync.Sources = []string{"ntp.example.com", "192.0.2.1:123", "[2001:db8::1]:123"}
+			cfg.TimeSync.Sources = []string{"ntp.example.com", "1.1.1.1:123", "[2606:4700:4700::1111]:123"}
 			tc.mutate(&cfg.TimeSync)
 			if err := Validate(&cfg); err != nil {
 				t.Fatalf("boundary config should validate: %v", err)
@@ -258,6 +259,8 @@ func TestValidateTimeSyncRejectsInvalidConfig(t *testing.T) {
 		{"non-numeric port", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "ntp.example.com:ntp" }, "port must be a number between 1 and 65535"},
 		{"port too large", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "ntp.example.com:65536" }, "port must be between 1 and 65535"},
 		{"private source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "10.0.0.1" }, "must not be a private, loopback, link-local, or unspecified address"},
+		{"documentation IPv4 source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "192.0.2.10:123" }, "must not be a private, loopback, link-local, or unspecified address"},
+		{"documentation IPv6 source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "[2001:db8::10]:123" }, "must not be a private, loopback, link-local, or unspecified address"},
 		{"loopback source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "127.0.0.1:123" }, "must not be a private, loopback, link-local, or unspecified address"},
 		{"localhost source", func(cfg *TimeSyncConfig) { cfg.Sources[0] = "localhost" }, "must not be a private, loopback, link-local, or unspecified address"},
 		{"duplicate source", func(cfg *TimeSyncConfig) {

@@ -538,7 +538,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// Rewrites mutate r.URL before the upstream call. Keep the public request
 	// identity for exact tamper snapshots and response telemetry.
 	publicRequest := r.Clone(r.Context())
-	redirect, redirectCode := siteRT.rewriter.Apply(r)
+	redirect, redirectCode := false, 0
+	// This endpoint belongs to the WAF, not the upstream application. Keep its
+	// request identity intact so site rewrites cannot divert challenge answers
+	// or remove the dedicated body limit. IP/Geo gates still run below.
+	if requestPath != botBehaviorVerifyPath {
+		redirect, redirectCode = siteRT.rewriter.Apply(r)
+	}
 	rewritten := publicRequest.URL.RequestURI() != r.URL.RequestURI()
 	if rewritten {
 		requestPath, pathOK = engine.NormalizeRequestPath(r.URL.Path)

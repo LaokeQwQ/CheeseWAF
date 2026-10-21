@@ -30,11 +30,35 @@ type HTTPClientOptions struct {
 }
 
 var restrictedCIDRs = mustParseCIDRs(
+	// Non-global special-use ranges from the IANA IPv4/IPv6 registries.
+	"0.0.0.0/8",
 	"100.64.0.0/10",
+	"192.0.0.0/24",
+	"192.0.2.0/24",
+	"192.88.99.0/24",
+	"198.18.0.0/15",
+	"198.51.100.0/24",
+	"203.0.113.0/24",
+	"240.0.0.0/4",
+	"::/96",          // Deprecated IPv4-compatible addresses are not native public IPv6.
+	"64:ff9b:1::/48", // Local-use translation has no universal embedded-IPv4 layout.
+	"100::/64",
+	"100:0:0:1::/64",
+	"2001::/32", // Teredo has separate server/client endpoints; do not infer public reachability.
+	"2001:2::/48",
+	"2001:10::/28",
+	"2001:db8::/32",
+	"3fff::/20",
+	"5f00::/16",
 	"169.254.169.254/32",
 	"169.254.170.2/32",
 	"100.100.100.200/32",
 	"fd00:ec2::254/128",
+)
+
+var (
+	nat64WellKnownPrefix = mustParseCIDRs("64:ff9b::/96")[0]
+	sixToFourPrefix      = mustParseCIDRs("2002::/16")[0]
 )
 
 func ValidateURL(raw string, policy URLPolicy) (*url.URL, error) {
@@ -173,14 +197,32 @@ func IsPublicIP(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	return ip.IsGlobalUnicast() &&
+	if ipv4 := ip.To4(); ipv4 != nil {
+		ip = ipv4
+	} else if ipv6 := ip.To16(); ipv6 != nil {
+		ip = ipv6
+	} else {
+		return false
+	}
+	if !(ip.IsGlobalUnicast() &&
 		!ip.IsLoopback() &&
 		!ip.IsPrivate() &&
 		!ip.IsLinkLocalUnicast() &&
 		!ip.IsLinkLocalMulticast() &&
 		!ip.IsMulticast() &&
 		!ip.IsUnspecified() &&
-		!inRestrictedCIDR(ip)
+		!inRestrictedCIDR(ip)) {
+		return false
+	}
+	// These public transition prefixes route through an embedded IPv4 target.
+	// Validate that target too, without disabling ordinary NAT64/public IPv6.
+	if nat64WellKnownPrefix.Contains(ip) {
+		return IsPublicIP(ip[12:16])
+	}
+	if sixToFourPrefix.Contains(ip) {
+		return IsPublicIP(ip[2:6])
+	}
+	return true
 }
 
 func resolveHost(ctx context.Context, resolver Resolver, host string) ([]net.IP, error) {
@@ -241,6 +283,11 @@ func schemeList(schemes []string) string {
 }
 
 func inRestrictedCIDR(ip net.IP) bool {
+	// IANA assigns these two globally reachable anycast addresses inside the
+	// otherwise non-global 192.0.0.0/24 protocol-assignment block.
+	if ipv4 := ip.To4(); ipv4 != nil && ipv4[0] == 192 && ipv4[1] == 0 && ipv4[2] == 0 && (ipv4[3] == 9 || ipv4[3] == 10) {
+		return false
+	}
 	for _, cidr := range restrictedCIDRs {
 		if cidr.Contains(ip) {
 			return true

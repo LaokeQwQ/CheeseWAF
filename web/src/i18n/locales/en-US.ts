@@ -455,7 +455,7 @@ const enUS = {
     semanticPolicy: 'Semantic Operations Policy',
     semanticPolicyHint: 'Budget fail-mode and false-positive allowlists. Budget defaults follow the Web Attack level.',
     budgetExhaustedPolicy: 'Detection Budget Policy',
-    budgetExhaustedPolicyHint: 'auto: follow Web Attack level (low→open, smart/high→observe, strict→challenge).',
+    budgetExhaustedPolicyHint: 'auto: follow Web Attack level (low→open, smart/high/strict→challenge).',
     budgetPolicyAuto: 'Auto (follow level)',
     budgetPolicyOpen: 'Open (pass + metrics)',
     budgetPolicyObserve: 'Observe (log only)',

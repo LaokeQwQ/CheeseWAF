@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 const (
@@ -30,9 +31,9 @@ type limitRule struct {
 }
 
 type bucket struct {
-	start      time.Time
-	lastAccess time.Time
-	count      int
+	start     time.Time
+	expiresAt time.Time
+	count     int
 }
 
 func NewRateLimiter(cfg []config.APIEndpointLimitConfig) (*RateLimiter, error) {
@@ -72,14 +73,28 @@ func (l *RateLimiter) AllowRequests(requests []*http.Request, key string) bool {
 	if l == nil {
 		return true
 	}
+	requestPaths := make([][]string, len(requests))
+	for i, r := range requests {
+		if r == nil {
+			continue
+		}
+		if r.URL == nil {
+			return false
+		}
+		paths, valid := engine.SecurityPathViews(r.URL.Path)
+		if !valid {
+			return false
+		}
+		requestPaths[i] = paths
+	}
 	// Apply every matching rule; deny if any rule denies.
 	allowAll := true
 	for _, rule := range l.rules {
-		for _, r := range requests {
+		for i, r := range requests {
 			if r == nil || (rule.cfg.Method != "" && !strings.EqualFold(rule.cfg.Method, r.Method)) {
 				continue
 			}
-			if !rule.pattern.MatchString(r.URL.Path) {
+			if !matchesEndpointPath(rule.pattern, requestPaths[i]) {
 				continue
 			}
 			if !l.allow(rule.cfg, key) {
@@ -103,52 +118,31 @@ func (l *RateLimiter) allow(rule config.APIEndpointLimitConfig, key string) bool
 	b := l.hits[mapKey]
 	if b == nil || now.Sub(b.start) >= rule.Window {
 		if b == nil && len(l.hits) >= l.maxKeys {
-			l.evictOldestLocked()
+			// An active quota must outlive capacity pressure from new identities.
+			return false
 		}
-		if b == nil && len(l.hits) >= l.maxKeys {
-			for k := range l.hits {
-				delete(l.hits, k)
-				break
-			}
-		}
-		l.hits[mapKey] = &bucket{start: now, lastAccess: now, count: 1}
+		l.hits[mapKey] = &bucket{start: now, expiresAt: now.Add(rule.Window), count: 1}
 		return true
 	}
 	if b.count >= rule.Requests {
-		b.lastAccess = now
 		return false
 	}
 	b.count++
-	b.lastAccess = now
 	return true
 }
 
 func (l *RateLimiter) expireLocked(now time.Time) {
+	// Keep cleanup bounded even at capacity. Different endpoint rules can have
+	// different windows; a shared idle TTL must not reset a still-live quota.
 	budget := evictionBudget
 	for key, b := range l.hits {
 		if budget <= 0 {
 			break
 		}
 		budget--
-		if now.Sub(b.start) >= time.Hour || now.Sub(b.lastAccess) >= time.Hour {
+		if !now.Before(b.expiresAt) {
 			delete(l.hits, key)
 		}
-	}
-}
-
-func (l *RateLimiter) evictOldestLocked() {
-	var oldestKey string
-	var oldest time.Time
-	first := true
-	for key, b := range l.hits {
-		if first || b.lastAccess.Before(oldest) {
-			oldest = b.lastAccess
-			oldestKey = key
-			first = false
-		}
-	}
-	if oldestKey != "" {
-		delete(l.hits, oldestKey)
 	}
 }
 
