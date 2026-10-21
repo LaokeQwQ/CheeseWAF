@@ -59,6 +59,9 @@ func TestCapBotVerificationBoundsTrustedPeerAndKeepsProofSingleUse(t *testing.T)
 	if busy.Code != http.StatusServiceUnavailable || calls.Load() != capacity || len(busy.Result().Cookies()) != 0 {
 		t.Fatalf("peer limit failed closed incorrectly: status=%d provider calls=%d cookies=%v", busy.Code, calls.Load(), busy.Result().Cookies())
 	}
+	if got := p.failureTracker.Check(p.failureKey(ip, site)); got.Failures != 0 {
+		t.Fatalf("busy verification counted as an incorrect answer: %+v", got)
+	}
 	finish()
 	replay := postCapAnswer(p, "https://site-a/private", ip, site, fmt.Sprintf("browser-%d", capacity), fields[capacity])
 	if replay.Code != http.StatusForbidden || calls.Load() != capacity || len(replay.Result().Cookies()) != 0 {
@@ -77,7 +80,7 @@ type capChallengeFields struct {
 	Method      string
 }
 
-func newCapBotPolicy(t *testing.T, verify http.HandlerFunc, challengeType string) (*Policy, *atomic.Int32) {
+func newCapBotPolicy(t *testing.T, verify http.HandlerFunc, challengeType string, configure ...func(*config.BotProtectionConfig)) (*Policy, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +116,9 @@ func newCapBotPolicy(t *testing.T, verify http.HandlerFunc, challengeType string
 	cfg.CAPTCHAChallengeTTL = 2 * time.Minute
 	cfg.CAPTCHAPolicyVersion = "cap-test-v1"
 	cfg.ClearanceMethodScope = true
+	for _, change := range configure {
+		change(&cfg)
+	}
 	providers := config.CAPTCHAProvidersConfig{Cap: config.CapStandaloneConfig{
 		APIEndpoint: server.URL,
 		WidgetURL:   server.URL + "/assets/cap.js",
@@ -126,6 +132,94 @@ func newCapBotPolicy(t *testing.T, verify http.HandlerFunc, challengeType string
 		t.Fatalf("construct Cap policy: %v", err)
 	}
 	return policy, &calls
+}
+
+func TestCapBotRejectedAnswersEscalateForBoundSite(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}, "pow")
+	const ip, site, ua = "203.0.113.91", "bound-site", "Mozilla/5.0"
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	answer := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	decision := p.failureTracker.Check(p.failureKey(ip, site))
+	if calls.Load() != 1 || decision.Failures != 1 || decision.Level != 1 {
+		t.Fatalf("rejected Cap answer did not update bound failure budget: calls=%d decision=%+v", calls.Load(), decision)
+	}
+	if answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), `id="stage"`) || strings.Contains(answer.Body.String(), "<cap-widget") {
+		t.Fatalf("Cap failure did not upgrade to configured native challenge: status=%d body=%q", answer.Code, answer.Body.String())
+	}
+	if got := p.failureTracker.Check(p.failureKey(ip, "site-a")); got.Failures != 0 {
+		t.Fatalf("Cap failure was attributed to transport host instead of bound site: %+v", got)
+	}
+}
+
+func TestCapBotRejectedAnswersEventuallyBlock(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}, "pow", func(cfg *config.BotProtectionConfig) { cfg.CAPTCHAEscalationTypes = nil })
+	const ip, site, ua = "203.0.113.92", "site-a", "Mozilla/5.0"
+	for attempt := 1; attempt <= p.captchaMaxAttempts; attempt++ {
+		_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+		answer := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+		decision := p.failureTracker.Check(p.failureKey(ip, site))
+		if decision.Failures != attempt {
+			t.Fatalf("attempt %d failure count=%d", attempt, decision.Failures)
+		}
+		wantStatus := http.StatusForbidden
+		if attempt == p.captchaMaxAttempts {
+			wantStatus = http.StatusTooManyRequests
+			if !decision.Blocked {
+				t.Fatalf("configured failure threshold did not block: %+v", decision)
+			}
+		}
+		if answer.Code != wantStatus || len(answer.Result().Cookies()) != 0 {
+			t.Fatalf("attempt %d status=%d cookies=%v want=%d", attempt, answer.Code, answer.Result().Cookies(), wantStatus)
+		}
+	}
+	if calls.Load() != int32(p.captchaMaxAttempts) {
+		t.Fatalf("remote verification count=%d", calls.Load())
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://site-a/private", nil)
+	request.Header.Set("User-Agent", ua)
+	if got := p.EvaluateForSite(request, ip, site); got == nil || got.DetectorID != "bot.failure" {
+		t.Fatalf("failed Cap answers did not enforce the existing block: %+v", got)
+	}
+}
+
+func TestCapBotSuccessfulAnswerResetsFailureBudget(t *testing.T) {
+	var accept atomic.Bool
+	p, _ := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"success":%t}`, accept.Load())
+	}, "pow", func(cfg *config.BotProtectionConfig) { cfg.CAPTCHAEscalationTypes = nil })
+	const ip, site, ua = "203.0.113.93", "bound-site", "Mozilla/5.0"
+	_, rejected := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	postCapAnswer(p, "https://site-a/private", ip, site, ua, rejected)
+	if got := p.failureTracker.Check(p.failureKey(ip, site)); got.Failures != 1 {
+		t.Fatalf("initial failure was not recorded: %+v", got)
+	}
+	accept.Store(true)
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	answer := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	if answer.Code != http.StatusSeeOther || len(answer.Result().Cookies()) != 1 {
+		t.Fatalf("successful answer did not issue native clearance: status=%d cookies=%v", answer.Code, answer.Result().Cookies())
+	}
+	if got := p.failureTracker.Check(p.failureKey(ip, site)); got.Failures != 0 || got.Level != 0 || got.Blocked {
+		t.Fatalf("successful Cap answer did not reset the existing failure budget: %+v", got)
+	}
+}
+
+func TestCapBotRejectedProofReplayDoesNotCountAgain(t *testing.T) {
+	p, calls := newCapBotPolicy(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}, "pow", func(cfg *config.BotProtectionConfig) { cfg.CAPTCHAEscalationTypes = nil })
+	const ip, site, ua = "203.0.113.94", "site-a", "Mozilla/5.0"
+	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
+	for range 2 {
+		postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
+	}
+	if got := p.failureTracker.Check(p.failureKey(ip, site)); got.Failures != 1 || calls.Load() != 1 {
+		t.Fatalf("replayed proof changed failure budget: decision=%+v provider calls=%d", got, calls.Load())
+	}
 }
 
 func capChallengePage(t *testing.T, p *Policy, method, target, ip, site, ua string) (*httptest.ResponseRecorder, capChallengeFields) {
@@ -308,6 +402,9 @@ func TestCapBotSiteVerifyErrorFailsClosed(t *testing.T) {
 	if strings.Contains(result.Body.String(), "test-cap-secret") || calls.Load() != 1 {
 		t.Fatalf("siteverify failure leaked secret or was not called once: calls=%d body=%q", calls.Load(), result.Body.String())
 	}
+	if got := p.failureTracker.Check(p.failureKey(ip, site)); got.Failures != 0 {
+		t.Fatalf("provider failure counted as an incorrect answer: %+v", got)
+	}
 }
 
 func TestCapBotSiteVerifyFalseDoesNotIssueClearance(t *testing.T) {
@@ -318,8 +415,13 @@ func TestCapBotSiteVerifyFalseDoesNotIssueClearance(t *testing.T) {
 	const ip, site, ua = "203.0.113.29", "site-a", "browser-a"
 	_, fields := capChallengePage(t, p, http.MethodGet, "https://site-a/private", ip, site, ua)
 	result := postCapAnswer(p, "https://site-a/private", ip, site, ua, fields)
-	if result.Code != http.StatusForbidden || len(result.Result().Cookies()) != 0 || !strings.Contains(result.Body.String(), "<cap-widget") {
-		t.Fatalf("negative siteverify result issued clearance or did not retry challenge: status=%d cookies=%v", result.Code, result.Result().Cookies())
+	if result.Code != http.StatusForbidden || !strings.Contains(result.Body.String(), `id="stage"`) || strings.Contains(result.Body.String(), "<cap-widget") {
+		t.Fatalf("negative siteverify result did not upgrade the challenge: status=%d cookies=%v", result.Code, result.Result().Cookies())
+	}
+	for _, cookie := range result.Result().Cookies() {
+		if cookie.Name == p.cookieName {
+			t.Fatalf("negative siteverify result issued clearance: %+v", cookie)
+		}
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("siteverify calls=%d, want 1", calls.Load())

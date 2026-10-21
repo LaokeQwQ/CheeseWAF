@@ -549,6 +549,13 @@ func (p *Policy) serveChallengeForSite(w http.ResponseWriter, r *http.Request, c
 				http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
 				return
 			}
+			// A non-empty method means a bound, single-use proof reached Cap and
+			// received a decision. Invalid/replayed proofs and provider failures
+			// must not spend the user's failure budget.
+			if method != "" {
+				answerRequest := r.WithContext(context.WithValue(r.Context(), captchaSiteKey{}, site))
+				p.recordCAPTCHAAnswer(answerRequest, clientIP, "cap", captchaFormValue(r, "cw_cap_challenge_id"), valid)
+			}
 			if valid {
 				p.recordChallengeMetric(ChallengeMetricSuccess, site, "cap", clientIP)
 				challengeRequest.Method = method
@@ -570,6 +577,16 @@ func (p *Policy) serveChallengeForSite(w http.ResponseWriter, r *http.Request, c
 				return
 			}
 			p.recordChallengeMetric(ChallengeMetricFailure, site, "cap", clientIP)
+			if p.failureTracker.Check(p.failureKey(clientIP, site)).Blocked {
+				p.recordChallengeMetric(ChallengeMetricCAPTCHABlocked, site, "cap", clientIP)
+				http.Error(w, "verification temporarily unavailable", http.StatusTooManyRequests)
+				return
+			}
+			selection = p.adaptiveCAPTCHASelection(r, clientIP, site)
+			if p.usesBehaviorChallenge(selection, clientIP, site) {
+				p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
+				return
+			}
 		}
 		p.serveCapChallenge(w, r, clientIP, site, returnURL, submittedType != "")
 		return

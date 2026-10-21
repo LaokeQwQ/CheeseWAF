@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { CapErrorEvent, CapSolveEvent, CapWidget } from 'cap-widget';
 import type { LoginCapCAPTCHAChallenge } from '../../types/api';
 
@@ -11,6 +12,7 @@ type CapLoginCaptchaProps = {
 
 export function CapLoginCaptcha({ challenge, locale, onSolve, onError }: CapLoginCaptchaProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useTranslation('translation', { lng: locale });
 
   useEffect(() => {
     let disposed = false;
@@ -42,14 +44,14 @@ export function CapLoginCaptcha({ challenge, locale, onSolve, onError }: CapLogi
 
         widget = document.createElement('cap-widget');
         widget.setAttribute('data-cap-api-endpoint', apiEndpoint);
-        widget.setAttribute('data-cap-i18n-initial-state', locale.startsWith('zh') ? '点击验证你是人类' : 'I\'m a human');
-        widget.setAttribute('data-cap-i18n-verifying-label', locale.startsWith('zh') ? '正在验证...' : 'Verifying...');
-        widget.setAttribute('data-cap-i18n-solved-label', locale.startsWith('zh') ? '验证通过' : 'You are human');
-        widget.setAttribute('data-cap-i18n-error-label', locale.startsWith('zh') ? '验证失败，请重试' : 'Error. Try again.');
-        widget.setAttribute('data-cap-i18n-verify-aria-label', locale.startsWith('zh') ? '点击验证你是人类' : 'Click to verify you are human');
-        widget.setAttribute('data-cap-i18n-verifying-aria-label', locale.startsWith('zh') ? '正在验证你是人类' : 'Verifying that you are human');
-        widget.setAttribute('data-cap-i18n-verified-aria-label', locale.startsWith('zh') ? '验证成功，可以继续' : 'Verification complete, you may continue');
-        widget.setAttribute('data-cap-i18n-error-aria-label', locale.startsWith('zh') ? '验证失败，请重试' : 'Verification failed, please try again');
+        widget.setAttribute('data-cap-i18n-initial-state', t('login.capInitialState'));
+        widget.setAttribute('data-cap-i18n-verifying-label', t('login.capVerifyingLabel'));
+        widget.setAttribute('data-cap-i18n-solved-label', t('login.capSolvedLabel'));
+        widget.setAttribute('data-cap-i18n-error-label', t('login.capErrorLabel'));
+        widget.setAttribute('data-cap-i18n-verify-aria-label', t('login.capVerifyAriaLabel'));
+        widget.setAttribute('data-cap-i18n-verifying-aria-label', t('login.capVerifyingAriaLabel'));
+        widget.setAttribute('data-cap-i18n-verified-aria-label', t('login.capVerifiedAriaLabel'));
+        widget.setAttribute('data-cap-i18n-error-aria-label', t('login.capErrorAriaLabel'));
         widget.addEventListener('solve', handleSolve);
         widget.addEventListener('error', handleError);
         containerRef.current.replaceChildren(widget);
@@ -73,7 +75,7 @@ export function CapLoginCaptcha({ challenge, locale, onSolve, onError }: CapLogi
         else window.CAP_CUSTOM_HASHWX_URL = previousHashwxURL;
       }
     };
-  }, [challenge.api_endpoint, challenge.challenge_id, challenge.hashwx_url, challenge.wasm_url, locale, onError, onSolve]);
+  }, [challenge.api_endpoint, challenge.challenge_id, challenge.hashwx_url, challenge.wasm_url, locale, onError, onSolve, t]);
 
   return <div ref={containerRef} className="flex min-h-[58px] items-center justify-center" data-testid="cap-widget-container" data-challenge-id={challenge.challenge_id} />;
 }
