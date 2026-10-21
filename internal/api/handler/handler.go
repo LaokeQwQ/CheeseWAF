@@ -41,6 +41,7 @@ import (
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -85,6 +86,8 @@ type Handler struct {
 	CWEDPDownload          consumer.Executor
 	CRPActivation          CRPActivationExecutor
 	LoginCAPTCHAState      *loginCAPTCHAState
+	Passkey                *passkey.Service
+	PasskeyStore           passkey.Store
 	CAPTCHAAssets          captchaassets.Store
 	CAPTCHAAssetReferences *captchaassets.ReferenceManager
 	CAPTCHAAssetInitError  error
@@ -396,12 +399,18 @@ type Options struct {
 	// RequireProtectionPolicyCoordinator is set only by the production
 	// composition root. It makes an omitted consumer fail closed; embedded and
 	// unit-test routers retain the historical local-only behavior explicitly.
-	RequireProtectionPolicyCoordinator  bool
-	OnAPISecChanged                     func(config.APISecConfig) error
-	OnBlockPageChanged                  func(config.BlockPageConfig) error
-	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
-	OnConfigChanged                     func(*config.Config) error
-	CAPTCHAAssets                       captchaassets.Store
+	RequireProtectionPolicyCoordinator bool
+	OnAPISecChanged                    func(config.APISecConfig) error
+	OnBlockPageChanged                 func(config.BlockPageConfig) error
+	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	OnConfigChanged                    func(*config.Config) error
+	CAPTCHAAssets                      captchaassets.Store
+	// Passkey is nil when WebAuthn login is not configured. Public routes then
+	// fail closed and the console does not advertise passkey sign-in.
+	Passkey *passkey.Service
+	// PasskeyStore backs authenticated credential listing and deletion. It is
+	// separate from Passkey because the service does not expose its store.
+	PasskeyStore                        passkey.Store
 	Clock                               timekeeper.Clock
 	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
 	// ApprovalHTTP is the durable approval boundary shared by cluster operations.
@@ -491,6 +500,8 @@ func New(opts Options) *Handler {
 		CWEDPDownload:                       opts.CWEDPDownload,
 		CRPActivation:                       opts.CRPActivation,
 		LoginCAPTCHAState:                   newLoginCAPTCHAState(),
+		Passkey:                             opts.Passkey,
+		PasskeyStore:                        opts.PasskeyStore,
 		CAPTCHAAssets:                       assetStore,
 		CAPTCHAAssetReferences:              assetRefs,
 		CAPTCHAAssetInitError:               assetErr,
@@ -944,13 +955,59 @@ var loginDummyHash = func() []byte {
 	return h
 }()
 
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+// loginOriginAllowed rejects a browser login from a foreign origin. It is
+// shared by password and passkey login so both ceremonies enforce the same
+// same-origin policy.
+func (h *Handler) loginOriginAllowed(w http.ResponseWriter, r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
 			writeError(w, http.StatusForbidden, "LOGIN_ORIGIN_INVALID", "login origin must match the management console")
-			return
+			return false
 		}
+	}
+	return true
+}
+
+// issueLoginSession persists the management session, writes the session
+// cookies, records the successful authentication audit, and writes the login
+// response. It preserves the password-login error contract: TOKEN_ERROR for a
+// signing fault, INVALID_CREDENTIALS when the account was invalidated between
+// verification and session creation, and SESSION_ERROR otherwise.
+func (h *Handler) issueLoginSession(w http.ResponseWriter, r *http.Request, user *storage.User, method string) (committed bool, invalidated bool) {
+	if h == nil || h.Tokens == nil || h.Store == nil || user == nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+		return false, false
+	}
+	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
+		return false, false
+	}
+	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
+		if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
+			return false, true
+		}
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+		return false, false
+	}
+	csrf, err := middleware.NewCSRFToken()
+	if err != nil {
+		// The durable session already exists, so callers must not release a
+		// consumed TOTP counter even though the browser received an error.
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+		return true, false
+	}
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
+	h.auditAuthentication(r, user, "auth.login", method, claims.ID)
+	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
+	return true, false
+}
+
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	if !h.loginOriginAllowed(w, r) {
+		return
 	}
 	tracker := h.loginCAPTCHATracker()
 	source := h.loginAuditIP(r)
@@ -1021,55 +1078,25 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 				h.twoFATracker().releaseConsumedTOTP(user.ID, counter)
 			}
 		}()
-		token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
-			return
-		}
-		if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
-			if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+		committed, invalidated := h.issueLoginSession(w, r, user, "totp")
+		if !committed {
+			if invalidated {
 				tracker.recordLoginFailure(rateLimitKeys, now)
-				writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
-				return
 			}
-			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 			return
 		}
 		sessionCommitted = true
-		csrf, err := middleware.NewCSRFToken()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
-			return
-		}
-		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 		tracker.clearLoginFailures(rateLimitKeys, now)
-		h.auditAuthentication(r, user, "auth.login", "totp", claims.ID)
-		writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 		return
 	}
-	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
-		return
-	}
-	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
-		if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+	committed, invalidated := h.issueLoginSession(w, r, user, "password")
+	if !committed {
+		if invalidated {
 			tracker.recordLoginFailure(rateLimitKeys, now)
-			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
-			return
 		}
-		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 		return
 	}
-	csrf, err := middleware.NewCSRFToken()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
-		return
-	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 	tracker.clearLoginFailures(rateLimitKeys, now)
-	h.auditAuthentication(r, user, "auth.login", "password", claims.ID)
-	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
 
 func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayload) bool {

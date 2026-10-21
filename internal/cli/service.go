@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/adapterinspect"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
@@ -36,9 +37,12 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/php2shell"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intel"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intelapi"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
@@ -360,6 +364,51 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	passkeyStore := storage.AsPasskeyStore(store)
+	passkeyService, err := api.NewPasskeyService(cfg.Console.Login.Passkey, passkeyStore, authSecret)
+	if err != nil {
+		return err
+	}
+	var intelHandler http.Handler
+	if cfg.Intel.Enabled {
+		intelStore, intelErr := storage.AsIntelStore(store)
+		if intelErr != nil {
+			log.Printf("intel: persistence unavailable: %v", intelErr)
+		} else {
+			for _, source := range cfg.Intel.Sources {
+				if err := intelStore.UpsertSource(runtimeCtx, intel.Source{
+					ID: source.ID, Type: source.Type, URL: source.URL,
+					Trust: intel.ParseTrustLevel(source.Trust), Enabled: source.Enabled,
+				}); err != nil {
+					log.Printf("intel: register source %q: %v", source.ID, err)
+				}
+			}
+			var intelExtractor intel.Extractor
+			if schedulerAIClient != nil {
+				intelExtractor = ai.NewIntelExtractor(schedulerAIClient)
+			}
+			intelHandler = intelapi.NewHandler(intelapi.HandlerOptions{
+				Store:            intelStore,
+				Extractor:        intelExtractor,
+				MaxFetchBytes:    cfg.Intel.MaxFetchBytes,
+				DisableURLImport: !cfg.Intel.URLImport,
+			})
+		}
+	}
+	adapterInspectHandler := adapterinspect.New(adapterinspect.Options{
+		ResolveSite: func(host string) (string, int64, bool) {
+			site := proxyServer.SiteForHost(host)
+			if site.ID == "" {
+				return "", 0, false
+			}
+			maxBody := site.WAF.Performance.MaxBodyBytes
+			if maxBody <= 0 {
+				maxBody = 8 << 20
+			}
+			return site.ID, maxBody, true
+		},
+		Detect: proxyServer.Detect,
+	})
 	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
 		return err
@@ -391,6 +440,10 @@ func runServe(ctx context.Context) error {
 		Sink:                               sink,
 		Hub:                                hub,
 		Secret:                             authSecret,
+		Passkey:                            passkeyService,
+		PasskeyStore:                       passkeyStore,
+		IntelHandler:                       intelHandler,
+		AdapterInspect:                     adapterInspectHandler,
 		SetupToken:                         setupToken,
 		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
@@ -1525,6 +1578,20 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			return nil, err
 		} else if len(compiled) > 0 {
 			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: enginerules.New(compiled)})
+		}
+		if site.WAF.PHP2Shell.IsEnabled() {
+			detectors = append(detectors, siteScopedDetector{
+				siteID: site.ID,
+				detector: php2shell.New(php2shell.Config{
+					Enabled:               true,
+					MaxParts:              site.WAF.PHP2Shell.MaxParts,
+					MaxArrayDepth:         site.WAF.PHP2Shell.MaxArrayDepth,
+					MaxEmptyFilenameParts: site.WAF.PHP2Shell.MaxEmptyFilenameParts,
+					BlockUploadProgress:   site.WAF.PHP2Shell.BlockUploadProgress,
+					BlockAllMultipart:     site.WAF.PHP2Shell.BlockAllMultipart,
+					AllowPaths:            site.WAF.PHP2Shell.AllowPaths,
+				}),
+			})
 		}
 		switches := site.WAF.SemanticEngines
 		// Single decision path: staged Analyzer covers all enabled categories.

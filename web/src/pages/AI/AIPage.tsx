@@ -21,6 +21,7 @@ import { APIRequestError, analyzeEventsStream, analyzeLogReferenceStream, fetchA
 import AIAnalysisMeta, { AIAnalysisSummary, AIReasoningSummary } from '../../components/AIAnalysisMeta';
 import PolicyDecisionCard from '../../components/PolicyDecisionCard';
 import SafeMarkdown from '../../components/SafeMarkdown';
+import IntelPanel from './IntelPanel';
 import type { AIAssistantTraceEvent, AIConfig, AIModelConfig, AIModelInfo, AIProviderOpsStatus, AISelfLearningReport, AttackAnalysis, LogEntry, LogQuery } from '../../types/api';
 import { displayAction, displayCategory } from '../../utils/display';
 import { usePollingVisibility } from '../../hooks/usePollingVisibility';
@@ -909,6 +910,8 @@ export default function AIPage() {
           )}
         </section>
       </div>
+
+      <IntelPanel />
     </section>
   );
 }

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultDetectorTimeout       = 25 * time.Millisecond
+	defaultDetectorTimeout       = 100 * time.Millisecond
 	defaultDetectorConcurrency   = 32
 	defaultDetectorCandidateSize = 1 << 20
 )

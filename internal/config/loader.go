@@ -157,6 +157,12 @@ func Default() Config {
 						SSTI:  true,
 					},
 					ProtectionPolicy: ProtectionPolicyConfig{},
+					PHP2Shell: PHP2ShellConfig{
+						Enabled:               boolPtr(true),
+						MaxParts:              256,
+						MaxArrayDepth:         6,
+						MaxEmptyFilenameParts: 32,
+					},
 					Performance: PerformanceTuningConfig{
 						MaxBodyBytes:   8 << 20,
 						MaxHeaderBytes: 1 << 20,
@@ -355,6 +361,19 @@ func Default() Config {
 				Builtin:     true,
 				MaxSnippets: 5,
 				File:        "",
+			},
+		},
+		Intel: IntelConfig{
+			Enabled:              true,
+			AutoApply:            false,
+			URLImport:            true,
+			ShadowWindow:         24 * time.Hour,
+			MaxFetchBytes:        256 << 10,
+			MaxCandidatesPerItem: 4,
+			RequireHumanApproval: true,
+			Sources: []IntelSourceConfig{
+				{ID: "nvd", Type: "url", URL: "https://nvd.nist.gov", Trust: "official", Enabled: true},
+				{ID: "avd", Type: "url", URL: "https://avd.aliyun.com", Trust: "official", Enabled: true},
 			},
 		},
 		Update: UpdateConfig{
@@ -1137,6 +1156,27 @@ func applyDefaults(cfg *Config) {
 		if site.WAF.HealthCheck.UnhealthyThreshold == 0 {
 			site.WAF.HealthCheck.UnhealthyThreshold = 2
 		}
+		if site.WAF.PHP2Shell.Enabled == nil {
+			site.WAF.PHP2Shell.Enabled = boolPtr(true)
+		}
+		if site.WAF.PHP2Shell.MaxParts == 0 {
+			site.WAF.PHP2Shell.MaxParts = 256
+		}
+		if site.WAF.PHP2Shell.MaxArrayDepth == 0 {
+			site.WAF.PHP2Shell.MaxArrayDepth = 6
+		}
+		if site.WAF.PHP2Shell.MaxEmptyFilenameParts == 0 {
+			site.WAF.PHP2Shell.MaxEmptyFilenameParts = 32
+		}
+	}
+	if cfg.Intel.ShadowWindow == 0 {
+		cfg.Intel.ShadowWindow = 24 * time.Hour
+	}
+	if cfg.Intel.MaxFetchBytes == 0 {
+		cfg.Intel.MaxFetchBytes = 256 << 10
+	}
+	if cfg.Intel.MaxCandidatesPerItem == 0 {
+		cfg.Intel.MaxCandidatesPerItem = 4
 	}
 }
 

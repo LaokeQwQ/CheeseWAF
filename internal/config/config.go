@@ -25,6 +25,7 @@ type Config struct {
 	Logging          LoggingConfig          `yaml:"logging" json:"logging"`
 	ACME             ACMEConfig             `yaml:"acme" json:"acme"`
 	AI               AIConfig               `yaml:"ai" json:"ai"`
+	Intel            IntelConfig            `yaml:"intel" json:"intel"`
 	Update           UpdateConfig           `yaml:"update" json:"update"`
 	Vulnerability    VulnerabilityConfig    `yaml:"vulnerability" json:"vulnerability"`
 	Scheduler        SchedulerConfig        `yaml:"scheduler" json:"scheduler"`
@@ -329,6 +330,17 @@ type ConsoleLoginConfig struct {
 	// SessionTTL controls browser/API admin session lifetime. Zero keeps the
 	// secure 24-hour default for backwards-compatible configurations.
 	SessionTTL time.Duration `yaml:"session_ttl" json:"session_ttl"`
+	Passkey    PasskeyConfig `yaml:"passkey" json:"passkey"`
+}
+
+// PasskeyConfig enables WebAuthn management login. It defaults off; operators
+// must supply the exact RP ID and HTTPS origins for their console.
+type PasskeyConfig struct {
+	Enabled                bool     `yaml:"enabled" json:"enabled"`
+	RPDisplayName          string   `yaml:"rp_display_name" json:"rp_display_name"`
+	RPID                   string   `yaml:"rp_id" json:"rp_id"`
+	RPOrigins              []string `yaml:"rp_origins" json:"rp_origins"`
+	AllowInsecureLocalhost bool     `yaml:"allow_insecure_localhost" json:"allow_insecure_localhost"`
 }
 
 type LoginCAPTCHAConfig struct {
@@ -450,6 +462,7 @@ type WAFConfig struct {
 	SemanticPolicy   SemanticPolicyConfig     `yaml:"semantic_policy" json:"semantic_policy"`
 	ProtectionPolicy ProtectionPolicyConfig   `yaml:"protection_policy" json:"protection_policy"`
 	CustomRules      []CustomRuleConfig       `yaml:"custom_rules" json:"custom_rules"`
+	PHP2Shell        PHP2ShellConfig          `yaml:"php2shell" json:"php2shell"`
 	Performance      PerformanceTuningConfig  `yaml:"performance" json:"performance"`
 	Response         ResponseInspectionConfig `yaml:"response" json:"response"`
 	Rewrite          []RewriteRuleConfig      `yaml:"rewrite" json:"rewrite"`
@@ -952,6 +965,48 @@ type ACMEDNSProviderConfig struct {
 	API     string            `yaml:"api" json:"api"`
 	Env     map[string]string `yaml:"env" json:"env"`
 	Enabled bool              `yaml:"enabled" json:"enabled"`
+}
+
+// PHP2ShellConfig bounds the PHP2Shell virtual-patch detector. Enabled is a
+// pointer so configurations created before this field existed still default to
+// enabled without mutating an explicit operator disable.
+type PHP2ShellConfig struct {
+	Enabled               *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	BlockUploadProgress   bool     `yaml:"block_upload_progress" json:"block_upload_progress"`
+	BlockAllMultipart     bool     `yaml:"block_all_multipart" json:"block_all_multipart"`
+	MaxParts              int      `yaml:"max_parts" json:"max_parts"`
+	MaxArrayDepth         int      `yaml:"max_array_depth" json:"max_array_depth"`
+	MaxEmptyFilenameParts int      `yaml:"max_empty_filename_parts" json:"max_empty_filename_parts"`
+	AllowPaths            []string `yaml:"allow_paths" json:"allow_paths"`
+}
+
+func (c PHP2ShellConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// IntelConfig controls the asynchronous intelligence-to-candidate pipeline.
+// AutoApply is deliberately separate and defaults false: intel may prepare
+// candidates, but never enables a production rule without review.
+type IntelConfig struct {
+	Enabled                    bool                `yaml:"enabled" json:"enabled"`
+	AutoApply                  bool                `yaml:"auto_apply" json:"auto_apply"`
+	URLImport                  bool                `yaml:"url_import" json:"url_import"`
+	ShadowWindow               time.Duration       `yaml:"shadow_window" json:"shadow_window"`
+	MaxFetchBytes              int64               `yaml:"max_fetch_bytes" json:"max_fetch_bytes"`
+	MaxCandidatesPerItem       int                 `yaml:"max_candidates_per_item" json:"max_candidates_per_item"`
+	RequireHumanApproval       bool                `yaml:"require_human_approval" json:"require_human_approval"`
+	AllowCommunitySingleSource bool                `yaml:"allow_community_single_source" json:"allow_community_single_source"`
+	Sources                    []IntelSourceConfig `yaml:"sources" json:"sources"`
+}
+
+// IntelSourceConfig registers an advisory feed or URL host for review-first
+// imports. Trust is parsed by the intel package; unknown values are rejected.
+type IntelSourceConfig struct {
+	ID      string `yaml:"id" json:"id"`
+	Type    string `yaml:"type" json:"type"`
+	URL     string `yaml:"url" json:"url"`
+	Trust   string `yaml:"trust" json:"trust"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
 }
 
 type AIConfig struct {
