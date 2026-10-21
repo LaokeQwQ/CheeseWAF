@@ -2,12 +2,121 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 )
+
+func TestValidateThreatIntelIndicatorTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		item ThreatIntelConfig
+		good bool
+	}{
+		{"domain", ThreatIntelConfig{Type: "domain", Value: "evil.example"}, true},
+		{"url", ThreatIntelConfig{Type: "url", Value: "https://evil.example/path"}, true},
+		{"sha256", ThreatIntelConfig{Type: "sha256", Value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}, true},
+		{"asn", ThreatIntelConfig{Type: "asn", Value: "AS64500"}, true},
+		{"ja3", ThreatIntelConfig{Type: "ja3", Value: "0123456789abcdef0123456789abcdef"}, true},
+		{"ja4", ThreatIntelConfig{Type: "ja4", Value: "t13d1516h2_8daaf6152771_0273b62f6f95"}, true},
+		{"wide cidr", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0/0"}, false},
+		{"mapped wide cidr", ThreatIntelConfig{Type: "ip", Value: "::ffff:0.0.0.0/96"}, false},
+		{"mapped short prefix", ThreatIntelConfig{Type: "ip", Value: "::ffff:1.2.3.4/95"}, false},
+		{"mapped public cidr", ThreatIntelConfig{Type: "ip", Value: "::ffff:8.8.8.0/120"}, true},
+		{"unspecified cidr", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0/8"}, false},
+		{"unspecified ip", ThreatIntelConfig{Type: "ip", Value: "0.0.0.0"}, false},
+		{"unspecified ipv6", ThreatIntelConfig{Type: "ip", Value: "::"}, false},
+		{"private cidr", ThreatIntelConfig{Type: "ip", Value: "10.0.0.0/8"}, false},
+		{"private ip", ThreatIntelConfig{Type: "ip", Value: "10.0.0.1"}, false},
+		{"unknown type", ThreatIntelConfig{Type: "opaque", Value: "evil.example"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateThreatIntelIndicator(tc.item)
+			if (err == nil) != tc.good {
+				t.Fatalf("validateThreatIntelIndicator(%+v) = %v, want valid=%v", tc.item, err, tc.good)
+			}
+		})
+	}
+}
+
+func TestResolveManagedSchedulerPath(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	dataDir := filepath.Join(base, "data")
+	logDir := filepath.Join(base, "logs")
+	for _, root := range []string{dataDir, logDir} {
+		if err := os.MkdirAll(root, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		target string
+		want   string
+	}{
+		{"./reports", filepath.Join(dataDir, "reports")},
+		{"./data/reports", filepath.Join(dataDir, "reports")},
+		{"./logs/reports", filepath.Join(logDir, "reports")},
+		{"./logs", logDir},
+		{filepath.Join(dataDir, "reports"), filepath.Join(dataDir, "reports")},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			got, err := ResolveManagedSchedulerPath(tc.target, "", ".", dataDir, logDir)
+			if err != nil || got != tc.want {
+				t.Fatalf("ResolveManagedSchedulerPath(%q) = %q, %v; want %q", tc.target, got, err, tc.want)
+			}
+		})
+	}
+	outside := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		link string
+		dest string
+	}{
+		{"outside link", "escape", outside},
+		{"inside link", "alias", logDir},
+		{"dangling link", "dangling", filepath.Join(outside, "missing")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			link := filepath.Join(dataDir, tc.link)
+			if err := os.Symlink(tc.dest, link); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			if _, err := ResolveManagedSchedulerPath(filepath.Join(link, "reports"), dataDir, logDir); err == nil {
+				t.Fatal("scheduler path through a symlink must be rejected")
+			}
+		})
+	}
+	for _, target := range []string{"", "../reports", outside} {
+		if _, err := ResolveManagedSchedulerPath(target, dataDir, logDir); err == nil {
+			t.Fatalf("unsafe scheduler path %q was accepted", target)
+		}
+	}
+}
+
+func TestResolveManagedSchedulerPathBeforeFreshInstall(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "fresh", "install", "data")
+	for _, target := range []string{root, "./reports", "./data/reports"} {
+		got, err := ResolveManagedSchedulerPath(target, root)
+		if err != nil {
+			t.Fatalf("fresh install directory %q must validate: %v", target, err)
+		}
+		want := filepath.Join(root, "reports")
+		if target == root {
+			want = root
+		}
+		if got != want {
+			t.Fatalf("resolved %q as %q, want %q", target, got, want)
+		}
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("validation must not create the installation directory: %v", err)
+	}
+}
 
 func TestValidatorUpstreamWeightLimits(t *testing.T) {
 	tests := []struct {
@@ -107,6 +216,33 @@ func TestValidatorUpstreamWeightLimits(t *testing.T) {
 	}
 }
 
+func TestValidateCAPTCHAProviderPublicURLs(t *testing.T) {
+	tests := []struct {
+		name        string
+		field       string
+		value       string
+		trailing    bool
+		wantErrText string
+	}{
+		{name: "site key endpoint", field: "api_endpoint", value: "https://cap.example/site-key/", trailing: true},
+		{name: "loopback development endpoint", field: "api_endpoint", value: "http://127.0.0.1:3000/site-key/", trailing: true},
+		{name: "root is not a site key", field: "api_endpoint", value: "https://cap.example/", trailing: true, wantErrText: "site key"},
+		{name: "missing trailing slash", field: "api_endpoint", value: "https://cap.example/site-key", trailing: true, wantErrText: "site key"},
+		{name: "public http is denied", field: "widget_url", value: "http://cap.example/widget.js", wantErrText: "HTTPS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCAPublicURL("captcha_providers.cap."+tt.field, tt.value, tt.trailing)
+			if tt.wantErrText == "" && err != nil {
+				t.Fatalf("validateCAPublicURL() error = %v", err)
+			}
+			if tt.wantErrText != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrText)) {
+				t.Fatalf("validateCAPublicURL() error = %v, want %q", err, tt.wantErrText)
+			}
+		})
+	}
+}
+
 func TestValidatorDecodeDepthBounds(t *testing.T) {
 	for _, depth := range []int{0, 1, DefaultDecodeDepth, MaxDecodeDepth} {
 		cfg := Default()
@@ -122,6 +258,23 @@ func TestValidatorDecodeDepthBounds(t *testing.T) {
 			t.Fatalf("depth %d error=%v, want decode_depth validation", depth, err)
 		}
 	}
+}
+
+func TestValidatorBodyInspectionLimitMatchesEngineAdmission(t *testing.T) {
+	t.Run("64 MiB boundary accepted", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Performance.MaxBodyBytes = 64 << 20
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("configured engine admission boundary rejected: %v", err)
+		}
+	})
+	t.Run("above boundary rejected", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.Performance.MaxBodyBytes = (64 << 20) + 1
+		if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "64MiB inspection ceiling") {
+			t.Fatalf("error=%v, want explicit 64 MiB inspection ceiling", err)
+		}
+	})
 }
 
 func TestValidatorRejectsAmbiguousACLAndIPEntries(t *testing.T) {

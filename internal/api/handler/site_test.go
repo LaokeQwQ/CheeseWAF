@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/acme"
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -194,7 +195,9 @@ func TestUpdateSitePersistsConsistentlyAcrossStoreAndConfigReload(t *testing.T) 
 	router := chi.NewRouter()
 	router.Put("/sites/{id}", handler.UpdateSite)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(raw)))
+	request := httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(raw))
+	request = withSiteAdminClaims(request)
+	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected site update success, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -461,6 +464,7 @@ func TestUpdateSiteNormalizesDefaultsBeforePersisting(t *testing.T) {
 		Upstreams:  []string{"127.0.0.1:9010"},
 		WAFEnabled: true,
 		Enabled:    true,
+		UpdatedAt:  site.UpdatedAt,
 	}
 	raw, _ := json.Marshal(payload)
 
@@ -468,6 +472,7 @@ func TestUpdateSiteNormalizesDefaultsBeforePersisting(t *testing.T) {
 	router.Put("/sites/{id}", handler.UpdateSite)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(raw))
+	request = withSiteAdminClaims(request)
 	router.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -498,6 +503,11 @@ func TestUpdateSiteNormalizesDefaultsBeforePersisting(t *testing.T) {
 	if !stored.Advanced.Protection.SemanticSQL || !stored.Advanced.Protection.SemanticXSS || !stored.Advanced.Protection.SemanticSSRF {
 		t.Fatalf("semantic protections should be enabled by default, got %+v", stored.Advanced.Protection)
 	}
+}
+
+func withSiteAdminClaims(request *http.Request) *http.Request {
+	claims := &middleware.Claims{Subject: "site-admin", ID: "site-admin-session", Username: "admin", Role: "admin"}
+	return request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, claims))
 }
 
 func TestUpdateSitePreservesRedactedKeyAndACMEEnv(t *testing.T) {
@@ -644,7 +654,7 @@ func TestIssueSiteACMEIgnoresUntrustedRuntimeFields(t *testing.T) {
 		"home":"/tmp/evil-home",
 		"cert_dir":"/tmp/evil-certs",
 		"reload_cmd":"sh -c evil",
-		"auto_renew":true,
+		"auto_renew":false,
 		"notify":true
 	}`)
 	router := chi.NewRouter()
@@ -789,6 +799,40 @@ func (s *siteFailureStore) UpdateSite(ctx context.Context, site *storage.Site) e
 		return s.updateErr
 	}
 	return s.Store.UpdateSite(ctx, site)
+}
+
+func TestValidateSiteCapabilitiesRejectsExplicitUnsupportedOverrides(t *testing.T) {
+	site := storage.Site{}
+	site.Advanced.AccessControl.AuthEnabled = true
+	if err := validateSiteCapabilities(site, true, false); err == nil {
+		t.Fatal("explicit auth_enabled=true must be rejected")
+	}
+	site.Advanced.AccessControl.AuthEnabled = false
+	site.Advanced.AccessControl.DynamicGuard = false
+	if err := validateSiteCapabilities(site, false, true); err == nil {
+		t.Fatal("explicit dynamic_guard=false must be rejected")
+	}
+	if err := validateSiteCapabilities(site, false, false); err != nil {
+		t.Fatalf("omitted capability fields should remain compatible: %v", err)
+	}
+}
+
+func TestCreateSiteRejectsUnsupportedAccessAuth(t *testing.T) {
+	handler, _, _ := newSiteTestHandler(t)
+	payload := storage.Site{
+		ID: "unsupported-auth", Name: "unsupported-auth", Domains: []string{"auth.example.test"},
+		Upstreams: []string{"127.0.0.1:9010"}, WAFEnabled: true, Enabled: true,
+	}
+	payload.Advanced.AccessControl.AuthEnabled = true
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	router.Post("/sites", handler.CreateSite)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/sites", bytes.NewReader(raw)))
+	assertSiteAPIError(t, recorder, http.StatusUnprocessableEntity, "SITE_CAPABILITY_UNAVAILABLE")
 }
 
 func (s *siteFailureStore) DeleteSite(ctx context.Context, id string) error {

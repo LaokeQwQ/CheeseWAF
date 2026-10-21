@@ -50,10 +50,10 @@
   background: color-mix(in srgb, var(--surface-soft) 72%, var(--surface));
   cursor: pointer;
   transition:
-    background 150ms ease,
-    border-color 150ms ease,
-    color 150ms ease,
-    transform 150ms ease;
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
 .assistant-quick-prompts button:hover:not(:disabled) {
@@ -217,9 +217,9 @@
 .assistant-approval-actions .assistant-approval-reject {
   border-radius: 999px !important;
   transition:
-    transform 160ms ease,
-    box-shadow 160ms ease,
-    background 160ms ease !important;
+    transform var(--motion-duration-standard) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-standard) var(--motion-ease-standard),
+    background var(--motion-duration-standard) var(--motion-ease-standard) !important;
 }
 
 .assistant-approval-actions .assistant-approval-approve:hover,

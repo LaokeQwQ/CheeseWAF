@@ -85,3 +85,65 @@ func TestClassifyCount(t *testing.T) {
 		t.Fatalf("count=%d want 4 (%+v)", c.Count(), c)
 	}
 }
+
+// TestPasswordPolicyGoldenVectors keeps the server-side classification contract
+// explicit for scripts that are easy to mishandle with ASCII-only checks. The
+// web password policy mirrors these vectors: non-ASCII letters are letters (and
+// therefore are not special), while ASCII case is required for upper/lower
+// classes and Unicode decimal digits still participate in the digit class.
+func TestPasswordPolicyGoldenVectors(t *testing.T) {
+	tests := []struct {
+		name     string
+		password string
+		classes  ClassFlags
+		err      error
+	}{
+		{
+			name:     "cjk letters are not special",
+			password: "Qzqjvbnm密码",
+			classes:  ClassFlags{Upper: true, Lower: true},
+			err:      ErrNeedClasses,
+		},
+		{
+			name:     "precomposed accented letters are not special",
+			password: "ÉÉÉÉéééé9!",
+			classes:  ClassFlags{NonRepeatingDigit: true, Special: true},
+			err:      ErrNeedClasses,
+		},
+		{
+			name:     "cjk letters can accompany the required ascii classes",
+			password: "Qzqjvbnm密码9!",
+			classes:  ClassFlags{Upper: true, Lower: true, NonRepeatingDigit: true, Special: true},
+			err:      nil,
+		},
+		{
+			name:     "arabic indian unique digits satisfy digit class",
+			password: "Qzqjvbnm١٩",
+			classes:  ClassFlags{Upper: true, Lower: true, NonRepeatingDigit: true},
+			err:      nil,
+		},
+		{
+			name:     "arabic indian sequential digits do not satisfy digit class",
+			password: "Qzqjvbnm١٢٣٤",
+			classes:  ClassFlags{Upper: true, Lower: true},
+			err:      ErrNeedClasses,
+		},
+		{
+			name:     "arabic indian repeated digits do not satisfy digit class",
+			password: "Qzqjvbnm١١!",
+			classes:  ClassFlags{Upper: true, Lower: true, Special: true},
+			err:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Classify(tt.password); got != tt.classes {
+				t.Fatalf("Classify(%q) = %+v, want %+v", tt.password, got, tt.classes)
+			}
+			if got := Validate(tt.password, ""); !errors.Is(got, tt.err) {
+				t.Fatalf("Validate(%q) = %v, want %v", tt.password, got, tt.err)
+			}
+		})
+	}
+}

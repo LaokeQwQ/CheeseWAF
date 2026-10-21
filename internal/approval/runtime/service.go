@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/hex"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/approval"
 	approvalpostgres "github.com/LaokeQwQ/CheeseWAF/internal/approval/postgres"
@@ -253,6 +255,41 @@ func (s *Service) Gate() *approval.Gate {
 	return s.gate
 }
 
+// NewAIGateApprovalAdapter binds the AI compatibility store to this service's
+// durable Gate and the same management-backed credential verifiers used by the
+// ApprovalHTTP transport. The caller owns the AI store lifetime.
+func (s *Service) NewAIGateApprovalAdapter(store *ai.ApprovalStore) (*ai.GateApprovalAdapter, error) {
+	if s == nil || s.gate == nil || s.policyEpoch == 0 {
+		return nil, ErrInvalidOptions
+	}
+	return ai.NewGateApprovalAdapterWithCredentialVerifier(store, s.gate, s.policyEpoch, func(ctx context.Context, actor ai.ApprovalActor, input ai.GateApprovalConfirmation) (ai.GateApprovalCredentialProof, error) {
+		session := handler.ApprovalSession{Subject: actor.Subject, SessionID: actor.SessionID, Username: actor.Username, Role: actor.Role}
+		var proof handler.ApprovalCredentialProof
+		var err error
+		if input.Password != "" {
+			proof, err = s.verifyPassword(ctx, session, input.Password)
+			if err != nil {
+				return ai.GateApprovalCredentialProof{}, err
+			}
+			if proof.RequiresTOTP() && input.TOTPCode == "" {
+				return ai.GateApprovalCredentialProof{}, ErrCredentialRejected
+			}
+		}
+		if input.TOTPCode != "" {
+			totpProof, totpErr := s.verifyTOTP(ctx, session, input.TOTPCode)
+			if totpErr != nil {
+				return ai.GateApprovalCredentialProof{}, totpErr
+			}
+			if proof.Token() == "" {
+				proof = totpProof
+			} else {
+				proof = handler.CombineApprovalCredentialProof(proof, totpProof)
+			}
+		}
+		return ai.NewGateApprovalCredentialProof(proof.Token(), proof.PasswordConfirmed(), proof.TOTPConfirmed()), nil
+	})
+}
+
 func (s *Service) Health(ctx context.Context) error {
 	if s == nil || s.store == nil || s.management == nil || s.gate == nil || s.http == nil {
 		return ErrInvalidOptions
@@ -307,7 +344,13 @@ func (s *Service) verifyPassword(ctx context.Context, session handler.ApprovalSe
 	if password == "" || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		return handler.ApprovalCredentialProof{}, ErrCredentialRejected
 	}
-	return s.proof(true, false)
+	token := make([]byte, 24)
+	if _, err := rand.Read(token); err != nil {
+		return handler.ApprovalCredentialProof{}, err
+	}
+	// A password proof retains the enrolled-factor requirement for the transport.
+	// The opaque proof token stays server-issued.
+	return handler.NewMFAApprovalCredentialProof(hex.EncodeToString(token), true, false, user.TwoFAEnabled), nil
 }
 
 func (s *Service) verifyTOTP(ctx context.Context, session handler.ApprovalSession, code string) (handler.ApprovalCredentialProof, error) {
@@ -392,7 +435,7 @@ func matchingTOTPCounter(secret, code string, now time.Time) (int64, bool) {
 	for offset := int64(-1); offset <= 1; offset++ {
 		step := counter + offset
 		expected, err := hotp(secret, step)
-		if err == nil && expected == code {
+		if err == nil && subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1 {
 			return step, true
 		}
 	}

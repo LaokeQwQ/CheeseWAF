@@ -104,7 +104,7 @@ func delayedApprovalWindow(t *testing.T) (approval.Record, activation.Authorizat
 	gate := approval.NewGate(7)
 	record, err := gate.Submit(submittedAt, approval.Request{
 		ID: "approval-window", Risk: approval.RiskMedium, Scope: activation.ApprovalScope(request), PolicyEpoch: 7,
-		TTL: 2 * time.Minute, Actor: "operator", SessionID: "session-window", ConfirmationLanguage: "en-US",
+		TTL: 2 * time.Minute, Actor: "requester", SessionID: "requester-window", ConfirmationLanguage: "en-US",
 		IntentDigest: activation.ApprovalIntentDigest(request), Nonce: "nonce-window",
 	})
 	if err != nil {
@@ -114,12 +114,17 @@ func delayedApprovalWindow(t *testing.T) (approval.Record, activation.Authorizat
 	if err != nil {
 		t.Fatal(err)
 	}
-	commit, err := gate.Confirm(issuedAt, record.ID, approval.Confirmation{
+	confirmation := approval.Confirmation{
 		WarningReadAt: submittedAt, PasswordConfirmed: true, SecondConfirmation: true, Local: true,
-		ConfirmationID: "confirmation-window", Actor: record.Request.Actor, Scope: record.Request.Scope,
-		PolicyEpoch: 7, SessionID: record.Request.SessionID, ConfirmationLanguage: "en-US", ConfirmationPhrase: phrase,
+		ConfirmationID: "confirmation-window", Actor: "approver", Scope: record.Request.Scope,
+		PolicyEpoch: 7, SessionID: "approver-window", ConfirmationLanguage: "en-US", ConfirmationPhrase: phrase,
 		IntentDigest: record.Request.IntentDigest, Nonce: record.Request.Nonce,
-	})
+	}
+	if _, err := gate.Confirm(issuedAt, record.ID, confirmation); !errors.Is(err, approval.ErrThirdConfirmation) {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	confirmation.ThirdConfirmation = true
+	commit, err := gate.Confirm(issuedAt, record.ID, confirmation)
 	if err != nil {
 		t.Fatal(err)
 	}

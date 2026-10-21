@@ -30,8 +30,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/crp/activation"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
+	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // TestRunServeProductionCRPActivationAndRollback exercises the browser-facing
@@ -121,6 +123,7 @@ func TestRunServeProductionCRPActivationAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTemporaryManagement(t, ctx, cfg.Storage.SQLite.Path)
+	seedRunServeCRPApprover(t, ctx, cfg.Storage.SQLite.Path)
 	migrate := climigration.NewRuntimeCommand(climigration.RuntimeOptions{
 		ConfigPath: func() string { return configFile }, DataDir: func() string { return dataRoot },
 		AcquireExclusive: func(runtimeDir string) (io.Closer, error) { return acquirePIDLease(runtimeDir) },
@@ -191,6 +194,12 @@ func TestRunServeProductionCRPActivationAndRollback(t *testing.T) {
 	baseURL := "http://" + adminAddress
 	waitForRunServeRoute(t, client, baseURL+"/health/ready", serveResult)
 	csrf := runServeCRPLogin(t, ctx, client, baseURL)
+	approverJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approverClient := &http.Client{Jar: approverJar, Timeout: 20 * time.Second}
+	approverCSRF := runServeCRPLoginAs(t, ctx, approverClient, baseURL, "launcher-approver", "launcher-approver-password")
 	var policyEpoch uint64
 	if err := adminDB.QueryRowContext(ctx, `SELECT policy_epoch FROM `+pgx.Identifier{controlSchema, "cheesewaf_approval_epoch"}.Sanitize()+` WHERE id=1`).Scan(&policyEpoch); err != nil {
 		t.Fatalf("read production approval epoch: %v", err)
@@ -208,7 +217,7 @@ func TestRunServeProductionCRPActivationAndRollback(t *testing.T) {
 		t.Fatalf("source-mismatched descriptor started a sidecar: marker err=%v", err)
 	}
 	promoteRequest := runServeCRPAuthorizationRequest(t, identity, crp.RuntimeActionPromote, stagedV2, stagedV2.Revision, promoteDescriptor)
-	runServeCRPApprove(t, ctx, client, baseURL, csrf, policyEpoch, promoteRequest, "runserve-crp-promote-"+suffix)
+	runServeCRPApprove(t, ctx, client, csrf, approverClient, approverCSRF, baseURL, policyEpoch, promoteRequest, "runserve-crp-promote-"+suffix)
 	promoted := runServeCRPAction(t, ctx, client, baseURL+"/api/system/crp/activate", csrf, stagedV2, promoteDescriptor)
 	if promoted.Phase != activation.PhaseActive || promoted.Version != stagedV2.Version || promoted.ManifestIdentity != stagedV2.ManifestIdentity || promoted.Revision <= stagedV2.Revision {
 		t.Fatalf("real CRP activation result=%+v, want active signed v2 %+v", promoted, stagedV2)
@@ -221,7 +230,7 @@ func TestRunServeProductionCRPActivationAndRollback(t *testing.T) {
 	rollbackTarget := stagedV2
 	rollbackTarget.Revision = promoted.Revision
 	rollbackRequest := runServeCRPAuthorizationRequest(t, identity, crp.RuntimeActionRollback, currentV1, promoted.Revision, rollbackDescriptor)
-	runServeCRPApprove(t, ctx, client, baseURL, csrf, policyEpoch, rollbackRequest, "runserve-crp-rollback-"+suffix)
+	runServeCRPApprove(t, ctx, client, csrf, approverClient, approverCSRF, baseURL, policyEpoch, rollbackRequest, "runserve-crp-rollback-"+suffix)
 	rolled := runServeCRPActionRevision(t, ctx, client, baseURL+"/api/system/crp/rollback", csrf, rollbackTarget, rollbackDescriptor, promoted.Revision)
 	if rolled.Phase != activation.PhaseRolled || rolled.Version != currentV1.Version || rolled.ManifestIdentity != currentV1.ManifestIdentity || rolled.Revision <= promoted.Revision {
 		t.Fatalf("real CRP rollback result=%+v, want exact signed v1 %+v", rolled, currentV1)
@@ -394,8 +403,12 @@ func runServeCRPDescriptorForRecord(record crp.RuntimeRecord) activation.Sidecar
 }
 
 func runServeCRPLogin(t *testing.T, ctx context.Context, client *http.Client, baseURL string) string {
+	return runServeCRPLoginAs(t, ctx, client, baseURL, "launcher-admin", "launcher-test-password")
+}
+
+func runServeCRPLoginAs(t *testing.T, ctx context.Context, client *http.Client, baseURL, username, password string) string {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"username": "launcher-admin", "password": "launcher-test-password"})
+	body, _ := json.Marshal(map[string]string{"username": username, "password": password})
 	response, err := client.Post(baseURL+"/api/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -415,6 +428,24 @@ func runServeCRPLogin(t *testing.T, ctx context.Context, client *http.Client, ba
 	}
 	_ = ctx
 	return envelope.Data.CSRF
+}
+
+func seedRunServeCRPApprover(t *testing.T, ctx context.Context, path string) {
+	t.Helper()
+	store, err := storage.OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	hash, err := bcrypt.GenerateFromPassword([]byte("launcher-approver-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateUser(ctx, &storage.User{
+		ID: "launcher-approver", Username: "launcher-approver", PasswordHash: string(hash), Role: "admin",
+	}); err != nil {
+		t.Fatalf("seed independent CRP approver: %v", err)
+	}
 }
 
 func runServeCRPTransportIdentity(t *testing.T, certPath string) activation.TransportIdentity {
@@ -449,13 +480,13 @@ func runServeCRPAuthorizationRequest(t *testing.T, identity activation.Transport
 	return activation.AuthorizationRequest{SchemaVersion: activation.TransportSchemaVersion, RequestID: "approval-preview", Identity: identity, Action: action, Permission: permission, Target: activation.RuntimeTarget{Key: target.Key, PluginID: target.PluginID, Namespace: target.Namespace, Version: target.Version, ReleaseSequence: target.ReleaseSequence, ManifestIdentity: target.ManifestIdentity, ArtifactIdentity: target.ArtifactIdentity, Revision: target.Revision}, ExpectedRevision: expectedRevision, Descriptor: descriptor, DescriptorIdentity: hex.EncodeToString(digest[:]), Canary: activation.CanaryPolicy{ObserveProbes: 1, CanaryProbes: 1, ProbeTimeout: time.Second}, RequestedAt: time.Now().UTC()}
 }
 
-func runServeCRPApprove(t *testing.T, ctx context.Context, client *http.Client, baseURL, csrf string, epoch uint64, request activation.AuthorizationRequest, id string) {
+func runServeCRPApprove(t *testing.T, ctx context.Context, requester *http.Client, requesterCSRF string, approver *http.Client, approverCSRF, baseURL string, epoch uint64, request activation.AuthorizationRequest, id string) {
 	t.Helper()
 	submit := map[string]any{"id": id, "risk": string(approval.RiskMedium), "scope": activation.ApprovalScope(request), "policy_epoch": epoch, "ttl": "2m", "confirmation_language": "en-US", "intent_digest": activation.ApprovalIntentDigest(request), "nonce": "nonce-" + id}
 	var submitted struct {
 		Record approval.Record `json:"record"`
 	}
-	runServeCRPJSON(t, ctx, client, http.MethodPost, baseURL+"/api/approvals", csrf, submit, http.StatusOK, &submitted)
+	runServeCRPJSON(t, ctx, requester, http.MethodPost, baseURL+"/api/approvals", requesterCSRF, submit, http.StatusOK, &submitted)
 	if submitted.Record.ID != id || submitted.Record.Status != approval.StatusPending {
 		t.Fatalf("approval submission mismatch: %+v", submitted.Record)
 	}
@@ -465,7 +496,7 @@ func runServeCRPApprove(t *testing.T, ctx context.Context, client *http.Client, 
 			Phrase         string `json:"phrase"`
 		} `json:"challenge"`
 	}
-	runServeCRPJSON(t, ctx, client, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation/start", csrf, map[string]string{"language": "en-US"}, http.StatusOK, &started)
+	runServeCRPJSON(t, ctx, approver, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation/start", approverCSRF, map[string]string{"language": "en-US"}, http.StatusOK, &started)
 	if started.Challenge.ConfirmationID == "" || started.Challenge.Phrase == "" {
 		t.Fatal("approval confirmation challenge is incomplete")
 	}
@@ -474,11 +505,17 @@ func runServeCRPApprove(t *testing.T, ctx context.Context, client *http.Client, 
 		t.Fatal(ctx.Err())
 	case <-time.After(approval.WarningDelay):
 	}
-	checkpoint := map[string]any{"confirmation_id": started.Challenge.ConfirmationID, "confirmation_phrase": started.Challenge.Phrase, "password": "launcher-test-password", "second_confirmation": true}
+	checkpoint := map[string]any{"confirmation_id": started.Challenge.ConfirmationID, "confirmation_phrase": started.Challenge.Phrase, "password": "launcher-approver-password", "second_confirmation": true}
+	// CRP approvals are classified as high-risk cluster operations by the HTTP
+	// handler. The first confirmation records the second checkpoint and must
+	// return the documented third-confirmation challenge before authorization
+	// can be committed.
 	var confirmed struct {
 		Record approval.Record `json:"record"`
 	}
-	runServeCRPJSON(t, ctx, client, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation", csrf, checkpoint, http.StatusOK, &confirmed)
+	runServeCRPJSON(t, ctx, approver, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation", approverCSRF, checkpoint, http.StatusConflict, nil)
+	final := map[string]any{"confirmation_id": started.Challenge.ConfirmationID, "confirmation_phrase": started.Challenge.Phrase, "password": "launcher-approver-password", "second_confirmation": true, "third_confirmation": true}
+	runServeCRPJSON(t, ctx, approver, http.MethodPost, baseURL+"/api/approvals/"+id+"/confirmation", approverCSRF, final, http.StatusOK, &confirmed)
 	if confirmed.Record.Status != approval.StatusApproved || confirmed.Record.Commit == nil {
 		t.Fatalf("approval was not durably authorized: %+v", confirmed.Record)
 	}

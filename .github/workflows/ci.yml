@@ -154,7 +154,7 @@ jobs:
           SEMANTIC_BENCH_OUTPUT: /tmp/cheesewaf-semantic-benchmark.json
         run: bash scripts/ci/run-semantic-benchmark.sh
       - name: Upload semantic performance baseline
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: semantic-benchmark-${{ github.run_number }}-${{ github.sha }}
           path: /tmp/cheesewaf-semantic-benchmark.json
@@ -253,7 +253,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24.18.0
           cache: npm
@@ -267,9 +267,6 @@ jobs:
       - name: Run build gate script tests
         working-directory: web
         run: npm run test:scripts
-      - name: Install pinned coverage provider
-        working-directory: web
-        run: npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.3 vitest@5.0.3
       - name: Run dashboard tests with coverage
         working-directory: web
         run: npm test -- --coverage
@@ -305,7 +302,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24.18.0
           cache: npm
@@ -425,7 +422,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24.18.0
           cache: npm
@@ -454,7 +451,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24.18.0
           cache: npm
@@ -477,6 +474,9 @@ jobs:
 
   release-artifacts:
     name: release-artifacts
+    # Only protected version tags need the release-signing environment. Branch
+    # artifacts are intentionally unsigned and must not wait for its approval.
+    environment: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && 'release-signing' || '' }}
     if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))
     runs-on: ubuntu-latest
     needs:
@@ -503,7 +503,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24.18.0
           cache: npm
@@ -514,6 +514,7 @@ jobs:
         env:
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
           CHEESEWAF_TAG_COMMIT: ${{ github.sha }}
+          CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           git fetch --no-tags --depth=1 origin master
           CHEESEWAF_MASTER_REF=FETCH_HEAD bash scripts/ci/verify-stable-tag.sh
@@ -528,8 +529,8 @@ jobs:
           CHEESEWAF_COMMIT: ${{ github.sha }}
           CHEESEWAF_RELEASE_PROFILE: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && 'server' || 'full' }}"
           # Desktop signing credentials are only consulted by full-profile tag builds.
-          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_P12 || '' }}"
-          WINDOWS_CERT_PASSWORD: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_PASSWORD || '' }}"
+          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_P12 || '' }}"
+          WINDOWS_CERT_PASSWORD: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_PASSWORD || '' }}"
         run: bash scripts/ci/go-env.sh bash scripts/ci/package-release.sh
       - name: Verify branch release artifacts
         shell: bash
@@ -537,7 +538,7 @@ jobs:
           CHEESEWAF_EVENT_NAME: ${{ github.event_name }}
           CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
           CHEESEWAF_REF_NAME: ${{ github.ref_name }}
-          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && !startsWith(github.ref_name, 'v') && secrets.WINDOWS_CERT_P12 || '' }}"
+          WINDOWS_CERT_P12: "${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_P12 || '' }}"
         run: |
           signing_mode=warn
           signing_scope=all
@@ -548,7 +549,7 @@ jobs:
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE="$signing_scope" \
             bash scripts/ci/verify-release.sh release
       - name: Upload branch release artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release/*
@@ -557,6 +558,9 @@ jobs:
 
   package-macos-dmg:
     name: package-macos-dmg
+    # Match release-artifacts: branch DMGs use ad-hoc signing and need no
+    # protected release-signing environment approval.
+    environment: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && 'release-signing' || '' }}
     if: "(github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' || (github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'))) && !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v'))"
     runs-on: macos-latest
     needs:
@@ -566,7 +570,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download branch release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release
@@ -574,29 +578,33 @@ jobs:
         shell: bash
         env:
           # Branch artifacts stay available without signing credentials. Only tag-triggered packaging can resolve them.
-          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
-          MACOS_P12_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_PASSWORD || '' }}
-          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
-          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64 || '' }}
+          MACOS_P12_PASSWORD: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_PASSWORD || '' }}
+          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_CODESIGN_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_ISSUER || '' }}
         run: bash scripts/ci/package-macos-dmg.sh release
       - name: Verify macOS disk images
         shell: bash
         env:
           CHEESEWAF_REF_TYPE: ${{ github.ref_type }}
-          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && secrets.MACOS_P12_BASE64 || '' }}
-          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && secrets.MACOS_CODESIGN_IDENTITY || '' }}
-          APPLE_API_KEY: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          CHEESEWAF_REF_NAME: ${{ github.ref_name }}
+          CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}
+          MACOS_P12_BASE64: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64 || '' }}
+          MACOS_CODESIGN_IDENTITY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_CODESIGN_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_protected && secrets.APPLE_API_ISSUER || '' }}
         run: |
-          signing_mode=1
-          if [[ "$CHEESEWAF_REF_TYPE" != "tag" ]]; then signing_mode=warn; fi
+          signing_mode=warn
+          if [[ "$CHEESEWAF_REF_TYPE" == "tag" && "$CHEESEWAF_REF_NAME" == v* && "$CHEESEWAF_REF_PROTECTED" == "true" ]]; then
+            signing_mode=1
+          fi
           CHEESEWAF_REQUIRE_SIGNING="$signing_mode" CHEESEWAF_SIGNING_SCOPE=macos \
             bash scripts/ci/verify-release.sh release
       - name: Upload macOS disk images
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}-dmg
           path: |
@@ -620,12 +628,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download branch release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release
       - name: Download macOS disk images
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}-dmg
           path: release
@@ -656,7 +664,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cheesewaf-${{ github.ref_name }}-${{ github.run_number }}-${{ github.sha }}
           path: release

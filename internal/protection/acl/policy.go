@@ -53,32 +53,73 @@ func NewPolicy(cfg config.ACLProtectionConfig) *Policy {
 }
 
 func (p *Policy) Evaluate(r *http.Request) *engine.DetectionResult {
-	if p == nil || !p.enabled || r == nil {
+	if p == nil || !p.enabled || r == nil || r.URL == nil {
 		return nil
 	}
-	for _, rule := range p.rules {
-		if !rule.Enabled || !rule.matches(r) {
-			continue
+	cleaned, valid := engine.NormalizeRequestPath(r.URL.Path)
+	if !valid {
+		return nil
+	}
+	paths := []string{cleaned}
+	if strings.ContainsAny(r.URL.Path, ";%") {
+		paths, valid = engine.SecurityPathViews(r.URL.Path)
+		if !valid {
+			return nil
 		}
-		return &engine.DetectionResult{
-			Detected:   true,
-			DetectorID: "acl." + rule.ID,
-			Category:   "acl",
-			Severity:   rule.Severity,
-			Action:     rule.Action,
-			Message:    "ACL rule matched: " + rule.Name,
-			Confidence: 1,
-			Payload:    r.Method + " " + r.URL.RequestURI(),
+		// Derive matrix routing before Clean can remove its path segment.
+		// Keep the old cleaned view, without adding raw dot-path matches.
+		if r.URL.Path != cleaned {
+			paths = paths[1:]
 		}
 	}
-	return nil
+	var selected *Rule
+	for _, path := range paths {
+		for i := range p.rules {
+			rule := &p.rules[i]
+			if !rule.Enabled || !rule.matches(r, path) {
+				continue
+			}
+			// Preserve first-match ordering within each interpretation. A new
+			// log-only view must not hide a block from an existing path view.
+			if selected == nil || actionRank(rule.Action) > actionRank(selected.Action) {
+				selected = rule
+			}
+			break
+		}
+	}
+	if selected == nil {
+		return nil
+	}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "acl." + selected.ID,
+		Category:   "acl",
+		Severity:   selected.Severity,
+		Action:     selected.Action,
+		Message:    "ACL rule matched: " + selected.Name,
+		Confidence: 1,
+		Payload:    r.Method + " " + r.URL.RequestURI(),
+	}
 }
 
-func (r Rule) matches(req *http.Request) bool {
+func actionRank(action engine.Action) int {
+	switch action {
+	case engine.ActionBlock:
+		return 3
+	case engine.ActionChallenge:
+		return 2
+	case engine.ActionLog:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (r Rule) matches(req *http.Request, path string) bool {
 	if r.Method != "" && r.Method != strings.ToUpper(req.Method) {
 		return false
 	}
-	if r.PathPrefix != "" && !strings.HasPrefix(req.URL.Path, r.PathPrefix) {
+	if r.PathPrefix != "" && !engine.PathMatchesPrefix(path, r.PathPrefix) {
 		return false
 	}
 	if r.Header != "" {

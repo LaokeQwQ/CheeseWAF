@@ -18,10 +18,8 @@ func TestLimiterBlocksAfterWindowQuota(t *testing.T) {
 	}
 }
 
-func TestLimiterEvictsWhenShardCapReached(t *testing.T) {
-	// Tiny cap forces per-shard capacity of 64 still; override maxKeys low via WithMaxKeys
-	// and use enough distinct keys that a single shard fills after hash clustering is unlikely.
-	// Use maxKeys so perShardCap = 64; fill one key heavily and many others to exercise eviction path.
+func TestLimiterBoundsKeysWhenShardCapReached(t *testing.T) {
+	// Each shard has a capacity of 64; new clients cannot grow a full shard.
 	limiter := New(config.RateLimitProfile{Requests: 100, Window: time.Minute, Burst: 0}, true).WithMaxKeys(64 * 32)
 	// Fill well beyond capacity with unique keys; should not grow unbounded.
 	for i := 0; i < 5000; i++ {
@@ -34,7 +32,7 @@ func TestLimiterEvictsWhenShardCapReached(t *testing.T) {
 
 func TestLimiterExpiresOldWindows(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	// Burst must be >0 (New coerces Burst<=0 to Requests); limit = 1+1 = 2.
+	// The explicit request and burst budgets give a total quota of two.
 	limiter := New(config.RateLimitProfile{Requests: 1, Window: time.Second, Burst: 1}, true)
 	limiter.now = func() time.Time { return now }
 	if !limiter.Allow("a") || !limiter.Allow("a") {

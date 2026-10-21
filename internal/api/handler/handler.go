@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -59,6 +60,8 @@ type Handler struct {
 	Secret                 string
 	Auditor                *middleware.Auditor
 	AssistantApprovals     *ai.ApprovalStore
+	AssistantGateApproval  *ai.GateApprovalAdapter
+	clusterApproval        *ApprovalHTTPHandler
 	Realtime               *realtime.Hub
 	approvalStoreError     error
 	TwoFAState             *twoFAState
@@ -117,6 +120,8 @@ type Handler struct {
 	// runtime. A production wiring layer must provide password/TOTP, warning
 	// delay and local-session checks before non-expiring tokens are enabled.
 	managementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
+	acmeRenewMu                         sync.Mutex
+	acmeRenewCancel                     context.CancelFunc
 	configWriteFrozen                   bool
 	configFreezeReason                  string
 	userMutationMu                      sync.Mutex
@@ -141,6 +146,7 @@ type Handler struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged           func(config.CAPTCHAProvidersConfig) error
 	// Both policy seams are intentionally supplied only by the process that
 	// owns control-plane coordination and node-local materialization. A nil
 	// consumer is fail-closed; HTTP and AI policy writes never fall back to a
@@ -151,6 +157,9 @@ type Handler struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	// OnConfigChanged publishes a completed setup/config snapshot to the
+	// serving composition root. Setup changes the entrance gate itself.
+	OnConfigChanged func(*config.Config) error
 }
 
 type captchaAssetRuntime struct {
@@ -341,6 +350,7 @@ type cachedDirSize struct {
 const (
 	defaultJSONBodyLimit       = 1 << 20
 	loginCAPTCHAJSONBodyLimit  = 16 << 10
+	loginJSONBodyLimit         = 32 << 10
 	loginCAPTCHAMaxTokenLength = 8192
 	loginCAPTCHAMaxTrackLength = 16384
 	loginCAPTCHAMaxFieldLength = 512
@@ -359,6 +369,7 @@ type Options struct {
 	Secret                      string
 	Auditor                     *middleware.Auditor
 	AssistantApprovals          *ai.ApprovalStore
+	AssistantGateApproval       *ai.GateApprovalAdapter
 	Realtime                    *realtime.Hub
 	ClusterIdentity             *identity.MemoryIdentityService
 	ClusterDeployTasks          *deploy.TaskManager
@@ -379,6 +390,7 @@ type Options struct {
 	OnSitesChanged              func([]config.SiteConfig) error
 	OnEdgeChanged               func(config.EdgeConfig) error
 	OnProtectionChanged         func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged   func(config.CAPTCHAProvidersConfig) error
 	ProtectionPolicyMutator     desiredstate.ProtectionPolicyMutator
 	ProtectionPolicyCoordinator ProtectionPolicyCoordinatorConsumer
 	// RequireProtectionPolicyCoordinator is set only by the production
@@ -388,9 +400,13 @@ type Options struct {
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	OnConfigChanged                     func(*config.Config) error
 	CAPTCHAAssets                       captchaassets.Store
 	Clock                               timekeeper.Clock
 	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
+	// ApprovalHTTP is the durable approval boundary shared by cluster operations.
+	// It is injected by the composition root; nil keeps cluster approval fail-closed.
+	ApprovalHTTP *ApprovalHTTPHandler
 }
 
 // OTAClient is the read-only index boundary. It can propose a candidate but
@@ -456,9 +472,11 @@ func New(opts Options) *Handler {
 		Secret:                              opts.Secret,
 		Auditor:                             opts.Auditor,
 		AssistantApprovals:                  approvals,
+		AssistantGateApproval:               opts.AssistantGateApproval,
+		clusterApproval:                     opts.ApprovalHTTP,
 		Realtime:                            opts.Realtime,
 		approvalStoreError:                  approvalStoreError,
-		TwoFAState:                          newTwoFAState(),
+		TwoFAState:                          newTwoFAStateWithStore(opts.Store),
 		ClusterIdentity:                     opts.ClusterIdentity,
 		ClusterDeployTasks:                  opts.ClusterDeployTasks,
 		ClusterDeployAuth:                   opts.ClusterDeployAuth,
@@ -490,12 +508,14 @@ func New(opts Options) *Handler {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		OnCAPTCHAProvidersChanged:           opts.OnCAPTCHAProvidersChanged,
 		protectionPolicyMutator:             opts.ProtectionPolicyMutator,
 		protectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
 		requireProtectionPolicyCoordinator:  opts.RequireProtectionPolicyCoordinator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnConfigChanged:                     opts.OnConfigChanged,
 	}
 	if opts.ConfigSnapshot != nil {
 		h.configCurrent.Store(opts.ConfigSnapshot)
@@ -544,6 +564,9 @@ func (h *Handler) publishConfig(candidate *config.Config) error {
 	}
 	// Publish the immutable request snapshot before replacing the compatibility
 	// view. New readers cannot retain the object that is replaced below.
+	if roles, ok := h.Store.(interface{ ConfigureRoles(map[string][]string) }); ok {
+		roles.ConfigureRoles(published.APISec.Permissions)
+	}
 	h.configCurrent.Store(published)
 	h.configCompatMu.Lock()
 	defer h.configCompatMu.Unlock()
@@ -732,7 +755,8 @@ func (h *Handler) LoginOptions(w http.ResponseWriter, _ *http.Request) {
 	writeData(w, map[string]any{
 		"captcha": map[string]any{
 			"enabled":    login.CAPTCHA.Enabled,
-			"mode":       login.CAPTCHA.Mode,
+			"provider":   loginCaptchaProvider(login.CAPTCHA),
+			"mode":       loginCaptchaPayloadMode(login.CAPTCHA, login.CAPTCHA.Mode),
 			"algorithm":  captcha.AlgorithmSHA256,
 			"max_number": loginCAPTCHAPowMax(login.CAPTCHA),
 			"slider": map[string]any{
@@ -747,8 +771,10 @@ func (h *Handler) LoginOptions(w http.ResponseWriter, _ *http.Request) {
 		},
 		"background": login.Background,
 		"branding": map[string]any{
-			"copyright":       login.Copyright,
-			"show_version":    showVersion,
+			"copyright":    login.Copyright,
+			"show_version": showVersion,
+			// Keep the version metadata available even when the line is hidden.
+			// Clients may re-enable the line without another request.
 			"product_version": version.Current().Version,
 		},
 	})
@@ -762,6 +788,10 @@ func (h *Handler) LoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	}
 	var req dto.CAPTCHAChallengeRequest
 	if !decodeOptional(w, r, &req, loginCAPTCHAJSONBodyLimit, "invalid captcha request") {
+		return
+	}
+	if loginCaptchaProvider(login.CAPTCHA) == "cap" {
+		h.issueCapLoginCAPTCHA(w, r, login)
 		return
 	}
 	mode := loginCaptchaRequestedMode(login.CAPTCHA, req.Mode)
@@ -863,13 +893,29 @@ func (h *Handler) VerifyLoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	login := h.loginConfig()
+	provider := loginCaptchaProvider(login.CAPTCHA)
+	if (provider == "cap" && strings.ToLower(strings.TrimSpace(payload.Provider)) != "cap") ||
+		(provider != "cap" && strings.EqualFold(strings.TrimSpace(payload.Provider), "cap")) {
+		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
+		return
+	}
 	mode := loginCaptchaPayloadMode(login.CAPTCHA, payload.Mode)
 	owner, peer, ok := h.loginCaptchaExistingQuotaIdentity(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
-	if !h.verifyLoginCAPTCHAProof(r, login, mode, &payload) {
+	if mode == "cap" {
+		valid, err := h.verifyLoginCapProof(r, login.CAPTCHA, &payload)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "CAPTCHA_UNAVAILABLE", "captcha verification is temporarily unavailable")
+			return
+		}
+		if !valid {
+			writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
+			return
+		}
+	} else if !h.verifyLoginCAPTCHAProof(r, login, mode, &payload) {
 		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
@@ -890,27 +936,51 @@ func (h *Handler) VerifyLoginCAPTCHA(w http.ResponseWriter, r *http.Request) {
 	writeData(w, map[string]any{"valid": true, "receipt": receipt})
 }
 
+var loginDummyHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("unmatchable-dummy-login-password-87fd662"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}()
+
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
+			writeError(w, http.StatusForbidden, "LOGIN_ORIGIN_INVALID", "login origin must match the management console")
+			return
+		}
+	}
 	tracker := h.loginCAPTCHATracker()
+	source := h.loginAuditIP(r)
+	if !tracker.acquireLoginBody(source) {
+		writeError(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many concurrent login requests from this source")
+		return
+	}
+	// Reading a slow body must not reserve a password verification slot.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(5 * time.Second))
+	r.Body = http.MaxBytesReader(w, r.Body, loginJSONBodyLimit)
+	var req dto.LoginRequest
+	decoded := decode(w, r, &req)
+	tracker.releaseLoginBody(source)
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
+	if !decoded {
+		return
+	}
 	if !tracker.acquireLoginSlot() {
 		writeError(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many login attempts")
 		return
 	}
 	defer tracker.releaseLoginSlot()
-	var req dto.LoginRequest
-	if !decode(w, r, &req) {
-		return
-	}
 	now := h.nowUTC()
 	rateLimitKeys := loginRateLimitKeys(r, req.Username, h.adminPublic())
 	if !tracker.loginAttemptAllowed(rateLimitKeys, now) {
-		h.auditLoginFailure(r, req.Username, "rate_limited")
 		writeError(w, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", "too many failed login attempts")
 		return
 	}
 	if accountidentity.ValidateUsername(req.Username) != nil {
 		tracker.recordLoginFailure(rateLimitKeys, now)
-		h.auditLoginFailure(r, req.Username, "invalid_username")
 		writeError(w, http.StatusBadRequest, "USERNAME_INVALID", "invalid username or password")
 		return
 	}
@@ -918,30 +988,30 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		req.CAPTCHA.Username = req.Username
 	}
 	if !h.verifyLoginCAPTCHA(r, req.CAPTCHA) {
-		tracker.recordLoginFailure(rateLimitKeys, now)
-		h.auditLoginFailure(r, req.Username, "bad_captcha")
 		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
 	h.pruneExpiredSessions(r)
 	user, err := h.Store.GetUserByUsername(r.Context(), req.Username)
-	if err != nil || user == nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
+	hash := loginDummyHash
+	if err == nil && user != nil {
+		hash = []byte(user.PasswordHash)
+	}
+	passwordErr := bcrypt.CompareHashAndPassword(hash, []byte(req.Password))
+	if err != nil || user == nil || passwordErr != nil {
 		tracker.recordLoginFailure(rateLimitKeys, now)
-		h.auditLoginFailure(r, req.Username, "bad_password")
 		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
 		return
 	}
 	if user.TwoFAEnabled {
 		if req.TOTPCode == "" {
 			tracker.recordLoginFailure(rateLimitKeys, now)
-			h.auditLoginFailure(r, req.Username, "two_fa_required")
 			writeError(w, http.StatusUnauthorized, "TWO_FA_REQUIRED", "two-factor code required")
 			return
 		}
 		counter, ok := h.twoFATracker().consumeTOTPCounter(user.ID, user.TwoFASecret, req.TOTPCode, h.nowUTC())
 		if !ok {
 			tracker.recordLoginFailure(rateLimitKeys, now)
-			h.auditLoginFailure(r, req.Username, "bad_2fa")
 			writeError(w, http.StatusUnauthorized, "INVALID_TWO_FA_CODE", "invalid two-factor code")
 			return
 		}
@@ -959,7 +1029,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
 			if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
 				tracker.recordLoginFailure(rateLimitKeys, now)
-				h.auditLoginFailure(r, req.Username, "credential_changed")
 				writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
 				return
 			}
@@ -972,8 +1041,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 			return
 		}
-		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
+		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 		tracker.clearLoginFailures(rateLimitKeys, now)
+		h.auditAuthentication(r, user, "auth.login", "totp", claims.ID)
 		writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 		return
 	}
@@ -985,7 +1055,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
 		if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
 			tracker.recordLoginFailure(rateLimitKeys, now)
-			h.auditLoginFailure(r, req.Username, "credential_changed")
 			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
 			return
 		}
@@ -997,42 +1066,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 		return
 	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 	tracker.clearLoginFailures(rateLimitKeys, now)
+	h.auditAuthentication(r, user, "auth.login", "password", claims.ID)
 	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
-}
-
-// auditLoginFailure records a failed login attempt. Username is truncated; reason is a short code
-// (bad_password, bad_2fa, bad_captcha, rate_limited, two_fa_required). Login does not fail closed on audit I/O.
-func (h *Handler) auditLoginFailure(r *http.Request, username, reason string) {
-	if h == nil || h.Auditor == nil || r == nil {
-		return
-	}
-	// Preserve the exact attempted identity in the audit record. Login rejects
-	// non-canonical usernames before authentication; trimming here would hide
-	// the input that triggered the rejection and make forensic review ambiguous.
-	user := username
-	if len(user) > 64 {
-		user = user[:64]
-	}
-	ua := strings.TrimSpace(r.UserAgent())
-	if len(ua) > 200 {
-		ua = ua[:200]
-	}
-	entry := middleware.AuditEntry{
-		Timestamp: h.nowUTC(),
-		User:      user,
-		Method:    r.Method,
-		Path:      r.URL.Path,
-		Status:    http.StatusUnauthorized,
-		RemoteIP:  remoteIPFromRequest(r),
-		Target:    "auth.login",
-		Message:   reason,
-	}
-	if ua != "" {
-		entry.Message = reason + " ua=" + ua
-	}
-	_ = h.Auditor.Write(context.Background(), entry)
 }
 
 func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayload) bool {
@@ -1046,11 +1083,16 @@ func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayloa
 	if payload == nil {
 		return false
 	}
+	provider := loginCaptchaProvider(login.CAPTCHA)
+	if (provider == "cap" && strings.ToLower(strings.TrimSpace(payload.Provider)) != "cap") ||
+		(provider != "cap" && strings.EqualFold(strings.TrimSpace(payload.Provider), "cap")) {
+		return false
+	}
 	mode := loginCaptchaPayloadMode(login.CAPTCHA, payload.Mode)
 	if payload.Receipt != "" {
 		return h.consumeLoginCAPTCHAReceipt(r, login, mode, payload.Receipt, payload.Username)
 	}
-	if mode == "slider" {
+	if mode == "slider" || mode == "cap" {
 		return false
 	}
 	return h.verifyLoginCAPTCHAProof(r, login, mode, payload)
@@ -1137,7 +1179,8 @@ func (h *Handler) verifyLoginCAPTCHAProof(r *http.Request, login config.ConsoleL
 
 func loginCAPTCHAPayloadSizeAllowed(payload *dto.CAPTCHAPayload) bool {
 	if payload == nil || len(payload.Algorithm) > loginCAPTCHAMaxFieldLength || len(payload.Challenge) > loginCAPTCHAMaxFieldLength ||
-		len(payload.Salt) > loginCAPTCHAMaxFieldLength || len(payload.Signature) > loginCAPTCHAMaxFieldLength || len(payload.Receipt) > loginCAPTCHAMaxTokenLength {
+		len(payload.Salt) > loginCAPTCHAMaxFieldLength || len(payload.Signature) > loginCAPTCHAMaxFieldLength || len(payload.Receipt) > loginCAPTCHAMaxTokenLength ||
+		len(payload.ChallengeID) > loginCAPTCHAMaxFieldLength || len(payload.Token) > loginCAPTCHAMaxTokenLength {
 		return false
 	}
 	if payload.Slider == nil {
@@ -1280,6 +1323,9 @@ func loginCaptchaPayloadMode(cfg config.LoginCAPTCHAConfig, requested string) st
 }
 
 func loginCaptchaEffectiveMode(cfg config.LoginCAPTCHAConfig, requested string) string {
+	if loginCaptchaProvider(cfg) == "cap" {
+		return "cap"
+	}
 	configured := loginCaptchaMode(cfg)
 	requested = strings.ToLower(strings.TrimSpace(requested))
 	// Mobile clients may select the server-supported PoW fallback when the
@@ -1289,6 +1335,14 @@ func loginCaptchaEffectiveMode(cfg config.LoginCAPTCHAConfig, requested string) 
 		return "pow"
 	}
 	return configured
+}
+
+func loginCaptchaProvider(cfg config.LoginCAPTCHAConfig) string {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" {
+		return "builtin"
+	}
+	return provider
 }
 
 func (h *Handler) loginCaptchaSecret() string {
@@ -1406,10 +1460,7 @@ func loginRateLimitKeys(r *http.Request, username string, adminPublic bool) []st
 	if client == "" {
 		client = peer
 	}
-	keys := []string{"peer:" + peer}
-	if client != peer {
-		keys = append(keys, "client:"+client)
-	}
+	keys := []string{"client:" + client}
 	if username != "" {
 		keys = append(keys, "account-source:"+loginIdentityFingerprint(username, client))
 	}
@@ -1439,7 +1490,7 @@ func loginCAPTCHASkippedForPeer(r *http.Request, adminPublic bool) bool {
 		return false
 	}
 	// A local reverse proxy that forwards an external client still needs CAPTCHA.
-	if trustedLoginClientIP(r, peer, adminPublic) != "" {
+	if r.Header.Values("X-Forwarded-For") != nil {
 		return false
 	}
 	return true
@@ -1471,12 +1522,13 @@ func trustedLoginClientIP(r *http.Request, peer string, adminPublic bool) string
 	if r == nil || peerIP == nil || !peerIP.IsLoopback() {
 		return ""
 	}
-	for _, part := range strings.Split(r.Header.Get("X-Forwarded-For"), ",") {
-		candidate := strings.TrimSpace(part)
-		if ip := net.ParseIP(candidate); ip != nil {
-			return ip.String()
-		}
+	parts := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	// Local proxies append the socket client at the right-hand edge; never trust
+	// an attacker supplied left-most address.
+	if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
+		return ip.String()
 	}
+
 	return ""
 }
 
@@ -1505,7 +1557,8 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
+	h.auditAuthentication(r, user, "auth.refresh", "session", nextClaims.ID)
 	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
 
@@ -1520,6 +1573,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	middleware.ClearSessionCookies(w, r)
+	h.auditAuthentication(r, nil, "auth.logout", "session")
 	writeData(w, map[string]any{"revoked": true})
 }
 
@@ -1569,7 +1623,7 @@ func (h *Handler) BootstrapSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", err.Error())
 		return
 	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.Config))
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true, "bootstrapped": true})
 }
 
@@ -1638,6 +1692,29 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		ConfigPath:         h.ConfigPath,
 		Store:              h.Store,
 		DefaultAdminListen: defaultAdminListen,
+		ApplyRuntime: func(next, previous *config.Config) (func() error, error) {
+			rollback := func() error {
+				var rollbackErr error
+				if h.OnProtectionChanged != nil {
+					rollbackErr = errors.Join(rollbackErr, h.OnProtectionChanged(previous.Protection))
+				}
+				if h.OnConfigChanged != nil {
+					rollbackErr = errors.Join(rollbackErr, h.OnConfigChanged(previous))
+				}
+				return rollbackErr
+			}
+			if h.OnProtectionChanged != nil {
+				if err := h.OnProtectionChanged(next.Protection); err != nil {
+					return rollback, err
+				}
+			}
+			if h.OnConfigChanged != nil {
+				if err := h.OnConfigChanged(next); err != nil {
+					return rollback, err
+				}
+			}
+			return rollback, nil
+		},
 	}, setup.SetupPayload{
 		Username:          req.Username,
 		Password:          req.Password,
@@ -1645,6 +1722,7 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		AdminStrategy:     req.AdminStrategy,
 		AdminPublic:       req.AdminPublic,
 		SecurityEntryPath: req.SecurityEntryPath,
+		Profile:           setup.HardwareProfile(req.Profile),
 	})
 	if err != nil {
 		status := setup.SetupErrorStatus(err)
@@ -1736,6 +1814,8 @@ func writeData(w http.ResponseWriter, data any) {
 }
 
 func writeDataResult(w http.ResponseWriter, data any) error {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(dto.Response{Data: data})
 }
@@ -1748,9 +1828,57 @@ func writeErrorWithTraceID(w http.ResponseWriter, status int, code, message, tra
 	if traceID == "" {
 		traceID = blockpage.NewTraceID()
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
 	w.Header().Set("X-CheeseWAF-Event-ID", traceID)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(dto.Response{Error: &dto.APIError{Code: code, Message: message, TraceID: traceID, EventID: traceID}})
+}
+
+func (h *Handler) loginAuditIP(r *http.Request) string {
+	if ip := trustedLoginClientIP(r, socketPeerIP(r), h.adminPublic()); ip != "" {
+		return ip
+	}
+	return socketPeerIP(r)
+}
+
+func (h *Handler) auditAuthentication(r *http.Request, user *storage.User, target, message string, sessionIDs ...string) {
+	if h == nil || h.Auditor == nil || r == nil {
+		return
+	}
+	entry := middleware.AuditEntry{Timestamp: h.nowUTC(), Method: r.Method, Path: r.URL.Path, Status: http.StatusOK, RemoteIP: h.loginAuditIP(r), Target: target, Message: message}
+	entry.PeerIP = socketPeerIP(r)
+	entry.IPSource = "socket"
+	if trustedLoginClientIP(r, entry.PeerIP, h.adminPublic()) != "" {
+		entry.IPSource = "local_proxy"
+	}
+	entry.UserAgent = r.UserAgent()
+	entry.Message += " peer=" + entry.PeerIP + " ua=" + entry.UserAgent
+	if len(sessionIDs) > 0 {
+		entry.SessionID = sessionIDs[0]
+	}
+	if user != nil {
+		entry.Subject, entry.User, entry.Role = user.ID, user.Username, user.Role
+	} else if claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims); claims != nil {
+		entry.Subject, entry.User, entry.Role = claims.Subject, claims.Username, claims.Role
+		entry.SessionID = claims.ID
+	}
+	_ = h.Auditor.Write(context.WithoutCancel(r.Context()), entry)
+}
+
+// AuditMiddleware records management activity using the same source policy as login.
+func (h *Handler) AuditMiddleware(next http.Handler) http.Handler {
+	if h == nil || h.Auditor == nil {
+		return next
+	}
+	return h.Auditor.MiddlewareWithSource(next, func(r *http.Request) (client, peer, source string) {
+		peer = socketPeerIP(r)
+		client, source = peer, "socket"
+		if forwarded := trustedLoginClientIP(r, peer, h.adminPublic()); forwarded != "" {
+			client, source = forwarded, "local_proxy"
+		}
+		return
+	})
 }

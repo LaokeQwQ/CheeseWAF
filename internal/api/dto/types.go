@@ -25,15 +25,18 @@ type CAPTCHAChallengeRequest struct {
 }
 
 type CAPTCHAPayload struct {
-	Mode      string                `json:"mode,omitempty"`
-	Receipt   string                `json:"receipt,omitempty"`
-	Username  string                `json:"username,omitempty"`
-	Algorithm string                `json:"algorithm"`
-	Challenge string                `json:"challenge"`
-	Number    int                   `json:"number"`
-	Salt      string                `json:"salt"`
-	Signature string                `json:"signature"`
-	Slider    *SliderCAPTCHAPayload `json:"slider,omitempty"`
+	Provider    string                `json:"provider,omitempty"`
+	Mode        string                `json:"mode,omitempty"`
+	ChallengeID string                `json:"challenge_id,omitempty"`
+	Token       string                `json:"token,omitempty"`
+	Receipt     string                `json:"receipt,omitempty"`
+	Username    string                `json:"username,omitempty"`
+	Algorithm   string                `json:"algorithm"`
+	Challenge   string                `json:"challenge"`
+	Number      int                   `json:"number"`
+	Salt        string                `json:"salt"`
+	Signature   string                `json:"signature"`
+	Slider      *SliderCAPTCHAPayload `json:"slider,omitempty"`
 }
 
 type SliderCAPTCHAPayload struct {
@@ -50,4 +53,5 @@ type SetupRequest struct {
 	AdminStrategy     string `json:"admin_strategy"`
 	AdminPublic       bool   `json:"admin_public"`
 	SecurityEntryPath string `json:"security_entry_path,omitempty"`
+	Profile           string `json:"profile,omitempty"`
 }

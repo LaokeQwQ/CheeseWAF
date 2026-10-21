@@ -729,8 +729,14 @@ func TestProductionManagementSnapshotVerificationAcceptsExactRowsAndRejectsMutat
 		t.Fatal(err)
 	}
 	matches, err = productionManagementMatchesSnapshot(ctx, db, raw)
-	if err != nil || matches {
+	if matches {
 		t.Fatalf("mutated imported snapshot accepted: matches=%t err=%v", matches, err)
+	}
+	if err == nil {
+		t.Fatal("mutated imported snapshot must return a mismatch error")
+	}
+	if !strings.Contains(err.Error(), "production management snapshot differs at users row 0 column username") {
+		t.Fatalf("mutation mismatch error=%v", err)
 	}
 }
 

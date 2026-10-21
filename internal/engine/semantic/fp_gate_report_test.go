@@ -23,6 +23,7 @@ func TestFPGateReport(t *testing.T) {
 		"testdata/curated_external_shapes.jsonl",
 		"testdata/benign_production_shapes.jsonl",
 		"testdata/handcrafted_attack_neighbors.jsonl",
+		"testdata/contextual_2026_shapes.jsonl",
 	}
 	var cases []security.Case
 	for _, name := range files {

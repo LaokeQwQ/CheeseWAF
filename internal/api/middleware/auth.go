@@ -473,6 +473,8 @@ func writeUnauthorized(w http.ResponseWriter) {
 
 func writeAPIError(w http.ResponseWriter, status int, code, message string) {
 	traceID := blockpage.NewTraceID()
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-CheeseWAF-Trace-ID", traceID)
 	w.Header().Set("X-CheeseWAF-Event-ID", traceID)
@@ -484,5 +486,14 @@ func writeAPIError(w http.ResponseWriter, status int, code, message string) {
 			"trace_id": traceID,
 			"event_id": traceID,
 		},
+	})
+}
+
+// NoStore prevents browsers and intermediary caches retaining management data.
+func NoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
 	})
 }

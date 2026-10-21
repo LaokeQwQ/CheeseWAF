@@ -99,9 +99,28 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	writeMetric(&buf, "cheesewaf_semantic_blocked_total", "Semantic analyzer block-mode detections.", float64(sem.Blocked), nil)
 	writeMetric(&buf, "cheesewaf_semantic_budget_exhausted_total", "Detection budget exhausted events.", float64(sem.BudgetExhausted), nil)
 	writeMetric(&buf, "cheesewaf_semantic_avg_latency_ns", "Average semantic analyzer latency in nanoseconds.", float64(sem.AvgLatencyNs), nil)
-	for _, bucket := range sortedStringKeys(sem.LatencyBuckets) {
-		writeMetric(&buf, "cheesewaf_semantic_latency_bucket_total", "Semantic latency histogram buckets.", float64(sem.LatencyBuckets[bucket]), map[string]string{"bucket": bucket})
+	// Prometheus histograms use cumulative buckets and the reserved `le`
+	// label. The semantic counters store exclusive buckets, so accumulate them
+	// at exposition time while retaining the original process counters.
+	writeMetricType(&buf, "cheesewaf_semantic_latency_seconds", "Semantic analyzer latency.", "histogram", nil)
+	latencyBuckets := []struct {
+		le    string
+		count uint64
+	}{
+		{le: "0.00005", count: sem.LatencyBuckets["under_50us"]},
+		{le: "0.0002", count: sem.LatencyBuckets["under_50us"] + sem.LatencyBuckets["under_200us"]},
+		{le: "0.001", count: sem.LatencyBuckets["under_50us"] + sem.LatencyBuckets["under_200us"] + sem.LatencyBuckets["under_1ms"]},
 	}
+	for _, bucket := range latencyBuckets {
+		writeMetricSample(&buf, "cheesewaf_semantic_latency_seconds_bucket", float64(bucket.count), map[string]string{"le": bucket.le})
+	}
+	latencyCount := uint64(0)
+	for _, count := range sem.LatencyBuckets {
+		latencyCount += count
+	}
+	writeMetricSample(&buf, "cheesewaf_semantic_latency_seconds_bucket", float64(latencyCount), map[string]string{"le": "+Inf"})
+	writeMetricSample(&buf, "cheesewaf_semantic_latency_seconds_sum", float64(sem.AvgLatencyNs)*float64(latencyCount)/1e9, nil)
+	writeMetricSample(&buf, "cheesewaf_semantic_latency_seconds_count", float64(latencyCount), nil)
 	for _, category := range sortedStringKeys(sem.HitByCategory) {
 		writeMetric(&buf, "cheesewaf_semantic_hit_by_category_total", "Semantic hits by category.", float64(sem.HitByCategory[category]), map[string]string{"category": category})
 	}
@@ -138,8 +157,22 @@ func Values(snapshot Snapshot) map[string]float64 {
 }
 
 func writeMetric(buf *bytes.Buffer, name, help string, value float64, labels map[string]string) {
+	typ := "gauge"
+	if strings.HasSuffix(name, "_total") {
+		typ = "counter"
+	}
+	writeMetricType(buf, name, help, typ, func() { writeMetricSample(buf, name, value, labels) })
+}
+
+func writeMetricType(buf *bytes.Buffer, name, help, typ string, sample func()) {
 	fmt.Fprintf(buf, "# HELP %s %s\n", name, help)
-	fmt.Fprintf(buf, "# TYPE %s gauge\n", name)
+	fmt.Fprintf(buf, "# TYPE %s %s\n", name, typ)
+	if sample != nil {
+		sample()
+	}
+}
+
+func writeMetricSample(buf *bytes.Buffer, name string, value float64, labels map[string]string) {
 	if len(labels) == 0 {
 		fmt.Fprintf(buf, "%s %g\n", name, value)
 		return

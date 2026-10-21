@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -50,15 +51,26 @@ func TestSetupAPIUsesSharedCompletionPath(t *testing.T) {
 	if !drafts.SetPassword(draft.ID, "Correct-Horse-9x!") {
 		t.Fatal("set draft password")
 	}
+	var appliedProtection *config.ProtectionConfig
 	handler := New(Options{
 		Config:      cfg,
 		ConfigPath:  bundle.Paths.ConfigFile,
 		Store:       store,
 		SetupToken:  "local-setup-secret",
 		SetupDrafts: drafts,
+		OnProtectionChanged: func(next config.ProtectionConfig) error {
+			appliedProtection = &next
+			return nil
+		},
+		OnConfigChanged: func(next *config.Config) error {
+			if next == nil || !next.Console.Login.SecurityEntry.Enabled {
+				t.Fatalf("completed setup config was not published with enabled security entry: %#v", next)
+			}
+			return nil
+		},
 	})
 
-	body := `{"username":"admin","password":"Correct-Horse-9x!","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls"}`
+	body := `{"username":"admin","password":"Correct-Horse-9x!","admin_listen":"0.0.0.0:9443","admin_strategy":"public_tls","profile":"high"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.AddCookie(&http.Cookie{Name: setup.SetupSessionCookie, Value: draft.ID})
@@ -70,6 +82,13 @@ func TestSetupAPIUsesSharedCompletionPath(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("setup returned %d: %s", rr.Code, rr.Body.String())
+	}
+	if appliedProtection == nil {
+		t.Fatal("setup did not apply completed protection config to the live runtime")
+	}
+	wantProfile := setup.ProfileDefaults(setup.ProfileHigh)
+	if appliedProtection.Policy.WebAttack != wantProfile.WebAttackLevel || appliedProtection.RateLimit.Default.Requests != wantProfile.RateLimitRequests {
+		t.Fatalf("live runtime received protection profile level=%q requests=%d, want level=%q requests=%d", appliedProtection.Policy.WebAttack, appliedProtection.RateLimit.Default.Requests, wantProfile.WebAttackLevel, wantProfile.RateLimitRequests)
 	}
 	var envelope struct {
 		Data map[string]any `json:"data"`
@@ -111,6 +130,93 @@ func TestSetupAPIUsesSharedCompletionPath(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("setup API should regenerate admin certificate bundle %s: %v", path, err)
 		}
+	}
+}
+
+func TestSetupRuntimeApplyFailureRollsBackCompletion(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	bundle, err := setup.EnsureDefaults(setup.DefaultOptions{DataDir: dataDir})
+	if err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	cfg, err := config.Load(bundle.Paths.ConfigFile)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	originalConfig, err := os.ReadFile(bundle.Paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.OpenSQLite(bundle.Paths.SQLiteFile)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{bundle.Paths.CertFile, bundle.Paths.KeyFile, bundle.Paths.CAFile, bundle.Paths.CAKeyFile} {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove generated cert fixture %s: %v", path, err)
+		}
+	}
+	drafts := setup.NewDraftStore(time.Minute)
+	draft, err := drafts.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drafts.SetPassword(draft.ID, "Correct-Horse-9x!") {
+		t.Fatal("set draft password")
+	}
+	var calls []string
+	handler := New(Options{
+		Config:      cfg,
+		ConfigPath:  bundle.Paths.ConfigFile,
+		Store:       store,
+		SetupToken:  "local-setup-secret",
+		SetupDrafts: drafts,
+		OnProtectionChanged: func(next config.ProtectionConfig) error {
+			calls = append(calls, next.Policy.WebAttack)
+			if next.Policy.WebAttack != cfg.Protection.Policy.WebAttack {
+				return errors.New("injected runtime apply failure")
+			}
+			return nil
+		},
+	})
+	body := `{"username":"admin","password":"Correct-Horse-9x!","admin_listen":"127.0.0.1:9443","profile":"high"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.AddCookie(&http.Cookie{Name: setup.SetupSessionCookie, Value: draft.ID})
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CheeseWAF-Setup-Token", "local-setup-secret")
+	rr := httptest.NewRecorder()
+
+	handler.Setup(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("setup returned %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if !setup.NeedsSetup(dataDir) {
+		t.Fatal("setup lock remains after runtime apply failure")
+	}
+	users, err := store.ListUsers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("administrator persisted after runtime apply failure: %+v", users)
+	}
+	gotConfig, err := os.ReadFile(bundle.Paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotConfig) != string(originalConfig) {
+		t.Fatal("setup configuration was not restored after runtime apply failure")
+	}
+	if len(calls) != 2 || calls[0] == calls[1] || calls[1] != cfg.Protection.Policy.WebAttack {
+		t.Fatalf("protection apply/restore calls = %v, want failed new profile then previous profile", calls)
 	}
 }
 

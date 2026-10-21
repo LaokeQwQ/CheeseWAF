@@ -28,6 +28,8 @@ const (
 	loginRateLimitWindow                = 5 * time.Minute
 	loginRateLimitLockDuration          = 5 * time.Minute
 	loginMaxConcurrentAttempts          = 32
+	loginMaxConcurrentBodiesPerClient   = 4
+	loginMaxBodySources                 = 4096
 )
 
 type loginCAPTCHAState struct {
@@ -36,6 +38,7 @@ type loginCAPTCHAState struct {
 	receipts      map[string]loginCAPTCHAReceiptState
 	loginFailures map[string]loginFailureState
 	loginSlots    chan struct{}
+	loginBodies   map[string]int
 	issuance      loginCAPTCHAIssuanceState
 	nextPrune     time.Time
 }
@@ -60,8 +63,11 @@ func ApplyAuthState(h *Handler, state *AuthState) {
 		state.login = newLoginCAPTCHAState()
 	}
 	if state.twoFA == nil {
-		state.twoFA = newTwoFAState()
+		state.twoFA = newTwoFAStateWithStore(h.Store)
 	}
+	state.twoFA.mu.Lock()
+	state.twoFA.store = h.Store
+	state.twoFA.mu.Unlock()
 	h.LoginCAPTCHAState = state.login
 	h.TwoFAState = state.twoFA
 }
@@ -178,6 +184,29 @@ func (s *loginCAPTCHAState) acquireLoginSlot() bool {
 	default:
 		return false
 	}
+}
+
+func (s *loginCAPTCHAState) acquireLoginBody(source string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loginBodies == nil {
+		s.loginBodies = make(map[string]int)
+	}
+	if s.loginBodies[source] >= loginMaxConcurrentBodiesPerClient || (s.loginBodies[source] == 0 && len(s.loginBodies) >= loginMaxBodySources) {
+		return false
+	}
+	s.loginBodies[source]++
+	return true
+}
+
+func (s *loginCAPTCHAState) releaseLoginBody(source string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loginBodies[source] <= 1 {
+		delete(s.loginBodies, source)
+		return
+	}
+	s.loginBodies[source]--
 }
 
 func (s *loginCAPTCHAState) releaseLoginSlot() {

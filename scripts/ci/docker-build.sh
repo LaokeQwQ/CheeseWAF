@@ -20,7 +20,10 @@ fi
 for entry in \
   "GO_IMAGE:${CHEESEWAF_GO_IMAGE:-}" \
   "NODE_IMAGE:${CHEESEWAF_NODE_IMAGE:-}" \
-  "RUNTIME_IMAGE:${CHEESEWAF_RUNTIME_IMAGE:-}"; do
+  "RUNTIME_IMAGE:${CHEESEWAF_RUNTIME_IMAGE:-}" \
+  "HTTP_PROXY:${CHEESEWAF_BUILD_HTTP_PROXY:-}" \
+  "HTTPS_PROXY:${CHEESEWAF_BUILD_HTTPS_PROXY:-}" \
+  "NO_PROXY:${CHEESEWAF_BUILD_NO_PROXY:-}"; do
   name="${entry%%:*}"
   value="${entry#*:}"
   if [[ -n "$value" ]]; then
@@ -59,10 +62,12 @@ fi
 container_name="cheesewaf-ci-smoke-$$"
 log_file="$(mktemp)"
 setup_response="$(mktemp)"
+setup_status_file="$(mktemp)"
 setup_payload="$(mktemp)"
 setup_header="$(mktemp)"
 secret_env_file="$(mktemp)"
-trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true; rm -f "$log_file" "$setup_response" "$setup_payload" "$setup_header" "$secret_env_file"' EXIT
+entry_cookie_file="$(mktemp)"
+trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true; rm -f "$log_file" "$setup_response" "$setup_status_file" "$setup_payload" "$setup_header" "$secret_env_file" "$entry_cookie_file"' EXIT
 
 runtime_user="$(docker image inspect --format '{{.Config.User}}' "$image_tag")"
 [[ -n "$runtime_user" && "$runtime_user" != "0" && "$runtime_user" != "root" ]] || {
@@ -135,7 +140,7 @@ for _ in $(seq 1 45); do
     echo "::error::container exited during startup smoke" >&2
     exit 1
   fi
-  if curl --fail --silent --show-error --insecure "https://127.0.0.1:${host_port}/" >/dev/null 2>&1; then
+  if curl --fail --silent --show-error --insecure "https://127.0.0.1:${host_port}/health/ready" >/dev/null 2>&1; then
     ready="yes"
     break
   fi
@@ -147,13 +152,27 @@ done
   exit 1
 }
 
-curl --fail --silent --show-error --insecure \
+curl --silent --show-error --insecure --write-out '%{http_code}' --output "$setup_response" >"$setup_status_file" \
   --header 'Content-Type: application/json' \
   --header "@${setup_header}" \
   --data-binary "@${setup_payload}" \
-  "https://127.0.0.1:${host_port}/api/setup" >"$setup_response"
+  "https://127.0.0.1:${host_port}/api/setup" || {
+  setup_status="$(cat "$setup_status_file" 2>/dev/null || true)"
+  echo "::error::fresh container setup request failed (HTTP ${setup_status:-unknown})" >&2
+  cat "$setup_response" >&2 || true
+  docker logs "$container_name" >&2 || true
+  exit 1
+}
+setup_status="$(cat "$setup_status_file")"
+if [[ ! "$setup_status" =~ ^2[0-9][0-9]$ ]]; then
+  echo "::error::fresh container setup returned HTTP ${setup_status}" >&2
+  cat "$setup_response" >&2 || true
+  docker logs "$container_name" >&2 || true
+  exit 1
+fi
 grep -q '"setup_complete":true' "$setup_response" || {
   cat "$setup_response" >&2
+  docker logs "$container_name" >&2 || true
   echo "::error::fresh container setup did not complete" >&2
   exit 1
 }
@@ -164,12 +183,25 @@ docker exec "$container_name" /usr/local/bin/cheesewaf-entrypoint healthcheck >/
   exit 1
 }
 
-asset_path="$(curl --fail --silent --show-error --insecure "https://127.0.0.1:${host_port}/" | sed -nE 's#.*(\/assets\/[^"'"'"' ]+\.js).*#\1#p' | head -n 1)"
+# Setup enables a random security entrance. Exercise that public contract
+# rather than treating the deliberately protected console as an open page.
+entry_path="$(python3 -c 'import json, re, sys; value = json.load(sys.stdin)["data"]["security_entry_path"]; assert re.fullmatch(r"/[A-Za-z0-9]{8,64}", value); print(value)' <"$setup_response")"
+protected_status="$(curl --silent --show-error --insecure --output /dev/null --write-out '%{http_code}' "https://127.0.0.1:${host_port}/")"
+[[ "$protected_status" == "418" ]] || {
+  echo "::error::container console must require its security entrance after setup (got ${protected_status})" >&2
+  exit 1
+}
+entry_status="$(curl --fail --silent --show-error --insecure --cookie-jar "$entry_cookie_file" --output /dev/null --write-out '%{http_code}' "https://127.0.0.1:${host_port}${entry_path}")"
+[[ "$entry_status" == "302" ]] || {
+  echo "::error::container security entrance did not issue its session cookie (got ${entry_status})" >&2
+  exit 1
+}
+asset_path="$(curl --fail --silent --show-error --insecure --cookie "$entry_cookie_file" "https://127.0.0.1:${host_port}/" | sed -nE 's#.*(\/assets\/[^"'"'"' ]+\.js).*#\1#p' | head -n 1)"
 [[ -n "$asset_path" ]] || {
   echo "::error::container UI entrypoint did not reference a JavaScript asset" >&2
   exit 1
 }
-content_type="$(curl --fail --silent --show-error --insecure --head "https://127.0.0.1:${host_port}${asset_path}" | awk 'BEGIN { IGNORECASE=1 } /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')"
+content_type="$(curl --fail --silent --show-error --insecure --cookie "$entry_cookie_file" --head "https://127.0.0.1:${host_port}${asset_path}" | awk 'tolower($0) ~ /^content-type:/ { sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')"
 [[ "$content_type" == *javascript* ]] || {
   echo "::error::container JavaScript asset returned unexpected MIME type: ${content_type}" >&2
   exit 1

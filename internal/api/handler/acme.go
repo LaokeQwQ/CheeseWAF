@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,6 +43,8 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
 	}
+	h.siteMutationMu.Lock()
+	defer h.siteMutationMu.Unlock()
 	if h.currentConfig() != nil && !h.currentConfig().ACME.Enabled {
 		writeError(w, http.StatusServiceUnavailable, "ACME_DISABLED", "acme automation is disabled")
 		return
@@ -100,6 +103,18 @@ func (h *Handler) IssueSiteACME(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.notifyACMEIssue(r, site, result, err)
 		writeErrorWithData(w, http.StatusBadRequest, "ACME_ISSUE_FAILED", err.Error(), map[string]any{
+			"result": result,
+			"events": result.Events,
+		})
+		return
+	}
+	requireInstalledFiles := false
+	if _, ok := issuer.(*acme.ACMESHIssuer); ok {
+		requireInstalledFiles = true
+	}
+	if _, err := validateACMECertificateFiles(result.CertFile, result.KeyFile, site.Domains, h.nowUTC(), requireInstalledFiles); err != nil {
+		h.notifyACMEIssue(r, site, result, err)
+		writeErrorWithData(w, http.StatusBadRequest, "ACME_CERT_INVALID", err.Error(), map[string]any{
 			"result": result,
 			"events": result.Events,
 		})
@@ -176,7 +191,7 @@ func (h *Handler) recoverACMEDeployment(r *http.Request, previous *storage.Site,
 		recoveryErrors = append(recoveryErrors, fmt.Errorf("restore certificate files: %w", err))
 	}
 	if restoreStore {
-		if err := h.Store.UpdateSite(r.Context(), previous); err != nil {
+		if err := restoreACMESiteRecord(r.Context(), h.Store, previous); err != nil {
 			recoveryErrors = append(recoveryErrors, fmt.Errorf("restore site record: %w", err))
 		}
 	}
@@ -189,6 +204,30 @@ func (h *Handler) recoverACMEDeployment(r *http.Request, previous *storage.Site,
 		return fmt.Errorf("%v", recoveryErrors)
 	}
 	return nil
+}
+
+func restoreACMESiteRecord(ctx context.Context, store storage.SiteStore, previous *storage.Site) error {
+	if restorer, ok := store.(interface {
+		RestoreSite(context.Context, *storage.Site) error
+	}); ok {
+		return restorer.RestoreSite(ctx, previous)
+	}
+
+	// Keep compatibility with SiteStore implementations that do not yet expose
+	// RestoreSite while still honoring their UpdatedAt compare-and-swap.
+	current, err := store.GetSite(ctx, previous.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		return fmt.Errorf("site %q no longer exists", previous.ID)
+	}
+	restored, err := cloneSite(previous)
+	if err != nil {
+		return err
+	}
+	restored.UpdatedAt = current.UpdatedAt
+	return store.UpdateSite(ctx, restored)
 }
 
 type acmeFileSnapshot struct {
@@ -278,6 +317,11 @@ func writeACMEFileAtomically(path string, data []byte, mode os.FileMode) error {
 	if err := replaceACMEFileAtomic(tempPath, path); err != nil {
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
 	}
+	if filepath.Base(path) == "site.key" {
+		if err := protectACMEPrivateKey(path); err != nil {
+			return fmt.Errorf("protect restored private key: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -302,12 +346,7 @@ type trustedACMERuntime struct {
 
 func (h *Handler) trustedSiteACMERuntime(site *storage.Site) trustedACMERuntime {
 	cfg := config.Default()
-	if h != nil && h.Config != nil {
-		// Config is the compatibility view kept in sync by publishConfig and is
-		// also the field used by package-level callers to override test/runtime
-		// ACME paths before issuing a certificate.
-		cfg = *h.Config
-	} else if h != nil && h.currentConfig() != nil {
+	if h != nil && h.currentConfig() != nil {
 		cfg = *h.currentConfig()
 	}
 	acmeCfg := cfg.ACME

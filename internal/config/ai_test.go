@@ -90,6 +90,19 @@ func TestValidateRejectsUnboundedAIModelSettings(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidAIPromptRegistry(t *testing.T) {
+	cfg := Default()
+	cfg.AI.Prompts = []AIPromptConfig{{
+		ID: "prompt", Version: "1", Content: "safe", Language: "en", Model: "model", Enabled: true,
+	}}
+	cfg.AI.Skills = []AISkillConfig{{
+		ID: "skill", Version: "1", PromptID: "missing", Enabled: true,
+	}}
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "AI skill requires") {
+		t.Fatalf("expected prompt registry validation error, got %v", err)
+	}
+}
+
 func TestValidateRejectsEscapingAIProviderPathsAndUnknownCatalogEffort(t *testing.T) {
 	cfg := Default()
 	cfg.AI.Enabled = true

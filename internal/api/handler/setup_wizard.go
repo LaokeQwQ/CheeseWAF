@@ -63,15 +63,14 @@ func (h *Handler) allowSetupMutation(w http.ResponseWriter, r *http.Request) boo
 	expected := ""
 	if h.SetupTokenSource != nil {
 		expected = h.SetupTokenSource.Current()
-	}
-	if expected == "" {
+	} else {
 		expected = h.SetupToken
-	}
-	if expected == "" {
-		expected = os.Getenv("CHEESEWAF_SETUP_TOKEN")
-	}
-	if expected == "" {
-		expected = setup.GetSetupToken()
+		if expected == "" {
+			expected = os.Getenv("CHEESEWAF_SETUP_TOKEN")
+		}
+		if expected == "" {
+			expected = setup.GetSetupToken()
+		}
 	}
 	got := r.Header.Get("X-CheeseWAF-Setup-Token")
 	if !validSetupTokenValue(expected) || !validSetupTokenValue(got) {
@@ -197,9 +196,21 @@ func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, r *http.Request
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(setup.DefaultDraftTTL.Seconds()),
 	})
+	adminListen := ""
+	adminStrategy := ""
+	if cfg := h.currentConfig(); cfg != nil {
+		adminListen = cfg.Server.AdminListen
+		if cfg.Server.AdminPublic {
+			adminStrategy = "public_tls"
+		} else {
+			adminStrategy = "local"
+		}
+	}
 	writeData(w, map[string]any{
-		"probe":    result,
-		"draft_id": draft.ID,
+		"probe":          result,
+		"draft_id":       draft.ID,
+		"admin_listen":   adminListen,
+		"admin_strategy": adminStrategy,
 		"profiles": map[string]setup.ProfileConfig{
 			"low":    setup.ProfileDefaults(setup.ProfileLow),
 			"medium": setup.ProfileDefaults(setup.ProfileMedium),
@@ -210,6 +221,9 @@ func (h *Handler) writeSetupProbeResponse(w http.ResponseWriter, r *http.Request
 
 // SetupDraftGet returns the current setup draft for the session cookie.
 func (h *Handler) SetupDraftGet(w http.ResponseWriter, r *http.Request) {
+	if !h.allowSetupMutation(w, r) {
+		return
+	}
 	id := setupSessionID(r)
 	if id == "" {
 		writeError(w, http.StatusUnauthorized, "SETUP_SESSION_REQUIRED", "setup session required")

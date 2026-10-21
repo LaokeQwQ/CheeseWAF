@@ -1,6 +1,7 @@
 import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
+import i18n from '../i18n';
 import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AIProviderOpsResponse, AISelfLearningReport, AIUsageSnapshot, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { ScheduledTaskHistoryEntry, TimeSyncStatus } from '../types/api';
 import type { OTAStatus } from '../types/api';
@@ -16,6 +17,8 @@ export const apiClient = axios.create({
 });
 
 const AI_REQUEST_TIMEOUT_MS = 300_000;
+// Cap siteverify permits a 30s server budget; leave room for its response.
+const CAP_VERIFY_TIMEOUT_MS = 35_000;
 /** Legacy key cleared on logout; sessions use HttpOnly cookies, not localStorage. */
 const tokenStorageKey = 'cheesewaf-token';
 const authFlagKey = 'cheesewaf-authed';
@@ -45,10 +48,16 @@ function readCSRFCookie(): string {
     return cachedCSRF;
   }
   const parts = document.cookie.split(';');
-  for (const part of parts) {
-    const [name, ...rest] = part.trim().split('=');
-    if (name === csrfCookieName) {
-      return decodeURIComponent(rest.join('=') || '');
+  for (const cookieName of [`__Host-${csrfCookieName}`, csrfCookieName]) {
+    for (const part of parts) {
+      const [name, ...rest] = part.trim().split('=');
+      if (name === cookieName) {
+        try {
+          return decodeURIComponent(rest.join('=') || '');
+        } catch {
+          continue;
+        }
+      }
     }
   }
   return cachedCSRF;
@@ -342,7 +351,8 @@ export class APIRequestError extends Error {
   approval?: AIApprovalRequest;
 
   constructor(message: string, code?: string, status?: number, traceID?: string, data?: unknown) {
-    super(traceID ? `${message} · Event / Trace ID: ${traceID}` : message);
+    const displayMessage = localizedAPIErrorMessage(message, code, status);
+    super(traceID ? `${displayMessage} · ${i18n.t('common.apiErrors.traceID', { id: traceID })}` : displayMessage);
     this.name = 'APIRequestError';
     this.rawMessage = message;
     this.code = code;
@@ -353,6 +363,37 @@ export class APIRequestError extends Error {
       this.approval = data as AIApprovalRequest;
     }
   }
+}
+
+const apiErrorTranslationKeys: Record<string, string> = {
+  NETWORK_ERROR: 'common.apiErrors.network',
+  REQUEST_TIMEOUT: 'common.apiErrors.timeout',
+  CAPTCHA_UNAVAILABLE: 'login.captchaUnavailable',
+  CAPTCHA_CAPACITY_REACHED: 'common.apiErrors.captchaCapacityReached',
+  CAPTCHA_ERROR: 'common.apiErrors.captchaFailure',
+};
+
+function localizedAPIErrorMessage(message: string, code?: string, status?: number): string {
+  const codeKey = code ? apiErrorTranslationKeys[code] : undefined;
+  const genericHTTPFailure = /^Request failed with status code \d+$/i.test(message);
+  const statusKey = !codeKey && genericHTTPFailure ? apiHTTPErrorTranslationKey(status) : undefined;
+  const key = codeKey ?? statusKey;
+  return key ? i18n.t(key, { status }) : message;
+}
+
+function apiHTTPErrorTranslationKey(status?: number): string | undefined {
+  if (!status) return undefined;
+  if (status === 401) return 'common.apiErrors.unauthorized';
+  if (status === 403) return 'common.apiErrors.forbidden';
+  if (status === 404) return 'common.apiErrors.notFound';
+  if (status === 409) return 'common.apiErrors.conflict';
+  if (status === 413) return 'common.apiErrors.requestTooLarge';
+  if (status === 429) return 'common.apiErrors.rateLimited';
+  if (status === 502) return 'common.apiErrors.badGateway';
+  if (status === 503) return 'common.apiErrors.serviceUnavailable';
+  if (status === 504) return 'common.apiErrors.gatewayTimeout';
+  if (status >= 500) return 'common.apiErrors.serverError';
+  return 'common.apiErrors.httpStatus';
 }
 
 const sessionInvalidErrorCodes = new Set(['UNAUTHORIZED', 'SESSION_EXPIRED', 'SESSION_INVALID']);
@@ -471,7 +512,8 @@ export function fetchLoginCaptcha(mode?: 'slider' | 'pow', signal?: AbortSignal)
 }
 
 export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload, signal?: AbortSignal) {
-  return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha, { signal }));
+  const config = captcha.provider === 'cap' ? { signal, timeout: CAP_VERIFY_TIMEOUT_MS } : { signal };
+  return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha, config));
 }
 
 export async function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
@@ -479,6 +521,7 @@ export async function login(username: string, password: string, totpCode?: strin
   const result = await unwrap<AuthResponse>(
     apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
   );
+  queryClient.clear();
   if (result.csrf) {
     setCSRFToken(result.csrf);
   }
@@ -541,7 +584,7 @@ export async function bootstrapSessionFromLegacyToken(): Promise<boolean> {
   }
 }
 
-export async function setupAdmin(username: string, password: string, adminListen: string, adminStrategy = 'local') {
+export async function setupAdmin(username: string, password: string, adminListen = '', adminStrategy = '', profile = '') {
   const result = await unwrap<{
     user: { username: string; role: string };
     setup_complete?: boolean;
@@ -553,6 +596,7 @@ export async function setupAdmin(username: string, password: string, adminListen
       admin_listen: adminListen,
       admin_strategy: adminStrategy,
       admin_public: adminStrategy === 'public_tls',
+      profile,
     }),
   );
   clearSetupToken();
@@ -632,12 +676,12 @@ export function decideReviewItem(id: string, decision: ReviewDecision) {
 
 export async function fetchLogEvent(reference: string) {
   const byTrace = await fetchLogs({ limit: 10, trace_id: reference });
-  const direct = byTrace.items.find((entry) => entry.trace_id === reference || entry.id === reference) ?? byTrace.items[0];
+  const direct = byTrace.items.find((entry) => entry.trace_id === reference || entry.id === reference);
   if (direct) {
     return direct;
   }
   const byID = await fetchLogs({ limit: 1, id: reference });
-  const fallback = byID.items.find((entry) => entry.id === reference || entry.trace_id === reference) ?? byID.items[0];
+  const fallback = byID.items.find((entry) => entry.id === reference || entry.trace_id === reference);
   if (!fallback) {
     throw new APIRequestError('Log event not found', 'LOG_NOT_FOUND', 404);
   }

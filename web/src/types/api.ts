@@ -45,6 +45,9 @@ export type NginxImportSite = {
 };
 
 export type SiteAdvanced = {
+  /** Explicit HTTP/2 gRPC pass-through; protobuf/frame inspection is unavailable. */
+  grpc_enabled?: boolean;
+  websocket_enabled?: boolean;
   certificate: SiteCertificateConfig;
   origin: SiteOriginConfig;
   health_check: SiteHealthCheckConfig;
@@ -193,10 +196,10 @@ export type SiteProtectionConfig = {
   semantic_ssrf: boolean;
   semantic_nosql: boolean;
   semantic_ssti: boolean;
-  bot: boolean;
-  ratelimit: boolean;
-  acl: boolean;
-  apisec: boolean;
+  bot?: boolean;
+  ratelimit?: boolean;
+  acl?: boolean;
+  apisec?: boolean;
 };
 
 export type SiteResponseConfig = {
@@ -308,6 +311,7 @@ export type ProtectionConfig = {
   bot: {
     enabled: boolean;
     challenge_backend?: 'memory' | 'redis' | string;
+    captcha_provider?: 'builtin' | 'cap' | string;
     risk_level?: number;
     risk_low_threshold?: number;
     risk_medium_threshold?: number;
@@ -374,6 +378,8 @@ export type ScheduledTask = {
   target: string;
   channel?: string;
   recipient?: string;
+  /** Recipient is blank when redacted; preserve it on an unchanged update. */
+  recipient_configured?: boolean;
   period?: string;
   format?: string;
   keep: number;
@@ -1003,10 +1009,24 @@ export type TOTPSetup = {
 
 export type LoginCAPTCHAConfig = {
   enabled: boolean;
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   max_number: number;
   ttl: number | string;
   slider: LoginSliderCAPTCHAConfig;
+};
+
+export type CapStandaloneProviderConfig = {
+  api_endpoint: string;
+  widget_url: string;
+  wasm_url: string;
+  hashwx_url: string;
+  timeout: number | string;
+  secret_set?: boolean;
+};
+
+export type CAPTCHAProvidersConfig = {
+  cap: CapStandaloneProviderConfig;
 };
 
 export type LoginSliderCAPTCHAConfig = {
@@ -1038,9 +1058,12 @@ export type LoginBranding = {
 };
 
 export type LoginCAPTCHAPayload = {
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   receipt?: string;
   username?: string;
+  challenge_id?: string;
+  token?: string;
   algorithm?: string;
   challenge?: string;
   number?: number;
@@ -1082,6 +1105,7 @@ export type LoginSliderCAPTCHAChallenge = {
 export type LoginOptions = {
   captcha: {
     enabled: boolean;
+    provider?: 'builtin' | 'cap' | string;
     mode?: 'slider' | 'pow' | string;
     algorithm?: string;
     max_number?: number;
@@ -1101,9 +1125,18 @@ export type LoginOptions = {
 
 export type LoginCAPTCHAResponse = {
   enabled: boolean;
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   challenge?: LoginCAPTCHAChallenge;
   slider?: LoginSliderCAPTCHAChallenge;
+  cap?: LoginCapCAPTCHAChallenge;
+};
+
+export type LoginCapCAPTCHAChallenge = {
+  challenge_id: string;
+  api_endpoint: string;
+  wasm_url: string;
+  hashwx_url: string;
 };
 
 export type APISecAuthConfig = {
@@ -1216,7 +1249,20 @@ export type TimeSyncStatus = {
 };
 
 export type SystemConfig = {
+	restart_required?: boolean;
+	restart_fields?: string[];
 	capabilities: {
+		acme_auto_renew?: SystemCapability;
+		grpc_proxy?: SystemCapability & { mode?: 'passthrough' | string; message?: string };
+		grpc_message_inspection?: SystemCapability;
+		backup?: SystemCapability;
+		storage_cleanup?: SystemCapability;
+		diagnostic_upload?: SystemCapability;
+		kms_recovery?: SystemCapability;
+		scoped_api_tokens?: SystemCapability;
+		audit_signing?: SystemCapability;
+		control_plane_redis?: SystemCapability & { configured?: boolean; scope?: string };
+		request_shared_state?: SystemCapability;
 		ota_updates: SystemCapability;
 		vulnerability_feeds: SystemCapability;
 		bot_challenge_redis: SystemCapability;
@@ -1234,6 +1280,7 @@ export type SystemConfig = {
       china_boundary: MapBoundaryConfig;
     };
   };
+  captcha_providers: CAPTCHAProvidersConfig;
   server: {
     listen: string;
     listen_tls: string;
@@ -1362,6 +1409,8 @@ export type SystemConfig = {
 export type SystemCapability = {
 	available: boolean;
 	reason: string;
+	message?: string;
+	mode?: string;
 };
 
 export type OTAReleaseCandidate = {

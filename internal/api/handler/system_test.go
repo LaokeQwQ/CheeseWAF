@@ -110,6 +110,18 @@ func TestSystemExposesUnavailableUpdateCapabilitiesAndEffectiveDisabledState(t *
 			t.Fatalf("capability %q = %+v, want unavailable NOT_IMPLEMENTED", capability, got)
 		}
 	}
+	for name, reason := range map[string]string{
+		"diagnostic_upload":    "UPLOAD_ADAPTER_UNCONFIGURED",
+		"kms_recovery":         "KEY_PROVIDER_UNCONFIGURED",
+		"scoped_api_tokens":    "TOKEN_SERVICE_NOT_COMPOSED",
+		"audit_signing":        "SIGNER_NOT_CONFIGURED",
+		"request_shared_state": "NODE_LOCAL_ONLY",
+	} {
+		got := response.Data.Capabilities[name]
+		if got.Available || got.Reason != reason {
+			t.Fatalf("capability %q = %+v, want unavailable %s", name, got, reason)
+		}
+	}
 	otaCapability := response.Data.Capabilities["ota_updates"]
 	if otaCapability.Available || otaCapability.Reason != "EXECUTOR_UNAVAILABLE" {
 		t.Fatalf("OTA capability = %+v, want executor unavailable", otaCapability)
@@ -129,6 +141,93 @@ func TestSystemExposesUnavailableUpdateCapabilitiesAndEffectiveDisabledState(t *
 	}
 	if string(after) != string(before) {
 		t.Fatal("GET rewrote the legacy config")
+	}
+}
+
+func TestSystemCapProviderRedactsSecretPathAndPreservesItOnUpdate(t *testing.T) {
+	cfg := config.Default()
+	secretPath := filepath.Join(t.TempDir(), "private-cap-secret")
+	if err := os.WriteFile(secretPath, []byte("cap-siteverify-secret"), 0o600); err != nil {
+		t.Fatalf("write Cap secret: %v", err)
+	}
+	cfg.CAPTCHAProviders.Cap = config.CapStandaloneConfig{
+		APIEndpoint: "https://cap.example/site-key/",
+		WidgetURL:   "https://cap.example/assets/widget.js",
+		WASMURL:     "https://cap.example/assets/cap_wasm_bg.wasm",
+		HashWXURL:   "https://cap.example/assets/hashwx.wasm",
+		SecretFile:  secretPath,
+		Timeout:     5 * time.Second,
+	}
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	h := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	get := httptest.NewRecorder()
+	h.System(get, httptest.NewRequest(http.MethodGet, "/api/system", nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET system status=%d body=%s", get.Code, get.Body.String())
+	}
+	if strings.Contains(get.Body.String(), secretPath) || strings.Contains(get.Body.String(), "private-cap-secret") {
+		t.Fatalf("system response leaked Cap secret path: %s", get.Body.String())
+	}
+	var view struct {
+		Data struct {
+			CAPTCHAProviders struct {
+				Cap struct {
+					SecretSet bool `json:"secret_set"`
+				} `json:"cap"`
+			} `json:"captcha_providers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode system response: %v", err)
+	}
+	if !view.Data.CAPTCHAProviders.Cap.SecretSet {
+		t.Fatal("system response did not report the configured Cap secret")
+	}
+
+	updateBody := []byte(`{"captcha_providers":{"cap":{"api_endpoint":"https://new-cap.example/site-key/","widget_url":"https://new-cap.example/assets/widget.js","wasm_url":"https://new-cap.example/assets/cap_wasm_bg.wasm","hashwx_url":"https://new-cap.example/assets/hashwx.wasm","timeout":7000000000}}}`)
+	update := httptest.NewRecorder()
+	h.UpdateSystem(update, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(updateBody)))
+	if update.Code != http.StatusOK {
+		t.Fatalf("update Cap provider status=%d body=%s", update.Code, update.Body.String())
+	}
+	if cfg.CAPTCHAProviders.Cap.SecretFile != secretPath {
+		t.Fatalf("Cap secret path changed to %q, want preserved path", cfg.CAPTCHAProviders.Cap.SecretFile)
+	}
+	if strings.Contains(update.Body.String(), secretPath) {
+		t.Fatalf("update response leaked Cap secret path: %s", update.Body.String())
+	}
+}
+
+func TestReadableSecretFileRequiresExistingRegularFile(t *testing.T) {
+	root := t.TempDir()
+	secretPath := filepath.Join(root, "secret")
+	if readableSecretFile(secretPath) {
+		t.Fatal("missing secret file reported as configured")
+	}
+	if readableSecretFile(root) {
+		t.Fatal("secret directory reported as configured")
+	}
+	if err := os.WriteFile(secretPath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if !readableSecretFile(secretPath) {
+		t.Fatal("existing regular secret file was not reported as configured")
+	}
+	if err := os.WriteFile(secretPath, []byte(" \n\t"), 0o600); err != nil {
+		t.Fatalf("write blank secret: %v", err)
+	}
+	if readableSecretFile(secretPath) {
+		t.Fatal("blank secret file reported as configured")
+	}
+	if err := os.WriteFile(secretPath, bytes.Repeat([]byte{'x'}, 4<<10+1), 0o600); err != nil {
+		t.Fatalf("write oversized secret: %v", err)
+	}
+	if readableSecretFile(secretPath) {
+		t.Fatal("oversized secret file reported as configured")
 	}
 }
 
@@ -780,7 +879,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		Env:     map[string]string{"CF_TOKEN": "old-cf-secret"},
 		Enabled: true,
 	}}
-	cfg.Protection.Bot.Secret = "old-strong-bot-secret"
+	cfg.Protection.Bot.Secret = "old-strong-bot-secret-with-sufficient-entropy-1234"
 	cfg.Protection.IP.Providers = []config.ThreatIntelProviderConfig{{
 		ID:      "otx",
 		Name:    "OTX",
@@ -789,12 +888,13 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		Enabled: true,
 	}}
 	cfg.Monitor.Notifiers = []config.NotifierConfig{{
-		ID:      "webhook",
-		Name:    "Webhook",
-		Type:    "webhook",
-		Token:   "old-notify-secret",
-		Headers: map[string]string{"Authorization": "Bearer old-notify-header-secret"},
-		Enabled: true,
+		ID:       "webhook",
+		Name:     "Webhook",
+		Type:     "webhook",
+		Endpoint: "https://notify.example.test/hook",
+		Token:    "old-notify-secret",
+		Headers:  map[string]string{"Authorization": "Bearer old-notify-header-secret"},
+		Enabled:  true,
 	}}
 	cfg.APISec.Auth.JWTSharedSecret = "old-jwt-secret"
 	cfg.APISec.Auth.JWTPublicKeyPEM = "old-public-key-pem"
@@ -823,6 +923,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 	nextMonitor := cfg.Monitor
 	nextMonitor.Notifiers = append([]config.NotifierConfig(nil), cfg.Monitor.Notifiers...)
 	nextMonitor.Notifiers[0].Token = ""
+	nextMonitor.Notifiers[0].Endpoint = ""
 	nextMonitor.Notifiers[0].Headers = map[string]string{"Authorization": ""}
 	nextAPISec := cfg.APISec
 	nextAPISec.Auth.JWTSharedSecret = ""
@@ -851,10 +952,11 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		cfg.Storage.Elasticsearch.APIKey != "old-elastic-api-secret" ||
 		cfg.Storage.Elasticsearch.Headers["Authorization"] != "Bearer old-elastic-header-secret" ||
 		cfg.ACME.DNSProviders[0].Env["CF_TOKEN"] != "old-cf-secret" ||
-		cfg.Protection.Bot.Secret != "old-strong-bot-secret" ||
+		cfg.Protection.Bot.Secret != "old-strong-bot-secret-with-sufficient-entropy-1234" ||
 		cfg.Protection.IP.Providers[0].APIKey != "old-otx-secret" ||
 		cfg.Protection.IP.Providers[0].Headers["X-OTX-API-KEY"] != "old-otx-header-secret" ||
 		cfg.Monitor.Notifiers[0].Token != "old-notify-secret" ||
+		cfg.Monitor.Notifiers[0].Endpoint != "https://notify.example.test/hook" ||
 		cfg.Monitor.Notifiers[0].Headers["Authorization"] != "Bearer old-notify-header-secret" ||
 		cfg.APISec.Auth.JWTSharedSecret != "old-jwt-secret" ||
 		cfg.APISec.Auth.JWTPublicKeyPEM != "old-public-key-pem" ||
@@ -868,7 +970,7 @@ func TestUpdateSystemPreservesRedactedSecretsOnEmptyPayload(t *testing.T) {
 		"old-postgres-secret",
 		"old-elastic-secret",
 		"old-cf-secret",
-		"old-strong-bot-secret",
+		"old-strong-bot-secret-with-sufficient-entropy-1234",
 		"old-otx-secret",
 		"old-notify-secret",
 		"old-jwt-secret",
@@ -931,14 +1033,19 @@ func TestChinaMapBoundaryDisabled(t *testing.T) {
 
 func TestChinaMapBoundaryReturnsValidFeatureCollection(t *testing.T) {
 	cfg := config.Default()
-	boundaryFile := filepath.Join(t.TempDir(), "china-boundary.geojson")
+	cfg.Setup.DataDir = t.TempDir()
+	mapsDir := filepath.Join(cfg.Setup.DataDir, "maps")
+	if err := os.MkdirAll(mapsDir, 0o750); err != nil {
+		t.Fatalf("create maps directory: %v", err)
+	}
+	boundaryFile := filepath.Join(mapsDir, "china-boundary.geojson")
 	if err := os.WriteFile(boundaryFile, []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"coverage"},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}]}`), 0o600); err != nil {
 		t.Fatalf("write boundary fixture: %v", err)
 	}
 	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
 		Enabled:    true,
 		SourceType: "file",
-		Source:     boundaryFile,
+		Source:     "china-boundary.geojson",
 		License:    "licensed test fixture",
 		ReviewID:   "GS-test",
 	}
@@ -957,14 +1064,19 @@ func TestChinaMapBoundaryReturnsValidFeatureCollection(t *testing.T) {
 
 func TestChinaMapBoundaryRejectsNonFeatureCollection(t *testing.T) {
 	cfg := config.Default()
-	boundaryFile := filepath.Join(t.TempDir(), "china-boundary.geojson")
+	cfg.Setup.DataDir = t.TempDir()
+	mapsDir := filepath.Join(cfg.Setup.DataDir, "maps")
+	if err := os.MkdirAll(mapsDir, 0o750); err != nil {
+		t.Fatalf("create maps directory: %v", err)
+	}
+	boundaryFile := filepath.Join(mapsDir, "china-boundary.geojson")
 	if err := os.WriteFile(boundaryFile, []byte(`{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[116.4,39.9]}}`), 0o600); err != nil {
 		t.Fatalf("write boundary fixture: %v", err)
 	}
 	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
 		Enabled:    true,
 		SourceType: "file",
-		Source:     boundaryFile,
+		Source:     "china-boundary.geojson",
 		License:    "licensed test fixture",
 		ReviewID:   "GS-test",
 	}
@@ -1134,7 +1246,11 @@ func TestChinaMapBoundaryByCodeDisabled(t *testing.T) {
 
 func TestChinaMapBoundaryByCodeLoadsDirectoryCandidate(t *testing.T) {
 	cfg := config.Default()
-	boundaryDir := t.TempDir()
+	cfg.Setup.DataDir = t.TempDir()
+	boundaryDir := filepath.Join(cfg.Setup.DataDir, "maps")
+	if err := os.MkdirAll(boundaryDir, 0o750); err != nil {
+		t.Fatalf("create maps directory: %v", err)
+	}
 	boundaryFile := filepath.Join(boundaryDir, "330100.json")
 	if err := os.WriteFile(boundaryFile, []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"杭州市","adcode":"330100"},"geometry":{"type":"Point","coordinates":[120.2,30.3]}}]}`), 0o600); err != nil {
 		t.Fatalf("write boundary fixture: %v", err)
@@ -1142,7 +1258,7 @@ func TestChinaMapBoundaryByCodeLoadsDirectoryCandidate(t *testing.T) {
 	cfg.Console.Map.ChinaBoundary = config.MapBoundaryConfig{
 		Enabled:     true,
 		SourceType:  "file",
-		Source:      boundaryDir,
+		Source:      ".",
 		License:     "licensed test fixture",
 		ReviewID:    "GS-test",
 		Attribution: "unit-test",

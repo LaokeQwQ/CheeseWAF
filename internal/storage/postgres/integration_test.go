@@ -50,6 +50,31 @@ func TestPostgreSQLManagementStoreIntegration(t *testing.T) {
 	if err := s.Health(ctx); err != nil {
 		t.Fatal(err)
 	}
+	site := &storage.Site{ID: "site-timestamp-precision", Name: "Timestamp precision", Domains: []string{"example.test"}, Upstreams: []string{"http://127.0.0.1:8080"}}
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	if site.UpdatedAt.Nanosecond()%int(time.Microsecond) != 0 {
+		t.Fatalf("created site's returned version has sub-microsecond precision: %s", site.UpdatedAt.Format(time.RFC3339Nano))
+	}
+	createdSite, err := s.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if createdSite == nil || !createdSite.UpdatedAt.Equal(site.UpdatedAt) {
+		t.Fatalf("created site's returned version=%s, stored version=%v", site.UpdatedAt.Format(time.RFC3339Nano), createdSite)
+	}
+	site.Name = "Timestamp precision updated"
+	if err := s.UpdateSite(ctx, site); err != nil {
+		t.Fatalf("first update with the version returned by CreateSite failed: %v", err)
+	}
+	updatedSite, err := s.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedSite == nil || !updatedSite.UpdatedAt.Equal(site.UpdatedAt) {
+		t.Fatalf("updated site's returned version=%s, stored version=%v", site.UpdatedAt.Format(time.RFC3339Nano), updatedSite)
+	}
 	committedAt := time.Date(2026, 9, 22, 12, 0, 0, 123456789, time.UTC)
 	handoff := storage.MigrationHandoffEvidence{
 		SnapshotID:             "snapshot-pg-precision",

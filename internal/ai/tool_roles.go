@@ -115,3 +115,7 @@ func permissionAllowedForActor(actor ApprovalActor, required string) bool {
 	}
 	return false
 }
+
+func ActorHasPermission(actor ApprovalActor, required string) bool {
+	return permissionAllowedForActor(actor, required)
+}

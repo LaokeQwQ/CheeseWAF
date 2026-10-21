@@ -57,6 +57,11 @@ func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	}
 	lb.mu.RLock()
 	site, ok := lb.byHost[host]
+	if !ok {
+		if dot := strings.IndexByte(host, '.'); dot > 0 {
+			site, ok = lb.byHost["*"+host[dot:]]
+		}
+	}
 	lb.mu.RUnlock()
 	if ok {
 		return site
@@ -72,7 +77,7 @@ func normalizeRequestHost(host string) string {
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		return strings.TrimSpace(host[1 : len(host)-1])
 	}
-	return host
+	return strings.TrimSuffix(host, ".")
 }
 
 func (lb *LoadBalancer) rebuildHostIndexLocked() {
@@ -256,7 +261,7 @@ func (lb *LoadBalancer) healthyUpstreams(site config.SiteConfig) []config.Upstre
 	lb.mu.RUnlock()
 	out := make([]config.UpstreamConfig, 0, len(site.Upstreams))
 	for _, upstream := range site.Upstreams {
-		if health != nil && !health.Healthy(upstream.Address) {
+		if health != nil && !health.HealthyForSite(site.ID, upstream.Address) {
 			continue
 		}
 		out = append(out, upstream)

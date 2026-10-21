@@ -67,7 +67,7 @@ func TestSubmitRejectsForbiddenFieldsAndRawWithoutThreeConfirmations(t *testing.
 
 func TestRawRequiresHighRiskConfirmationAndExpiry(t *testing.T) {
 	now := time.Unix(200, 0).UTC()
-	b, err := NewBroker(Config{MaxQueueItems: 2, MaxQueueBytes: 4096, TTL: time.Minute, Now: func() time.Time { return now }})
+	b, err := NewBroker(Config{MaxQueueItems: 2, MaxQueueBytes: 4096, TTL: time.Minute, Now: func() time.Time { return now }, VerifyRaw: allowRawDiagnosticTest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +81,8 @@ func TestRawRequiresHighRiskConfirmationAndExpiry(t *testing.T) {
 		t.Fatalf("status err=%v", err)
 	}
 }
+
+func allowRawDiagnosticTest(context.Context, Request) error { return nil }
 
 func TestIdempotencyBindsSecurityContextAndQuotas(t *testing.T) {
 	b, err := NewBroker(Config{MaxQueueItems: 1, MaxQueueBytes: 256, TTL: time.Hour, MaxAttempts: 2})

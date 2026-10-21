@@ -89,8 +89,11 @@ func TestSQLiteMigrateMovesLegacyRulesIntoSiteCustomRules(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	site := &Site{ID: "site", Name: "site", Domains: []string{"example.test"}, Upstreams: []string{"127.0.0.1:9000"}, Enabled: true}
+	site := &Site{ID: "site", Name: "site", Domains: []string{"example.test"}, Upstreams: []string{"https://origin.example.test:8443"}, Enabled: true}
 	if err := store.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE sites SET advanced=? WHERE id=?`, legacyStoredSiteAdvanced, site.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateRule(ctx, &Rule{ID: "legacy", SiteID: site.ID, Name: "legacy rule", Description: "migrated description", Pattern: "probe", Location: "query", Action: "challenge", Severity: "high", Enabled: true, Priority: 42}); err != nil {
@@ -108,6 +111,10 @@ func TestSQLiteMigrateMovesLegacyRulesIntoSiteCustomRules(t *testing.T) {
 	}
 	if migrated == nil || len(migrated.Advanced.CustomRules) != 1 {
 		t.Fatalf("legacy rule was not migrated: %+v", migrated)
+	}
+	converted := SiteToConfig(*migrated)
+	if converted.WAF.BotEnabled != nil || converted.WAF.RateLimitEnabled != nil || converted.WAF.ACLEnabled != nil || converted.WAF.APISecurityEnabled != nil || converted.OriginScheme != "https" {
+		t.Fatalf("rule migration changed legacy site runtime behavior: %+v", converted)
 	}
 	rule := migrated.Advanced.CustomRules[0]
 	if rule.ID != "legacy" || rule.Description != "migrated description" || rule.Location != "query" || rule.Priority != 42 {

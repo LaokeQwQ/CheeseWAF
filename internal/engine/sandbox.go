@@ -34,6 +34,10 @@ const (
 	maxInflightRegexMatches = 64
 	// maxInflightGuards bounds detector Guard workers on timeout paths.
 	maxInflightGuards = 128
+	// Keep a site from monopolizing detector guard workers. This must exceed the
+	// semantic queue quota because each site may have that many semantic jobs
+	// concurrently entering GuardContext.
+	maxInflightGuardsPerSite = 64
 )
 
 // ErrDetectionOverload reports that Guard could not start detector work
@@ -54,6 +58,28 @@ var regexMatchSlots = make(chan struct{}, maxInflightRegexMatches)
 
 // guardSlots bounds concurrent Guard workers the same way.
 var guardSlots = make(chan struct{}, maxInflightGuards)
+
+var guardSiteAdmissions = siteAdmission{
+	maxActive: maxInflightGuardsPerSite,
+	maxSites:  1024,
+}
+
+type requestSiteContextKey struct{}
+
+func withRequestSite(ctx context.Context, siteID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, requestSiteContextKey{}, siteID)
+}
+
+func requestSiteFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	siteID, _ := ctx.Value(requestSiteContextKey{}).(string)
+	return siteID
+}
 
 // BoundedRegex wraps a regexp.Regexp with timeout protection for ReDoS.
 type BoundedRegex struct{ re *regexp.Regexp }
@@ -84,10 +110,11 @@ func CompileSafe(pattern string) (*BoundedRegex, error) {
 	return &BoundedRegex{re: re}, nil
 }
 
-// MatchString performs bounded matching with ReDoS protection via deadline.
+// MatchString performs a complete RE2 match. Go's regexp engine has linear
+// complexity; callers choosing the explicit deadline API must use Status and
+// handle its error instead of silently treating an incomplete match as false.
 func (b *BoundedRegex) MatchString(s string) bool {
-	matched, _ := b.MatchStringStatus(s)
-	return matched
+	return b != nil && b.re != nil && b.re.MatchString(s)
 }
 
 // MatchStringStatus performs the complete match without truncating the
@@ -123,8 +150,7 @@ func (b *BoundedRegex) MatchStringStatus(s string) (bool, error) {
 
 // Match performs bounded matching on a byte slice with ReDoS protection.
 func (b *BoundedRegex) Match(b2 []byte) bool {
-	matched, _ := b.MatchStatus(b2)
-	return matched
+	return b != nil && b.re != nil && b.re.Match(b2)
 }
 
 // MatchStatus is the byte-slice counterpart of MatchStringStatus.
@@ -195,9 +221,10 @@ func Guard[T any](fn func() (T, error)) (result T, err error) {
 	return GuardContext(context.Background(), fn)
 }
 
-// GuardContext runs a detector with panic recovery, a hard upper bound, and
-// caller cancellation. The detector runs in a bounded goroutine so a function
-// that ignores ctx cannot hold the request path past its budget. When the
+// GuardContext runs a detector with panic recovery, a caller deadline (or a
+// compatibility timeout when none is set), and caller cancellation. The detector
+// runs in a bounded goroutine so a function that ignores ctx cannot hold the
+// request path past its budget. When the
 // caller returns early, the guard slot remains occupied until the detector
 // exits; this preserves the leak bound enforced by guardSlots.
 //
@@ -211,9 +238,14 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return zero, ctxErr
 	}
+	siteToken, admitted := guardSiteAdmissions.acquire(requestSiteFromContext(ctx))
+	if !admitted {
+		return zero, ErrDetectionOverload
+	}
 	select {
 	case guardSlots <- struct{}{}:
 	default:
+		siteToken.release()
 		return zero, ErrDetectionOverload
 	}
 	done := make(chan struct {
@@ -223,6 +255,10 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 
 	go func() {
 		defer func() { <-guardSlots }()
+		// Keep the site permit until detector work actually exits. Releasing it
+		// when the caller times out would let an uncooperative detector exceed
+		// the per-site worker bound.
+		defer siteToken.release()
 		defer func() {
 			if r := recover(); r != nil {
 				stack := string(debug.Stack())
@@ -264,22 +300,23 @@ func GuardContext[T any](ctx context.Context, fn func() (T, error)) (result T, e
 		}
 	}()
 
-	timer := time.NewTimer(2 * time.Second)
-	defer func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-	}()
+	// Pipeline invocations already share their configured deadline timer. Do not
+	// shorten that budget with a second timeout; callers without a deadline still
+	// get the compatibility hard stop.
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if _, ok := ctx.Deadline(); !ok {
+		timer = time.NewTimer(2 * time.Second)
+		timeout = timer.C
+		defer timer.Stop()
+	}
 	select {
 	case r := <-done:
 		return r.res, r.err
 	case <-ctx.Done():
 		return zero, ctx.Err()
-	case <-timer.C:
-		return zero, fmt.Errorf("detection deadline exceeded (2s)")
+	case <-timeout:
+		return zero, fmt.Errorf("detection deadline exceeded (2s): %w", context.DeadlineExceeded)
 	}
 }
 

@@ -10,28 +10,29 @@ import (
 )
 
 type Config struct {
-	Deployment    DeploymentConfig    `yaml:"deployment" json:"deployment"`
-	Server        ServerConfig        `yaml:"server" json:"server"`
-	TimeSync      TimeSyncConfig      `yaml:"time_sync" json:"time_sync"`
-	TLS           TLSConfig           `yaml:"tls" json:"tls"`
-	Setup         SetupConfig         `yaml:"setup" json:"setup"`
-	Cluster       ClusterConfig       `yaml:"cluster" json:"cluster"`
-	Console       ConsoleConfig       `yaml:"console" json:"console"`
-	CAPTCHAAssets CAPTCHAAssetsConfig `yaml:"captcha_assets" json:"captcha_assets"`
-	Sites         []SiteConfig        `yaml:"sites" json:"sites"`
-	Protection    ProtectionConfig    `yaml:"protection" json:"protection"`
-	Storage       StorageConfig       `yaml:"storage" json:"storage"`
-	Logging       LoggingConfig       `yaml:"logging" json:"logging"`
-	ACME          ACMEConfig          `yaml:"acme" json:"acme"`
-	AI            AIConfig            `yaml:"ai" json:"ai"`
-	Update        UpdateConfig        `yaml:"update" json:"update"`
-	Vulnerability VulnerabilityConfig `yaml:"vulnerability" json:"vulnerability"`
-	Scheduler     SchedulerConfig     `yaml:"scheduler" json:"scheduler"`
-	Edge          EdgeConfig          `yaml:"edge" json:"edge"`
-	Monitor       MonitorConfig       `yaml:"monitor" json:"monitor"`
-	APISec        APISecConfig        `yaml:"apisec" json:"apisec"`
-	BlockPage     BlockPageConfig     `yaml:"block_page" json:"block_page"`
-	Performance   PerformanceConfig   `yaml:"performance" json:"performance"`
+	Deployment       DeploymentConfig       `yaml:"deployment" json:"deployment"`
+	Server           ServerConfig           `yaml:"server" json:"server"`
+	TimeSync         TimeSyncConfig         `yaml:"time_sync" json:"time_sync"`
+	TLS              TLSConfig              `yaml:"tls" json:"tls"`
+	Setup            SetupConfig            `yaml:"setup" json:"setup"`
+	Cluster          ClusterConfig          `yaml:"cluster" json:"cluster"`
+	Console          ConsoleConfig          `yaml:"console" json:"console"`
+	CAPTCHAAssets    CAPTCHAAssetsConfig    `yaml:"captcha_assets" json:"captcha_assets"`
+	CAPTCHAProviders CAPTCHAProvidersConfig `yaml:"captcha_providers" json:"captcha_providers"`
+	Sites            []SiteConfig           `yaml:"sites" json:"sites"`
+	Protection       ProtectionConfig       `yaml:"protection" json:"protection"`
+	Storage          StorageConfig          `yaml:"storage" json:"storage"`
+	Logging          LoggingConfig          `yaml:"logging" json:"logging"`
+	ACME             ACMEConfig             `yaml:"acme" json:"acme"`
+	AI               AIConfig               `yaml:"ai" json:"ai"`
+	Update           UpdateConfig           `yaml:"update" json:"update"`
+	Vulnerability    VulnerabilityConfig    `yaml:"vulnerability" json:"vulnerability"`
+	Scheduler        SchedulerConfig        `yaml:"scheduler" json:"scheduler"`
+	Edge             EdgeConfig             `yaml:"edge" json:"edge"`
+	Monitor          MonitorConfig          `yaml:"monitor" json:"monitor"`
+	APISec           APISecConfig           `yaml:"apisec" json:"apisec"`
+	BlockPage        BlockPageConfig        `yaml:"block_page" json:"block_page"`
+	Performance      PerformanceConfig      `yaml:"performance" json:"performance"`
 }
 
 // PerformanceConfig holds runtime tuning that is independent of security policy.
@@ -121,6 +122,27 @@ type CAPTCHAAssetsConfig struct {
 	Limits  CAPTCHAAssetLimits `yaml:"limits" json:"limits"`
 }
 
+// CAPTCHAProvidersConfig configures optional external CAPTCHA services shared
+// by the administrator login and the public Bot challenge page.
+type CAPTCHAProvidersConfig struct {
+	Cap CapStandaloneConfig `yaml:"cap" json:"cap"`
+}
+
+// CapStandaloneConfig points to a Cap Standalone site. SecretFile contains
+// the server-only siteverify secret and is deliberately omitted from JSON.
+type CapStandaloneConfig struct {
+	APIEndpoint string        `yaml:"api_endpoint" json:"api_endpoint"`
+	WidgetURL   string        `yaml:"widget_url" json:"widget_url"`
+	WASMURL     string        `yaml:"wasm_url" json:"wasm_url"`
+	HashWXURL   string        `yaml:"hashwx_url" json:"hashwx_url"`
+	SecretFile  string        `yaml:"secret_file" json:"-"`
+	Timeout     time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+func (c CapStandaloneConfig) SiteVerifyEndpoint() string {
+	return strings.TrimRight(strings.TrimSpace(c.APIEndpoint), "/") + "/siteverify"
+}
+
 type CAPTCHAAssetLocal struct {
 	Path string `yaml:"path" json:"path"`
 }
@@ -188,9 +210,19 @@ type ConsensusConfig struct {
 // used by the production serve startup unit. The mode is intentionally not
 // inferred: bootstrap and join have different safety properties.
 type NativeRaftConfig struct {
-	DataDir string `yaml:"data_dir" json:"data_dir"`
-	Listen  string `yaml:"listen" json:"listen"`
-	Mode    string `yaml:"mode" json:"mode"`
+	DataDir       string            `yaml:"data_dir" json:"data_dir"`
+	Listen        string            `yaml:"listen" json:"listen"`
+	Mode          string            `yaml:"mode" json:"mode"`
+	InitialVoters []NativeRaftVoter `yaml:"initial_voters" json:"initial_voters"`
+}
+
+// NativeRaftVoter identifies a trusted seed voter for a fresh TLS join. The
+// address is the native-raft peer address, not the WAF interconnect address.
+// It is intentionally explicit so an operator cannot accidentally widen the
+// trust boundary by deriving voters from an unrelated node inventory.
+type NativeRaftVoter struct {
+	ID      string `yaml:"id" json:"id"`
+	Address string `yaml:"address" json:"address"`
 }
 
 type JoinConfig struct {
@@ -301,6 +333,7 @@ type ConsoleLoginConfig struct {
 
 type LoginCAPTCHAConfig struct {
 	Enabled   bool                     `yaml:"enabled" json:"enabled"`
+	Provider  string                   `yaml:"provider" json:"provider"`
 	Mode      string                   `yaml:"mode" json:"mode"` // slider/pow
 	MaxNumber int                      `yaml:"max_number" json:"max_number"`
 	TTL       time.Duration            `yaml:"ttl" json:"ttl"`
@@ -345,10 +378,13 @@ type MapBoundaryConfig struct {
 }
 
 type SiteConfig struct {
-	ID        string           `yaml:"id" json:"id"`
-	Name      string           `yaml:"name" json:"name"`
-	Domains   []string         `yaml:"domains" json:"domains"`
-	Upstreams []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
+	OriginScheme string           `yaml:"origin_scheme" json:"origin_scheme"`
+	PassHost     *bool            `yaml:"pass_host,omitempty" json:"pass_host,omitempty"`
+	HostHeader   string           `yaml:"host_header,omitempty" json:"host_header,omitempty"`
+	ID           string           `yaml:"id" json:"id"`
+	Name         string           `yaml:"name" json:"name"`
+	Domains      []string         `yaml:"domains" json:"domains"`
+	Upstreams    []UpstreamConfig `yaml:"upstreams" json:"upstreams"`
 	// ListenPort is stored for nginx import and the admin UI. The process
 	// binds Server.Listen (and ListenTLS / ListenHTTP3) only; requests are
 	// routed by Host / site domains, not by opening this port per site.
@@ -394,8 +430,15 @@ type UpstreamConfig struct {
 }
 
 type WAFConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Mode    string `yaml:"mode" json:"mode"`
+	BotEnabled         *bool  `yaml:"bot_enabled,omitempty" json:"bot_enabled,omitempty"`
+	RateLimitEnabled   *bool  `yaml:"ratelimit_enabled,omitempty" json:"ratelimit_enabled,omitempty"`
+	ACLEnabled         *bool  `yaml:"acl_enabled,omitempty" json:"acl_enabled,omitempty"`
+	APISecurityEnabled *bool  `yaml:"api_security_enabled,omitempty" json:"api_security_enabled,omitempty"`
+	Enabled            bool   `yaml:"enabled" json:"enabled"`
+	Mode               string `yaml:"mode" json:"mode"`
+	// Tunnels require explicit consent: HTTP inspection cannot inspect frames.
+	WebSocketEnabled bool `yaml:"websocket_enabled" json:"websocket_enabled"`
+	GRPCEnabled      bool `yaml:"grpc_enabled" json:"grpc_enabled"`
 	// AccessLogEnabled controls whether normal pass/cache/redirect traffic is written.
 	// Security events (block/challenge/log with detections) are always recorded.
 	// Nil means default on (preserve historical full-access logging).
@@ -455,6 +498,7 @@ func (w *WAFConfig) UnmarshalYAML(value *yaml.Node) error {
 // SemanticPolicyConfig holds commercial operational knobs for the staged analyzer.
 // BudgetExhaustedPolicy defaults to "auto" (follow web_attack protection level).
 type SemanticPolicyConfig struct {
+	DetectionBudget time.Duration `yaml:"detection_budget" json:"detection_budget"`
 	// BudgetExhaustedPolicy: auto|open|observe|closed. Empty/auto derives from web_attack.
 	BudgetExhaustedPolicy string `yaml:"budget_exhausted_policy" json:"budget_exhausted_policy"`
 	// DecodeDepth is the bounded number of nested encoding transformations (1-8).
@@ -656,6 +700,7 @@ type BotProtectionConfig struct {
 	RiskConfidenceMin          float64       `yaml:"risk_confidence_min" json:"risk_confidence_min"`
 	JSChallenge                bool          `yaml:"js_challenge" json:"js_challenge"`
 	CAPTCHA                    bool          `yaml:"captcha" json:"captcha"`
+	CAPTCHAProvider            string        `yaml:"captcha_provider" json:"captcha_provider"`
 	CAPTCHAType                string        `yaml:"captcha_type" json:"captcha_type"`
 	CAPTCHATypes               []string      `yaml:"captcha_types" json:"captcha_types"`
 	CAPTCHAChallengeTTL        time.Duration `yaml:"captcha_challenge_ttl" json:"captcha_challenge_ttl"`
@@ -910,6 +955,8 @@ type ACMEDNSProviderConfig struct {
 }
 
 type AIConfig struct {
+	Prompts             []AIPromptConfig      `yaml:"prompts" json:"prompts"`
+	Skills              []AISkillConfig       `yaml:"skills" json:"skills"`
 	Enabled             bool                  `yaml:"enabled" json:"enabled"`
 	Provider            string                `yaml:"provider" json:"provider"`
 	APIBase             string                `yaml:"api_base" json:"api_base"`

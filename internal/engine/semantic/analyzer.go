@@ -80,6 +80,8 @@ const (
 	multipartCoverageIncompleteReason = "multipart_coverage_incomplete"
 	jsonNodeLimitIncompleteReason     = "json_node_limit"
 	jsonDepthLimitIncompleteReason    = "json_depth_limit"
+	jsonDuplicateKeyReason            = "json_duplicate_key"
+	jsonDuplicateScanLimitReason      = "json_duplicate_scan_limit"
 	jsonCollectorLimitReason          = "json_collector_limit"
 	jsonVariantLimitReason            = "decode_variant_limit"
 	jsonRawClippedReason              = "raw_body_clipped"
@@ -210,7 +212,12 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 		ProcessMetrics().RecordAnalysis(time.Since(start), outcome, category)
 	}()
 
-	if pathAllowlisted(reqCtx.Request.URL.Path, a.pathAllowlist) {
+	path, pathOK := engine.NormalizeRequestPath(reqCtx.Request.URL.Path)
+	cleanedPath := path
+	if reqCtx.NormalizedPath != "" {
+		path, pathOK = reqCtx.NormalizedPath, true
+	}
+	if pathOK && pathAllowlisted(path, a.pathAllowlist) && routingPathsAllowlisted(reqCtx.Request.URL.Path, cleanedPath, a.pathAllowlist) {
 		if reqCtx.Metadata == nil {
 			reqCtx.Metadata = map[string]any{}
 		}
@@ -239,6 +246,10 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	// merely races the timer after returning.
 	if incomplete {
 		reqCtx.Metadata["semantic_analysis_incomplete"] = true
+		if ctx.Err() == nil {
+			markSemanticInputIncomplete(reqCtx, "candidate_analysis_incomplete")
+			inputIncompleteErr = semanticInputIncompleteError(reqCtx)
+		}
 	}
 	if !haveBest {
 		if review, ok := strongestHit(report.Hits); ok {
@@ -427,6 +438,11 @@ func (a *Analyzer) analyzeAllCandidates(ctx context.Context, candidates []semant
 	fastAbort := os.Getenv("CHEESEWAF_SEMANTIC_FAST_ABORT") == "1"
 	var wg sync.WaitGroup
 	scan := func() {
+		defer func() {
+			if recover() != nil {
+				skipped.Store(true)
+			}
+		}()
 		for {
 			i := int(next.Add(1) - 1)
 			if i >= len(candidates) || abort.Load() {
@@ -823,6 +839,7 @@ const (
 	maxDecodeVariants      = 8
 	maxJSONNodes           = 200
 	maxJSONDepth           = 8
+	maxJSONTokenDepth      = 64 // includes skipped subtrees in the streaming decoder
 	maxJSONTreeDecodeBytes = 256 << 10
 	// maxMultipartInputs caps how many inspection inputs one multipart body can
 	// contribute, bounding the parse work an attacker-controlled upload can
@@ -904,6 +921,28 @@ func pathAllowlisted(path string, rules []string) bool {
 	return false
 }
 
+// Allowlist skips must hold for every routing interpretation. Preserve the
+// historical cleaned-path meaning for ordinary dot segments; only additional
+// matrix routing views can narrow an existing exemption, never broaden it.
+func routingPathsAllowlisted(raw, cleaned string, rules []string) bool {
+	if !strings.ContainsAny(raw, ";%") {
+		return true
+	}
+	views, ok := engine.SecurityPathViews(raw)
+	if !ok {
+		return false
+	}
+	for i, view := range views {
+		if i == 0 && view == raw && raw != cleaned {
+			continue
+		}
+		if !pathAllowlisted(view, rules) {
+			return false
+		}
+	}
+	return true
+}
+
 // paramAllowlisted skips query/form/json/cookie/multipart parameter names only.
 func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 	if len(allow) == 0 || name == "" {
@@ -913,7 +952,7 @@ func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 	// Accept both short sources and body.* sources used by extractCandidates.
 	switch src {
 	case "query", "form", "json", "cookie", "multipart",
-		"body.form", "body.json", "body.multipart":
+		"body.form", "body.json", "body.multipart", "body.multipart.file":
 		// filename fields are stored as "field.filename" — allowlist the base param.
 		base := strings.ToLower(name)
 		if i := strings.Index(base, ".filename"); i > 0 {
@@ -954,6 +993,12 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 
 	groups := make([][]InputPoint, 0, 5)
 	var allowSkipped int
+	clipInput := func(raw string) string {
+		if len(raw) > maxInputRawBytes {
+			markSemanticInputIncomplete(reqCtx, "request_field_clipped")
+		}
+		return clipRaw(raw)
+	}
 	add := func(group *[]InputPoint, input InputPoint) {
 		if paramAllowlisted(input.Source, input.Name, allow) {
 			allowSkipped++
@@ -969,7 +1014,7 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 		pathRaw = r.URL.Path
 	}
 	if pathRaw != "" && pathRaw != "/" {
-		add(&uriInputs, InputPoint{Source: "uri", Name: "path", Raw: clipRaw(pathRaw), Layers: rawLayersOnly})
+		add(&uriInputs, InputPoint{Source: "uri", Name: "path", Raw: clipInput(pathRaw), Layers: rawLayersOnly})
 	}
 	// Custom-scheme request targets (for example javascript://...) have no
 	// normal URL path, so preserve the target as an explicit URI candidate. The
@@ -985,7 +1030,7 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	// the URL and validates javascript/data/vbscript payloads; ordinary paths and
 	// prose mentioning a scheme are intentionally not promoted to URI targets.
 	if r.URL.Scheme != "" && xssExecutableURLSchemeTarget(targetRaw) {
-		add(&uriInputs, InputPoint{Source: "uri", Name: "target", Raw: clipRaw(targetRaw), Layers: rawLayersOnly})
+		add(&uriInputs, InputPoint{Source: "uri", Name: "target", Raw: clipInput(targetRaw), Layers: rawLayersOnly})
 	}
 	// url.Query() allocates a url.Values map even for an empty RawQuery, and the
 	// loop below would then iterate zero times. Skip the whole step instead.
@@ -1002,9 +1047,9 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 		sort.Strings(keys)
 		for _, key := range keys {
 			values := queryValues[key]
-			add(&queryInputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(key), Layers: rawLayersOnly})
+			add(&queryInputs, InputPoint{Source: "query", Name: key, Raw: clipInput(key), Layers: rawLayersOnly})
 			for _, value := range values {
-				add(&queryInputs, InputPoint{Source: "query", Name: key, Raw: clipRaw(value), Layers: rawLayersOnly})
+				add(&queryInputs, InputPoint{Source: "query", Name: key, Raw: clipInput(value), Layers: rawLayersOnly})
 			}
 		}
 		groups = append(groups, queryInputs)
@@ -1012,7 +1057,7 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	// Suspicious raw query (shell glue) — keep a single fused candidate so
 	// payloads that standard ParseQuery splits still get analyzed.
 	if raw := r.URL.RawQuery; raw != "" && suspiciousRawQuery(raw) {
-		add(&uriInputs, InputPoint{Source: "uri", Name: "raw_query", Raw: clipRaw(raw), Layers: rawLayersOnly})
+		add(&uriInputs, InputPoint{Source: "uri", Name: "raw_query", Raw: clipInput(raw), Layers: rawLayersOnly})
 	}
 	groups = append([][]InputPoint{uriInputs}, groups...)
 
@@ -1027,7 +1072,10 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	sort.Strings(headerKeys)
 	for _, key := range headerKeys {
 		for _, value := range r.Header[key] {
-			add(&headerInputs, InputPoint{Source: "header", Name: key, Raw: clipRaw(value), Layers: rawLayersOnly})
+			if plainBodyMediaTypeHeader(key, value) {
+				continue
+			}
+			add(&headerInputs, InputPoint{Source: "header", Name: key, Raw: clipInput(value), Layers: rawLayersOnly})
 		}
 	}
 	groups = append(groups, headerInputs)
@@ -1035,7 +1083,7 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	cookies := r.Cookies()
 	cookieInputs := make([]InputPoint, 0, len(cookies))
 	for _, cookie := range cookies {
-		add(&cookieInputs, InputPoint{Source: "cookie", Name: cookie.Name, Raw: clipRaw(cookie.Value), Layers: rawLayersOnly})
+		add(&cookieInputs, InputPoint{Source: "cookie", Name: cookie.Name, Raw: clipInput(cookie.Value), Layers: rawLayersOnly})
 	}
 	groups = append(groups, cookieInputs)
 	bodyGroup := make([]InputPoint, 0, 4)
@@ -1348,12 +1396,19 @@ func hasInspectableHeaders(header http.Header) bool {
 			continue
 		}
 		for _, value := range values {
-			if value != "" {
+			if value != "" && !plainBodyMediaTypeHeader(key, value) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// A known, parameterless body media type has no payload-bearing part. Preserve
+// its old fast path and candidate budget without excluding quoted parameters,
+// encoded values, or unknown media types from inspection.
+func plainBodyMediaTypeHeader(key, value string) bool {
+	return strings.EqualFold(key, "Content-Type") && strings.IndexByte(value, ';') < 0 && requestMediaType(value) != ""
 }
 
 func clipRaw(raw string) string {
@@ -1686,6 +1741,17 @@ func bodyInputsWithTraversalStatus(r *http.Request, body []byte) ([]InputPoint, 
 	case "application/json":
 		jsonStatus := flattenJSONInputsWithStatus("body.json", "", body, &inputs)
 		status.merge(jsonStatus)
+		duplicate, duplicateStatus := jsonHasDuplicateKeys(body)
+		status.merge(duplicateStatus)
+		if duplicate || duplicateStatus.omitted {
+			// The decoder walk is last-wins. Keep an explicit raw-body candidate so
+			// a first-occurrence payload is inspected even when duplicate scanning
+			// stops before it can establish whether keys repeat.
+			if duplicate {
+				status.mark(jsonDuplicateKeyReason)
+			}
+			inputs = append(inputs, InputPoint{Source: "body.json.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
+		}
 		if len(inputs) > 0 {
 			return withBodyCoverageStatus(body, inputs, status), status
 		}
@@ -1712,13 +1778,24 @@ func bodyInputsWithTraversalStatus(r *http.Request, body []byte) ([]InputPoint, 
 	}
 	if json.Valid(body) {
 		status.merge(flattenJSONInputsWithStatus("body.json", "", body, &inputs))
+		duplicate, duplicateStatus := jsonHasDuplicateKeys(body)
+		status.merge(duplicateStatus)
+		if duplicate || duplicateStatus.omitted {
+			// The decoder walk is last-wins. Preserve an explicit raw-body
+			// candidate for duplicates and incomplete duplicate scans under other
+			// media types, too.
+			if duplicate {
+				status.mark(jsonDuplicateKeyReason)
+			}
+			inputs = append(inputs, InputPoint{Source: "body.json.raw", Name: "body", Raw: clipRawBytes(body), Layers: rawLayersOnly})
+		}
 	}
 	if len(inputs) == 0 {
 		// A small malformed/non-JSON body is fully represented by its bounded raw
 		// fallback; do not report parser omission when no structured field was
 		// successfully emitted. Large bodies remain incomplete because clipping
 		// prevents full raw coverage.
-		if len(body) <= maxInputRawBytes {
+		if len(body) <= maxInputRawBytes && status.reason != jsonDepthLimitIncompleteReason {
 			status = traversalStatus{}
 		}
 		raw := clipRawBytes(body)
@@ -1846,6 +1923,18 @@ func flattenJSONInputsWithStatus(source, prefix string, raw []byte, inputs *[]In
 			return status
 		}
 	}
+	// Restore sibling coverage after a deep subtree while preserving the original
+	// depth reason, even if the decoder later finds malformed JSON. Tree replay
+	// is size-bounded; the streaming replay also bounds skipped nesting.
+	if status.reason == jsonDepthLimitIncompleteReason {
+		*inputs = (*inputs)[:mark]
+		if len(raw) > maxJSONTreeDecodeBytes {
+			status.merge(flattenJSONInputsStream(source, prefix, raw, inputs))
+		} else {
+			status.merge(flattenJSONInputsDecode(source, prefix, raw, inputs))
+		}
+		return status
+	}
 	// A declined fast walk is replayed from the original document; discard any
 	// budget observations made before the fallback so malformed/escaped input is
 	// judged solely by the decoder-backed traversal.
@@ -1963,7 +2052,7 @@ func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, co
 		if collector.status != nil {
 			collector.status.mark(jsonDepthLimitIncompleteReason)
 		}
-		return discardJSONValue(decoder)
+		return discardJSONValue(decoder, depth)
 	}
 	if collector.nodes >= maxJSONNodes {
 		if collector.status != nil {
@@ -2034,7 +2123,7 @@ func streamJSONValue(decoder *json.Decoder, source, prefix string, depth int, co
 	}
 }
 
-func discardJSONValue(decoder *json.Decoder) error {
+func discardJSONValue(decoder *json.Decoder, depth int) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -2048,6 +2137,11 @@ func discardJSONValue(decoder *json.Decoder) error {
 	}
 	level := 1
 	for level > 0 {
+		// Decoder.Token has its own growing nesting stack. Iteration alone is
+		// insufficient to bound memory when discarding attacker-controlled JSON.
+		if depth+level >= maxJSONTokenDepth {
+			return errors.New("json nesting exceeds token budget")
+		}
 		token, err = decoder.Token()
 		if err != nil {
 			return err
@@ -2248,7 +2342,11 @@ func multipartInputsWithStatus(body []byte, boundary string) ([]InputPoint, bool
 			incomplete = true
 			n = maxInputRawBytes
 		}
-		if !appendInput(InputPoint{Source: "body.multipart", Name: clipRaw(name), Raw: string(buf[:n]), Layers: rawLayersOnly}) {
+		source := "body.multipart"
+		if fileName != "" {
+			source = "body.multipart.file"
+		}
+		if !appendInput(InputPoint{Source: source, Name: clipRaw(name), Raw: string(buf[:n]), Layers: rawLayersOnly}) {
 			break
 		}
 	}
@@ -2621,6 +2719,10 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	if looksCleanASCIIField(raw) && !rceBareCommandSinkValueForSource(inputSource, inputName, raw) {
 		return nil
 	}
+	// Candidate admission must see the same separators as the LFI analyzer.
+	// Folding only after either hint gate can discard the category before its
+	// decoder runs. Ordinary ASCII input is returned without an allocation.
+	foldedRaw := foldOverlongUTF8(raw)
 	// Long unstructured values are commonly security articles, logs, or source
 	// listings. Running every category's regexp suite on those values makes the
 	// hot path proportional to document length even when there is no request
@@ -2632,12 +2734,12 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	// syntax/semantic and document-context guards still decide block/pass.
 	longMask := 0
 	if len(raw) >= longCandidateThreshold {
-		longMask = longCandidateStrongHints(raw, inputName, inputSource)
+		longMask = longCandidateStrongHints(foldedRaw, inputName, inputSource)
 		if longMask == 0 {
 			return nil
 		}
 	}
-	hints := scanAttackHints(raw)
+	hints := scanAttackHints(foldedRaw)
 	if hints == 0 {
 		hints = hintSQL | hintXSS | hintRCE | hintLFI | hintXXE | hintSSRF | hintNoSQL | hintSSTI
 	}
@@ -2650,11 +2752,6 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 			hints = longMask
 		}
 	}
-	// Fold overlong UTF-8 before normalising, for the same reason analyzeLFI
-	// does: NFKC turns the invalid bytes 0xC0 0xAF into U+FFFD, and the scoring
-	// gates here would then see no "../" and give lfi zero score — so
-	// analyzeLFI was never called on the very payload it was written to catch.
-	foldedRaw := foldOverlongUTF8(raw)
 	if lfiUnicodeSeparatorCandidate(foldedRaw, inputSource, inputName) {
 		if foldedUnicode, ok := foldLFIUnicodeSeparators(foldedRaw); ok {
 			foldedRaw = foldedUnicode
@@ -2748,7 +2845,7 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 		scores["rce"] += 2
 	}
 	if hints&hintLFI != 0 {
-		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
+		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "zip://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
 			lfiHexPathEscapeCandidate(foldedRaw, inputSource, inputName) ||
 			// RFI-shaped remote includes: http(s) value often only scores SSRF unless LFI is also opened.
 			((strings.Contains(text, "http://") || strings.Contains(text, "https://")) && (strings.Contains(text, ".php") || strings.Contains(text, "shell") || strings.Contains(text, "passwd") || strings.HasSuffix(text, "?"))) {
@@ -2776,7 +2873,7 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 		}
 	}
 	if hints&hintSSTI != 0 {
-		if sstiTemplateExpression.MatchString(text) {
+		if sstiTemplateExpression.MatchString(text) || ssti2026Direct.MatchString(text) {
 			scores["ssti"] += 2
 		}
 	}
@@ -2912,7 +3009,8 @@ func longCandidateStrongHints(raw, inputName, inputSource string) int {
 	}
 	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") ||
 		strings.Contains(lower, "${") || strings.Contains(lower, "<%") ||
-		strings.Contains(lower, "__class__") || strings.Contains(lower, "__globals__") {
+		strings.Contains(lower, "__class__") || strings.Contains(lower, "__globals__") ||
+		ssti2026Hint(lower) {
 		mask |= hintSSTI
 	}
 
@@ -2978,7 +3076,7 @@ func longCandidateStrongHintsASCII(lower, inputName, inputSource string) int {
 		mask |= hintNoSQL
 	}
 	if strings.Contains(lower, "{{") || strings.Contains(lower, "{%") || strings.Contains(lower, "${") ||
-		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") {
+		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") || ssti2026Hint(lower) {
 		mask |= hintSSTI
 	}
 	return mask
@@ -3367,7 +3465,7 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, ".aws") || strings.Contains(lower, ".git") ||
 		strings.Contains(lower, ".ssh") || strings.Contains(lower, "boot.ini") ||
 		strings.Contains(lower, "win.ini") || strings.Contains(lower, "passwd") ||
-		strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") ||
+		strings.Contains(lower, "phar://") || strings.Contains(lower, "zip://") || strings.Contains(lower, "expect://") ||
 		// Windows drive-absolute paths. ":\" is the marker rather than ":/"
 		// because ":/" is in every URL. Without this, a Windows LFI target
 		// scored no hint at all and analyzeLFI was never called.
@@ -3409,7 +3507,8 @@ func scanAttackHints(raw string) int {
 		strings.Contains(lower, "%{") || strings.Contains(lower, "${") || strings.Contains(lower, "#{") ||
 		strings.Contains(lower, "<%") || strings.Contains(lower, "__class__") ||
 		strings.Contains(lower, "__globals__") || strings.Contains(lower, "popen") ||
-		strings.Contains(lower, "objectspace") || strings.Contains(lower, "classloader") {
+		strings.Contains(lower, "objectspace") || strings.Contains(lower, "classloader") ||
+		ssti2026Hint(lower) {
 		hints |= hintSSTI
 	}
 	// Webshell
@@ -3935,6 +4034,20 @@ func sqlUnionSelectInjectionShape(text string) bool {
 	return false
 }
 
+// Document-shaped bytes in a request parameter do not make it a document.
+// Only raw bodies and actual uploaded file content can receive prose suppression.
+func documentSourceAllowed(source string) bool {
+	switch strings.ToLower(source) {
+	case "body.raw", "body.multipart.file", "multipart.file":
+		return true
+	default:
+		return false
+	}
+}
+func candidateDocumentContextAllowed(candidate semanticCandidate) bool {
+	return documentSourceAllowed(candidate.input.Source)
+}
+
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// Probe surfaces before comment-bridging so SELECT/**/WHERE and IF((SELECT
 	// shapes stay visible; full analysis still uses bridged executable text.
@@ -4101,7 +4214,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	doc := candidate.text
 
 	// Markdown heading date context: Changelog entries (#### 1.6.9 - March 16, 2019)
-	if markdownHeadingDateContext(doc) {
+	if candidateDocumentContextAllowed(candidate) && markdownHeadingDateContext(doc) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -4123,7 +4236,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// Security document context: vulnerability reports, CTF writeups, training
 	// material, academic papers, Chinese technical articles, and source files all
 	// quote SQL grammar verbatim without composing a query.
-	if securityDocumentContextWindowed(doc, sqlWin) {
+	if candidateDocumentContextAllowed(candidate) && securityDocumentContextWindowed(doc, sqlWin) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -4131,7 +4244,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// C source code comments: /* packet-nasdaq-itch.c */
-	if cSourceCodeCommentContext(doc) {
+	if candidateDocumentContextAllowed(candidate) && cSourceCodeCommentContext(doc) {
 		confidence *= 0.5
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -4139,7 +4252,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
-	if httpProtocolContextShape(doc) {
+	if candidateDocumentContextAllowed(candidate) && httpProtocolContextShape(doc) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -4147,7 +4260,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// Markdown code block guard: reduce confidence for code examples
-	if markdownCodeBlockShape(doc) {
+	if candidateDocumentContextAllowed(candidate) && markdownCodeBlockShape(doc) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -4160,7 +4273,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// is surrounded by explanatory prose, not oracle filler padding).
 	// Oracle bypass: filler region near payload has no techdoc markers → window returns false.
 	// Legitimate doc: explanatory text around examples contains 示例/攻击/vulnerability/etc.
-	if technicalDocumentationContext(doc) && technicalDocumentationEvidenceContext(sqlWin) {
+	if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(doc) && technicalDocumentationEvidenceContext(sqlWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -4229,7 +4342,7 @@ func sqlMultipartWordPressLockContext(candidate semanticCandidate) bool {
 // fingerprint there is transport noise, not a query. Explicit SQL grammar is
 // evaluated before this fallback and remains blockable.
 func sqlJSONTrailingCommentContext(candidate semanticCandidate) bool {
-	if candidate.input.Source != "body.raw" {
+	if candidate.input.Source != "body.raw" && candidate.input.Source != "body.json.raw" {
 		return false
 	}
 	trimmed := strings.TrimSpace(candidate.text)
@@ -5080,6 +5193,20 @@ func xpathInjectionShape(text string) (step string, ok bool) {
 }
 
 func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
+	if candidate.input.Source == "body.json.raw" {
+		// Whole JSON cannot use Name=body to recover operator paths, and a map
+		// decode would collapse the duplicate values this source protects. Keep
+		// every occurrence in the bounded streaming sample instead.
+		var inputs []InputPoint
+		flattenJSONInputsStream("body.json", "", []byte(candidate.text), &inputs)
+		for _, input := range inputs {
+			if result, ok := analyzeNoSQL(semanticCandidate{input: input, text: input.Raw}); ok {
+				result.Source = candidate.input.Source
+				return result, true
+			}
+		}
+		return Hit{}, false
+	}
 	text := strings.TrimSpace(candidate.text)
 	lowerText := normalize(text)
 	name := strings.ToLower(candidate.input.Name)
@@ -5197,7 +5324,7 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	// explaining NoSQL injection. A document-scale article is not a query.
 	// Use evidenceInProseContext so that a prose prefix + filler bypass cannot
 	// suppress detection of a real NoSQL injection operator.
-	if evidenceInProseContext(text, []string{
+	if candidateDocumentContextAllowed(candidate) && evidenceInProseContext(text, []string{
 		"$where", "$eval", "$function", "$or", "$and", "$regex",
 		"$ne", "$nin", "$gt", "$gte", "$lt", "$lte", "$not",
 		"mapreduce", "$accumulator", "$expr",
@@ -5255,6 +5382,11 @@ func nosqlMapReduceField(name string) bool {
 }
 
 func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
+	// 2022-2026 additions: Java/OGNL memory-shell construction and the
+	// SpEL/Thymeleaf selectors that are not themselves wrapped in ${...}.
+	if hit, ok := analyzeSSTI2026(candidate); ok {
+		return hit, true
+	}
 	text := strings.TrimSpace(candidate.text)
 	lowerText := normalize(text)
 	if !sstiTemplateExpression.MatchString(lowerText) {
@@ -5276,12 +5408,10 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 		strings.Contains(lowerText, "classloader.loadclass") || strings.Contains(lowerText, "objectspace.each_object") {
 		reasons["semantics: template expression can reach host runtime command execution"] = true
 	}
-	// The parameter-name gate can only be applied when a name carries signal.
-	// When the whole value is one template expression there is no surrounding
-	// prose to be a fragment of, so the gate has nothing to discriminate — and
-	// the field name for these payloads is literally "body".
-	wholeBody := sstiWholeBodyExpression.MatchString(text)
-	if arithmeticProbe && (sstiProbeContext(candidate.input.Name) || wholeBody) {
+	// An integer-only arithmetic probe is only credible when the value is the
+	// whole template expression. A sentence such as "{{7*7}} in documentation"
+	// is a search query, not a server-side evaluation probe.
+	if arithmeticProbe && sstiArithmeticStandalone(text) {
 		reasons["syntax: arithmetic template evaluation probe"] = true
 		reasons["semantics: probe attempts to confirm server-side template evaluation"] = true
 	}
@@ -5310,7 +5440,7 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 	// sources, and SSTI tutorials. A document-scale article is not a template.
 	// Use evidenceInProseContext so that a prose prefix + filler bypass cannot
 	// suppress detection of a real template injection payload.
-	if evidenceInProseContext(text, []string{
+	if candidateDocumentContextAllowed(candidate) && evidenceInProseContext(text, []string{
 		"{{", "{%", "${", "<#", "#{", "[[",
 		"__class__", "__mro__", "__subclasses__", "__globals__",
 		"freemarker.template", "classloader", "processbuilder",
@@ -5331,7 +5461,7 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 		// that word would make the locality window too short to recognize the
 		// nearby documentation markers.
 		beansWin := evidenceWindow(text, []string{"beans", ".exec("})
-		if technicalDocumentationContext(beansWin) {
+		if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(beansWin) {
 			confidence *= 0.4
 			if confidence < 0.7 {
 				return Hit{}, false
@@ -5402,7 +5532,7 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	// Apply shape guards in order of specificity (most specific first)
 
 	// Vulnerability report context: XSS in vulnerability titles
-	if vulnerabilityReportContext(text) {
+	if candidateDocumentContextAllowed(candidate) && vulnerabilityReportContext(text) {
 		confidence *= 0.55
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5410,7 +5540,7 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
-	if httpProtocolContextShape(lower) {
+	if candidateDocumentContextAllowed(candidate) && httpProtocolContextShape(lower) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5418,7 +5548,7 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// Markdown code block guard: reduce confidence for code examples
-	if markdownCodeBlockShape(text) {
+	if candidateDocumentContextAllowed(candidate) && markdownCodeBlockShape(text) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5435,7 +5565,7 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	})
 
 	// Technical documentation keyword guard: AND-gate — full document AND local window.
-	if technicalDocumentationContext(text) && technicalDocumentationContext(xssWin) {
+	if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(text) && technicalDocumentationContext(xssWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5528,7 +5658,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	// Markdown table markup turns "| id |" into a fake pipe-plus-command shape.
 	// Outside an execution sink, a table delimiter row means the pipes are cell
 	// separators. Inside a sink, table markup earns no trust.
-	tableMarkup := !sink && markdownTableShape(text)
+	tableMarkup := candidateDocumentContextAllowed(candidate) && !sink && markdownTableShape(text)
 	tableCommand := tableMarkup && markdownTableHasExecutableCommand(text)
 	// A genuine command embedded in a table cell must not inherit the prose
 	// exemption. Ordinary documentation tables list bare tool names in one cell
@@ -5741,7 +5871,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	// Security document context: vulnerability reports, CTF writeups, training
 	// material, academic papers, Chinese technical articles, and source files all
 	// quote shell commands verbatim without invoking them.
-	if securityDocumentContextWindowed(text, rceWin) {
+	if candidateDocumentContextAllowed(candidate) && securityDocumentContextWindowed(text, rceWin) {
 		confidence *= 0.4
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5749,7 +5879,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// PowerShell documentation: technical descriptions of PowerShell features
-	if powerShellDocumentationContext(text) {
+	if candidateDocumentContextAllowed(candidate) && powerShellDocumentationContext(text) {
 		confidence *= 0.55
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5757,7 +5887,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// HTTP header documentation: explaining HTTP headers as examples
-	if httpHeaderDocumentationContext(text) {
+	if candidateDocumentContextAllowed(candidate) && httpHeaderDocumentationContext(text) {
 		confidence *= 0.5
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5765,7 +5895,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
-	if httpProtocolContextShape(lower) {
+	if candidateDocumentContextAllowed(candidate) && httpProtocolContextShape(lower) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5773,7 +5903,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// Markdown code block guard: reduce confidence for code examples
-	if markdownCodeBlockShape(text) {
+	if candidateDocumentContextAllowed(candidate) && markdownCodeBlockShape(text) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -5781,7 +5911,7 @@ func analyzeRCE(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// Technical documentation keyword guard: AND-gate — full document AND local window.
-	if technicalDocumentationContext(text) && technicalDocumentationContext(rceWin) {
+	if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(text) && technicalDocumentationContext(rceWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -6439,13 +6569,13 @@ func rceNewlineCommandChainAllowed(text, source, name string) bool {
 	if rceExecutionSinkForValue(source, name, text) {
 		return true
 	}
-	if rceNewlineDocumentationContextFromScan(view, scan) {
+	if documentSourceAllowed(source) && rceNewlineDocumentationContextFromScan(view, scan) {
 		return false
 	}
 	// Long-form security and technical documents are handled by the established
 	// shape guards. Use the command window for locality-sensitive signatures.
 	window := evidenceWindow(view, []string{"\nid", "\nls", "\ncat", "\nwhoami", "\necho", "\nuname", "\ngrep", "\nhead", "\ntail"})
-	if len(text) >= documentScaleThreshold &&
+	if documentSourceAllowed(source) && len(text) >= documentScaleThreshold &&
 		(securityDocumentContextWindowed(view, window) ||
 			(technicalDocumentationContext(view) && technicalDocumentationContext(window))) {
 		return false
@@ -7721,6 +7851,9 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	explicitPathContext := lfiExplicitPathContext(candidate.input.Source, candidate.input.Name)
 	reasons := map[string]bool{}
 	for _, pattern := range lfiPatterns {
+		if pattern == lfiWrapperPattern && !lfiWrapperPathShape(strings.ToLower(text)) {
+			continue
+		}
 		// Patterns 3 and 6 are sensitive-target signatures. When a decoded NUL
 		// sits inside a command word (c\x00at /etc/passwd), those signatures are
 		// documentation evidence rather than a path request. Keep them enabled for
@@ -7767,7 +7900,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 			break
 		}
 	}
-	if strings.Contains(lower, "php://") || strings.Contains(lower, "zip://") || strings.Contains(lower, "phar://") || strings.Contains(lower, "expect://") {
+	if lfiWrapperPathShape(lower) {
 		reasons["syntax: traversal or wrapper path expression"] = true
 		reasons["semantics: stream wrapper local file access"] = true
 	}
@@ -7822,7 +7955,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	// Apply shape guards in order of specificity (most specific first)
 
 	// Book/ISBN documentation: technical books should not trigger LFI
-	if bookDocumentationContext(text) {
+	if candidateDocumentContextAllowed(candidate) && bookDocumentationContext(text) {
 		confidence *= 0.5
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -7845,13 +7978,13 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 
 	// Security document context: reports, writeups, papers, and source files
 	// quote paths like /etc/passwd and file:// URIs as subject matter.
-	securityDocument := securityDocumentContextWindowed(text, lfiWin)
+	securityDocument := candidateDocumentContextAllowed(candidate) && securityDocumentContextWindowed(text, lfiWin)
 	if reasons["syntax: server-side include directive"] {
 		// SSI directives are themselves the evidence.  A report heading far
 		// before the directive must not suppress a later executable request;
 		// judge the document-shaped guard on the local directive window while
 		// retaining the normal full-document diffuse guards for other LFI forms.
-		securityDocument = securityDocumentContextWindowed(lfiWin, lfiWin)
+		securityDocument = candidateDocumentContextAllowed(candidate) && securityDocumentContextWindowed(lfiWin, lfiWin)
 	}
 	if securityDocument {
 		confidence *= 0.4
@@ -7866,7 +7999,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	// request-line shape must not erase the only executable evidence. The
 	// exception is restricted to a recognizable #exec command and still comes
 	// after the document-context gate above.
-	if httpProtocolContextShape(text) && !lfiRawHTTPSSICommandShape(candidate, lower) {
+	if candidateDocumentContextAllowed(candidate) && httpProtocolContextShape(text) && !lfiRawHTTPSSICommandShape(candidate, lower) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -7874,7 +8007,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// Markdown code block guard: reduce confidence for code examples
-	if markdownCodeBlockShape(text) {
+	if candidateDocumentContextAllowed(candidate) && markdownCodeBlockShape(text) {
 		confidence *= 0.6
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -7882,7 +8015,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	// Technical documentation keyword guard: AND-gate — full document AND local window.
-	if technicalDocumentationContext(text) && technicalDocumentationContext(lfiWin) {
+	if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(text) && technicalDocumentationContext(lfiWin) {
 		confidence *= 0.7
 		if confidence < 0.7 {
 			return Hit{}, false
@@ -8047,7 +8180,9 @@ func lfiRemoteIncludeContextForSource(source, name, lower string) bool {
 	for _, part := range parts {
 		switch part {
 		case "file", "path", "page", "include", "require", "template", "tpl", "doc", "document", "view":
-			if strings.EqualFold(strings.TrimSpace(source), "body.multipart") &&
+			if (strings.EqualFold(strings.TrimSpace(source), "body.multipart") ||
+				strings.EqualFold(strings.TrimSpace(source), "body.multipart.file") ||
+				strings.EqualFold(strings.TrimSpace(source), "multipart.file")) &&
 				strings.Contains(lower, "xmlns=") &&
 				!lfiRemoteExecutableExtensionRE.MatchString(lower) &&
 				!strings.Contains(lower, "include") && !strings.Contains(lower, "require") {
@@ -8117,14 +8252,14 @@ func xxePayloadContext(candidate semanticCandidate, lower string) bool {
 	}
 	source := candidate.input.Source
 	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
-	if source == "body.raw" {
+	if source == "body.raw" || source == "body.json.raw" {
 		return true
 	}
 	if xxeDocumentationField(name) {
 		return false
 	}
 	switch source {
-	case "query", "body.form", "body.json", "body.multipart":
+	case "query", "body.form", "body.json", "body.multipart", "body.multipart.file":
 		return xxePayloadField(name)
 	default:
 		return false
@@ -8468,7 +8603,7 @@ func nosqlStructuredSource(source string) bool {
 	// for every header on every request. A WAF cannot treat headers as second
 	// class: they are attacker-controlled input like any other.
 	switch source {
-	case "query", "body.form", "body.json", "body.raw", "cookie", "header":
+	case "query", "body.form", "body.json", "body.json.raw", "body.raw", "cookie", "header":
 		return true
 	default:
 		return false
@@ -8612,13 +8747,15 @@ func printableRatio(value string) float64 {
 	return float64(printable) / float64(len([]rune(value)))
 }
 
-// skippedHeaders holds the lowercase header names that carry no
-// attacker-controlled semantics worth scanning. Kept as a set so skipHeader can
+// skippedHeaders holds lowercase transport-header names excluded from semantic
+// analysis. Content-Type is intentionally inspected: legal quoted parameters
+// remain attacker-controlled data even when the media type itself is ordinary.
+// Kept as a set so skipHeader can
 // fold the key into a stack buffer instead of allocating a lowercased copy
 // (strings.ToLower allocated once per request for every canonical header).
 var skippedHeaders = map[string]struct{}{
 	"accept": {}, "accept-encoding": {}, "accept-language": {}, "connection": {},
-	"content-length": {}, "content-type": {}, "host": {}, "cache-control": {},
+	"content-length": {}, "host": {}, "cache-control": {},
 	"pragma": {}, "upgrade-insecure-requests": {}, "sec-fetch-site": {},
 	"sec-fetch-mode": {}, "sec-fetch-dest": {}, "sec-fetch-user": {},
 	"sec-ch-ua": {}, "sec-ch-ua-mobile": {}, "sec-ch-ua-platform": {},

@@ -117,3 +117,17 @@ func TestCleanupOldFilesRejectsSymlinkEscape(t *testing.T) {
 		t.Fatalf("cleanup touched file through symlink escape: %v", statErr)
 	}
 }
+
+func TestCleanupOldFilesResolvesConfiguredRelativeRootWithoutDoubleJoining(t *testing.T) {
+	// The target is the same relative form used by the default config. The
+	// managed root is the resolved log directory, so it must not be joined a
+	// second time (for example, root/logs/logs).
+	got := resolveManagedTarget("./logs", []string{"./logs"})
+	want, err := filepath.Abs("./logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("relative configured root resolved to %q, want %q", got, want)
+	}
+}

@@ -56,6 +56,7 @@ var specialUseAddressPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48"), netip.MustParsePrefix("2001::/23"), netip.MustParsePrefix("3fff::/20"), netip.MustParsePrefix("5f00::/16"),
 	netip.MustParsePrefix("100::/64"),
 	netip.MustParsePrefix("2001:2::/48"),
 	netip.MustParsePrefix("2001:db8::/32"),
@@ -306,7 +307,16 @@ func (b *Broker) Revoke(id string) error {
 	if err := b.appendAudit(b.leaseAuditEvent(lease, "revoked", "revoked", 0, 0, lease.Requests)); err != nil {
 		return fmt.Errorf("%w: %v", ErrAuditUnavailable, err)
 	}
-	b.revocationAudited[id] = struct{}{}
+	if len(b.revocationAudited) >= 65536 {
+		for oldID := range b.revocationAudited {
+			if _, exists := b.leases.Get(oldID); !exists {
+				delete(b.revocationAudited, oldID)
+			}
+		}
+	}
+	if len(b.revocationAudited) < 65536 {
+		b.revocationAudited[id] = struct{}{}
+	}
 	return nil
 }
 

@@ -47,7 +47,7 @@ func NewClickHouseSink(cfg config.ClickHouseConfig, client *http.Client) (*Click
 	sink.async = newAsyncLogWriter("clickhouse", sink.writeSync, nil, func() error {
 		sink.client.CloseIdleConnections()
 		return nil
-	}, asyncLogWriterOptions{})
+	}, asyncLogWriterOptions{batchSize: remoteLogBatchSize, writeBatch: sink.writeBatchSync})
 	return sink, nil
 }
 
@@ -59,12 +59,27 @@ func (s *ClickHouseSink) Write(ctx context.Context, entry *storage.LogEntry) err
 }
 
 func (s *ClickHouseSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
-	if entry == nil {
+	return s.writeBatchSync(ctx, []*storage.LogEntry{entry})
+}
+
+func (s *ClickHouseSink) writeBatchSync(ctx context.Context, entries []*storage.LogEntry) error {
+	if len(entries) == 0 {
 		return nil
 	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return err
+	var body bytes.Buffer
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		body.Write(data)
+		body.WriteByte('\n')
+	}
+	if body.Len() == 0 {
+		return nil
 	}
 	endpoint, err := url.Parse(s.cfg.Endpoint)
 	if err != nil {
@@ -74,7 +89,7 @@ func (s *ClickHouseSink) writeSync(ctx context.Context, entry *storage.LogEntry)
 	query.Set("database", s.cfg.Database)
 	query.Set("query", fmt.Sprintf("INSERT INTO %s FORMAT JSONEachRow", s.cfg.Table))
 	endpoint.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(append(data, '\n')))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body.Bytes()))
 	if err != nil {
 		return err
 	}

@@ -38,7 +38,7 @@ func NewVictoriaLogsSink(cfg config.VictoriaLogsConfig, client *http.Client) (*V
 	sink.async = newAsyncLogWriter("victorialogs", sink.writeSync, nil, func() error {
 		sink.client.CloseIdleConnections()
 		return nil
-	}, asyncLogWriterOptions{})
+	}, asyncLogWriterOptions{batchSize: remoteLogBatchSize, writeBatch: sink.writeBatchSync})
 	return sink, nil
 }
 
@@ -50,18 +50,37 @@ func (s *VictoriaLogsSink) Write(ctx context.Context, entry *storage.LogEntry) e
 }
 
 func (s *VictoriaLogsSink) writeSync(ctx context.Context, entry *storage.LogEntry) error {
-	if entry == nil {
+	return s.writeBatchSync(ctx, []*storage.LogEntry{entry})
+}
+
+func (s *VictoriaLogsSink) writeBatchSync(ctx context.Context, entries []*storage.LogEntry) error {
+	if len(entries) == 0 {
 		return nil
 	}
-	row, err := encodeLogEntryForVictoriaLogs(entry)
-	if err != nil {
-		return err
+	var body bytes.Buffer
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		row, err := encodeLogEntryForVictoriaLogs(entry)
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(row)
+		if err != nil {
+			return err
+		}
+		body.Write(data)
+		body.WriteByte('\n')
 	}
-	data, err := json.Marshal(row)
-	if err != nil {
-		return err
+	if body.Len() == 0 {
+		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Endpoint, bytes.NewReader(append(data, '\n')))
+	return s.postBatch(ctx, body.Bytes())
+}
+
+func (s *VictoriaLogsSink) postBatch(ctx context.Context, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.Endpoint, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}

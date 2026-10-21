@@ -3,6 +3,7 @@ package semantic
 import (
 	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -352,6 +353,52 @@ func TestXXEDetectorUsesAnalyzerGate(t *testing.T) {
 	}
 	if result != nil {
 		t.Fatalf("expected documentation XXE sample to stay clean, got %+v", result)
+	}
+}
+
+func TestMultipartFileXXEUsesFieldNameGate(t *testing.T) {
+	xmlPayload := `<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>`
+	makeRequest := func(t *testing.T, field string) *http.Request {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile(field, "upload.xml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte(xmlPayload)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/upload", bytes.NewReader(body.Bytes()))
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req
+	}
+
+	for _, tc := range []struct {
+		field string
+		want  bool
+	}{
+		{field: "payload", want: true},
+		{field: "file", want: false},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			req := makeRequest(t, tc.field)
+			ctx, err := engine.NewRequestContext(req, "site-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := NewAnalyzer("block", 2, "xxe").Detect(context.Background(), ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := result != nil && result.Detected && result.Category == "xxe"
+			if got != tc.want {
+				t.Fatalf("multipart file XXE detection=%v want %v, result=%+v metadata=%+v", got, tc.want, result, ctx.Metadata)
+			}
+		})
 	}
 }
 

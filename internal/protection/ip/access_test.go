@@ -74,6 +74,27 @@ func TestAccessPolicyPathScope(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyPathScopeUsesSegmentBoundary(t *testing.T) {
+	policy, err := NewAccessPolicy(config.IPProtectionConfig{
+		AccessRules: []config.IPAccessRuleConfig{{
+			ID: "block-admin", Action: "block", Scope: "path", PathPrefix: "/admin",
+			Entries: []string{"203.0.113.10"}, Enabled: true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if decision := policy.Evaluate("203.0.113.10", "site-a", "/administrator"); decision.Matched {
+		t.Fatalf("path rule must not match a sibling prefix: %+v", decision)
+	}
+	if decision := policy.Evaluate("203.0.113.10", "site-a", "/admin/../public"); decision.Matched {
+		t.Fatalf("path rule must not match a traversal escape: %+v", decision)
+	}
+	if decision := policy.Evaluate("203.0.113.10", "site-a", "/admin/users"); !decision.Matched || decision.Action != AccessActionBlock {
+		t.Fatalf("path rule must match children: %+v", decision)
+	}
+}
+
 // NewAccessPolicy folds the legacy Whitelist/Blacklist config into global
 // allow/block rules, which is what makes the standalone Whitelist/Blacklist
 // constructors redundant. Pin that the folded rules still cover CIDR entries,

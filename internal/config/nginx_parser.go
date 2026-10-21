@@ -19,7 +19,10 @@ var (
 const maxNginxScannerLineBytes = 4 << 20
 
 // ParseNginxServerBlock imports a practical subset of nginx server blocks:
-// listen, server_name, proxy_pass, and rewrite directives.
+// listen, server_name, proxy_pass, and rewrite directives. Server names must be
+// hostnames, IP addresses, or leading *. hostname patterns accepted by site
+// validation. Nginx-only names such as *, regexes, ports, and underscores are
+// rejected during import rather than producing an unloadable configuration.
 func ParseNginxServerBlock(contents []byte) ([]SiteConfig, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(contents))
 	scanner.Buffer(make([]byte, 64<<10), maxNginxScannerLineBytes)
@@ -117,6 +120,15 @@ func ParseNginxServerBlock(contents []byte) ([]SiteConfig, error) {
 	}
 	if current != nil {
 		finishServer()
+	}
+	for i := range sites {
+		for j, domain := range sites[i].Domains {
+			normalized, err := normalizeSiteDomain(domain)
+			if err != nil {
+				return nil, fmt.Errorf("unsupported nginx server_name %q: %w; use a hostname, IP address, or *.hostname", domain, err)
+			}
+			sites[i].Domains[j] = normalized
+		}
 	}
 	return sites, nil
 }

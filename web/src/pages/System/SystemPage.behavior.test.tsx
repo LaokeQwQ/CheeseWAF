@@ -27,6 +27,7 @@ vi.mock('sonner', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
@@ -170,6 +171,44 @@ describe('SystemPage persistence failures', () => {
 });
 
 describe('SystemPage persistence success', () => {
+  it('saves the login provider and shared Cap endpoints without secret readiness metadata', async () => {
+    const initial = systemWithListen(':18080');
+    initial.captcha_providers.cap = {
+      api_endpoint: 'https://captcha.example.test/site-key/',
+      widget_url: 'https://captcha.example.test/cap.js',
+      wasm_url: 'https://captcha.example.test/wasm/',
+      hashwx_url: 'https://captcha.example.test/hashwx/',
+      timeout: 5_000_000_000,
+      secret_set: true,
+    };
+    apiMocks.fetchSystemConfig.mockResolvedValue(initial);
+    apiMocks.updateSystemConfig.mockImplementation(async (payload) => ({ ...initial, ...payload } as SystemConfig));
+    renderSystem();
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'system.consoleLogin' }), { button: 0, ctrlKey: false });
+    await screen.findByText('system.capProvider');
+    const providerSelect = screen.getByText('system.loginCaptchaProvider').closest('label')?.querySelector('[role="combobox"]');
+    expect(providerSelect).toBeTruthy();
+    fireEvent.click(providerSelect as HTMLElement);
+    fireEvent.click(await screen.findByRole('option', { name: 'Cap Standalone' }));
+
+    fireEvent.change(screen.getByDisplayValue('https://captcha.example.test/site-key/'), { target: { value: 'https://cap-new.example.test/site-key/' } });
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateSystemConfig).toHaveBeenCalledTimes(1));
+    const payload = apiMocks.updateSystemConfig.mock.calls[0]?.[0];
+    expect(payload?.console?.login.captcha.provider).toBe('cap');
+    expect(payload?.captcha_providers?.cap).toEqual({
+      api_endpoint: 'https://cap-new.example.test/site-key/',
+      widget_url: 'https://captcha.example.test/cap.js',
+      wasm_url: 'https://captcha.example.test/wasm/',
+      hashwx_url: 'https://captcha.example.test/hashwx/',
+      timeout: 5_000_000_000,
+    });
+    expect(payload?.captcha_providers?.cap).not.toHaveProperty('secret_set');
+    expect(payload?.captcha_providers?.cap).not.toHaveProperty('secret_file');
+  });
+
   it('invalidates and rereads the saved runtime configuration', async () => {
     const initial = systemWithListen(':18080');
     const persisted = systemWithListen(':8080');

@@ -1,11 +1,17 @@
 package proxy
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestNewReverseProxyReusesTransportForSamePolicy(t *testing.T) {
 	target, err := url.Parse("http://127.0.0.1:8080")
@@ -31,21 +37,21 @@ func TestNewReverseProxyReusesTransportForSamePolicy(t *testing.T) {
 }
 
 func TestNewReverseProxyPreservesOriginalForwardedHost(t *testing.T) {
-	target, err := url.Parse("http://origin.internal:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
+	var gotHost, gotForwardedHost string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost, gotForwardedHost = r.Host, r.Header.Get("X-Forwarded-Host")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
 	proxy := NewReverseProxy(target, time.Second)
-	req, err := http.NewRequest(http.MethodGet, "https://app.example.test/path", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodGet, "https://app.example.test/path", nil)
 	req.Host = "app.example.test"
-	proxy.Director(req)
-	if got := req.Host; got != "origin.internal:8080" {
-		t.Fatalf("expected upstream host, got %q", got)
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+	if gotHost != target.Host {
+		t.Fatalf("expected upstream host %q, got %q", target.Host, gotHost)
 	}
-	if got := req.Header.Get("X-Forwarded-Host"); got != "app.example.test" {
+	if got := gotForwardedHost; got != "app.example.test" {
 		t.Fatalf("expected original forwarded host, got %q", got)
 	}
 }
@@ -67,23 +73,20 @@ func TestPeerIPOnlyReturnsParsedAddresses(t *testing.T) {
 }
 
 func TestNewReverseProxyStripsAllProviderIdentityHeaders(t *testing.T) {
-	target, err := url.Parse("http://origin.internal:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
+	var received http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received = r.Header.Clone(); w.WriteHeader(204) }))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
 	proxy := NewReverseProxy(target, time.Second)
-	req, err := http.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
 	req.RemoteAddr = "192.0.2.10:1234"
 	for _, header := range stripClientForwardHeaders {
 		req.Header.Set(header, "203.0.113.99")
 	}
 
-	proxy.Director(req)
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
 	for _, header := range stripClientForwardHeaders {
-		got := req.Header.Get(header)
+		got := received.Get(header)
 		switch http.CanonicalHeaderKey(header) {
 		case http.CanonicalHeaderKey("X-Forwarded-For"), http.CanonicalHeaderKey("X-Real-IP"):
 			if got != "192.0.2.10" {
@@ -97,6 +100,10 @@ func TestNewReverseProxyStripsAllProviderIdentityHeaders(t *testing.T) {
 			if got != "http" {
 				t.Fatalf("forwarded proto was not rebuilt from the request transport: %q", got)
 			}
+		case http.CanonicalHeaderKey("X-Forwarded-Port"):
+			if got != "80" {
+				t.Fatalf("forwarded port was not rebuilt from the request transport: %q", got)
+			}
 		default:
 			if got != "" {
 				t.Fatalf("provider identity header %s leaked upstream as %q", header, got)
@@ -106,45 +113,82 @@ func TestNewReverseProxyStripsAllProviderIdentityHeaders(t *testing.T) {
 }
 
 func TestNewReverseProxyForClientForwardsValidatedClientIdentity(t *testing.T) {
-	target, err := url.Parse("http://origin.internal:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
+	var received http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received = r.Header.Clone(); w.WriteHeader(204) }))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
 	proxy := NewReverseProxyForClient(target, time.Second, "203.0.113.42")
-	req, err := http.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
 	req.RemoteAddr = "192.0.2.10:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.99")
 	req.Header.Set("CF-Connecting-IP", "198.51.100.100")
 
-	proxy.Director(req)
-	if got := req.Header.Get("X-Forwarded-For"); got != "203.0.113.42" {
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+	if got := received.Get("X-Forwarded-For"); got != "203.0.113.42" {
 		t.Fatalf("X-Forwarded-For = %q, want validated client IP", got)
 	}
-	if got := req.Header.Get("X-Real-IP"); got != "203.0.113.42" {
+	if got := received.Get("X-Real-IP"); got != "203.0.113.42" {
 		t.Fatalf("X-Real-IP = %q, want validated client IP", got)
 	}
-	if got := req.Header.Get("CF-Connecting-IP"); got != "" {
+	if got := received.Get("CF-Connecting-IP"); got != "" {
 		t.Fatalf("provider identity header leaked upstream as %q", got)
 	}
 }
 
 func TestNewReverseProxyForClientRejectsInvalidValidatedIdentity(t *testing.T) {
-	target, err := url.Parse("http://origin.internal:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
+	var received http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { received = r.Header.Clone(); w.WriteHeader(204) }))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
 	proxy := NewReverseProxyForClient(target, time.Second, "not-an-ip")
-	req, err := http.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodGet, "http://app.example.test/path", nil)
 	req.RemoteAddr = "192.0.2.10:1234"
 
-	proxy.Director(req)
-	if got := req.Header.Get("X-Forwarded-For"); got != "192.0.2.10" {
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+	if got := received.Get("X-Forwarded-For"); got != "192.0.2.10" {
 		t.Fatalf("X-Forwarded-For = %q, want socket peer fallback", got)
+	}
+}
+
+func TestNewReverseProxyForSiteAppliesOriginSchemeAndHostPolicy(t *testing.T) {
+	target, _ := url.Parse("http://origin.internal:8080/base")
+	var gotScheme, gotHost string
+	proxy := NewReverseProxyForSite(target, time.Second, "203.0.113.42", "https", true, "origin.example.test")
+	proxy.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotScheme, gotHost = r.URL.Scheme, r.Host
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(http.NoBody), Request: r}, nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://public.example.test/path", nil)
+	req.Host = "public.example.test"
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+	if gotScheme != "https" {
+		t.Fatalf("origin scheme = %q, want https", gotScheme)
+	}
+	if gotHost != "origin.example.test" {
+		t.Fatalf("origin Host = %q, want configured host header", gotHost)
+	}
+
+	proxy = NewReverseProxyForSite(target, time.Second, "203.0.113.42", "http", true, "")
+	proxy.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotScheme, gotHost = r.URL.Scheme, r.Host
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(http.NoBody), Request: r}, nil
+	})
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+	if gotScheme != "http" || gotHost != "public.example.test" {
+		t.Fatalf("pass_host policy = scheme %q host %q", gotScheme, gotHost)
+	}
+}
+
+func TestNewReverseProxyForSitePreservesSecureOriginWithoutOverride(t *testing.T) {
+	target, _ := url.Parse("https://origin.internal:8443/base")
+	proxy := NewReverseProxyForSite(target, time.Second, "203.0.113.42", "", false, "")
+	var gotScheme string
+	proxy.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotScheme = r.URL.Scheme
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: io.NopCloser(http.NoBody), Request: r}, nil
+	})
+	proxy.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://public.example.test/path", nil))
+	if gotScheme != "https" {
+		t.Fatalf("secure origin scheme = %q, want https", gotScheme)
 	}
 }

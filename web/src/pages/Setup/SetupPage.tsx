@@ -25,6 +25,7 @@ import {
 import {
   Badge,
   Button,
+  buttonVariants,
   Checkbox,
   Input,
   Label,
@@ -52,9 +53,6 @@ import { USERNAME_MAX, USERNAME_MIN, usernameErrorKey } from '../../utils/userna
  * lock themselves out before the console ever loads. Both stay on backend
  * defaults and are documented in the review step instead.
  */
-const DEFAULT_ADMIN_LISTEN = '0.0.0.0:9443';
-const DEFAULT_ADMIN_STRATEGY = 'public_tls';
-
 const TYPING_INTERVAL_MS = 70;
 const DELETING_INTERVAL_MS = 34;
 const TYPEWRITER_HOLD_MS = 1500;
@@ -85,6 +83,8 @@ type ProbeResult = {
   disk_ok?: boolean;
   notes?: string[];
   suggested_config?: SuggestedConfig;
+  admin_listen?: string;
+  admin_strategy?: string;
 };
 
 type CheckStatus = 'pass' | 'warn' | 'fail';
@@ -379,11 +379,14 @@ function useTypewriter(phrases: string[], active: boolean) {
   const [index, setIndex] = useState(0);
   const [length, setLength] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const reducedMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    : false;
 
   useEffect(() => {
     // Only tick on the language step; otherwise the timer re-renders the whole
     // wizard every few milliseconds while the operator is filling in forms.
-    if (!active || phrases.length === 0) return;
+    if (!active || phrases.length === 0 || reducedMotion) return;
     const text = phrases[index] ?? '';
     if (!deleting && length >= text.length) {
       if (phrases.length < 2) return;
@@ -400,10 +403,10 @@ function useTypewriter(phrases: string[], active: boolean) {
       deleting ? DELETING_INTERVAL_MS : TYPING_INTERVAL_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [active, deleting, index, length, phrases]);
+  }, [active, deleting, index, length, phrases, reducedMotion]);
 
   const text = phrases[index] ?? '';
-  return text.slice(0, Math.max(0, length));
+  return reducedMotion ? text : text.slice(0, Math.max(0, length));
 }
 
 export default function SetupPage() {
@@ -417,7 +420,10 @@ export default function SetupPage() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [done, setDone] = useState(false);
+  const [securityEntryPath, setSecurityEntryPath] = useState('/');
   const [probe, setProbe] = useState<ProbeResult | null>(null);
+  const [adminListen, setAdminListen] = useState('');
+  const [adminStrategy, setAdminStrategy] = useState('');
   const [profile, setProfile] = useState<ProfileKey>('smart');
   const [profileWarning, setProfileWarning] = useState('');
   const warnedProfileRef = useRef('');
@@ -442,7 +448,7 @@ export default function SetupPage() {
   const [setupTokenInput, setSetupTokenInput] = useState('');
   const [setupTokenError, setSetupTokenError] = useState<SetupTokenErrorKey | ''>('');
   const probeProfileInitializedRef = useRef(false);
-  const setupProbeRequestRef = useRef<Promise<{ probe: ProbeResult }> | null>(null);
+  const setupProbeRequestRef = useRef<Promise<{ probe: ProbeResult; admin_listen?: string; admin_strategy?: string }> | null>(null);
   const setupAccessReady = setupAccessState === 'ready';
 
   const typewriterPhrases = useMemo(
@@ -471,6 +477,12 @@ export default function SetupPage() {
     const detected = detectBrowserLanguage();
     if (detected !== language) setLanguage(detected);
   }, []);
+
+  useEffect(() => {
+    if (step === STEP_LANGUAGE) {
+      void ensureLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
+    }
+  }, [step, language]);
 
   useEffect(() => {
     let cancelled = false;
@@ -513,11 +525,13 @@ export default function SetupPage() {
   useEffect(() => {
     if (setupAccessState !== 'probing') return;
     let cancelled = false;
-    const probeRequest = setupProbeRequestRef.current ?? (setupProbeRequestRef.current = unwrapAPIResponse<{ probe: ProbeResult }>(apiClient.post('/setup/probe', {})));
+    const probeRequest = setupProbeRequestRef.current ?? (setupProbeRequestRef.current = unwrapAPIResponse<{ probe: ProbeResult; admin_listen?: string; admin_strategy?: string }>(apiClient.post('/setup/probe', {})));
     probeRequest
       .then((data) => {
         if (!cancelled) {
           setProbe(data.probe);
+          setAdminListen(data.admin_listen ?? data.probe?.admin_listen ?? '');
+          setAdminStrategy(data.admin_strategy ?? data.probe?.admin_strategy ?? 'local');
           setSetupTokenInput('');
           if (!probeProfileInitializedRef.current && data.probe?.profile && data.probe.profile !== 'custom') {
             setProfile(data.probe.profile);
@@ -607,7 +621,9 @@ export default function SetupPage() {
     }
 
     setAccount((prev) => ({ ...prev, username }));
-    await persistDraft({ username, password: account.password });
+    // Keep the credential only in this browser tab until the one-shot setup
+    // request. The draft is resumable state, so it must never receive secrets.
+    await persistDraft({ username });
     goToStep(STEP_INTEGRATIONS);
   }
 
@@ -699,28 +715,16 @@ export default function SetupPage() {
       await persistDraft({
         profile,
         username: account.username,
-        password: account.password,
-        admin_listen: DEFAULT_ADMIN_LISTEN,
-        admin_strategy: DEFAULT_ADMIN_STRATEGY,
         confirmed: true,
         integrations: integrationsDraftPayload(integrations),
       });
-      const setupResult = await setupAdmin(account.username, account.password, DEFAULT_ADMIN_LISTEN, DEFAULT_ADMIN_STRATEGY);
+      const setupResult = await setupAdmin(account.username, account.password, '', '', profile);
       const securityEntryPath = typeof setupResult.security_entry_path === 'string'
         ? sanitizeInternalReturnPath(setupResult.security_entry_path)
         : '/';
+      setSecurityEntryPath(securityEntryPath);
       setDone(true);
       goToStep(STEP_DONE);
-      window.setTimeout(() => {
-        // The security entry must be requested as a real document so the
-        // server can mint its short-lived entry cookie before /login loads.
-        if (securityEntryPath !== '/') {
-          window.location.assign(securityEntryPath);
-          return;
-        }
-        // Keep the legacy client-side redirect for older API responses/mocks.
-        navigate('/login', { replace: true });
-      }, 800);
     } catch (err) {
       const message = err instanceof Error ? err.message : t('setup.failed');
       setErrorMessage(message);
@@ -844,7 +848,7 @@ export default function SetupPage() {
         />
         <button
           type="button"
-          className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+          className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors duration-[var(--motion-duration-fast)] ease-[var(--motion-ease-standard)] hover:text-foreground"
           aria-label={shown ? t('setup.hidePassword') : t('setup.showPassword')}
           title={shown ? t('setup.hidePassword') : t('setup.showPassword')}
           onClick={onToggle}
@@ -968,9 +972,10 @@ export default function SetupPage() {
                     onChange={(event) => { setSetupTokenInput(event.target.value); }}
                     placeholder={t('setup.tokenPlaceholder')}
                     aria-invalid={setupTokenError ? true : undefined}
+                    aria-describedby={setupTokenError ? 'setup-token-error' : undefined}
                   />
                   {setupTokenError ? (
-                    <div className="setup-token-error" role="alert" aria-live="assertive">
+                    <div id="setup-token-error" className="setup-token-error" role="alert" aria-live="assertive">
                       <AlertTriangle size={15} aria-hidden="true" />
                       <span>{t(setupTokenError)}</span>
                     </div>
@@ -1018,7 +1023,7 @@ export default function SetupPage() {
                 })}
               </span>
               <span className="setup-progress-mobile-track" aria-hidden="true">
-                <span style={{ width: `${((step + 1) / steps.length) * 100}%` }} />
+                <span style={{ transform: `scaleX(${(step + 1) / steps.length})` }} />
               </span>
             </p>
           </>
@@ -1051,26 +1056,55 @@ export default function SetupPage() {
               onValueChange={(value) => setLanguage(value as Language)}
               className="mt-2 grid gap-2"
             >
-              {LANGUAGE_OPTIONS.map((option) => {
+              {LANGUAGE_OPTIONS.map((option, optionIndex) => {
                 const id = `setup-language-${option.value}`;
                 return (
                   <div
                     key={option.value}
+                    id={`${id}-card`}
                     className={[
                       'setup-card-radio flex items-start gap-3 p-5',
                       language === option.value ? 'setup-card-radio-selected' : '',
                     ].join(' ')}
+                    role="radio"
+                    tabIndex={0}
+                    aria-checked={language === option.value}
+                    aria-labelledby={`${id}-label`}
+                    aria-describedby={`${id}-note`}
                     onClick={() => setLanguage(option.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setLanguage(option.value);
+                        return;
+                      }
+                      let nextIndex = optionIndex;
+                      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (optionIndex + 1) % LANGUAGE_OPTIONS.length;
+                      else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (optionIndex - 1 + LANGUAGE_OPTIONS.length) % LANGUAGE_OPTIONS.length;
+                      else if (event.key === 'Home') nextIndex = 0;
+                      else if (event.key === 'End') nextIndex = LANGUAGE_OPTIONS.length - 1;
+                      else return;
+                      event.preventDefault();
+                      const next = LANGUAGE_OPTIONS[nextIndex];
+                      setLanguage(next.value);
+                      document.getElementById(`setup-language-${next.value}-card`)?.focus();
+                    }}
                   >
-                    <RadioGroupItem value={option.value} id={id} className="mt-0.5" />
-                    <Label htmlFor={id} className="grid cursor-pointer gap-0.5 font-normal leading-snug">
+                    <RadioGroupItem
+                      value={option.value}
+                      id={id}
+                      className="mt-0.5"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    />
+                    <Label htmlFor={id} id={`${id}-label`} className="grid cursor-pointer gap-0.5 font-normal leading-snug">
                       <span className="setup-language-title flex items-center gap-2 text-sm font-medium">
                         {t(option.titleKey)}
                         {browserLanguage === option.value ? (
                           <Badge variant="secondary">{t('setup.languageBrowserDefault')}</Badge>
                         ) : null}
                       </span>
-                      <span className="setup-language-note text-xs text-muted-foreground" title={t(option.noteKey)}>{t(option.noteKey)}</span>
+                      <span id={`${id}-note`} className="setup-language-note text-xs text-muted-foreground" title={t(option.noteKey)}>{t(option.noteKey)}</span>
                     </Label>
                   </div>
                 );
@@ -1311,7 +1345,7 @@ export default function SetupPage() {
               >
                 <span
                   className={`setup-password-strength-fill ${STRENGTH_BAR_STYLES[score] ?? 'bg-muted'}`}
-                  style={{ width: `${score * 25}%` }}
+                  style={{ transform: `scaleX(${score / 4})` }}
                   aria-hidden="true"
                 />
               </div>
@@ -1396,7 +1430,7 @@ export default function SetupPage() {
                       />
                       <button
                         type="button"
-                        className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                        className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground transition-colors duration-[var(--motion-duration-fast)] ease-[var(--motion-ease-standard)] hover:text-foreground"
                         aria-label={showPostgresPassword ? t('setup.hidePassword') : t('setup.showPassword')}
                         title={showPostgresPassword ? t('setup.hidePassword') : t('setup.showPassword')}
                         onClick={() => setShowPostgresPassword((visible) => !visible)}
@@ -1473,7 +1507,7 @@ export default function SetupPage() {
                   >
                     {connectionTests.postgres === 'testing' ? t('setup.integrationsTesting') : t('setup.integrationsTestConnection')}
                   </Button>
-                  {connectionTests.postgres === 'success' ? <span className="setup-connection-status is-success" role="status"><CheckCircle2 size={15} />{t('setup.integrationsConnected')}</span> : null}
+                  {connectionTests.postgres === 'success' ? <span className="setup-connection-status is-success" role="status"><CheckCircle2 size={15} />{t('setup.integrationsConnectedTestOnly')}</span> : null}
                   {connectionTests.postgres === 'error' ? <span className="setup-connection-status is-error" role="status"><AlertTriangle size={15} />{t('setup.integrationsTestFailed')}</span> : null}
                 </div>
               </>,
@@ -1554,7 +1588,7 @@ export default function SetupPage() {
                   >
                     {connectionTests.victoria === 'testing' ? t('setup.integrationsTesting') : t('setup.integrationsTestConnection')}
                   </Button>
-                  {connectionTests.victoria === 'success' ? <span className="setup-connection-status is-success" role="status"><CheckCircle2 size={15} />{t('setup.integrationsConnected')}</span> : null}
+                  {connectionTests.victoria === 'success' ? <span className="setup-connection-status is-success" role="status"><CheckCircle2 size={15} />{t('setup.integrationsConnectedTestOnly')}</span> : null}
                   {connectionTests.victoria === 'error' ? <span className="setup-connection-status is-error" role="status"><AlertTriangle size={15} />{t('setup.integrationsTestFailed')}</span> : null}
                 </div>
               </>,
@@ -1623,16 +1657,16 @@ export default function SetupPage() {
             <section className="setup-card mt-2 rounded-2xl border-dashed p-4">
               <h3 className="m-0 mb-1 text-sm font-semibold">{t('setup.advancedTitle')}</h3>
               <p className="m-0 text-xs text-muted-foreground">
-                {t('setup.advancedHint', { listen: DEFAULT_ADMIN_LISTEN, strategy: t('setup.strategyPublicTLS') })}
+                {t('setup.advancedHint', { listen: adminListen || t('setup.notAvailable'), strategy: adminStrategy === 'public_tls' ? t('setup.strategyPublicTLS') : t('setup.strategyLocal') })}
               </p>
               <dl className="m-0 mt-2 grid gap-1 text-xs">
                 <div className="flex gap-3">
                   <dt className="text-muted-foreground">{t('setup.adminListen')}</dt>
-                  <dd className="m-0 ml-auto font-medium">{DEFAULT_ADMIN_LISTEN}</dd>
+                  <dd className="m-0 ml-auto font-medium">{adminListen || t('setup.notAvailable')}</dd>
                 </div>
                 <div className="flex gap-3">
                   <dt className="text-muted-foreground">{t('setup.adminStrategy')}</dt>
-                  <dd className="m-0 ml-auto font-medium">{t('setup.strategyPublicTLS')}</dd>
+                  <dd className="m-0 ml-auto font-medium">{adminStrategy === 'public_tls' ? t('setup.strategyPublicTLS') : t('setup.strategyLocal')}</dd>
                 </div>
               </dl>
             </section>
@@ -1661,6 +1695,13 @@ export default function SetupPage() {
             <CheckCircle2 className="setup-success-mark text-emerald-600 dark:text-emerald-400" size={30} aria-hidden="true" />
             <h2 className="m-0 text-lg font-semibold">{t('setup.completeTitle')}</h2>
             <p className="form-success">{t('setup.success')}</p>
+            <div className="setup-action-row mt-2">
+              <a className={buttonVariants({ className: 'setup-btn-primary w-full min-w-0' })} href={`${securityEntryPath !== '/' ? securityEntryPath : '/login'}?returnTo=%2Fsites`}>{t('setup.createFirstSite')}</a>
+              <Button className="setup-btn-secondary" variant="outline" onClick={() => {
+                if (securityEntryPath !== '/') window.location.assign(securityEntryPath);
+                else navigate('/login', { replace: true });
+              }}>{t('setup.goToLogin')}</Button>
+            </div>
           </div>
         )}
 

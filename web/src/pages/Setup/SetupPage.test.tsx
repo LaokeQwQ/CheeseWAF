@@ -223,7 +223,10 @@ describe('SetupPage', () => {
 
     await waitFor(() => expect(screen.getByLabelText('setup.tokenLabel')).toBeTruthy());
     expect(screen.queryByRole('radio', { name: /setup.languageZh/ })).toBeNull();
-    expect(screen.getByRole('alert').textContent).toContain('setup.tokenInvalid');
+    const tokenInput = screen.getByLabelText('setup.tokenLabel');
+    const tokenError = screen.getByRole('alert');
+    expect(tokenError.textContent).toContain('setup.tokenInvalid');
+    expect(tokenInput.getAttribute('aria-describedby')).toBe(tokenError.id);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
@@ -255,11 +258,25 @@ describe('SetupPage', () => {
     expect(apiMocks.setupAdmin).toHaveBeenCalledWith(
       'root-admin',
       'S3cure-Pass!',
-      expect.any(String),
-      expect.any(String),
+      '',
+      '',
+      'low',
     );
-    await vi.advanceTimersByTimeAsync(900);
+    fireEvent.click(screen.getByRole('button', { name: 'setup.goToLogin' }));
     expect(navigateMock).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  it.each([
+    ['/AdminEntry123', '/AdminEntry123?returnTo=%2Fsites'],
+    [undefined, '/login?returnTo=%2Fsites'],
+  ])('opens the first-site action through the login entry (%s)', async (securityEntryPath, expectedHref) => {
+    apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true, security_entry_path: securityEntryPath });
+    await advanceToReviewStep();
+    await completeSetup();
+
+    const firstSiteLink = await screen.findByRole('link', { name: 'setup.createFirstSite' });
+    expect(firstSiteLink.getAttribute('href')).toBe(expectedHref);
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it('surfaces setup API failures', async () => {
@@ -293,6 +310,19 @@ describe('SetupPage', () => {
     );
   });
 
+  it('supports standard radio-group arrow navigation for language cards', async () => {
+    render(<SetupPage />);
+    const zh = await screen.findByRole('radio', { name: /setup.languageZh/ });
+    const en = screen.getByRole('radio', { name: /setup.languageEn/ });
+    zh.focus();
+    fireEvent.keyDown(zh, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(en);
+    expect(en.getAttribute('aria-checked')).toBe('true');
+    fireEvent.keyDown(en, { key: 'Home' });
+    expect(document.activeElement).toBe(zh);
+    expect(zh.getAttribute('aria-checked')).toBe('true');
+  });
+
   it('keeps English preselected when the browser reports English', async () => {
     render(<SetupPage />);
     await waitFor(() =>
@@ -305,9 +335,21 @@ describe('SetupPage', () => {
     render(<SetupPage />);
     await waitFor(() => expect(useAppStore.getState().language).toBe('zh-CN'));
 
-    const englishCard = screen.getByText('setup.languageEn').closest('.setup-card-radio');
+    const englishCard = (await screen.findByText('setup.languageEn')).closest('.setup-card-radio');
     expect(englishCard).toBeTruthy();
     fireEvent.click(englishCard!);
+    await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
+  });
+
+  it('lets the operator activate a language card with the keyboard', async () => {
+    setBrowserLanguage('zh-CN');
+    render(<SetupPage />);
+    await waitFor(() => expect(useAppStore.getState().language).toBe('zh-CN'));
+
+    const englishCard = screen.getByText('setup.languageEn').closest('.setup-card-radio');
+    expect(englishCard?.getAttribute('role')).toBe('radio');
+    expect(englishCard?.getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(englishCard!, { key: 'Enter' });
     await waitFor(() => expect(useAppStore.getState().language).toBe('en-US'));
   });
 
@@ -482,22 +524,22 @@ describe('SetupPage', () => {
 
     expect(fill).toBeTruthy();
     expect(meter.getAttribute('aria-valuenow')).toBe('0');
-    expect(fill.style.width).toBe('0%');
+    expect(fill.style.transform).toBe('scaleX(0)');
     expect(fill.classList.contains('bg-muted')).toBe(true);
 
     fireEvent.change(passwordInput, { target: { value: 'abc' } });
     expect(meter.getAttribute('aria-valuenow')).toBe('1');
-    expect(fill.style.width).toBe('25%');
+    expect(fill.style.transform).toBe('scaleX(0.25)');
     expect(fill.classList.contains('bg-red-500')).toBe(true);
 
     fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass!' } });
     expect(meter.getAttribute('aria-valuenow')).toBe('3');
-    expect(fill.style.width).toBe('75%');
+    expect(fill.style.transform).toBe('scaleX(0.75)');
     expect(fill.classList.contains('bg-yellow-400')).toBe(true);
 
     fireEvent.change(passwordInput, { target: { value: 'S3cure-Pass-2026!' } });
     expect(meter.getAttribute('aria-valuenow')).toBe('4');
-    expect(fill.style.width).toBe('100%');
+    expect(fill.style.transform).toBe('scaleX(1)');
     expect(fill.classList.contains('bg-emerald-500')).toBe(true);
   });
 
@@ -508,11 +550,11 @@ describe('SetupPage', () => {
     expect(screen.queryByLabelText('setup.adminStrategy')).toBeNull();
   });
 
-  it('uses the backend defaults for the admin listener', async () => {
+  it('preserves the backend admin listener and strategy', async () => {
     apiMocks.setupAdmin.mockResolvedValue({ setup_complete: true });
     await advanceToReviewStep();
     await completeSetup();
-    expect(apiMocks.setupAdmin).toHaveBeenCalledWith('root-admin', 'S3cure-Pass!', '0.0.0.0:9443', 'public_tls');
+    expect(apiMocks.setupAdmin).toHaveBeenCalledWith('root-admin', 'S3cure-Pass!', '', '', 'low');
   });
 
   // 问题 7：review 使用 i18n 标签。
@@ -534,7 +576,7 @@ describe('SetupPage', () => {
     expect(screen.getByText('setup.advancedTitle')).toBeTruthy();
     expect(screen.getByText('setup.adminListen')).toBeTruthy();
     expect(screen.getByText('setup.adminStrategy')).toBeTruthy();
-    expect(screen.getByText('0.0.0.0:9443')).toBeTruthy();
+    expect(screen.getByText('setup.notAvailable')).toBeTruthy();
   });
 
   // 问题 8：成功只提示一次。
@@ -580,6 +622,30 @@ describe('SetupPage', () => {
     const later = typed();
     expect(later).not.toBe(first);
     expect(isOneLanguage(later)).toBe(true);
+  });
+
+  it('shows the full headline when reduced motion is requested', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }),
+    });
+    try {
+      render(<SetupPage />);
+      const headline = await screen.findByTestId('setup-language-typewriter');
+      expect(headline.textContent?.replaceAll('|', '')).toBe('setup.languageTitleZh');
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
   });
 
   // 问题 5（续）：密码复用项目既有的 passwordPolicy。
@@ -646,7 +712,7 @@ describe('SetupPage', () => {
     fireEvent.click(screen.getByTestId('setup-integration-postgres-toggle'));
     fireEvent.change(screen.getByLabelText('setup.integrationsPostgresUsername'), { target: { value: 'cheesewaf' } });
     fireEvent.click(screen.getByRole('button', { name: 'setup.integrationsTestConnection' }));
-    expect(await screen.findByText('setup.integrationsConnected')).toBeTruthy();
+    expect(await screen.findByText('setup.integrationsConnectedTestOnly')).toBeTruthy();
     expect(screen.queryByText('setup.summaryTitle')).toBeNull();
 
     fireEvent.click(screen.getByTestId('setup-integration-victoria-toggle'));
@@ -655,7 +721,7 @@ describe('SetupPage', () => {
       target: { value: 'http://127.0.0.1:9428/insert/jsonline' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'setup.integrationsTestConnection' }));
-    expect(await screen.findByText('setup.integrationsConnected')).toBeTruthy();
+    expect(await screen.findByText('setup.integrationsConnectedTestOnly')).toBeTruthy();
   });
 
   it('rejects a VictoriaLogs endpoint that is not an http URL', async () => {

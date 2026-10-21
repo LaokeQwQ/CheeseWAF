@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -62,6 +63,67 @@ func (h *Handler) ApproveAIApproval(w http.ResponseWriter, r *http.Request) {
 	writeData(w, approval)
 }
 
+// StartAIApprovalConfirmation opens the server-held warning window for a
+// destructive AI approval. The adapter owns the challenge and binds it to the
+// authenticated approver session; request body identity fields are ignored.
+func (h *Handler) StartAIApprovalConfirmation(w http.ResponseWriter, r *http.Request) {
+	if !h.aiInteractiveSession(r) || !approvalHTTPRequestIsLocal(r) || h.AssistantGateApproval == nil {
+		writeError(w, http.StatusForbidden, "AI_APPROVAL_CONFIRMATION_FORBIDDEN", "interactive user session and high-risk approval gate are required")
+		return
+	}
+	var payload struct {
+		Language string `json:"language"`
+	}
+	if !decode(w, r, &payload) {
+		return
+	}
+	challenge, err := h.AssistantGateApproval.StartConfirmation(chi.URLParam(r, "id"), h.aiApprovalActor(r), payload.Language)
+	if err != nil {
+		writeError(w, http.StatusConflict, "AI_APPROVAL_CONFIRMATION_ERROR", err.Error())
+		return
+	}
+	writeData(w, challenge)
+}
+
+// ConfirmAIApproval completes one checkpoint of the strict destructive AI
+// approval flow. Credentials are verified by the production adapter against
+// the current management session; client confirmation booleans are ignored.
+func (h *Handler) ConfirmAIApproval(w http.ResponseWriter, r *http.Request) {
+	if !h.aiInteractiveSession(r) || !approvalHTTPRequestIsLocal(r) || h.AssistantGateApproval == nil {
+		writeError(w, http.StatusForbidden, "AI_APPROVAL_CONFIRMATION_FORBIDDEN", "interactive user session and high-risk approval gate are required")
+		return
+	}
+	var payload ai.GateApprovalConfirmation
+	if !decode(w, r, &payload) {
+		return
+	}
+	result, err := h.AssistantGateApproval.ConfirmContext(r.Context(), chi.URLParam(r, "id"), h.aiApprovalActor(r), payload)
+	if err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, ai.ErrHighRiskCredentialLocked) || errors.Is(err, ai.ErrHighRiskCredentialBusy) {
+			status = http.StatusTooManyRequests
+		} else if strings.Contains(strings.ToLower(err.Error()), "credential") || strings.Contains(strings.ToLower(err.Error()), "verifier") {
+			status = http.StatusForbidden
+		}
+		writeError(w, status, "AI_APPROVAL_CONFIRMATION_ERROR", err.Error())
+		return
+	}
+	writeData(w, result)
+}
+
+func (h *Handler) aiInteractiveSession(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil || claims.ID == "" || claims.Subject == "" || claims.Username == "" {
+		return false
+	}
+	role := strings.ToLower(strings.TrimSpace(claims.Role))
+	subject := strings.ToLower(strings.TrimSpace(claims.Subject))
+	return role != "api_token" && !strings.HasPrefix(subject, "api-token:")
+}
+
 func (h *Handler) RejectAIApproval(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !h.canDecideAIApproval(r, id) {
@@ -77,12 +139,15 @@ func (h *Handler) RejectAIApproval(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) canDecideAIApproval(r *http.Request, id string) bool {
+	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
+	if claims == nil || claims.ID == "" || strings.EqualFold(strings.TrimSpace(claims.Role), "api_token") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(claims.Subject)), "api-token:") {
+		return false
+	}
 	approval, ok := h.AssistantApprovals.Get(strings.TrimSpace(id))
 	if !ok {
 		return true // Preserve the normal not-found response from the store.
 	}
 	actor := h.aiApprovalActor(r)
-	claims, _ := r.Context().Value(middleware.UserContextKey).(*middleware.Claims)
 	permissions := config.Default().APISec.Permissions
 	if h != nil && h.currentConfig() != nil && len(h.currentConfig().APISec.Permissions) > 0 {
 		permissions = h.currentConfig().APISec.Permissions
@@ -133,10 +198,17 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("X-Accel-Buffering", "no")
 	allowLongResponseWrite(w)
 	var writeMu sync.Mutex
-	writeEvent := func(event string, payload any) {
+	writeEvent := func(event string, payload any) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		writeAssistantSSE(w, flusher, event, payload)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := writeAssistantSSE(w, flusher, event, payload); err != nil {
+			cancel()
+			return err
+		}
+		return nil
 	}
 	heartbeatDone := make(chan struct{})
 	var heartbeatOnce sync.Once
@@ -152,7 +224,9 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 		for {
 			select {
 			case <-ticker.C:
-				writeEvent("heartbeat", map[string]any{"at": h.nowUTC().Format(time.RFC3339Nano)})
+				if err := writeEvent("heartbeat", map[string]any{"at": h.nowUTC().Format(time.RFC3339Nano)}); err != nil {
+					return
+				}
 			case <-heartbeatDone:
 				return
 			case <-ctx.Done():
@@ -160,7 +234,9 @@ func (h *Handler) ContinueAIApprovalStream(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}()
-	writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "审批执行流式连接已建立。", "Approval execution stream is open.")})
+	if err := writeEvent("trace", ai.AssistantTraceEvent{Type: "stream_open", Message: localizedTraceMessage(req.Language, "审批执行流式连接已建立。", "Approval execution stream is open.")}); err != nil {
+		return
+	}
 	reply, err := h.continueAIApproval(h.aiApprovalContextWithBase(ctx, r), id, req, func(event ai.AssistantTraceEvent) {
 		writeEvent("trace", event)
 	})
@@ -259,7 +335,7 @@ func (h *Handler) continueAIApproval(ctx context.Context, id string, req aiAssis
 }
 
 func (h *Handler) aiAssistant() *ai.Assistant {
-	return ai.NewAssistant(h.aiAssistantRegistry(), h.AssistantApprovals)
+	return ai.NewAssistantWithApprovalGate(h.aiAssistantRegistry(), h.AssistantApprovals, h.AssistantGateApproval)
 }
 
 func (h *Handler) aiAssistantRegistry() *ai.Registry {
@@ -459,13 +535,15 @@ func (t knowledgeBaseTool) Execute(_ context.Context, args map[string]any) (*ai.
 	}
 	query, _ := stringArg(args, "query")
 	limit := boundedIntArg(args, "limit", cfg.MaxSnippets, 1, 10)
-	output := ai.NewKnowledgeBase(cfg).SearchJSON(query, limit)
+	output := ai.CachedKnowledgeBase(cfg).SearchJSON(query, limit)
 	return &ai.ToolResult{Success: true, Output: output}, nil
 }
 
 type setBotChallengeTool struct {
 	Handler *Handler
 }
+
+func (setBotChallengeTool) RequiredPermission() string { return "write:protection" }
 
 func (setBotChallengeTool) Name() string {
 	return "set_bot_challenge"
@@ -550,6 +628,12 @@ func (t setBotChallengeTool) nextBotConfig(args map[string]any) (config.BotProte
 type setProtectionLevelTool struct {
 	Handler *Handler
 }
+
+func (t setProtectionLevelTool) UsesStoredPreviewBinding() bool {
+	return t.Handler != nil && t.Handler.protectionPolicyCoordinator != nil
+}
+
+func (setProtectionLevelTool) RequiredPermission() string { return "write:protection" }
 
 func (setProtectionLevelTool) Name() string {
 	return "set_protection_level"
@@ -918,4 +1002,11 @@ func normalizeProtectionLevel(value string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
+}
+
+func (setProtectionLevelTool) SensitivityForArgs(args map[string]any) ai.ToolSensitivity {
+	if level, _ := args["level"].(string); normalizeProtectionLevel(level) == config.ProtectionLevelOff {
+		return ai.Destructive
+	}
+	return ai.Modify
 }

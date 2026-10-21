@@ -633,7 +633,9 @@ func (s *Service) Cleanup(ctx context.Context, tenantIDs ...string) (int, error)
 			if expired {
 				reason = "expired"
 			}
-			mutation := tokens.Mutation{TenantID: tenant, Token: item, ExpectedVersion: item.Version, LeaseID: item.LeaseID, IdempotencyKey: "cleanup:" + item.ID + ":" + fmt.Sprint(item.Version), DeleteToken: true, Event: tokens.Event{Sequence: seq, Type: tokens.EventAutoDestroyed, At: now, TokenID: item.ID, Actor: item.Owner, Reason: reason, Notification: true}}
+			next := item
+			next.Version++
+			mutation := tokens.Mutation{TenantID: tenant, Token: next, ExpectedVersion: item.Version, LeaseID: item.LeaseID, IdempotencyKey: "cleanup:" + item.ID + ":" + fmt.Sprint(item.Version), DeleteToken: true, Event: tokens.Event{Sequence: seq, Type: tokens.EventAutoDestroyed, At: now, TokenID: item.ID, Actor: item.Owner, Reason: reason, Notification: true}}
 			if err := s.persistence.Apply(ctx, mutation); err != nil {
 				if errors.Is(err, tokens.ErrIdempotencyConflict) {
 					continue

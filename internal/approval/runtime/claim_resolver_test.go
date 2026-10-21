@@ -40,7 +40,7 @@ func TestApprovalClaimResolverUsesDurableRestoredApprovalMetadata(t *testing.T) 
 	if err != nil {
 		t.Fatalf("resolve approval claim: %v", err)
 	}
-	if claim.ApprovalID != record.ID || claim.ConfirmationID != record.Commit.ConfirmationID || claim.Actor != record.Commit.Actor || claim.Scope != record.Request.Scope || claim.PolicyEpoch != 7 || claim.IntentDigest != record.Request.IntentDigest || claim.Nonce != record.Request.Nonce || claim.SessionID != record.Request.SessionID {
+	if claim.ApprovalID != record.ID || claim.ConfirmationID != record.Commit.ConfirmationID || claim.Actor != record.Commit.Actor || claim.Scope != record.Request.Scope || claim.PolicyEpoch != 7 || claim.IntentDigest != record.Request.IntentDigest || claim.Nonce != record.Request.Nonce || claim.SessionID != record.Commit.SessionID {
 		t.Fatalf("claim lost approval bindings: %+v", claim)
 	}
 	if !claim.IssuedAt.Equal(record.Commit.IssuedAt) || !claim.ExpiresAt.Equal(record.ExpiresAt) || claim.TTL != record.ExpiresAt.Sub(record.Commit.IssuedAt) {
@@ -206,8 +206,8 @@ func approveCRPRequest(t *testing.T, gate *approval.Gate, request activation.Aut
 		Scope:                activation.ApprovalScope(request),
 		PolicyEpoch:          7,
 		TTL:                  time.Minute,
-		Actor:                actor,
-		SessionID:            sessionID,
+		Actor:                "requester-" + actor,
+		SessionID:            "requester-" + sessionID,
 		ConfirmationLanguage: "zh-CN",
 		IntentDigest:         activation.ApprovalIntentDigest(request),
 		Nonce:                nonce,
@@ -219,7 +219,7 @@ func approveCRPRequest(t *testing.T, gate *approval.Gate, request activation.Aut
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = gate.Confirm(approvedAt, record.ID, approval.Confirmation{
+	confirmation := approval.Confirmation{
 		WarningReadAt:        approvedAt.Add(-approval.WarningDelay),
 		PasswordConfirmed:    true,
 		SecondConfirmation:   true,
@@ -228,12 +228,17 @@ func approveCRPRequest(t *testing.T, gate *approval.Gate, request activation.Aut
 		Scope:                record.Request.Scope,
 		PolicyEpoch:          record.Request.PolicyEpoch,
 		Local:                true,
-		SessionID:            record.Request.SessionID,
+		SessionID:            sessionID,
 		ConfirmationLanguage: record.Request.ConfirmationLanguage,
 		ConfirmationPhrase:   phrase,
 		IntentDigest:         record.Request.IntentDigest,
 		Nonce:                record.Request.Nonce,
-	})
+	}
+	if _, err = gate.Confirm(approvedAt, record.ID, confirmation); !errors.Is(err, approval.ErrThirdConfirmation) {
+		t.Fatalf("confirm checkpoint: %v", err)
+	}
+	confirmation.ThirdConfirmation = true
+	_, err = gate.Confirm(approvedAt, record.ID, confirmation)
 	if err != nil {
 		t.Fatalf("confirm approval: %v", err)
 	}

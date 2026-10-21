@@ -57,7 +57,7 @@ func TestOpenAIOfficialEndpointUsesResponsesAPI(t *testing.T) {
 		t.Fatalf("reasoning request = %#v", reasoning)
 	}
 	input, _ := requestBody["input"].([]any)
-	if len(input) != 2 || input[0].(map[string]any)["role"] != "developer" || input[1].(map[string]any)["role"] != "user" {
+	if len(input) != 3 || input[0].(map[string]any)["role"] != "system" || input[1].(map[string]any)["role"] != "developer" || input[2].(map[string]any)["role"] != "user" {
 		t.Fatalf("input roles = %#v", input)
 	}
 }

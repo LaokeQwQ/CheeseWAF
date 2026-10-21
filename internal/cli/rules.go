@@ -30,7 +30,7 @@ var rulesCmd = &cobra.Command{
 
 var rulesImportCmd = &cobra.Command{
 	Use:   "import",
-	Short: "从 YAML 或 JSON 文件替换站点 custom_rules",
+	Short: "从 YAML、JSON 或 ModSecurity 文件合并站点 custom_rules",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		count, err := importSiteCustomRules(cmd.Context(), rulesImportSite, rulesImportFile)
@@ -86,7 +86,7 @@ var rulesExampleCmd = &cobra.Command{
 
 func init() {
 	rulesImportCmd.Flags().StringVar(&rulesImportSite, "site", "", "Site ID")
-	rulesImportCmd.Flags().StringVar(&rulesImportFile, "file", "", "YAML or JSON rules file")
+	rulesImportCmd.Flags().StringVar(&rulesImportFile, "file", "", "YAML, JSON, or ModSecurity rules file")
 	_ = rulesImportCmd.MarkFlagRequired("site")
 	_ = rulesImportCmd.MarkFlagRequired("file")
 	rulesExportCmd.Flags().StringVar(&rulesExportSite, "site", "", "Site ID")
@@ -117,15 +117,10 @@ func importSiteCustomRules(ctx context.Context, siteID, filePath string) (int, e
 	if err != nil {
 		return 0, err
 	}
-	prepared, err := config.PrepareCustomRules(parsed)
-	if err != nil {
+	if _, err := config.PrepareCustomRules(parsed); err != nil {
 		return 0, err
 	}
-	sqlitePath, err := cliSQLitePath()
-	if err != nil {
-		return 0, err
-	}
-	store, err := storage.OpenSQLite(sqlitePath)
+	store, err := openRulesManagementStore(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -140,12 +135,18 @@ func importSiteCustomRules(ctx context.Context, siteID, filePath string) (int, e
 	if site == nil {
 		return 0, fmt.Errorf("site %s not found", siteID)
 	}
+	existing := storage.SiteCustomRulesToConfig(site.Advanced.CustomRules)
+	// Keep omitted IDs absent until merge resolves existing identities.
+	merged, err := config.MergeCustomRules(existing, parsed)
+	if err != nil {
+		return 0, err
+	}
 	previous := append([]storage.SiteCustomRule(nil), site.Advanced.CustomRules...)
-	site.Advanced.CustomRules = storage.SiteCustomRulesFromConfig(prepared)
+	site.Advanced.CustomRules = storage.SiteCustomRulesFromConfig(merged)
 	if err := store.UpdateSite(ctx, site); err != nil {
 		return 0, err
 	}
-	if err := persistSiteCustomRulesToConfig(siteID, prepared); err != nil {
+	if err := persistSiteCustomRulesToConfig(siteID, merged); err != nil {
 		site.Advanced.CustomRules = previous
 		if rollbackErr := store.UpdateSite(ctx, site); rollbackErr != nil {
 			return 0, fmt.Errorf("save config: %v; rollback site store: %v", err, rollbackErr)
@@ -155,7 +156,7 @@ func importSiteCustomRules(ctx context.Context, siteID, filePath string) (int, e
 	if err := notifyLoadedServiceHangup(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "imported rules but hangup notify failed: %v\n", err)
 	}
-	return len(prepared), nil
+	return len(parsed), nil
 }
 
 func exportSiteCustomRules(ctx context.Context, siteID, format string) ([]byte, error) {
@@ -163,11 +164,7 @@ func exportSiteCustomRules(ctx context.Context, siteID, format string) ([]byte, 
 	if siteID == "" {
 		return nil, errors.New("site is required")
 	}
-	sqlitePath, err := cliSQLitePath()
-	if err != nil {
-		return nil, err
-	}
-	store, err := storage.OpenSQLite(sqlitePath)
+	store, err := openRulesManagementStore(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +180,33 @@ func exportSiteCustomRules(ctx context.Context, siteID, format string) ([]byte, 
 		return nil, fmt.Errorf("site %s not found", siteID)
 	}
 	return config.EncodeCustomRules(storage.SiteCustomRulesToConfig(site.Advanced.CustomRules), format)
+}
+
+// openRulesManagementStore follows the configured storage profile. In
+// production mode this deliberately delegates to the PostgreSQL management
+// store and never silently creates or mutates the temporary SQLite database.
+func openRulesManagementStore(ctx context.Context) (storage.Store, error) {
+	if strings.TrimSpace(configPath) != "" {
+		if _, err := os.Stat(configPath); err == nil {
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return nil, err
+			}
+			if err := applyCLIDataDir(cfg, dataDir); err != nil {
+				return nil, err
+			}
+			return openConfiguredManagementStore(ctx, cfg)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	path, err := cliSQLitePath()
+	if err != nil {
+		return nil, err
+	}
+	cfg := config.Default()
+	cfg.Storage.SQLite.Path = path
+	return openConfiguredManagementStore(ctx, &cfg)
 }
 
 func persistSiteCustomRulesToConfig(siteID string, rules []config.CustomRuleConfig) error {

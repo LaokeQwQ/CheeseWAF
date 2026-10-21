@@ -30,6 +30,20 @@ var (
 	ErrHighRiskCredentialVerifierUnavailable = errors.New("high-risk AI credential verifier is unavailable")
 	ErrHighRiskCredentialRejected            = errors.New("high-risk AI credential was rejected")
 	ErrHighRiskCredentialProofInvalid        = errors.New("high-risk AI credential proof is invalid")
+	ErrHighRiskCredentialLocked              = errors.New("high-risk AI credential challenge is locked after repeated failures")
+	ErrHighRiskCredentialBusy                = errors.New("high-risk AI credential verification is already in progress")
+	ErrHighRiskCredentialBudgetCapacity      = errors.New("high-risk AI credential budget capacity is exhausted")
+)
+
+const highRiskCredentialProofTTL = time.Minute
+
+const (
+	highRiskCredentialMaxFailures = 5
+	highRiskCredentialLockWindow  = 5 * time.Minute
+	// Credential budgets are keyed by authenticated subject and session. Keep
+	// the map bounded so a caller cannot grow process memory by rotating
+	// session IDs faster than the lock window expires.
+	highRiskCredentialBudgetMaxEntries = 1024
 )
 
 // GateApprovalChallenge is the server-created challenge returned before a
@@ -107,10 +121,21 @@ type gateApprovalBinding struct {
 }
 
 type gateApprovalChallengeState struct {
-	challenge    GateApprovalChallenge
-	approver     ApprovalActor
-	scope        string
-	intentDigest string
+	challenge      GateApprovalChallenge
+	approver       ApprovalActor
+	scope          string
+	intentDigest   string
+	proof          GateApprovalCredentialProof
+	proofExpiresAt time.Time
+	failures       int
+	verifying      bool
+}
+
+type gateCredentialBudget struct {
+	failures  int
+	verifying bool
+	expiresAt time.Time
+	lastSeen  time.Time
 }
 
 // GateApprovalAdapter is the narrow bridge between the historical AI
@@ -132,6 +157,7 @@ type GateApprovalAdapter struct {
 	mu                 sync.Mutex
 	bindings           map[string]gateApprovalBinding
 	challenges         map[string]gateApprovalChallengeState
+	credentialBudgets  map[string]gateCredentialBudget
 	credentialVerifier GateApprovalCredentialVerifier
 }
 
@@ -143,12 +169,13 @@ func NewGateApprovalAdapter(store *ApprovalStore, gate *approval.Gate, policyEpo
 		return nil, ErrHighRiskApprovalUnavailable
 	}
 	return &GateApprovalAdapter{
-		store:       store,
-		gate:        gate,
-		policyEpoch: policyEpoch,
-		now:         time.Now,
-		bindings:    make(map[string]gateApprovalBinding),
-		challenges:  make(map[string]gateApprovalChallengeState),
+		store:             store,
+		gate:              gate,
+		policyEpoch:       policyEpoch,
+		now:               time.Now,
+		bindings:          make(map[string]gateApprovalBinding),
+		challenges:        make(map[string]gateApprovalChallengeState),
+		credentialBudgets: make(map[string]gateCredentialBudget),
 	}, nil
 }
 
@@ -196,6 +223,18 @@ func (a *GateApprovalAdapter) nowUTC() time.Time {
 		now = a.now
 	}
 	return now().UTC()
+}
+
+// pruneCredentialBudgetsLocked removes expired, inactive session budgets.
+// It must be called while a.mu is held. A budget remains until its lock
+// window expires, including after a successful verification, so it cannot be
+// used to bypass the per-session failure budget by immediately retrying.
+func (a *GateApprovalAdapter) pruneCredentialBudgetsLocked(now time.Time) {
+	for key, budget := range a.credentialBudgets {
+		if !budget.verifying && !budget.expiresAt.After(now) {
+			delete(a.credentialBudgets, key)
+		}
+	}
 }
 
 // CreateFor creates a pending destructive AI request whose requester identity
@@ -314,8 +353,8 @@ func (a *GateApprovalAdapter) BeginConfirmation(id string, actor ApprovalActor, 
 		Scope:                binding.scope,
 		PolicyEpoch:          a.policyEpoch,
 		TTL:                  ttl,
-		Actor:                actor.Subject,
-		SessionID:            actor.SessionID,
+		Actor:                binding.requester.Subject,
+		SessionID:            binding.requester.SessionID,
 		ConfirmationLanguage: canonicalLanguage,
 		IntentDigest:         binding.intentDigest,
 	}
@@ -361,6 +400,9 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 		ctx = context.Background()
 	}
 	a.mu.Lock()
+	// Prune on every confirmation attempt, including attempts for unknown
+	// challenges, so idle subject/session entries do not accumulate forever.
+	a.pruneCredentialBudgetsLocked(a.nowUTC())
 	state, ok := a.challenges[id]
 	if !ok {
 		a.mu.Unlock()
@@ -425,17 +467,70 @@ func (a *GateApprovalAdapter) ConfirmContext(ctx context.Context, id string, act
 		a.mu.Unlock()
 		return GateApprovalResult{Approval: request, Challenge: state.challenge}, approval.ErrWarningDelay
 	}
+	proof := state.proof
+	useCachedProof := state.challenge.ConfirmationStep >= 2 && state.proofExpiresAt.After(now) && proof.valid()
 	verifier := a.credentialVerifier
+	budgetKey := actor.Subject + ":" + actor.SessionID
+	if !useCachedProof {
+		budget, exists := a.credentialBudgets[budgetKey]
+		if !exists {
+			if len(a.credentialBudgets) >= highRiskCredentialBudgetMaxEntries {
+				a.mu.Unlock()
+				return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialBudgetCapacity
+			}
+			budget = gateCredentialBudget{expiresAt: now.Add(highRiskCredentialLockWindow)}
+		} else if !budget.verifying && !budget.expiresAt.After(now) {
+			budget = gateCredentialBudget{expiresAt: now.Add(highRiskCredentialLockWindow)}
+		}
+		budget.lastSeen = now
+		if state.failures >= highRiskCredentialMaxFailures || budget.failures >= highRiskCredentialMaxFailures {
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialLocked
+		}
+		if state.verifying || budget.verifying {
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialBusy
+		}
+		if verifier == nil {
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialVerifierUnavailable
+		}
+		state.verifying = true
+		a.challenges[id] = state
+		budget.verifying = true
+		a.credentialBudgets[budgetKey] = budget
+	}
 	a.mu.Unlock()
-	if verifier == nil {
-		return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialVerifierUnavailable
-	}
-	proof, err := verifier(ctx, actor, input)
-	if err != nil {
-		return GateApprovalResult{Approval: request, Challenge: state.challenge}, fmt.Errorf("%w: %v", ErrHighRiskCredentialRejected, err)
-	}
-	if !proof.valid() {
-		return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialProofInvalid
+	if !useCachedProof {
+		verifiedProof, err := verifier(ctx, actor, input)
+		a.mu.Lock()
+		state = a.challenges[id]
+		state.verifying = false
+		budget := a.credentialBudgets[budgetKey]
+		budget.verifying = false
+		budget.lastSeen = a.nowUTC()
+		if err != nil {
+			state.failures++
+			budget.failures++
+			a.challenges[id] = state
+			budget.expiresAt = now.Add(highRiskCredentialLockWindow)
+			a.credentialBudgets[budgetKey] = budget
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, fmt.Errorf("%w: %v", ErrHighRiskCredentialRejected, err)
+		}
+		proof = verifiedProof
+		if !proof.valid() {
+			state.failures++
+			budget.failures++
+			a.challenges[id] = state
+			budget.expiresAt = now.Add(highRiskCredentialLockWindow)
+			a.credentialBudgets[budgetKey] = budget
+			a.mu.Unlock()
+			return GateApprovalResult{Approval: request, Challenge: state.challenge}, ErrHighRiskCredentialProofInvalid
+		}
+		a.challenges[id] = state
+		a.credentialBudgets[budgetKey] = budget
+		a.mu.Unlock()
 	}
 	return a.confirmWithProof(id, actor, input, proof)
 }
@@ -513,6 +608,8 @@ func (a *GateApprovalAdapter) confirmWithProof(id string, actor ApprovalActor, i
 	if errors.Is(err, approval.ErrThirdConfirmation) {
 		state.challenge.ConfirmationStep = 2
 		state.challenge.RequiresThirdConfirmation = true
+		state.proof = proof
+		state.proofExpiresAt = now.Add(highRiskCredentialProofTTL)
 		a.challenges[id] = state
 		return GateApprovalResult{Approval: request, Challenge: state.challenge}, err
 	}
@@ -521,6 +618,8 @@ func (a *GateApprovalAdapter) confirmWithProof(id string, actor ApprovalActor, i
 	}
 	state.challenge.ConfirmationStep = 3
 	state.challenge.RequiresThirdConfirmation = false
+	state.proof = GateApprovalCredentialProof{}
+	state.proofExpiresAt = time.Time{}
 	a.challenges[id] = state
 	approved, err := a.store.approveFor(id, state.approver, true)
 	if err != nil {

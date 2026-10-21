@@ -41,7 +41,7 @@ import {
 } from '../../api/client';
 import QueryErrorState from '../../components/QueryErrorState';
 import { useServerDraft } from '../../hooks/useServerDraft';
-import i18n from '../../i18n';
+import { ensureLanguage } from '../../i18n';
 import { useAppStore, type Language } from '../../stores';
 import { themeOptions, type ThemeName } from '../../themes/tokens';
 import type { APISecAuthConfig, APISecAuthEndpointPolicyConfig, ManagementAPIConfig, ManagementAPIToken, SystemConfig } from '../../types/api';
@@ -76,7 +76,11 @@ export default function SystemPage() {
       queryClient.invalidateQueries({ queryKey: ['system'] });
       queryClient.invalidateQueries({ queryKey: timeSyncQueryKey });
       queryClient.invalidateQueries({ queryKey: ['management-api-tokens'] });
-      toast.success(t('system.saved'));
+      if (saved.restart_required) {
+        toast.warning(t('system.savedRestartRequired', { fields: (saved.restart_fields ?? []).join(', ') }));
+      } else {
+        toast.success(t('system.saved'));
+      }
     },
     onError: (error) => toast.error(error.message),
   });
@@ -310,10 +314,12 @@ export default function SystemPage() {
                       <span>{t('system.language')}</span>
                       <Select
                         value={language}
+                        onOpenChange={(open) => {
+                          if (open) void ensureLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
+                        }}
                         onValueChange={(value) => {
                           const next = value as Language;
                           setLanguage(next);
-                          void i18n.changeLanguage(next);
                         }}
                       >
                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -370,7 +376,19 @@ export default function SystemPage() {
             <div className="system-section">
               <div className="system-section-title">
                 <h2>{t('system.consoleLogin')}</h2>
-                <Button onClick={() => saveMutation.mutate({ console: system.console })} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
+                <Button onClick={() => {
+                  const cap = system.captcha_providers.cap;
+                  saveMutation.mutate({
+                    console: system.console,
+                    captcha_providers: { cap: {
+                      api_endpoint: cap.api_endpoint,
+                      widget_url: cap.widget_url,
+                      wasm_url: cap.wasm_url,
+                      hashwx_url: cap.hashwx_url,
+                      timeout: cap.timeout,
+                    } },
+                  });
+                }} loading={saveMutation.isPending} disabled={!systemQuery.isSuccess}>{t('common.save')}</Button>
               </div>
               <div className="system-form-groups console-settings-grid">
                 <section className="system-fieldset">
@@ -385,6 +403,19 @@ export default function SystemPage() {
                         checked={system.console.login.captcha.enabled}
                         onCheckedChange={(enabled) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, enabled } })}
                       />
+                    </label>
+                    <label>
+                      <span>{t('system.loginCaptchaProvider')}</span>
+                      <Select
+                        value={system.console.login.captcha.provider || 'builtin'}
+                        onValueChange={(provider) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, provider } })}
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="builtin">{t('system.captchaProviderBuiltin')}</SelectItem>
+                          <SelectItem value="cap">Cap Standalone</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </label>
                     <label>
                       <span>{t('system.loginCaptchaMode')}</span>
@@ -472,6 +503,38 @@ export default function SystemPage() {
                         onChange={(e) => patchConsoleLogin({ captcha: { ...system.console.login.captcha, slider: { ...system.console.login.captcha.slider, pow_max_number: Number(e.target.value || 12000) } } })}
                       />
                     </label>
+                  </div>
+                </section>
+
+                <section className="system-fieldset">
+                  <header>
+                    <strong>{t('system.capProvider')}</strong>
+                    <span>{t('system.capProviderHint')}</span>
+                  </header>
+                  <div className="site-detail-grid">
+                    <label>
+                      <span>{t('system.capAPIEndpoint')}</span>
+                      <Input type="url" value={system.captcha_providers.cap.api_endpoint} placeholder="https://captcha.example.com/site-key/" onChange={(e) => patchSystem({ captcha_providers: { cap: { ...system.captcha_providers.cap, api_endpoint: e.target.value } } })} />
+                    </label>
+                    <label>
+                      <span>{t('system.capWidgetURL')}</span>
+                      <Input type="url" value={system.captcha_providers.cap.widget_url} placeholder="https://captcha.example.com/cap.js" onChange={(e) => patchSystem({ captcha_providers: { cap: { ...system.captcha_providers.cap, widget_url: e.target.value } } })} />
+                    </label>
+                    <label>
+                      <span>{t('system.capWASMURL')}</span>
+                      <Input type="url" value={system.captcha_providers.cap.wasm_url} placeholder="https://captcha.example.com/wasm/" onChange={(e) => patchSystem({ captcha_providers: { cap: { ...system.captcha_providers.cap, wasm_url: e.target.value } } })} />
+                    </label>
+                    <label>
+                      <span>{t('system.capHashWXURL')}</span>
+                      <Input type="url" value={system.captcha_providers.cap.hashwx_url} placeholder="https://captcha.example.com/hashwx/" onChange={(e) => patchSystem({ captcha_providers: { cap: { ...system.captcha_providers.cap, hashwx_url: e.target.value } } })} />
+                    </label>
+                    <label>
+                      <span>{t('system.capTimeout')}</span>
+                      <Input type="number" min={1} max={30} value={durationSeconds(system.captcha_providers.cap.timeout)} onChange={(e) => patchSystem({ captcha_providers: { cap: { ...system.captcha_providers.cap, timeout: secondsToDuration(Number(e.target.value || 1)) } } })} />
+                    </label>
+                    <div className="system-field-note" role="status">
+                      {t(system.captcha_providers.cap.secret_set ? 'system.capSecretReady' : 'system.capSecretMissing')}
+                    </div>
                   </div>
                 </section>
 

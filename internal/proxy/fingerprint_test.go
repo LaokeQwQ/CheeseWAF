@@ -56,8 +56,8 @@ func TestFingerprintDeniedBlocksMatchingClient(t *testing.T) {
 	req.Header.Set("Accept-Language", "zh-CN")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("denied fingerprint must block, code=%d body=%q", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy fingerprint denylist is auxiliary in log mode, code=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 

@@ -60,6 +60,7 @@ func loadAllCorpusCases(t *testing.T) []security.Case {
 		"testdata/curated_external_shapes.jsonl",
 		"testdata/benign_production_shapes.jsonl",
 		"testdata/handcrafted_attack_neighbors.jsonl",
+		"testdata/contextual_2026_shapes.jsonl",
 	}
 	var all []security.Case
 	for _, name := range files {

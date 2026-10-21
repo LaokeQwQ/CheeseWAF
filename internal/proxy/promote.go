@@ -9,7 +9,7 @@ import (
 )
 
 type promoteTable struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	until map[string]time.Time
 	store storage.Store
 }
@@ -60,18 +60,22 @@ func (p *promoteTable) Active(siteID string, now time.Time) bool {
 	if p == nil || siteID == "" {
 		return false
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
 	deadline, ok := p.until[siteID]
+	p.mu.RUnlock()
 	if !ok {
 		return false
 	}
-	if !deadline.After(now) {
+	if deadline.After(now) {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if current, exists := p.until[siteID]; exists && !current.After(now) {
 		delete(p.until, siteID)
 		if p.store != nil {
 			_ = p.store.DeleteSitePromote(context.Background(), siteID)
 		}
-		return false
 	}
-	return true
+	return false
 }

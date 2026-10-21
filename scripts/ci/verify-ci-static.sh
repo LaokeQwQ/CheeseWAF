@@ -12,6 +12,55 @@ fail() {
   exit 1
 }
 
+# Every desktop signing secret reference must be guarded by the complete
+# protected version-tag predicate. Checking only for one guarded occurrence
+# would allow a second, unscoped reference to leak the secret to branch jobs.
+signing_secrets=(
+  WINDOWS_CERT_P12 WINDOWS_CERT_PASSWORD
+  MACOS_P12_BASE64 MACOS_P12_PASSWORD MACOS_CODESIGN_IDENTITY
+  APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER
+)
+
+check_protected_tag_secret_scope() {
+  local workflow="$1" secret="$2" matches=0 line_number line
+  local guarded_expression reference_pattern
+  guarded_expression="[$]\{\{[[:space:]]*github\.ref_type[[:space:]]*==[[:space:]]*'tag'[[:space:]]*&&[[:space:]]*startsWith\(github\.ref_name,[[:space:]]*'v'\)[[:space:]]*&&[[:space:]]*github\.ref_protected[[:space:]]*&&[[:space:]]*secrets\.${secret}[[:space:]]*\|\|[[:space:]]*''[[:space:]]*\}\}"
+  reference_pattern="secrets[[:space:]]*(\.[[:space:]]*${secret}([^A-Za-z0-9_]|$)|\[[[:space:]]*['\"]${secret}['\"])"
+
+  while IFS=: read -r line_number line; do
+    [[ -n "$line_number" ]] || continue
+    matches=1
+    if ! printf '%s\n' "$line" | grep -Eq "^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*:[[:space:]]*(\"${guarded_expression}\"|'${guarded_expression}'|${guarded_expression})[[:space:]]*(#.*)?$"; then
+      fail "${workflow}:${line_number}: secrets.${secret} must be guarded by a protected version-tag predicate"
+    fi
+  done < <(grep -niE "$reference_pattern" "$workflow" || true)
+
+  if ((matches == 0)); then
+    fail "${workflow} does not reference secrets.${secret}"
+  fi
+}
+
+check_all_signing_secret_scopes() {
+  local workflow="$1" secret
+  for secret in "${signing_secrets[@]}"; do
+    check_protected_tag_secret_scope "$workflow" "$secret"
+  done
+}
+
+if [[ "${1:-}" == "--check-signing-secret-scopes" ]]; then
+  [[ $# -eq 2 ]] || fail "usage: $0 --check-signing-secret-scopes WORKFLOW"
+  [[ -r "$2" ]] || fail "workflow is not readable: $2"
+  check_all_signing_secret_scopes "$2"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--check-protected-tag-secret-scope" ]]; then
+  [[ $# -eq 3 ]] || fail "usage: $0 --check-protected-tag-secret-scope WORKFLOW SECRET"
+  [[ -r "$2" ]] || fail "workflow is not readable: $2"
+  check_protected_tag_secret_scope "$2" "$3"
+  exit 0
+fi
+
 run_regression_test() {
   local name="$1"
   shift
@@ -63,8 +112,8 @@ for workflow in "${workflow_files[@]}"; do
     fail "${workflow} does not enforce go vet"
   grep -Fq 'bash scripts/ci/verify-go-quality.sh coverage' "$workflow" ||
     fail "${workflow} does not enforce Go coverage"
-  grep -Fq 'npm install --no-save --package-lock=false --ignore-scripts @vitest/coverage-v8@5.0.3 vitest@5.0.3' "$workflow" ||
-    fail "${workflow} does not pin matching Vitest and coverage provider versions"
+  grep -Fq 'npm ci --ignore-scripts' "$workflow" ||
+    fail "${workflow} must install the lockfile-pinned web dependencies"
   grep -Fq 'npm test -- --coverage' "$workflow" ||
     fail "${workflow} does not execute project tests with coverage"
   grep -Fq 'test -s coverage/coverage-summary.json' "$workflow" ||
@@ -320,6 +369,12 @@ grep -Fq 'signing_scope=server' .github/workflows/ci.yml ||
   fail "stable release verification must use the server signing scope"
 grep -Fq 'CHEESEWAF_MASTER_REF=FETCH_HEAD bash scripts/ci/verify-stable-tag.sh' .github/workflows/ci.yml ||
   fail "stable release packaging must bind the tag to protected master"
+grep -Fq 'CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}' .github/workflows/ci.yml ||
+  fail "stable release signing must require a protected tag"
+grep -Fq "startsWith(github.ref_name, 'v') && github.ref_protected && secrets.WINDOWS_CERT_P12" .github/workflows/ci.yml ||
+  fail "Windows signing credentials must be limited to protected version tags"
+grep -Fq "startsWith(github.ref_name, 'v') && github.ref_protected && secrets.MACOS_P12_BASE64" .github/workflows/ci.yml ||
+  fail "macOS signing credentials must be limited to protected version tags"
 grep -Fq 'git fetch --no-tags --depth=1 origin master' .github/workflows/ci.yml ||
   fail "stable release provenance check must fetch protected master"
 grep -Fq 'does not match product version' scripts/ci/package-release.sh ||
@@ -378,6 +433,12 @@ grep -Fq 'install-linux.sh' scripts/ci/package-release.sh ||
   fail "Linux channel packages must ship install-linux.sh"
 grep -Fq 'dst: install-linux.sh' .goreleaser.yaml ||
   fail "GoReleaser archive must include install-linux.sh"
+grep -Fq 'chmod 01770 "$config_dir"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must use a sticky config directory to protect root-owned bootstrap files"
+grep -Fq 'chown cheesewaf:cheesewaf "${config_dir}/cheesewaf.yaml"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must make the runtime config service-owned for atomic saves"
+grep -Fq 'chmod 0600 "${config_dir}/cheesewaf.yaml"' scripts/ci/install-linux.sh ||
+  fail "Linux installer must keep the runtime config private to the service account"
 grep -Fq 'cheesewaf serve --config' internal/cluster/deploy/ansible.go ||
   fail "Ansible unit must start cheesewaf serve"
 grep -Fq 'internal/webui/dist' scripts/ci/build-web.sh ||
@@ -623,18 +684,7 @@ grep -Fq 'sign_blob "$product_sbom"' scripts/ci/publish-prerelease.sh ||
 # inputs may only resolve for a tag-triggered package.
 grep -Fq -- "- 'Alpha-*'" .github/workflows/ci.yml ||
   fail "GitHub CI must trigger tagged release packaging for signed artifacts"
-for signing_secret in \
-  WINDOWS_CERT_P12 \
-  WINDOWS_CERT_PASSWORD \
-  MACOS_P12_BASE64 \
-  MACOS_P12_PASSWORD \
-  MACOS_CODESIGN_IDENTITY \
-  APPLE_API_KEY \
-  APPLE_API_KEY_ID \
-  APPLE_API_ISSUER; do
-  grep -Eq "github\.ref_type == 'tag'.*secrets\.${signing_secret}" .github/workflows/ci.yml ||
-    fail "${signing_secret} must only be resolved for tag-triggered signing"
-done
+check_all_signing_secret_scopes .github/workflows/ci.yml
 grep -Fq "github.ref_name == 'dev' || github.ref_name == 'canary' || github.ref_name == 'master'" .github/workflows/ci.yml ||
   fail "ordinary branch release artifacts must remain enabled"
 grep -Fq 'Upload branch release artifacts' .github/workflows/ci.yml ||
@@ -646,8 +696,10 @@ grep -Fq '"127.0.0.1:9443:9443"' deploy/docker/docker-compose.yml ||
 if grep -Fq '"9443:9443"' deploy/docker/docker-compose.yml; then
   fail "Docker admin TLS must not bind to all host interfaces"
 fi
-grep -Fq 'ReadWritePaths=/etc/cheesewaf/cheesewaf.yaml /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
-	fail "systemd must restrict CheeseWAF configuration writes to its config file"
+grep -Fq 'ReadWritePaths=/etc/cheesewaf /var/lib/cheesewaf /var/log/cheesewaf' deploy/systemd/cheesewaf.service ||
+	fail "systemd must allow atomic writes within the CheeseWAF configuration directory"
+grep -Fq 'UMask=0077' deploy/systemd/cheesewaf.service ||
+	fail "systemd must create CheeseWAF runtime files with private permissions"
 if [[ -e deploy/macos/fix-gatekeeper.command ]]; then
   fail "signed macOS release media must not ship a Gatekeeper quarantine helper"
 fi
@@ -685,6 +737,17 @@ grep -A18 -F 'name: Verify branch release artifacts' .github/workflows/ci.yml | 
   fail "stable versioned release artifacts must retain server-only signing scope"
 grep -Fq 'CHEESEWAF_SIGNING_SCOPE=macos' .github/workflows/ci.yml ||
   fail "GitHub macOS release verification must use the macOS signing scope"
+grep -Fq "&& !(github.ref_type == 'tag' && startsWith(github.ref_name, 'v'))" .github/workflows/ci.yml ||
+  fail "macOS DMG packaging must stay out of server-only versioned releases"
+grep -A8 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'CHEESEWAF_REF_PROTECTED: ${{ github.ref_protected }}' ||
+  fail "macOS signing verification must receive protected-ref metadata"
+grep -A8 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'CHEESEWAF_REF_NAME: ${{ github.ref_name }}' ||
+  fail "macOS signing verification must receive the exact ref name"
+grep -A24 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq '"$CHEESEWAF_REF_NAME" == v*' ||
+  fail "macOS signing must be strict only for protected version tags"
+grep -A24 -F 'name: Verify macOS disk images' .github/workflows/ci.yml | grep -Fq 'signing_mode=warn' ||
+  fail "Alpha and branch DMG verification must remain advisory"
+check_protected_tag_secret_scope .github/workflows/ci.yml MACOS_P12_BASE64
 if grep -Fq 'secrets.WINDOWS_CERT' .forgejo/workflows/ci.yml; then
   fail "Forgejo branch and manual builds must not receive Windows signing secrets"
 fi
@@ -789,5 +852,7 @@ run_regression_test verify-stable-tag bash scripts/ci/verify-stable-tag_test.sh
 run_regression_test publish-prerelease bash scripts/ci/publish-prerelease_test.sh
 run_regression_test verify-release bash scripts/ci/verify-release_test.sh
 run_regression_test package-macos-dmg-lifecycle bash scripts/ci/package-macos-dmg_lifecycle_test.sh
+run_regression_test signing-secret-scopes bash scripts/ci/verify-ci-static_signing_scope_test.sh
+run_regression_test linux-installer-lifecycle bash scripts/ci/install-linux_test.sh
 
 echo "CI static regression checks passed."

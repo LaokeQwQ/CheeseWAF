@@ -59,7 +59,7 @@ func resolveApprovalClaim(records []approval.Record, policyEpoch uint64, now tim
 	matches := 0
 	expired := false
 	for _, record := range records {
-		if record.Status != approval.StatusApproved || record.Request.IntentDigest != intentDigest || record.Request.Scope != scope || record.Request.PolicyEpoch != policyEpoch {
+		if record.Request.PreApproved || record.Request.Risk != approval.RiskHigh || record.Status != approval.StatusApproved || record.Request.IntentDigest != intentDigest || record.Request.Scope != scope || record.Request.PolicyEpoch != policyEpoch {
 			continue
 		}
 		claim, err := claimFromApprovedRecord(record, now, request.RequestedAt)

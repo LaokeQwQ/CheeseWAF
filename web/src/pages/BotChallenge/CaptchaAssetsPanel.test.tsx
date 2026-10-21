@@ -1,17 +1,35 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APIRequestError } from '../../api/client';
 import CaptchaAssetsPanel from './CaptchaAssetsPanel';
 
 const api = vi.hoisted(() => ({ fetchCAPTCHAAssets: vi.fn(), fetchCAPTCHAAssetConfig: vi.fn(), uploadCAPTCHAAsset: vi.fn(), deleteCAPTCHAAsset: vi.fn(), fetchCAPTCHAAssetPreview: vi.fn(), updateCAPTCHAAssetConfig: vi.fn(), testCAPTCHAAssetConfig: vi.fn() }));
 vi.mock('../../api/captchaAssets', () => api);
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}:${options.name}` : key, i18n: { resolvedLanguage: 'en-US' } }) }));
+vi.mock('react-i18next', () => ({ initReactI18next: { type: '3rdParty', init: () => undefined }, useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}:${options.name}` : key, i18n: { resolvedLanguage: 'en-US' } }) }));
 
 const config = { backend: 's3' as const, local: { path: './data' }, s3: { endpoint: 's3.example.test', bucket: 'captcha', region: 'us-east-1', path_style: true, prefix: 'assets', use_tls: true, allow_private_endpoint: true, request_timeout: 5_000_000_000, credential_configured: true, metadata_key_configured: true }, limits: { max_image_bytes: 100, max_font_bytes: 200, max_pixels: 300 } };
 function renderPanel() { const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }); return render(<QueryClientProvider client={client}><CaptchaAssetsPanel/></QueryClientProvider>); }
 
 describe('CaptchaAssetsPanel', () => {
+  it('keeps the latest requested asset when previews resolve out of order', async () => {
+    const asset = (id: string) => ({ id, name: id, kind: 'background', size: 100, sha256: id, created_at: '2026-01-01' });
+    api.fetchCAPTCHAAssets.mockResolvedValue({ items: [asset('A'), asset('B')] });
+    let resolveA!: (value: { blob: Blob }) => void;
+    api.fetchCAPTCHAAssetPreview.mockImplementation((id: string) => id === 'A'
+      ? new Promise((resolve) => { resolveA = resolve; })
+      : Promise.resolve({ blob: new Blob(['B']) }));
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:latest') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    renderPanel();
+    const buttons = await screen.findAllByRole('button', { name: 'botChallenge.captchaAssets.preview' });
+    fireEvent.click(buttons[0]);
+    fireEvent.click(buttons[1]);
+    expect(await screen.findByRole('img', { name: 'B' })).toBeTruthy();
+    await act(async () => { resolveA({ blob: new Blob(['A']) }); });
+    expect(screen.getByRole('img', { name: 'B' })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'A' })).toBeNull();
+  });
   afterEach(cleanup);
   beforeEach(() => { vi.clearAllMocks(); api.fetchCAPTCHAAssets.mockResolvedValue({ items: [] }); api.fetchCAPTCHAAssetConfig.mockResolvedValue(config); api.testCAPTCHAAssetConfig.mockResolvedValue({ ok: true }); });
   it('shows the empty state when no assets match', async () => {

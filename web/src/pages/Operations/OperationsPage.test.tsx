@@ -6,6 +6,7 @@ import type { ScheduledTask, ScheduledTaskHistoryEntry } from '../../types/api';
 const apiMocks = vi.hoisted(() => ({
   cleanupStorage: vi.fn(),
   exportBackup: vi.fn(),
+  fetchSystemConfig: vi.fn(),
   fetchStorageStats: vi.fn(),
   fetchTaskHistory: vi.fn(),
   fetchTasks: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock('sonner', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => options ? `${key}:${JSON.stringify(options)}` : key }),
 }));
 
@@ -115,6 +117,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   apiMocks.fetchTasks.mockResolvedValue([structuredClone(cleanupTask), structuredClone(reportTask)]);
   apiMocks.fetchStorageStats.mockResolvedValue({ data: 1024, logs: 2048 });
+  apiMocks.fetchSystemConfig.mockResolvedValue({ capabilities: { backup: { available: true }, storage_cleanup: { available: true } } });
   apiMocks.cleanupStorage.mockResolvedValue({ removed: 1, scanned: 2 });
   apiMocks.exportBackup.mockResolvedValue({ path: './backup.tar.gz' });
   apiMocks.fetchTaskHistory.mockResolvedValue([]);
@@ -178,6 +181,14 @@ describe('OperationsPage query states', () => {
 });
 
 describe('OperationsPage task mutations', () => {
+  it('hides backup export when the backend capability is unavailable', async () => {
+    apiMocks.fetchSystemConfig.mockResolvedValue({ capabilities: { backup: { available: false, reason: 'RESTORABLE_FORMAT_UNAVAILABLE' }, storage_cleanup: { available: true } } });
+    renderOperations();
+
+    await waitFor(() => expect(apiMocks.fetchSystemConfig).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: 'ops.backup' })).toBeNull();
+  });
+
   it('keeps the edit modal and draft open when saving fails', async () => {
     apiMocks.updateTasks.mockRejectedValue(new APIRequestError('task save failed', 'TASK_WRITE_FAILED', 500));
     renderOperations();
@@ -198,7 +209,7 @@ describe('OperationsPage task mutations', () => {
     apiMocks.exportBackup.mockRejectedValue(new APIRequestError('backup failed', 'BACKUP_FAILED', 500));
     renderOperations();
 
-    fireEvent.click(screen.getByRole('button', { name: 'ops.backup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'ops.backup' }));
 
     await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('backup failed'));
     expect(toastMocks.success).not.toHaveBeenCalled();

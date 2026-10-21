@@ -3,6 +3,7 @@ package ip
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
@@ -199,5 +200,97 @@ func TestMergeThreatIntelUpdatesExisting(t *testing.T) {
 	}
 	if merged[0].Source != "new" || merged[0].Severity != "high" {
 		t.Fatalf("expected existing indicator to update: %+v", merged[0])
+	}
+}
+
+func TestParseThreatIntelRejectsUnknownFormat(t *testing.T) {
+	if _, err := ParseThreatIntel("vendor-proprietary", []byte("203.0.113.99\n"), ImportOptions{Source: "feed"}); err == nil {
+		t.Fatal("expected unsupported format to fail instead of importing zero indicators")
+	}
+}
+
+func TestCanonicalIndicatorSupportedTypes(t *testing.T) {
+	cases := []struct {
+		name, typ, value, wantType, wantValue string
+	}{
+		{"domain", "domain-name", "WWW.Example.COM.", "domain", "www.example.com"},
+		{"url", "url", "https://Example.COM/path#fragment", "url", "https://example.com/path"},
+		{"sha256", "file:hashes.SHA-256", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "sha256", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{"md5", "md5", "0123456789ABCDEF0123456789ABCDEF", "md5", "0123456789abcdef0123456789abcdef"},
+		{"asn", "autonomous-system", "AS64500", "asn", "64500"},
+		{"ja3", "ja3", "0123456789abcdef0123456789abcdef", "ja3", "0123456789abcdef0123456789abcdef"},
+		{"ja4", "ja4", "t13d1516h2_8daaf6152771_0273b62f6f95", "ja4", "t13d1516h2_8daaf6152771_0273b62f6f95"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			typ, value, ok := CanonicalIndicator(tc.typ, tc.value)
+			if !ok || typ != tc.wantType || value != tc.wantValue {
+				t.Fatalf("CanonicalIndicator(%q, %q) = (%q, %q, %v), want (%q, %q, true)", tc.typ, tc.value, typ, value, ok, tc.wantType, tc.wantValue)
+			}
+		})
+	}
+}
+
+func TestCanonicalIndicatorRejectsOversizedCIDR(t *testing.T) {
+	for _, value := range []string{"0.0.0.0/0", "198.51.100.0/7", "2001:db8::/8"} {
+		if typ, canonical, ok := CanonicalIndicator("cidr", value); ok {
+			t.Fatalf("accepted oversized CIDR %q as %s:%s", value, typ, canonical)
+		}
+	}
+}
+
+func TestParseSTIXTypedPatterns(t *testing.T) {
+	raw := `{"type":"bundle","objects":[
+{"type":"indicator","pattern":"[domain-name:value = 'evil.example']"},
+{"type":"indicator","pattern":"[url:value = 'https://evil.example/path']"},
+{"type":"indicator","pattern":"[file:hashes.'SHA-256' = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef']"},
+{"type":"indicator","pattern":"[autonomous-system:number = 'AS64500']"},
+{"type":"indicator","pattern":"[network-traffic:extensions.'ja3-fingerprint' = '0123456789abcdef0123456789abcdef']"}
+]}`
+	items, err := ParseThreatIntel("stix", []byte(raw), ImportOptions{Source: "stix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, item := range items {
+		got[item.Type+":"+item.Value] = true
+	}
+	for _, want := range []string{
+		"domain:evil.example",
+		"url:https://evil.example/path",
+		"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"asn:64500",
+		"ja3:0123456789abcdef0123456789abcdef",
+	} {
+		if !got[want] {
+			t.Errorf("missing STIX indicator %s in %#v", want, got)
+		}
+	}
+}
+
+func TestMergeThreatIntelTrustAndActionGuards(t *testing.T) {
+	existing := []config.ThreatIntelConfig{
+		{Value: "203.0.113.90", Type: "ip", Source: "verified:feed", Severity: "high", Action: "challenge"},
+		{Value: "203.0.113.91", Type: "ip", Source: "feed", Severity: "low", Action: "challenge"},
+		{Value: "203.0.113.92", Type: "ip", Source: "feed", Severity: "low", Action: "block", ExpiresAt: time.Now().Add(-time.Minute)},
+	}
+	imported := []config.ThreatIntelConfig{
+		{Value: "203.0.113.90", Type: "ip", Source: "feed", Severity: "critical", Action: "block"},
+		{Value: "203.0.113.91", Type: "ip", Source: "feed", Severity: "high", Action: "block"},
+		{Value: "203.0.113.93", Type: "ip", Source: "feed", Action: "block"},
+	}
+	merged := MergeThreatIntel(existing, imported)
+	if len(merged) != 3 {
+		t.Fatalf("expected expired item removed and new item retained, got %d: %+v", len(merged), merged)
+	}
+	byValue := map[string]config.ThreatIntelConfig{}
+	for _, item := range merged {
+		byValue[item.Value] = item
+	}
+	if byValue["203.0.113.90"].Source != "verified:feed" || byValue["203.0.113.90"].Action != "challenge" {
+		t.Fatalf("low-trust feed replaced/escalated trusted item: %+v", byValue["203.0.113.90"])
+	}
+	if byValue["203.0.113.91"].Action != "challenge" {
+		t.Fatalf("incoming action escalated existing action: %+v", byValue["203.0.113.91"])
 	}
 }

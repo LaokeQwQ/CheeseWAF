@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 	SetupTokenFileName = "setup.token"
 
 	setupTokenBytes = 256
+	SetupTokenTTL   = 10 * time.Minute
 )
 
 // TokenSource is the small contract used by setup mutation handlers. A source
@@ -61,7 +63,7 @@ func (s *TokenStore) Current() string {
 	}
 	path := TokenFilePath(s.dataDir)
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || validateSetupSecretFilePermissions(path, info) != nil {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > setupTokenBytes || validateSetupSecretFilePermissions(path, info) != nil || time.Since(info.ModTime()) > SetupTokenTTL || info.ModTime().After(time.Now().Add(time.Minute)) {
 		return ""
 	}
 	raw, err := os.ReadFile(path)
