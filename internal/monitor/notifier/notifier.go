@@ -40,7 +40,7 @@ func (m *Manager) Notify(ctx context.Context, alerts []monitor.Alert) error {
 	if m == nil {
 		return nil
 	}
-	deliveryErrors := make([]error, 0, len(m.configErrors)+len(alerts)*len(m.notifiers))
+	deliveryErrors := make([]error, 0, len(m.configErrors))
 	deliveryErrors = append(deliveryErrors, m.configErrors...)
 	for _, alert := range alerts {
 		for _, notifier := range m.notifiers {
