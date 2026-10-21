@@ -1270,6 +1270,7 @@ const zhCN = {
     intelDetailScope: '方法与路径范围',
     intelDetailPattern: '匹配模式',
     intelDetailEvidence: '来源证据',
+    intelNetworkError: '无法连接管理 API，请检查网络后重试。',
     intelReadOnly: '当前权限只能查看。导入、通过和拒绝需要 write:protection 或 write:rules。',
   },
   monitor: {

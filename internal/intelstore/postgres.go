@@ -317,6 +317,12 @@ func (s *PostgresStore) UpdateCandidate(ctx context.Context, id string, update C
 		return intel.Candidate{}, err
 	}
 	updatedAt := time.Now().UTC()
+	// Re-approving a candidate in the same shadow state must not restart the
+	// observation window; only a real state transition gets a new timestamp.
+	if candidate.State == intel.CandidateShadow && !candidate.UpdatedAt.IsZero() &&
+		(update.State == nil || *update.State == candidate.State) {
+		updatedAt = candidate.UpdatedAt
+	}
 	query := `
 UPDATE rule_candidates
 SET rule_json = $1::jsonb, action = $2, state = $3, confidence = $4, provenance_json = $5::jsonb, expires_at = $6, updated_at = $7

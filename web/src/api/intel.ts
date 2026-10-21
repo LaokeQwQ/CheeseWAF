@@ -1,4 +1,5 @@
 import axios from 'axios';
+import i18n from '../i18n';
 import { APIRequestError, apiClient } from './client';
 import type {
   IntelApproveRequest,
@@ -47,7 +48,7 @@ function intelRequestError(error: unknown): unknown {
   if (response?.status) {
     return new APIRequestError(error.message, undefined, response.status);
   }
-  return new APIRequestError('Network request failed.', 'NETWORK_ERROR');
+  return new APIRequestError(i18n.t('ai.intelNetworkError'), 'NETWORK_ERROR');
 }
 
 async function unwrapIntel<T>(request: Promise<{ data: T }>): Promise<T> {

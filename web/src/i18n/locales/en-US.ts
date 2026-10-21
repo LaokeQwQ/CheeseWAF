@@ -1270,6 +1270,7 @@ const enUS = {
     intelDetailScope: 'Method / path scope',
     intelDetailPattern: 'Pattern',
     intelDetailEvidence: 'Source evidence',
+    intelNetworkError: 'Could not reach the management API. Check the connection and retry.',
     intelReadOnly: 'Your scope allows review only. Import, approval, and rejection require write:protection or write:rules.',
   },
   monitor: {

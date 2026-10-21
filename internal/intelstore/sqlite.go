@@ -318,6 +318,12 @@ func (s *SQLiteStore) UpdateCandidate(ctx context.Context, id string, update Can
 		return intel.Candidate{}, err
 	}
 	updatedAt := time.Now().UTC()
+	// Re-approving a candidate in the same shadow state must not restart the
+	// observation window; only a real state transition gets a new timestamp.
+	if candidate.State == intel.CandidateShadow && !candidate.UpdatedAt.IsZero() &&
+		(update.State == nil || *update.State == candidate.State) {
+		updatedAt = candidate.UpdatedAt
+	}
 	query := `
 UPDATE rule_candidates
 SET rule_json = ?, action = ?, state = ?, confidence = ?, provenance_json = ?, expires_at = ?, updated_at = ?
