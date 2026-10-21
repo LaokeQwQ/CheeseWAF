@@ -55,6 +55,9 @@ func (h *Handler) ReloadLiveConfig(next *config.Config) error {
 	if err := config.Validate(overlay); err != nil {
 		return err
 	}
+	if err := validateCapLoginReadiness(previous, overlay); err != nil {
+		return err
+	}
 	if err := h.applyLiveRuntime(overlay); err != nil {
 		if rollbackErr := h.applyLiveRuntime(previous); rollbackErr != nil {
 			h.freezeConfigWritesLocked(fmt.Sprintf("file reload apply failed: %v; runtime rollback failed: %v", err, rollbackErr))
