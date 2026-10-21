@@ -11,6 +11,9 @@ const api = vi.hoisted(() => ({
   },
   fetchLoginCaptcha: vi.fn(),
   fetchLoginOptions: vi.fn(),
+  fetchPasskeyOptions: vi.fn(),
+  beginPasskeyLogin: vi.fn(),
+  finishPasskeyLogin: vi.fn(),
   login: vi.fn(),
   verifyLoginCaptcha: vi.fn(),
   fetchSession: vi.fn(),
@@ -107,6 +110,9 @@ beforeEach(() => {
   vi.stubGlobal('Image', LoadedImageMock);
   api.fetchLoginCaptcha.mockReset();
   api.fetchLoginOptions.mockReset().mockResolvedValue(options);
+  api.fetchPasskeyOptions.mockReset().mockResolvedValue({ enabled: false });
+  api.beginPasskeyLogin.mockReset();
+  api.finishPasskeyLogin.mockReset();
   api.login.mockReset();
   api.verifyLoginCaptcha.mockReset();
   api.isAuthenticatedFlag.mockReset().mockReturnValue(false);

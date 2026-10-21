@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -197,6 +198,11 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 	}
 	for name, values := range resp.Header {
 		for _, value := range values {
+			if strings.EqualFold(name, "Set-Cookie") {
+				if finding := php2shellCookieFinding(value); finding != nil {
+					return finding, nil
+				}
+			}
 			if finding := i.Inspect([]byte(value)); finding != nil {
 				finding.Message = "sensitive response header matched: " + name
 				finding.Reason = "response_header"
@@ -409,5 +415,35 @@ func replayThenClose(prefix []byte, rest io.ReadCloser) io.ReadCloser {
 	return replayReadCloser{
 		Reader: io.MultiReader(bytes.NewReader(prefix), rest),
 		closer: rest,
+	}
+}
+
+// php2shellCookieFinding detects the memory-disclosure artifact produced when a
+// corrupted PHP worker leaks heap bytes into a PHPSESSID response cookie. Normal
+// PHP session IDs are short alphanumeric values; a large or heavily
+// percent-encoded value is a high-confidence signal. This check is header-only
+// so it runs before any response body buffering.
+func php2shellCookieFinding(setCookie string) *Finding {
+	lower := strings.ToLower(setCookie)
+	idx := strings.Index(lower, "phpsessid=")
+	if idx < 0 {
+		return nil
+	}
+	value := strings.TrimSpace(setCookie[idx+len("phpsessid="):])
+	if cut := strings.IndexAny(value, ";,"); cut >= 0 {
+		value = value[:cut]
+	}
+	value = strings.TrimSpace(value)
+	if len(value) < 256 {
+		return nil
+	}
+	encoded := strings.Count(value, "%")
+	return &Finding{
+		Pattern:    "PHPSESSID length=" + strconv.Itoa(len(value)) + " encoded=" + strconv.Itoa(encoded),
+		Message:    "oversized PHPSESSID response cookie indicates PHP worker memory disclosure",
+		DetectorID: "response.php2shell",
+		Category:   "rce",
+		Severity:   "critical",
+		Reason:     "php2shell_memory_disclosure",
 	}
 }

@@ -314,6 +314,24 @@ func (s *Server) currentPipeline() requestDetectionPipeline {
 	return s.pipeline
 }
 
+// SiteForHost resolves the enabled site for an adapter-supplied authority.
+func (s *Server) SiteForHost(host string) config.SiteConfig {
+	if s == nil || s.lb == nil {
+		return config.SiteConfig{}
+	}
+	return s.lb.SiteForHost(host)
+}
+
+// Detect runs the live request detection pipeline without proxying. It is used
+// by the adapter inspection endpoint; callers own request-body loading.
+func (s *Server) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+	pipeline := s.currentPipeline()
+	if pipeline == nil {
+		return nil, nil
+	}
+	return pipeline.Detect(ctx, reqCtx)
+}
+
 func (s *Server) wallNow() time.Time {
 	if s != nil && s.clock != nil {
 		return s.clock.Now()

@@ -2,7 +2,7 @@ import axios, { type AxiosResponse } from 'axios';
 import type { CaptchaChallenge, CaptchaResponse, CaptchaType, CaptchaVerifyResult } from '../features/captcha/protocol';
 import { queryClient } from '../queryClient';
 import i18n from '../i18n';
-import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AIProviderOpsResponse, AISelfLearningReport, AIUsageSnapshot, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
+import type { ACMEIssueRequest, ACMEIssueResponse, ACMEDNSProvider, AIApprovalList, AIApprovalRequest, AIConfig, AIEventsAnalysisResponse, AIModelConfig, AIModelInfo, AIProviderOpsResponse, AISelfLearningReport, AIUsageSnapshot, AIAssistantReply, AIAssistantTraceEvent, AIToolDefinition, AIToolExecution, APISecSummary, AttackAnalysis, AttackMapAggregateQuery, AttackMapAggregateResponse, AuditEntry, BlockPageConfig, BlockPagePreview, BlockTemplate, ClusterAnsiblePackage, ClusterAnsiblePlan, ClusterAuditList, ClusterBootstrapPlan, ClusterBootstrapPlanRequest, ClusterConfigVersionRecord, ClusterConsensusSnapshot, ClusterDeploymentCheckResponse, ClusterDeploymentRequest, ClusterDeploymentRunResult, ClusterDeploymentTask, ClusterDeploymentTaskList, ClusterJoinTokenCreateRequest, ClusterJoinTokenList, ClusterNodeCertificateRotateRequest, ClusterNodeCertificateRotateResponse, ClusterNodeList, ClusterRollingJob, ClusterRollingUpgradeRequest, ClusterStatus, ClusterTrafficPeersResponse, CreateManagementAPITokenRequest, CreateManagementAPITokenResponse, EdgeConfig, HealthStatus, IPAccessRule, IPReputationEntry, IPRulesResponse, LogQuery, LogResponse, LoginCAPTCHAPayload, LoginCAPTCHAResponse, LoginOptions, ManagementAPITokenList, PasskeyCredentialList, PasskeyOptions, PasskeyPublicKeyOptions, MapBoundaryResponse, MonitorSummary, NginxImportSite, Notification, NotificationFilter, NotificationList, ProtectionConfig, ReviewDecision, ReviewItem, ReviewQuery, ReviewResponse, Rule, RuntimeStats, ScheduledTask, Site, StorageCleanupResult, StorageStats, SystemConfig, ThreatIntelIndicator, ThreatIntelProvider, TOTPSetup, User, VersionInfo } from '../types/api';
 import type { ScheduledTaskHistoryEntry, TimeSyncStatus } from '../types/api';
 import type { OTAStatus } from '../types/api';
 import { cacheAccount, clearAccount } from '../authProfile';
@@ -516,11 +516,7 @@ export function verifyLoginCaptcha(captcha: LoginCAPTCHAPayload, signal?: AbortS
   return unwrap<{ valid: boolean; receipt: string }>(apiClient.post('/auth/captcha/verify', captcha, config));
 }
 
-export async function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
-  authGeneration += 1;
-  const result = await unwrap<AuthResponse>(
-    apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
-  );
+function applyAuthenticatedSession(result: AuthResponse) {
   queryClient.clear();
   if (result.csrf) {
     setCSRFToken(result.csrf);
@@ -528,7 +524,50 @@ export async function login(username: string, password: string, totpCode?: strin
   markAuthenticated(true);
   clearLegacyTokenStorage();
   cacheAccount(result.user);
+}
+
+export async function login(username: string, password: string, totpCode?: string, captcha?: LoginCAPTCHAPayload) {
+  authGeneration += 1;
+  const result = await unwrap<AuthResponse>(
+    apiClient.post('/auth/login', { username, password, totp_code: totpCode, captcha }),
+  );
+  applyAuthenticatedSession(result);
   return result;
+}
+
+export function fetchPasskeyOptions() {
+  return unwrap<PasskeyOptions>(apiClient.get('/auth/passkey/options'));
+}
+
+export function beginPasskeyLogin(username: string) {
+  return unwrap<PasskeyPublicKeyOptions>(apiClient.post('/auth/passkey/login/begin', { username }));
+}
+
+export async function finishPasskeyLogin(username: string, sessionToken: string, credential: unknown) {
+  authGeneration += 1;
+  const result = await unwrap<AuthResponse>(
+    apiClient.post('/auth/passkey/login/finish', { username, session_token: sessionToken, credential }),
+  );
+  applyAuthenticatedSession(result);
+  return result;
+}
+
+export function beginPasskeyRegistration(name?: string) {
+  return unwrap<PasskeyPublicKeyOptions>(apiClient.post('/auth/passkey/register/begin', name ? { name } : {}));
+}
+
+export function finishPasskeyRegistration(sessionToken: string, credential: unknown, name?: string) {
+  return unwrap<{ credential: { id: string; name: string } }>(
+    apiClient.post('/auth/passkey/register/finish', { session_token: sessionToken, credential, ...(name ? { name } : {}) }),
+  );
+}
+
+export function fetchPasskeyCredentials() {
+  return unwrap<PasskeyCredentialList>(apiClient.get('/auth/passkey/credentials'));
+}
+
+export function deletePasskeyCredential(id: string) {
+  return unwrap<{ deleted: boolean }>(apiClient.delete(`/auth/passkey/credentials/${encodeURIComponent(id)}`));
 }
 
 export async function logout() {
@@ -546,12 +585,7 @@ export async function logout() {
 
 export async function fetchSession() {
   const result = await unwrap<AuthResponse & { session_cookie?: boolean }>(apiClient.get('/auth/session'));
-  if (result.csrf) {
-    setCSRFToken(result.csrf);
-  }
-  markAuthenticated(true);
-  clearLegacyTokenStorage();
-  cacheAccount(result.user);
+  applyAuthenticatedSession(result);
   return result;
 }
 
