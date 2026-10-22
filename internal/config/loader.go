@@ -367,6 +367,7 @@ func Default() Config {
 			Enabled:              true,
 			AutoApply:            false,
 			URLImport:            true,
+			PollInterval:         15 * time.Minute,
 			ShadowWindow:         24 * time.Hour,
 			MaxFetchBytes:        256 << 10,
 			MaxCandidatesPerItem: 4,
@@ -1171,6 +1172,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Intel.ShadowWindow == 0 {
 		cfg.Intel.ShadowWindow = 24 * time.Hour
+	}
+	if cfg.Intel.PollInterval == 0 {
+		cfg.Intel.PollInterval = 15 * time.Minute
 	}
 	if cfg.Intel.MaxFetchBytes == 0 {
 		cfg.Intel.MaxFetchBytes = 256 << 10

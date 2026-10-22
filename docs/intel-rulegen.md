@@ -11,6 +11,7 @@ intel:
   enabled: true
   auto_apply: false          # always false in shipped configs
   url_import: true           # set false to remove POST /api/v1/intel/import-url
+  poll_interval: 15m         # feed scheduler interval, 10s..24h
   max_fetch_bytes: 262144    # hard cap is 262144 (256 KiB)
   max_candidates_per_item: 5
   shadow_window: 1h
@@ -37,6 +38,12 @@ intel:
   locations are supported.
 - The API is mounted under `write:protection` or `write:rules`; read-only
   accounts cannot import or review.
+- The background scheduler polls only `type: rss|atom|api` sources and stores
+  normalized items for review. `type: url` sources are import allowlists and
+  are not polled. Scheduler failures are isolated from the request path.
+- Metrics: `cheesewaf_intel_imports_total`,
+  `cheesewaf_intel_feed_items_stored_total`, and
+  `cheesewaf_intel_candidates_reviewed_total`.
 
 ## PHP2Shell
 
@@ -85,5 +92,7 @@ console:
   until a durable replay table is added.
 - Password and TOTP login remain available. Passkey recovery routes are not
   exposed because there is no completed-factor state to authorize them.
+- The Monitor page lists configured notification providers and can send a test
+  through the native provider; provider secrets remain in configuration.
 - Operators can rename or delete their own credentials from the console; admin
   reset revokes all credentials for the account.

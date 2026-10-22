@@ -2101,6 +2101,19 @@ export type Alert = {
   starts_at: string;
 };
 
+export type NotifierProvider = {
+  id: string;
+  name?: string;
+  type: string;
+  enabled: boolean;
+  configured: boolean;
+};
+
+export type NotifierTestResult = {
+  id: string;
+  delivered: boolean;
+};
+
 export type MonitorSummary = {
   snapshot: MonitorSnapshot;
   metrics: Record<string, number>;

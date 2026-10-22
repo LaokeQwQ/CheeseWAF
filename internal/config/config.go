@@ -991,6 +991,7 @@ type IntelConfig struct {
 	Enabled                    bool                `yaml:"enabled" json:"enabled"`
 	AutoApply                  bool                `yaml:"auto_apply" json:"auto_apply"`
 	URLImport                  bool                `yaml:"url_import" json:"url_import"`
+	PollInterval               time.Duration       `yaml:"poll_interval" json:"poll_interval"`
 	ShadowWindow               time.Duration       `yaml:"shadow_window" json:"shadow_window"`
 	MaxFetchBytes              int64               `yaml:"max_fetch_bytes" json:"max_fetch_bytes"`
 	MaxCandidatesPerItem       int                 `yaml:"max_candidates_per_item" json:"max_candidates_per_item"`

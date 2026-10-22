@@ -87,7 +87,11 @@ func encodeRemoteWrite(snapshot Snapshot) []byte {
 		name, labelValue, _ := strings.Cut(encodedName, ":")
 		labels := []remoteWriteLabel{{name: "__name__", value: name}}
 		if labelValue != "" {
-			labels = append(labels, remoteWriteLabel{name: "area", value: labelValue})
+			labelName, value, hasName := strings.Cut(labelValue, "=")
+			if !hasName {
+				labelName, value = "area", labelValue
+			}
+			labels = append(labels, remoteWriteLabel{name: labelName, value: value})
 		}
 		sort.Slice(labels, func(i, j int) bool { return labels[i].name < labels[j].name })
 

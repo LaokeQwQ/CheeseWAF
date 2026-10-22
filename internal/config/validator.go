@@ -257,6 +257,9 @@ func Validate(cfg *Config) error {
 	if cfg.Intel.ShadowWindow < 0 || cfg.Intel.ShadowWindow > 30*24*time.Hour {
 		return fmt.Errorf("intel.shadow_window must be between 0 and 720h")
 	}
+	if cfg.Intel.PollInterval < 10*time.Second || cfg.Intel.PollInterval > 24*time.Hour {
+		return fmt.Errorf("intel.poll_interval must be between 10s and 24h")
+	}
 	if cfg.Intel.MaxFetchBytes < 1 || cfg.Intel.MaxFetchBytes > 256<<10 {
 		return fmt.Errorf("intel.max_fetch_bytes must be between 1 and %d", 256<<10)
 	}

@@ -226,6 +226,9 @@ type Options struct {
 	Provider SourceProvider
 	Fetcher  Fetcher
 	Sink     Sink
+	// OnReport receives a sanitized summary after every poll. It must not block
+	// the poll loop; use it for logging or metrics.
+	OnReport func(Report)
 	// Dedupe carries replay protection across polls. A nil value starts with
 	// fresh state.
 	Dedupe *feed.Dedupe
@@ -242,6 +245,7 @@ type Runner struct {
 	provider  SourceProvider
 	fetcher   Fetcher
 	sink      Sink
+	onReport  func(Report)
 	dedupe    *feed.Dedupe
 	newTicker func(time.Duration) ticker
 
@@ -283,6 +287,7 @@ func New(options Options) (*Runner, error) {
 		provider:  options.Provider,
 		fetcher:   options.Fetcher,
 		sink:      options.Sink,
+		onReport:  options.OnReport,
 		dedupe:    dedupe,
 		newTicker: systemTickerFactory,
 		states:    make(map[string]*sourceState),
@@ -360,6 +365,9 @@ func (r *Runner) PollOnce(ctx context.Context) (Report, error) {
 	r.pollSources(ctx, report.Results, pollable)
 
 	report.FinishedAt = r.config.Now()
+	if r.onReport != nil {
+		r.onReport(report)
+	}
 	if err := ctx.Err(); err != nil {
 		return report, err
 	}

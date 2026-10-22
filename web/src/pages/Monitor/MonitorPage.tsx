@@ -1,16 +1,21 @@
 import type { ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Activity, AlertTriangle, Cpu, Database, HardDrive, ShieldAlert } from 'lucide-react';
-import { Badge, Progress, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui';
+import { Activity, AlertTriangle, Bell, Cpu, Database, HardDrive, Send, ShieldAlert } from 'lucide-react';
+import { Badge, Button, Progress, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, toast } from '@/components/ui';
 import { fetchMonitorSummary } from '../../api/client';
+import { fetchNotifierProviders, testNotifierProvider } from '../../api/notifiers';
+import { currentAccount, hasScope } from '../../authProfile';
 import QueryErrorState from '../../components/QueryErrorState';
-import type { Alert } from '../../types/api';
+import type { Alert, NotifierProvider } from '../../types/api';
 import { displaySeverity } from '../../utils/display';
 import { usePollingVisibility } from '../../hooks/usePollingVisibility';
 
 export default function MonitorPage() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const account = currentAccount();
+  const canTestNotifier = hasScope(account, 'write:monitor');
   const monitorRefetchInterval = usePollingVisibility(15_000);
   const { data, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['monitor'],
@@ -26,6 +31,17 @@ export default function MonitorPage() {
   const loading = isLoading && !data;
   const processCount = snapshot?.process_count;
   const alerts: Alert[] = data?.alerts ?? [];
+  const notifiersQuery = useQuery({
+    queryKey: ['monitor-notifiers'],
+    queryFn: fetchNotifierProviders,
+    retry: false,
+  });
+  const notifierProviders = notifiersQuery.data?.providers ?? [];
+  const testNotifierMutation = useMutation({
+    mutationFn: (id: string) => testNotifierProvider(id),
+    onSuccess: () => toast.success(t('monitor.notifierTestOk')),
+    onError: (error) => toast.error(error.message || t('monitor.notifierTestFailed')),
+  });
 
   if (isError && !data) {
     return (
@@ -119,6 +135,68 @@ export default function MonitorPage() {
           </div>
         </section>
       </div>
+
+      <section className="panel mt-6" aria-labelledby="notifier-panel-title">
+        <div className="panel-heading">
+          <div>
+            <h2 id="notifier-panel-title"><Bell size={16} /> {t('monitor.notifierTitle')}</h2>
+            <p>{t('monitor.notifierSubtitle')}</p>
+          </div>
+          <Badge variant="secondary">{t('monitor.notifierCount', { count: notifiersQuery.data?.count ?? 0 })}</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">{t('monitor.notifierConfigHint')}</p>
+        {notifiersQuery.isError ? (
+          <QueryErrorState
+            className="mt-4"
+            message={notifiersQuery.error?.message}
+            onRetry={() => void notifiersQuery.refetch()}
+            retrying={notifiersQuery.isFetching}
+          />
+        ) : notifiersQuery.isLoading ? (
+          <div className="flex items-center justify-center py-8"><Spinner /></div>
+        ) : notifierProviders.length === 0 ? (
+          <p className="py-6 text-sm text-muted-foreground">{t('monitor.notifierEmpty')}</p>
+        ) : (
+          <Table className="mt-4">
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('monitor.notifierID')}</TableHead>
+                <TableHead>{t('monitor.notifierType')}</TableHead>
+                <TableHead>{t('monitor.notifierEnabled')}</TableHead>
+                <TableHead className="text-right">{t('common.actions')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {notifierProviders.map((provider: NotifierProvider) => (
+                <TableRow key={provider.id}>
+                  <TableCell>
+                    <span className="font-medium">{provider.name || provider.id}</span>
+                    <p className="text-xs text-muted-foreground">{provider.id}</p>
+                  </TableCell>
+                  <TableCell><code>{provider.type}</code></TableCell>
+                  <TableCell>
+                    <Badge variant={provider.enabled && provider.configured ? 'success' : 'secondary'}>
+                      {provider.enabled && provider.configured ? t('monitor.notifierEnabled') : t('monitor.notifierDisabled')}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!canTestNotifier || !provider.enabled || !provider.configured}
+                      loading={testNotifierMutation.isPending && testNotifierMutation.variables === provider.id}
+                      onClick={() => testNotifierMutation.mutate(provider.id)}
+                    >
+                      <Send size={14} /> {t('monitor.notifierTest')}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </section>
     </section>
   );
 }

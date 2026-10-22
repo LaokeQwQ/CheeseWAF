@@ -387,6 +387,7 @@ func runServe(ctx context.Context) error {
 			if schedulerAIClient != nil {
 				intelExtractor = ai.NewIntelExtractor(schedulerAIClient)
 			}
+			startIntelScheduler(runtimeCtx, cfg.Intel, intelStore)
 			intelHandler = intelapi.NewHandler(intelapi.HandlerOptions{
 				Store:            intelStore,
 				Extractor:        intelExtractor,
