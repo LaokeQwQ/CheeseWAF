@@ -140,8 +140,9 @@ func storeFeedItem(ctx context.Context, store intelstore.Store, source feed.Sour
 	ids = append(ids, item.CVEIDs...)
 	ids = append(ids, item.AVDIDs...)
 	ids = append(ids, item.GHSAIDs...)
+	idSum := sha256.Sum256([]byte(source.ID + "\x00" + hash))
 	intelItem := intel.Item{
-		ID:          "feed-" + source.ID + "-" + hash[:16],
+		ID:          "feed-" + hex.EncodeToString(idSum[:8]),
 		SourceID:    source.ID,
 		ExternalIDs: ids,
 		Title:       item.Title,
