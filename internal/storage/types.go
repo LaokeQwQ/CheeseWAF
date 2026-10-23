@@ -32,8 +32,8 @@ type LogEntry struct {
 }
 
 // LogSink is the interface for log output backends.
-// Implementations include: local file, ClickHouse, VictoriaLogs, PostgreSQL.
-// 日志输出后端接口。实现包括：本地文件、ClickHouse、VictoriaLogs、PostgreSQL。
+// Implementations include: local file, ClickHouse, VictoriaLogs, Loki, Elasticsearch, PostgreSQL.
+// 日志输出后端接口。实现包括：本地文件、ClickHouse、VictoriaLogs、Loki、Elasticsearch、PostgreSQL。
 type LogSink interface {
 	// Write writes a log entry to the sink.
 	// 写入一条日志。

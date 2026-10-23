@@ -179,6 +179,17 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("storage.victorialogs.endpoint is invalid: %w", err)
 		}
 	}
+	if cfg.Storage.Loki.Enabled {
+		if strings.TrimSpace(cfg.Storage.Loki.Endpoint) == "" {
+			return fmt.Errorf("storage.loki.endpoint is required when Loki log sink is enabled")
+		}
+		if err := validateLogSinkEndpoint(cfg.Storage.Loki.Endpoint, cfg.Storage.Loki.AllowPrivateEndpoint, "loki endpoint"); err != nil {
+			return fmt.Errorf("storage.loki.endpoint is invalid: %w", err)
+		}
+		if err := ValidateLokiLabels(cfg.Storage.Loki.Labels); err != nil {
+			return fmt.Errorf("storage.loki.labels is invalid: %w", err)
+		}
+	}
 	if cfg.Storage.PostgreSQL.Enabled {
 		if strings.TrimSpace(cfg.Storage.PostgreSQL.DSN) == "" {
 			return fmt.Errorf("storage.postgresql.dsn is required when PostgreSQL log sink is enabled")
@@ -2363,6 +2374,29 @@ func validateLogSinkEndpoint(raw string, allowPrivate bool, purpose string) erro
 		AllowPrivate:   allowPrivate,
 	})
 	return err
+}
+
+var lokiLabelNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// ValidateLokiLabels enforces Loki's stream label grammar. Label names become
+// part of the index, so reserved names and empty values are rejected instead of
+// silently collapsing streams at write time.
+func ValidateLokiLabels(labels map[string]string) error {
+	for name, value := range labels {
+		if !lokiLabelNamePattern.MatchString(name) {
+			return fmt.Errorf("label %q must match %s", name, lokiLabelNamePattern.String())
+		}
+		if strings.HasPrefix(name, "__") {
+			return fmt.Errorf("label %q uses a reserved Loki prefix", name)
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("label %q must have a non-empty value", name)
+		}
+		if !utf8.ValidString(name) || !utf8.ValidString(value) {
+			return fmt.Errorf("label %q must be valid UTF-8", name)
+		}
+	}
+	return nil
 }
 
 func validateMapBoundaryURL(raw string, boundary MapBoundaryConfig) error {

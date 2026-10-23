@@ -212,6 +212,7 @@ The setup wizard tests system performance and recommends an operational tier, wh
 In addition to built-in features, CheeseWAF connects to external monitoring and storage services (testable during setup or configured later):
 - **PostgreSQL**: Centralized access logs and audit trails.
 - **VictoriaLogs**: High-performance structured log ingestion and querying.
+- **Grafana Loki**: Label-indexed log shipping and LogQL queries for existing Loki stacks.
 - **Prometheus**: Metrics scraping endpoint.
 
 ---

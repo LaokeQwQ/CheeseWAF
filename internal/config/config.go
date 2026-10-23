@@ -824,6 +824,7 @@ type StorageConfig struct {
 	Redis                RedisConfig                `yaml:"redis" json:"redis"`
 	ClickHouse           ClickHouseConfig           `yaml:"clickhouse" json:"clickhouse"`
 	VictoriaLogs         VictoriaLogsConfig         `yaml:"victorialogs" json:"victorialogs"`
+	Loki                 LokiConfig                 `yaml:"loki" json:"loki"`
 	PostgreSQL           PostgreSQLConfig           `yaml:"postgresql" json:"postgresql"`
 	Elasticsearch        ElasticsearchConfig        `yaml:"elasticsearch" json:"elasticsearch"`
 }
@@ -868,6 +869,21 @@ type VictoriaLogsConfig struct {
 	Endpoint             string        `yaml:"endpoint" json:"endpoint"`
 	AllowPrivateEndpoint bool          `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
 	Timeout              time.Duration `yaml:"timeout" json:"timeout"`
+}
+
+// LokiConfig configures the Grafana Loki log sink. Endpoint may point at the
+// Loki root (https://loki.example.com) or directly at the push URL; Labels are
+// indexed stream labels, so keep them bounded (a `job` label defaults to
+// "cheesewaf" and site_id is added per entry when the entry carries one).
+type LokiConfig struct {
+	Enabled              bool              `yaml:"enabled" json:"enabled"`
+	Endpoint             string            `yaml:"endpoint" json:"endpoint"`
+	AllowPrivateEndpoint bool              `yaml:"allow_private_endpoint" json:"allow_private_endpoint"`
+	TenantID             string            `yaml:"tenant_id" json:"tenant_id"`
+	Username             string            `yaml:"username" json:"username"`
+	Password             string            `yaml:"password" json:"password"`
+	Labels               map[string]string `yaml:"labels" json:"labels"`
+	Timeout              time.Duration     `yaml:"timeout" json:"timeout"`
 }
 
 type PostgreSQLConfig struct {

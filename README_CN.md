@@ -212,6 +212,7 @@ flowchart TB
 除内置能力外，系统也支持对接外部监控与存储组件（可在安装向导中测试连通性，也可后续在控制台配置）：
 - **PostgreSQL**：集中存储审计日志。
 - **VictoriaLogs**：存储并检索访问日志。
+- **Grafana Loki**：按标签索引推送日志，并通过 LogQL 检索。
 - **Prometheus**：采集运行指标。
 
 ---

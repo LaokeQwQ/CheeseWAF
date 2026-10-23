@@ -374,6 +374,19 @@ storage:
         endpoint: ""
         allow_private_endpoint: false
         timeout: 10s
+    loki:
+        enabled: false
+        # Loki root URL or the full push URL (/loki/api/v1/push).
+        endpoint: ""
+        allow_private_endpoint: false
+        # Multi-tenant Loki only; sent as X-Scope-OrgID.
+        tenant_id: ""
+        username: ""
+        password: ""
+        # Indexed stream labels. `job` defaults to "cheesewaf" and site_id is
+        # attached per entry when the entry carries a site.
+        labels: {}
+        timeout: 10s
     postgresql:
         enabled: false
         dsn: ""

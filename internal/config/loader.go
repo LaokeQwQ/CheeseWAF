@@ -295,6 +295,7 @@ func Default() Config {
 			SQLite:               SQLiteConfig{Path: "./data/cheesewaf.db"},
 			ClickHouse:           ClickHouseConfig{Database: "default", Table: "cheesewaf_logs", Timeout: 10 * time.Second},
 			VictoriaLogs:         VictoriaLogsConfig{Timeout: 10 * time.Second},
+			Loki:                 LokiConfig{Timeout: 10 * time.Second},
 			PostgreSQL:           PostgreSQLConfig{Table: "cheesewaf_logs", Timeout: 10 * time.Second},
 			Elasticsearch:        ElasticsearchConfig{Index: "cheesewaf-logs", Timeout: 10 * time.Second},
 		},
@@ -816,6 +817,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Storage.VictoriaLogs.Timeout == 0 {
 		cfg.Storage.VictoriaLogs.Timeout = def.Storage.VictoriaLogs.Timeout
+	}
+	if cfg.Storage.Loki.Timeout == 0 {
+		cfg.Storage.Loki.Timeout = def.Storage.Loki.Timeout
+	}
+	if cfg.Storage.Loki.Labels == nil {
+		cfg.Storage.Loki.Labels = map[string]string{}
 	}
 	if cfg.Storage.PostgreSQL.Table == "" {
 		cfg.Storage.PostgreSQL.Table = def.Storage.PostgreSQL.Table

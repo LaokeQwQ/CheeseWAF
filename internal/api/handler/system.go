@@ -758,6 +758,11 @@ func testStorageWithDataDir(ctx context.Context, backend string, storage config.
 			return fmt.Errorf("victorialogs is disabled")
 		}
 		return testHTTP(ctx, storage.VictoriaLogs.Endpoint, "", "", "", storage.VictoriaLogs.AllowPrivateEndpoint, "victorialogs endpoint")
+	case "loki":
+		if !storage.Loki.Enabled {
+			return fmt.Errorf("loki is disabled")
+		}
+		return testHTTP(ctx, storage.Loki.Endpoint, storage.Loki.Username, storage.Loki.Password, "", storage.Loki.AllowPrivateEndpoint, "loki endpoint")
 	case "elasticsearch", "elastic":
 		if !storage.Elasticsearch.Enabled {
 			return fmt.Errorf("elasticsearch is disabled")

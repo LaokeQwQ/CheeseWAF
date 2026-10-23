@@ -108,6 +108,7 @@ func effectiveVulnerabilityConfigView(in config.VulnerabilityConfig) config.Vuln
 func storageConfigView(in config.StorageConfig) config.StorageConfig {
 	out := in
 	out.ClickHouse.Password = ""
+	out.Loki.Password = ""
 	out.PostgreSQL.DSN = ""
 	out.Elasticsearch.Password = ""
 	out.Elasticsearch.APIKey = ""
