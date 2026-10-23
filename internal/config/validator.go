@@ -604,7 +604,7 @@ func Validate(cfg *Config) error {
 			continue
 		}
 		switch notifier.Type {
-		case "webhook", "email", "telegram", "dingtalk", "wecom", "feishu":
+		case "webhook", "email", "telegram", "dingtalk", "wecom", "feishu", "datadog", "grafana", "flashcat", "nightingale":
 		default:
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
 		}

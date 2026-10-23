@@ -40,6 +40,14 @@ func NewManager(configs []config.NotifierConfig) *Manager {
 			manager.notifiers = append(manager.notifiers, NewFeishu(cfg, nil))
 		case "email":
 			manager.notifiers = append(manager.notifiers, NewEmail(cfg, nil))
+		case "datadog":
+			manager.notifiers = append(manager.notifiers, NewDatadog(cfg, nil))
+		case "grafana":
+			manager.notifiers = append(manager.notifiers, NewGrafana(cfg, nil))
+		case "flashcat":
+			manager.notifiers = append(manager.notifiers, NewFlashcat(cfg, nil))
+		case "nightingale":
+			manager.notifiers = append(manager.notifiers, NewNightingale(cfg, nil))
 		default:
 			manager.notifiers = append(manager.notifiers, NewWebhook(cfg, nil))
 		}
