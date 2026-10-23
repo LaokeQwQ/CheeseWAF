@@ -33,7 +33,16 @@ func NewManager(configs []config.NotifierConfig) *Manager {
 		if !cfg.Enabled {
 			continue
 		}
-		manager.notifiers = append(manager.notifiers, NewWebhook(cfg, nil))
+		switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
+		case "dingtalk":
+			manager.notifiers = append(manager.notifiers, NewDingTalk(cfg, nil))
+		case "feishu":
+			manager.notifiers = append(manager.notifiers, NewFeishu(cfg, nil))
+		case "email":
+			manager.notifiers = append(manager.notifiers, NewEmail(cfg, nil))
+		default:
+			manager.notifiers = append(manager.notifiers, NewWebhook(cfg, nil))
+		}
 	}
 	return manager
 }
@@ -91,12 +100,8 @@ func (w *Webhook) Notify(ctx context.Context, alert monitor.Alert) error {
 	if err != nil {
 		return err
 	}
-	parsed, err := url.Parse(w.cfg.Endpoint)
-	if err != nil {
-		return fmt.Errorf("notifier %q endpoint is invalid: %w", w.cfg.ID, err)
-	}
-	if webhookHasCredentials(w.cfg) && !strings.EqualFold(parsed.Scheme, "https") {
-		return fmt.Errorf("notifier %q requires an HTTPS endpoint when credentials are configured", w.cfg.ID)
+	if _, err := validateWebhookEndpoint(w.cfg); err != nil {
+		return err
 	}
 	eventID := webhookEventID(alert)
 	timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
@@ -147,6 +152,17 @@ func (w *Webhook) Notify(ctx context.Context, alert monitor.Alert) error {
 		}
 	}
 	return fmt.Errorf("notifier %q delivery failed after %d attempts: %w", w.cfg.ID, webhookMaxAttempts, lastErr)
+}
+
+func validateWebhookEndpoint(cfg config.NotifierConfig) (*url.URL, error) {
+	parsed, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("notifier %q endpoint is invalid: %w", cfg.ID, err)
+	}
+	if webhookHasCredentials(cfg) && !strings.EqualFold(parsed.Scheme, "https") {
+		return nil, fmt.Errorf("notifier %q requires an HTTPS endpoint when credentials are configured", cfg.ID)
+	}
+	return parsed, nil
 }
 
 func webhookHasCredentials(cfg config.NotifierConfig) bool {

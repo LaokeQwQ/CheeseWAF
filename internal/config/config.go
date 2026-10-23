@@ -1255,6 +1255,14 @@ type NotifierConfig struct {
 	To                   string            `yaml:"to" json:"to"`
 	Token                string            `yaml:"token" json:"token"`
 	Headers              map[string]string `yaml:"headers" json:"headers"`
+	MsgType              string            `yaml:"msg_type" json:"msg_type"`
+	AtMobiles            []string          `yaml:"at_mobiles" json:"at_mobiles"`
+	SMTPHost             string            `yaml:"smtp_host" json:"smtp_host"`
+	SMTPPort             int               `yaml:"smtp_port" json:"smtp_port"`
+	SMTPUsername         string            `yaml:"smtp_username" json:"smtp_username"`
+	TLSMode              string            `yaml:"tls_mode" json:"tls_mode"`
+	From                 string            `yaml:"from" json:"from"`
+	SubjectPrefix        string            `yaml:"subject_prefix" json:"subject_prefix"`
 	Enabled              bool              `yaml:"enabled" json:"enabled"`
 }
 

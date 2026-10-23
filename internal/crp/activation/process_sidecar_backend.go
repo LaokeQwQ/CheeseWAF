@@ -78,9 +78,22 @@ type ProcessSidecarAdmissionRequest struct {
 // immutable registry entry and resource request.
 type ProcessSidecarAdmissionHook func(context.Context, ProcessSidecarAdmissionRequest) error
 
+// ProcessDataPlane is the transport-agnostic data plane a sidecar may use
+// after the lifecycle handshake. The backend never interprets its frames.
+type ProcessDataPlane interface {
+	Start(context.Context) error
+	Close() error
+}
+
+// ProcessDataPlaneFactory receives the host ends of the inherited data-plane
+// pipes. Unix implementations pass fd3 (host to plugin) and fd4 (plugin to
+// host); Windows uses a named-pipe adapter instead.
+type ProcessDataPlaneFactory func(identity ProcessSidecarIdentity, hostToPlugin, pluginToHost *os.File) (ProcessDataPlane, error)
+
 type ProcessSidecarBackendOptions struct {
 	Registry         []ProcessSidecarRegistryEntry
 	Admission        ProcessSidecarAdmissionHook
+	DataPlaneFactory ProcessDataPlaneFactory
 	OperationTimeout time.Duration
 	StopTimeout      time.Duration
 	MaxMessageBytes  int
@@ -91,6 +104,7 @@ type ProcessSidecarBackendOptions struct {
 type ProcessSidecarBackend struct {
 	registry         map[ProcessSidecarIdentity]ProcessSidecarRegistryEntry
 	admission        ProcessSidecarAdmissionHook
+	dataPlaneFactory ProcessDataPlaneFactory
 	operationTimeout time.Duration
 	stopTimeout      time.Duration
 	maxMessageBytes  int
@@ -136,7 +150,7 @@ func NewProcessSidecarBackend(opts ProcessSidecarBackendOptions) (*ProcessSideca
 	}
 	closeCtx, closeBackend := context.WithCancel(context.Background())
 	return &ProcessSidecarBackend{
-		registry: registry, admission: opts.Admission,
+		registry: registry, admission: opts.Admission, dataPlaneFactory: opts.DataPlaneFactory,
 		operationTimeout: opts.OperationTimeout, stopTimeout: opts.StopTimeout,
 		maxMessageBytes: opts.MaxMessageBytes, processes: make(map[*processSidecarProcess]struct{}),
 		closeCtx: closeCtx, close: closeBackend,
@@ -205,18 +219,61 @@ func (b *ProcessSidecarBackend) Start(ctx context.Context, spec SidecarLaunchSpe
 	if err := configureProcessSidecarCommand(cmd); err != nil {
 		return nil, fmt.Errorf("%w: configure process: %v", ErrProcessSidecarConfig, err)
 	}
+	var hostToPluginR, hostToPluginW, pluginToHostR, pluginToHostW *os.File
+	if b.dataPlaneFactory != nil {
+		var pipeErr error
+		hostToPluginR, hostToPluginW, pipeErr = os.Pipe()
+		if pipeErr != nil {
+			return nil, fmt.Errorf("%w: data plane host pipe: %v", ErrProcessSidecarProtocol, pipeErr)
+		}
+		pluginToHostR, pluginToHostW, pipeErr = os.Pipe()
+		if pipeErr != nil {
+			_ = hostToPluginR.Close()
+			_ = hostToPluginW.Close()
+			return nil, fmt.Errorf("%w: data plane plugin pipe: %v", ErrProcessSidecarProtocol, pipeErr)
+		}
+		if pipeErr := configureProcessDataPlaneFiles(cmd, hostToPluginR, pluginToHostW); pipeErr != nil {
+			_ = hostToPluginR.Close()
+			_ = hostToPluginW.Close()
+			_ = pluginToHostR.Close()
+			_ = pluginToHostW.Close()
+			return nil, fmt.Errorf("%w: data plane files: %v", ErrProcessSidecarConfig, pipeErr)
+		}
+	}
+	closeDataPlaneFiles := func() {
+		if hostToPluginR != nil {
+			_ = hostToPluginR.Close()
+			_ = hostToPluginW.Close()
+			_ = pluginToHostR.Close()
+			_ = pluginToHostW.Close()
+		}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		closeDataPlaneFiles()
 		return nil, fmt.Errorf("%w: stdin pipe: %v", ErrProcessSidecarProtocol, err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		closeDataPlaneFiles()
 		return nil, fmt.Errorf("%w: stdout pipe: %v", ErrProcessSidecarProtocol, err)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
+		if hostToPluginR != nil {
+			_ = hostToPluginR.Close()
+			_ = hostToPluginW.Close()
+			_ = pluginToHostR.Close()
+			_ = pluginToHostW.Close()
+		}
 		return nil, fmt.Errorf("%w: start executable: %v", ErrProcessSidecarExited, err)
+	}
+	if b.dataPlaneFactory != nil {
+		// The child owns fd3/fd4. The parent keeps the opposite ends and must
+		// close these copies so EOF is observable when the child exits.
+		_ = hostToPluginR.Close()
+		_ = pluginToHostW.Close()
 	}
 
 	process := &processSidecarProcess{
@@ -229,7 +286,28 @@ func (b *ProcessSidecarBackend) Start(ctx context.Context, spec SidecarLaunchSpe
 	startErr := process.roundTripLocked(launchContext, "start", SidecarModeObserve, b.operationTimeout)
 	process.mu.Unlock()
 	if startErr != nil {
+		if b.dataPlaneFactory != nil {
+			_ = hostToPluginW.Close()
+			_ = pluginToHostR.Close()
+		}
 		return nil, fmt.Errorf("%w: start handshake: %w", ErrProcessSidecarProtocol, startErr)
+	}
+	if b.dataPlaneFactory != nil {
+		dataPlane, dpErr := b.dataPlaneFactory(identity, hostToPluginW, pluginToHostR)
+		if dpErr != nil {
+			_ = hostToPluginW.Close()
+			_ = pluginToHostR.Close()
+			_ = process.Stop(context.Background())
+			return nil, fmt.Errorf("%w: data plane: %v", ErrProcessSidecarProtocol, dpErr)
+		}
+		if dpErr := dataPlane.Start(launchContext); dpErr != nil {
+			_ = dataPlane.Close()
+			_ = hostToPluginW.Close()
+			_ = pluginToHostR.Close()
+			_ = process.Stop(context.Background())
+			return nil, fmt.Errorf("%w: data plane handshake: %v", ErrProcessSidecarProtocol, dpErr)
+		}
+		process.setDataPlane(dataPlane)
 	}
 
 	b.mu.Lock()
@@ -295,6 +373,10 @@ type processSidecarProcess struct {
 	stdout   *bufio.Reader
 	done     chan struct{}
 
+	dataPlaneMu   sync.Mutex
+	dataPlane     ProcessDataPlane
+	dataPlaneOnce sync.Once
+
 	waitMu  sync.Mutex
 	waitErr error
 
@@ -308,6 +390,30 @@ type processSidecarProcess struct {
 	unusable      bool
 	stopAttempted bool
 	stopErr       error
+}
+
+func (p *processSidecarProcess) setDataPlane(dataPlane ProcessDataPlane) {
+	p.dataPlaneMu.Lock()
+	p.dataPlane = dataPlane
+	p.dataPlaneMu.Unlock()
+}
+
+// DataPlane returns the optional host data-plane session for this process.
+func (p *processSidecarProcess) DataPlane() ProcessDataPlane {
+	p.dataPlaneMu.Lock()
+	defer p.dataPlaneMu.Unlock()
+	return p.dataPlane
+}
+
+func (p *processSidecarProcess) closeDataPlane() {
+	p.dataPlaneOnce.Do(func() {
+		p.dataPlaneMu.Lock()
+		dataPlane := p.dataPlane
+		p.dataPlaneMu.Unlock()
+		if dataPlane != nil {
+			_ = dataPlane.Close()
+		}
+	})
 }
 
 func (p *processSidecarProcess) SetMode(ctx context.Context, mode SidecarMode) error {
@@ -379,6 +485,7 @@ func (p *processSidecarProcess) Stop(ctx context.Context) error {
 }
 
 func (p *processSidecarProcess) wait() {
+	p.closeDataPlane()
 	err := p.cmd.Wait()
 	p.waitMu.Lock()
 	p.waitErr = err
@@ -614,6 +721,7 @@ func (p *processSidecarProcess) waitForExitLocked(ctx context.Context, timeout t
 }
 
 func (p *processSidecarProcess) killAndWaitLocked() error {
+	p.closeDataPlane()
 	_ = p.stdin.Close()
 	select {
 	case <-p.done:
