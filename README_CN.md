@@ -226,11 +226,27 @@ CheeseWAF 针对主流运维基础设施提供部署支持。
 
 #### 推荐：一键安装
 
-在目标 Linux 主机以 root 执行下面的命令。脚本会让你选择语言，识别 CPU 架构，拉取最新稳定版并校验 SHA256，然后安装、启动 systemd 服务并输出公网/内网地址、一次性初始化 URL、配置路径和服务状态：
+在目标 Linux 主机使用官网入口安装。脚本会让你选择语言，识别 CPU 架构，拉取最新稳定版并校验 SHA256，然后安装、启动 systemd 服务并输出公网/内网地址、一次性初始化 URL、配置路径和服务状态：
 
 ```bash
-curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo bash ./install-linux.sh
 ```
+
+也可使用 GNU wget：
+
+```bash
+wget --max-redirect=0 -O install-linux.sh https://cheesesec.com/install.sh && sudo bash ./install-linux.sh
+```
+
+若官网入口不可达，可改从 [GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载安装器：
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh -o install-linux.sh && sudo bash ./install-linux.sh
+```
+
+安装器内部支持 curl 或 GNU wget。官方版本优先使用软件元数据 `https://ota.cheesesec.com/v1/software/channels/stable/index.json` 和资源地址 `https://res.cheesesec.com/releases/{tag}/{asset}`；官方下载不可用时回退到 GitHub，选定版本 tag 后，资源回退始终使用同一 tag。校验和或签名验证失败会停止安装，不会通过切换来源绕过失败。
+
+可在 `sudo` 后的命令中设置 `CHEESEWAF_RELEASE` 固定版本 tag，例如 `sudo env CHEESEWAF_RELEASE=vX.Y.Z bash ./install-linux.sh`。将 `CHEESEWAF_REPO` 设为非官方仓库时，会从指定的 GitHub fork 下载，不使用官方服务器。
 
 安装过程中会生成一个仅含 ASCII 字母和数字的安全入口；直接回车使用随机值，或输入 8-64 位自定义值。公网管理面使用 HTTPS 和一次性 setup Token，首次访问自签名证书会出现浏览器警告，生产环境应替换为受信证书或反向代理。脚本会把 RFC1918/内网接口与公网候选地址分开输出；如果服务器在 NAT 后面或使用域名，请设置 `CHEESEWAF_ADMIN_PUBLIC_HOST`。云安全组只开放 TCP 9443。只有交互式终端会直接显示敏感 URL，安装信息同时保存到 root-only 回执文件。
 
@@ -238,7 +254,7 @@ curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/instal
 
 #### 离线/手动安装
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应架构的软件包：
+选定版本 tag 和对应架构的软件包后，优先使用官网资源地址 `https://res.cheesesec.com/releases/{tag}/{asset}`；不可用时改用 `https://github.com/LaokeQwQ/CheeseWAF/releases/download/{tag}/{asset}`，保持 tag 和文件名一致。[GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面可查询版本 tag 与文件名。请同时下载该版本的 `SHA256SUMS`，校验压缩包后再解压：
 
 | 发行包名称 | 适用架构 |
 | :--- | :--- |
@@ -266,7 +282,13 @@ sudo ./install-linux.sh
 sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
 ```
 
-一键安装升级时，将同一变量传给 `sudo` 后的命令：`curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`。未确认时，安装器会在停服前退出。
+通过官网入口升级时，将同一变量传给 `sudo` 后的命令：
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash ./install-linux.sh
+```
+
+也可按上文改用 GNU wget 或 GitHub 安装器 URL。未确认时，安装器会在停服前退出。
 
 如需手动配置，需同时复制二进制文件与 Web 管理端静态资源：
 
