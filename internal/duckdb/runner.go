@@ -153,6 +153,9 @@ func (r *Runner) Run(ctx context.Context, job Job) (AnalysisRecord, error) {
 	if len(rows) > job.Template.MaxRows {
 		return AnalysisRecord{}, fmt.Errorf("duckdb output exceeds %d rows", job.Template.MaxRows)
 	}
+	if len(rows) > 1000 {
+		return AnalysisRecord{}, fmt.Errorf("duckdb output exceeds 1000 analysis findings")
+	}
 	findings := make([]Finding, 0, len(rows))
 	for _, row := range rows {
 		severity := "info"

@@ -29,6 +29,9 @@ func buildDuckDBRunner(t *testing.T) string {
 	if data, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build DuckDB runner: %v\n%s", err, data)
 	}
+	if err := os.Chmod(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return output
 }
 

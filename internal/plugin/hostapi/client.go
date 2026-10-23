@@ -350,7 +350,6 @@ func (c *Client) closeSession() {
 		if closer, ok := c.in.(io.Closer); ok {
 			_ = closer.Close()
 		}
-		close(c.receipts)
 	})
 }
 

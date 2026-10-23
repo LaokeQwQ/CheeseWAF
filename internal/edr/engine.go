@@ -15,7 +15,7 @@ import (
 
 const (
 	PluginID      = "edr-waf-correlation"
-	PluginVersion = "1.0.0"
+	PluginVersion = "1.0.1"
 
 	maxTrackedKeys  = 4096
 	maxEventsPerKey = 256

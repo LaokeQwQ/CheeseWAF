@@ -81,7 +81,7 @@ func (h *duckDBHandler) OnJob(ctx context.Context, payload json.RawMessage) erro
 		SnapshotPaths: request.SnapshotPaths, Template: template,
 		WindowFrom: from, WindowTo: to, EngineVersion: request.EngineVersion,
 		ExecutionProfileRef: request.ExecutionProfileRef, ExecutionProfileSHA256: request.ExecutionProfileSHA256,
-		PluginID: "duckdb-analysis", PluginVersion: "1.0.0",
+		PluginID: "duckdb-analysis", PluginVersion: "1.0.1",
 	})
 	if err != nil {
 		return err
@@ -99,7 +99,7 @@ func (h *duckDBHandler) OnShutdown(context.Context) error { return nil }
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--describe" {
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{
-			"plugin_id": "duckdb-analysis", "version": "1.0.0", "protocol": hostapi.ProtocolVersion,
+			"plugin_id": "duckdb-analysis", "version": "1.0.1", "protocol": hostapi.ProtocolVersion,
 			"purpose": "read-only DuckDB analysis job; host-provided engine; no arbitrary SQL",
 		})
 		return
