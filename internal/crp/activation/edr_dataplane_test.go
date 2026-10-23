@@ -3,6 +3,7 @@ package activation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,39 +91,41 @@ func TestEDRSidecarEmitsAuthBurstHint(t *testing.T) {
 		t.Fatalf("config: %v", err)
 	}
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
-	var hint hostapi.Result
-	for i := range 10 {
-		event := edr.Event{
-			EventID: "evt-" + string(rune('a'+i)), EventType: "auth_failure",
-			ObservedAt: now.Add(time.Duration(i) * time.Second),
-			TenantRef:  "tenant-1", SiteRef: "site-1", RouteRef: "/login",
-			SubjectHash: strings.Repeat("e", 64), Severity: "medium", Count: 1,
-			WindowSeconds: 60, EvidenceRefs: []string{"evidence:evt"},
-		}
-		raw, err := json.Marshal(event)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := session.SendEvent(ctx, raw); err != nil {
-			t.Fatalf("event %d: %v", i, err)
+	// Exceed the client's 64-receipt buffer so a missing consumer fails here.
+	for subject := range 66 {
+		for i := range 10 {
+			event := edr.Event{
+				EventID: fmt.Sprintf("evt-%d-%d", subject, i), EventType: "auth_failure",
+				ObservedAt: now.Add(time.Duration(i) * time.Second),
+				TenantRef:  "tenant-1", SiteRef: "site-1", RouteRef: "/login",
+				SubjectHash: fmt.Sprintf("%064x", subject+1), Severity: "medium", Count: 1,
+				WindowSeconds: 60, EvidenceRefs: []string{"evidence:evt"},
+			}
+			raw, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := session.SendEvent(ctx, raw); err != nil {
+				t.Fatalf("subject %d event %d: %v", subject, i, err)
+			}
 		}
 		select {
-		case result := <-session.Results():
-			hint = result
-		default:
+		case hint := <-session.Results():
+			if hint.Kind != hostapi.ResultHint {
+				t.Fatalf("subject %d: no hint produced: %#v", subject, hint)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(hint.Payload, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded["plugin_id"] != edr.PluginID || decoded["policy_epoch"] != float64(7) {
+				t.Fatalf("hint = %#v", decoded)
+			}
+			if err := session.SendHintReceipt(ctx, hint.Sequence, true, ""); err != nil {
+				t.Fatalf("subject %d receipt: %v", subject, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("subject %d: timed out waiting for hint", subject)
 		}
-	}
-	if hint.Kind != hostapi.ResultHint {
-		t.Fatalf("no hint produced: %#v", hint)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(hint.Payload, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded["plugin_id"] != edr.PluginID {
-		t.Fatalf("hint plugin = %v", decoded["plugin_id"])
-	}
-	if decoded["policy_epoch"] != float64(7) {
-		t.Fatalf("hint policy_epoch = %v", decoded["policy_epoch"])
 	}
 }

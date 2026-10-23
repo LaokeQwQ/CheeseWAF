@@ -15,12 +15,13 @@ import (
 )
 
 var (
-	ErrSessionState  = errors.New("plugin host session is not ready")
-	ErrHandshake     = errors.New("plugin host handshake failed")
-	ErrSessionClosed = errors.New("plugin host session is closed")
-	ErrProtocol      = errors.New("plugin host protocol violation")
-	ErrAckTimeout    = errors.New("plugin host acknowledgement timed out")
-	ErrResultBacklog = errors.New("plugin host result backlog is full")
+	ErrSessionState     = errors.New("plugin host session is not ready")
+	ErrHandshake        = errors.New("plugin host handshake failed")
+	ErrSessionClosed    = errors.New("plugin host session is closed")
+	ErrProtocol         = errors.New("plugin host protocol violation")
+	ErrAckTimeout       = errors.New("plugin host acknowledgement timed out")
+	ErrResultBacklog    = errors.New("plugin host result backlog is full")
+	ErrCapabilityDenied = errors.New("plugin host capability was not negotiated")
 )
 
 // State is the host-side session lifecycle.
@@ -102,16 +103,17 @@ type Session struct {
 	reader *bufio.Reader
 	opts   SessionOptions
 
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	state   State
-	nextSeq uint64
-	pending map[uint64]chan Frame
-	drainCh chan struct{}
-	results chan Result
-	done    chan struct{}
-	close   sync.Once
-	err     error
+	writeMu      sync.Mutex
+	mu           sync.Mutex
+	state        State
+	capabilities map[Capability]struct{}
+	nextSeq      uint64
+	pending      map[uint64]chan Frame
+	drainCh      chan struct{}
+	results      chan Result
+	done         chan struct{}
+	close        sync.Once
+	err          error
 }
 
 func helloFrame(payload HelloPayload) Frame {
@@ -148,6 +150,8 @@ func NewSession(in io.Reader, out io.WriteCloser, opts SessionOptions) (*Session
 			return nil, fmt.Errorf("%w: capability %q", ErrHandshake, capability)
 		}
 	}
+	opts.Capabilities = append([]Capability(nil), opts.Capabilities...)
+	opts.Challenge = append([]byte(nil), opts.Challenge...)
 	return &Session{
 		in:      in,
 		out:     out,
@@ -175,8 +179,10 @@ func (s *Session) Results() <-chan Result { return s.results }
 
 // Start performs the challenge/response handshake and starts the read loop.
 func (s *Session) Start(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return context.Cause(ctx)
 	}
 	s.mu.Lock()
 	if s.state != StateNew {
@@ -192,7 +198,7 @@ func (s *Session) Start(ctx context.Context) error {
 		MaxFrameBytes: s.opts.MaxFrameBytes,
 	})
 	s.mu.Unlock()
-	if err := s.writeFrame(hello); err != nil {
+	if err := s.writeFrame(ctx, hello); err != nil {
 		s.fail(err)
 		return err
 	}
@@ -210,8 +216,9 @@ func (s *Session) Start(ctx context.Context) error {
 	select {
 	case first = <-readyCh:
 	case <-ctx.Done():
-		s.fail(ctx.Err())
-		return ctx.Err()
+		err := context.Cause(ctx)
+		s.fail(err)
+		return err
 	case <-s.done:
 		return ErrSessionClosed
 	}
@@ -248,6 +255,10 @@ func (s *Session) Start(ctx context.Context) error {
 	if s.state != StateHandshaking {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: state changed during handshake", ErrSessionState)
+	}
+	s.capabilities = make(map[Capability]struct{}, len(ready.AcceptedCapabilities))
+	for _, capability := range ready.AcceptedCapabilities {
+		s.capabilities[capability] = struct{}{}
 	}
 	s.state = StateReady
 	s.mu.Unlock()
@@ -307,8 +318,10 @@ func (s *Session) SendAnalysisReceipt(ctx context.Context, sequence uint64, acce
 
 // Drain asks the plugin to stop accepting events, flush, and report drained.
 func (s *Session) Drain(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return context.Cause(ctx)
 	}
 	s.mu.Lock()
 	if s.state != StateReady {
@@ -319,7 +332,7 @@ func (s *Session) Drain(ctx context.Context) error {
 	sequence := s.nextSeq
 	s.nextSeq++
 	s.mu.Unlock()
-	if err := s.writeFrame(Frame{Type: FrameDrain, SchemaVersion: ProtocolVersion, Sequence: sequence}); err != nil {
+	if err := s.writeFrame(ctx, Frame{Type: FrameDrain, SchemaVersion: ProtocolVersion, Sequence: sequence}); err != nil {
 		s.fail(err)
 		return err
 	}
@@ -327,7 +340,9 @@ func (s *Session) Drain(ctx context.Context) error {
 	case <-s.drainCh:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		err := context.Cause(ctx)
+		s.fail(err)
+		return err
 	case <-s.done:
 		return ErrSessionClosed
 	}
@@ -339,13 +354,19 @@ func (s *Session) Shutdown(ctx context.Context) error {
 }
 
 func (s *Session) sendAndWait(ctx context.Context, frameType FrameType, payload json.RawMessage, ackType FrameType) error {
-	if ctx == nil {
-		ctx = context.Background()
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return context.Cause(ctx)
 	}
 	s.mu.Lock()
 	if s.state != StateReady {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: send from %s", ErrSessionState, s.state)
+	}
+	if err := s.requireCapabilityLocked(frameType); err != nil {
+		s.mu.Unlock()
+		return err
 	}
 	sequence := s.nextSeq
 	s.nextSeq++
@@ -353,7 +374,7 @@ func (s *Session) sendAndWait(ctx context.Context, frameType FrameType, payload 
 	s.pending[sequence] = ackCh
 	s.mu.Unlock()
 
-	err := s.writeFrame(Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: payload})
+	err := s.writeFrame(ctx, Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: payload})
 	if err != nil {
 		s.dropPending(sequence)
 		s.fail(err)
@@ -366,24 +387,21 @@ func (s *Session) sendAndWait(ctx context.Context, frameType FrameType, payload 
 			return ErrProtocol
 		}
 		return nil
-	case <-time.After(s.opts.AckTimeout):
-		s.dropPending(sequence)
-		s.fail(ErrAckTimeout)
-		return ErrAckTimeout
 	case <-ctx.Done():
 		s.dropPending(sequence)
-		return ctx.Err()
+		err := context.Cause(ctx)
+		s.fail(err)
+		return err
 	case <-s.done:
 		return ErrSessionClosed
 	}
 }
 
 func (s *Session) sendOneWay(ctx context.Context, frameType FrameType, sequence uint64, payload any) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx, cancel := s.operationContext(ctx)
+	defer cancel()
 	if err := ctx.Err(); err != nil {
-		return err
+		return context.Cause(ctx)
 	}
 	s.mu.Lock()
 	if s.state != StateReady && s.state != StateDraining {
@@ -399,18 +417,51 @@ func (s *Session) sendOneWay(ctx context.Context, frameType FrameType, sequence 
 	if err != nil {
 		return err
 	}
-	return s.writeFrame(Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: raw})
+	if err := s.writeFrame(ctx, Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: raw}); err != nil {
+		s.fail(err)
+		return err
+	}
+	return nil
 }
 
-func (s *Session) writeFrame(frame Frame) error {
+func (s *Session) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeoutCause(ctx, s.opts.AckTimeout, ErrAckTimeout)
+}
+
+func (s *Session) writeFrame(ctx context.Context, frame Frame) error {
 	raw, err := EncodeFrame(frame, s.opts.MaxFrameBytes)
 	if err != nil {
 		return err
 	}
 	raw = append(raw, '\n')
+	// Closing the session interrupts writes to the inherited OS pipe, including
+	// a peer that stopped reading. Install cancellation before taking writeMu so
+	// queued writers share the same bound as the active writer.
+	canceled := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		s.fail(context.Cause(ctx))
+		close(canceled)
+	})
+	defer func() {
+		if !stopCancellation() {
+			<-canceled
+		}
+	}()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err = s.out.Write(raw)
+	if err := ctx.Err(); err != nil {
+		return context.Cause(ctx)
+	}
+	written, err := s.out.Write(raw)
+	if err := ctx.Err(); err != nil {
+		return context.Cause(ctx)
+	}
+	if err == nil && written != len(raw) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
@@ -444,6 +495,14 @@ func (s *Session) readLoop() {
 }
 
 func (s *Session) dispatch(frame Frame) error {
+	if frame.Type == FrameHint || frame.Type == FrameAnalysis || frame.Type == FrameHealth {
+		s.mu.Lock()
+		err := s.requireCapabilityLocked(frame.Type)
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
 	switch frame.Type {
 	case FrameEventAck, FrameJobAck, FrameConfigAck:
 		s.mu.Lock()
@@ -473,6 +532,14 @@ func (s *Session) dispatch(frame Frame) error {
 	default:
 		return fmt.Errorf("%w: unexpected frame %s", ErrProtocol, frame.Type)
 	}
+}
+
+func (s *Session) requireCapabilityLocked(frameType FrameType) error {
+	capability := frameCapability(frameType)
+	if _, ok := s.capabilities[capability]; !ok {
+		return fmt.Errorf("%w: %s requires %s", ErrCapabilityDenied, frameType, capability)
+	}
+	return nil
 }
 
 func (s *Session) publish(result Result) error {

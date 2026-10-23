@@ -1,6 +1,7 @@
 package edr
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -62,5 +63,40 @@ func TestMultiRouteProbe(t *testing.T) {
 	}
 	if len(hints) != 1 {
 		t.Fatalf("hints = %#v", hints)
+	}
+}
+
+func TestDistinctRouteStateRemainsBounded(t *testing.T) {
+	engine := NewEngine()
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	for i := range 4096 {
+		event := testEvent(now, "waf_rule_hit", "subject-4")
+		event.RouteRef = fmt.Sprintf("/route-%d", i)
+		engine.Observe(event, 1)
+	}
+	state := engine.states["tenant-1\x00site-1\x00subject-4"]
+	if len(state.events) != maxEventsPerKey || len(state.routes) != maxEventsPerKey {
+		t.Fatalf("state retains %d events and %d routes, want %d each", len(state.events), len(state.routes), maxEventsPerKey)
+	}
+}
+
+func TestMultiRouteProbeRetainsInfrequentRoutes(t *testing.T) {
+	engine := NewEngine()
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	event := testEvent(now, "waf_rule_hit", "subject-5")
+	event.RouteRef = "/first"
+	engine.Observe(event, 1)
+	event.RouteRef = "/repeated"
+	for range 1000 {
+		if hints := engine.Observe(event, 1); len(hints) != 0 {
+			t.Fatalf("probe reported before 20 distinct routes: %#v", hints)
+		}
+	}
+	for i := range 18 {
+		event.RouteRef = fmt.Sprintf("/route-%d", i)
+		hints := engine.Observe(event, 1)
+		if want := i == 17; (len(hints) == 1) != want {
+			t.Fatalf("route %d returned %d hints, want hint: %t", i, len(hints), want)
+		}
 	}
 }

@@ -1,16 +1,37 @@
 package duckdb
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+var errCLIOutputTooLarge = fmt.Errorf("duckdb output exceeds %d bytes", DefaultMaxBytes)
+
+type boundedCLIOutput struct {
+	buffer bytes.Buffer
+	cancel context.CancelFunc
+	excess bool
+}
+
+func (w *boundedCLIOutput) Write(p []byte) (int, error) {
+	remaining := DefaultMaxBytes - w.buffer.Len()
+	if len(p) > remaining {
+		_, _ = w.buffer.Write(p[:remaining])
+		w.excess = true
+		w.cancel()
+		return remaining, errCLIOutputTooLarge
+	}
+	return w.buffer.Write(p)
+}
 
 // Executor runs one already-validated SQL statement and returns JSON rows.
 type Executor interface {
@@ -49,14 +70,22 @@ func (e *CLIExecutor) Query(ctx context.Context, sql string) ([]byte, error) {
 		return nil, err
 	}
 	command := exec.CommandContext(runContext, binary, "--readonly", "-json", "-f", name)
-	output, err := command.Output()
+	// Bound stdout while it is produced, before Runner decodes any rows. A
+	// descendant keeping an inherited output pipe open must not delay cleanup.
+	output := &boundedCLIOutput{cancel: cancel}
+	command.Stdout = output
+	command.WaitDelay = time.Second
+	err = command.Run()
+	if output.excess {
+		return nil, errCLIOutputTooLarge
+	}
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("duckdb failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		if errors.Is(err, exec.ErrWaitDelay) {
+			return nil, fmt.Errorf("duckdb output pipe did not close: %w", err)
 		}
 		return nil, err
 	}
-	return output, nil
+	return output.buffer.Bytes(), nil
 }
 
 // Job is the immutable input to one analysis run.

@@ -163,6 +163,18 @@ func run() error {
 				runner: duckdb.NewRunner(&duckdb.CLIExecutor{Binary: os.Getenv("CHEESEWAF_DUCKDB_BIN")}),
 			}
 			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case _, ok := <-client.Receipts():
+						if !ok {
+							return
+						}
+					}
+				}
+			}()
+			go func() {
 				if err := client.Run(ctx, handler); err != nil && ctx.Err() == nil {
 					_, _ = io.WriteString(os.Stderr, "duckdb data plane: "+err.Error()+"\n")
 				}

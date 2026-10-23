@@ -137,6 +137,16 @@ func (e *Engine) Observe(event Event, policyEpoch uint64) []Hint {
 		state.events = state.events[len(state.events)-e.maxPerKey:]
 	}
 	if event.RouteRef != "" {
+		if _, tracked := state.routes[event.RouteRef]; !tracked && len(state.routes) >= e.maxPerKey {
+			var oldestRoute string
+			var oldestAt time.Time
+			for route, at := range state.routes {
+				if oldestRoute == "" || at.Before(oldestAt) {
+					oldestRoute, oldestAt = route, at
+				}
+			}
+			delete(state.routes, oldestRoute)
+		}
 		state.routes[event.RouteRef] = now
 	}
 	if !state.lastHintAt.IsZero() && now.Sub(state.lastHintAt) < suppressionTTL {

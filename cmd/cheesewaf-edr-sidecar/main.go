@@ -150,6 +150,18 @@ func run() error {
 			}
 			handler = &edrHandler{client: client, engine: edr.NewEngine(), mode: mode}
 			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case _, ok := <-client.Receipts():
+						if !ok {
+							return
+						}
+					}
+				}
+			}()
+			go func() {
 				if err := client.Run(ctx, handler); err != nil && ctx.Err() == nil {
 					_, _ = io.WriteString(os.Stderr, "edr data plane: "+err.Error()+"\n")
 				}

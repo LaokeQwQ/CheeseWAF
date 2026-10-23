@@ -106,22 +106,28 @@ func TestDuckDBRunnerExecutesJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := session.SendJob(ctx, raw); err != nil {
-		t.Fatalf("send job: %v", err)
-	}
-	select {
-	case result := <-session.Results():
-		if result.Kind != hostapi.ResultAnalysis {
-			t.Fatalf("result = %#v", result)
+	// Exceed the client's 64-receipt buffer so a missing consumer fails here.
+	for i := range 66 {
+		if err := session.SendJob(ctx, raw); err != nil {
+			t.Fatalf("job %d: %v", i, err)
 		}
-		var record map[string]any
-		if err := json.Unmarshal(result.Payload, &record); err != nil {
-			t.Fatal(err)
+		select {
+		case result := <-session.Results():
+			if result.Kind != hostapi.ResultAnalysis {
+				t.Fatalf("result = %#v", result)
+			}
+			var record map[string]any
+			if err := json.Unmarshal(result.Payload, &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["plugin_id"] != "duckdb-analysis" {
+				t.Fatalf("record = %#v", record)
+			}
+			if err := session.SendAnalysisReceipt(ctx, result.Sequence, true, ""); err != nil {
+				t.Fatalf("job %d receipt: %v", i, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("job %d: timed out waiting for analysis record", i)
 		}
-		if record["plugin_id"] != "duckdb-analysis" {
-			t.Fatalf("record = %#v", record)
-		}
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for analysis record")
 	}
 }
