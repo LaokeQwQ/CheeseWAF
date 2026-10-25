@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/adapterapi"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
@@ -457,9 +458,13 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	adapterHandler, err := adapterapi.NewHandler(proxyServer, cfg.Server.AdapterToken, sink)
+	if err != nil {
+		return fmt.Errorf("configure adapter API: %w", err)
+	}
 	admin := &http.Server{
 		Addr:              cfg.Server.AdminListen,
-		Handler:           adminHandler,
+		Handler:           withAdapterAPI(adapterHandler, adminHandler),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -506,6 +511,7 @@ func runServe(ctx context.Context) error {
 	}
 
 	proxyHTTP := proxyServer.HTTPServer()
+	proxyHTTP.Handler = withAdapterAPI(adapterHandler, proxyHTTP.Handler)
 	serveCtx, stopServing := context.WithCancel(runtimeCtx)
 	defer stopServing()
 	var wg sync.WaitGroup
@@ -837,6 +843,18 @@ func firstInstallPending(ctx context.Context, dataDir string, store storage.User
 		return false, fmt.Errorf("first-install user lookup: %w", err)
 	}
 	return len(users) == 0, nil
+}
+
+// withAdapterAPI serves the adapter inspection/telemetry/health routes before
+// the gateway or admin handler. The adapter API has its own token/loopback
+// authentication and must not inherit the admin entrance gate or site routing.
+func withAdapterAPI(adapter, fallback http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/v1/adapter/inspect", adapter)
+	mux.Handle("/api/v1/adapter/telemetry", adapter)
+	mux.Handle("/healthz", adapter)
+	mux.Handle("/", fallback)
+	return mux
 }
 
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
