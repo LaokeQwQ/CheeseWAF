@@ -434,7 +434,7 @@ If your infrastructure already uses a reverse proxy or API gateway, you can inte
 
 ### Architecture
 
-`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries CheeseWAF at `/api/v1/check`.
+`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries the versioned adapter contract endpoint at `/api/v1/adapter/inspect` (override with `CHEESEWAF_CORE_INSPECT_PATH`). The core must expose that endpoint.
 
 ### NGINX Integration Example
 
