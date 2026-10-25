@@ -431,7 +431,7 @@ docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url
 
 ### 接入原理
 
-`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用 CheeseWAF 核心的 `/api/v1/check` 接口完成判定。
+`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用版本化适配器契约接口 `/api/v1/adapter/inspect`（可用 `CHEESEWAF_CORE_INSPECT_PATH` 覆盖）完成判定；核心必须提供该接口。
 
 ### NGINX 集成示例
 
