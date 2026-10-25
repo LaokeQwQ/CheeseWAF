@@ -9,6 +9,9 @@ server:
     # starting the service; setup remains token-gated until the wizard finishes.
     admin_listen: "127.0.0.1:9443"
     admin_public: false
+    # Shared secret used by CheeseWAF-Adapters as Authorization: Bearer.
+    # Empty permits only loopback adapter clients.
+    adapter_token: ""
     admin_tls:
         enabled: true
         cert_file: "./data/certs/admin.crt"

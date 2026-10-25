@@ -233,6 +233,7 @@ type ServerConfig struct {
 	ListenHTTP3  string         `yaml:"listen_http3" json:"listen_http3"`
 	AdminListen  string         `yaml:"admin_listen" json:"admin_listen"`
 	AdminPublic  bool           `yaml:"admin_public" json:"admin_public"`
+	AdapterToken string         `yaml:"adapter_token,omitempty" json:"adapter_token,omitempty"`
 	AdminTLS     AdminTLSConfig `yaml:"admin_tls" json:"admin_tls"`
 	ReadTimeout  time.Duration  `yaml:"read_timeout" json:"read_timeout"`
 	WriteTimeout time.Duration  `yaml:"write_timeout" json:"write_timeout"`
