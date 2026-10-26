@@ -27,7 +27,11 @@ func TestFlashcatPostsStandardEvent(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: server.URL, Token: "fc-token"}
-	if err := NewFlashcat(cfg, server.Client()).Notify(context.Background(), testAlert()); err != nil {
+	notifier, err := NewProvider(cfg, server.Client())
+	if err != nil {
+		t.Fatalf("create flashcat provider: %v", err)
+	}
+	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodPost {
@@ -42,7 +46,7 @@ func TestFlashcatPostsStandardEvent(t *testing.T) {
 	if gotAuth != "Bearer fc-token" {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
-	if gotBody["title_rule"] != "Auth burst" {
+	if gotBody["title_rule"] != "PHP upload blocked" {
 		t.Fatalf("title_rule = %#v", gotBody["title_rule"])
 	}
 	if gotBody["event_status"] != "Critical" {
@@ -52,11 +56,11 @@ func TestFlashcatPostsStandardEvent(t *testing.T) {
 		t.Fatalf("alert_key = %#v", gotBody["alert_key"])
 	}
 	labels, _ := gotBody["labels"].(map[string]any)
-	if labels["source"] != "cheesewaf" || labels["rule_id"] != "rule-1" || labels["metric"] != "auth_failures" {
+	if labels["source"] != "cheesewaf" || labels["rule_id"] != "php2shell-upload" || labels["metric"] != "cheesewaf_php2shell_blocks" {
 		t.Fatalf("labels = %#v", labels)
 	}
 	description, _ := gotBody["description"].(string)
-	if !strings.Contains(description, "too many failures") {
+	if !strings.Contains(description, "multipart upload blocked") {
 		t.Fatalf("description = %q", description)
 	}
 	body, _ := json.Marshal(gotBody)
@@ -74,12 +78,16 @@ func TestFlashcatPreservesDedicatedPushURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "fc",
+		Type:     "flashcat",
 		Endpoint: server.URL + "/event/push/alert/standard?integration_key=integration-1",
 		Token:    "fc-token",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("create flashcat provider: %v", err)
 	}
-	if err := NewFlashcat(cfg, server.Client()).Notify(context.Background(), testAlert()); err != nil {
+	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/event/push/alert/standard" {
@@ -109,8 +117,12 @@ func TestFlashcatStatusMapping(t *testing.T) {
 }
 
 func TestFlashcatRequiresHTTPSWithToken(t *testing.T) {
-	cfg := config.NotifierConfig{ID: "fc", Endpoint: "http://flashcat.example.test", Token: "secret"}
-	err := NewFlashcat(cfg, http.DefaultClient).Notify(context.Background(), testAlert())
+	cfg := config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: "http://flashcat.example.test", Token: "secret"}
+	notifier, err := NewProvider(cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("create flashcat provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
 	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("expected HTTPS rejection, got %v", err)
 	}
@@ -121,18 +133,25 @@ func TestFlashcatAllowsHTTPWithoutToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	cfg := config.NotifierConfig{ID: "fc", Endpoint: server.URL}
-	if err := NewFlashcat(cfg, server.Client()).Notify(context.Background(), testAlert()); err != nil {
+	notifier, err := NewProvider(config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: server.URL}, server.Client())
+	if err != nil {
+		t.Fatalf("create flashcat provider: %v", err)
+	}
+	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestFlashcatHandlesNilAndEmptyConfig(t *testing.T) {
-	var notifier *Flashcat
+func TestFlashcatHandlesEmptyConfig(t *testing.T) {
+	var notifier *flashcatNotifier
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("nil notifier: %v", err)
 	}
-	if err := NewFlashcat(config.NotifierConfig{}, nil).Notify(context.Background(), testAlert()); err != nil {
+	provider, err := NewProvider(config.NotifierConfig{ID: "fc", Type: "flashcat"}, nil)
+	if err != nil {
+		t.Fatalf("create flashcat provider: %v", err)
+	}
+	if err := provider.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("empty endpoint: %v", err)
 	}
 	if _, err := flashcatEventEndpoint(config.NotifierConfig{Endpoint: "ftp://flashcat.example.test"}); err == nil {

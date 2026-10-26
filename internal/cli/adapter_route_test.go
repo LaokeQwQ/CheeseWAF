@@ -53,3 +53,28 @@ func TestWithAdapterAPIPreservesProxyPaths(t *testing.T) {
 		}
 	}
 }
+
+// The admin listener keeps its JWT-scoped adapter route at the same path, so
+// only the health endpoint may be served by the adapter handler there.
+func TestWithAdapterHealthLeavesAdminAdapterRoutesToFallback(t *testing.T) {
+	adapter := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := withAdapterHealth(adapter, fallback)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("healthz status = %d, want adapter handler", recorder.Code)
+	}
+	for _, path := range []string{"/api/v1/adapter/inspect", "/api/v1/adapter/telemetry"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want fallback", path, recorder.Code)
+		}
+	}
+}

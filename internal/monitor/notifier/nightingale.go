@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,44 +17,44 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 )
 
-// Nightingale delivers alerts to a Nightingale (n9e) callback address. The
-// callback URL is configured in Nightingale under alert notification settings
-// and is used verbatim as Endpoint. Token is optional and is sent as a bearer
-// token for reverse proxies or gateways in front of Nightingale; it is never
-// placed in the JSON body.
-type Nightingale struct {
+// nightingaleNotifier delivers alerts to a Nightingale (n9e) callback address.
+// The callback URL is configured in Nightingale under alert notification
+// settings and is used verbatim as Endpoint. Token is optional and is sent as a
+// bearer token for reverse proxies or gateways in front of Nightingale; it is
+// never placed in the JSON body.
+type nightingaleNotifier struct {
 	cfg    config.NotifierConfig
 	client *http.Client
 	now    func() time.Time
 }
 
-func NewNightingale(cfg config.NotifierConfig, client *http.Client) *Nightingale {
-	if client == nil {
-		client = newNotifierHTTPClient(cfg.AllowPrivateEndpoint)
+func newNightingaleNotifier(cfg config.NotifierConfig, client *http.Client) *nightingaleNotifier {
+	return &nightingaleNotifier{
+		cfg:    cfg,
+		client: notifierHTTPClient(cfg, client),
+		now:    func() time.Time { return time.Now().UTC() },
 	}
-	return &Nightingale{cfg: cfg, client: client, now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (n *Nightingale) Notify(ctx context.Context, alert monitor.Alert) error {
+func (n *nightingaleNotifier) Notify(ctx context.Context, alert monitor.Alert) error {
 	if n == nil || strings.TrimSpace(n.cfg.Endpoint) == "" {
 		return nil
 	}
 	endpoint, err := nightingaleCallbackEndpoint(n.cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("notifier %q: %w", n.cfg.ID, err)
 	}
 	triggerTime := alert.StartsAt
 	if triggerTime.IsZero() {
 		triggerTime = n.now()
 	}
-	title, _ := alertTitleText(alert)
 	event := nightingaleEvent{
 		Cate:             "cheesewaf",
 		Cluster:          "cheesewaf",
 		GroupName:        "CheeseWAF",
 		Hash:             nightingaleEventKey(alert),
 		RuleID:           0,
-		RuleName:         title,
+		RuleName:         alertTitle(alert),
 		RuleProd:         "metric",
 		Severity:         nightingaleSeverity(alert.Severity),
 		PromForDuration:  0,
@@ -72,22 +73,13 @@ func (n *Nightingale) Notify(ctx context.Context, alert monitor.Alert) error {
 	}
 	body, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("nightingale notifier %q could not encode event: %w", nightingaleNotifierName(n.cfg), err)
+		return fmt.Errorf("notifier %q could not encode event: %w", n.cfg.ID, err)
 	}
-	headers := make(map[string]string, len(n.cfg.Headers)+1)
-	for key, value := range n.cfg.Headers {
-		if strings.TrimSpace(key) == "" {
-			continue
-		}
-		headers[key] = value
-	}
-	if token := strings.TrimSpace(n.cfg.Token); token != "" {
-		headers["Authorization"] = "Bearer " + token
-	}
-	if err := deliverJSON(ctx, n.client, endpoint, body, headers); err != nil {
-		return fmt.Errorf("nightingale notifier %q: %w", nightingaleNotifierName(n.cfg), err)
-	}
-	return nil
+	return sendJSON(ctx, n.cfg, n.client, jsonDelivery{
+		endpoint: endpoint,
+		body:     body,
+		headers:  notifierHeaders(n.cfg, "Authorization", bearerValue(n.cfg.Token)),
+	})
 }
 
 // nightingaleEvent mirrors the AlertCurEvent fields that a callback receiver
@@ -121,32 +113,25 @@ type nightingaleEvent struct {
 func nightingaleCallbackEndpoint(cfg config.NotifierConfig) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(cfg.Endpoint))
 	if err != nil {
-		return "", fmt.Errorf("nightingale notifier %q endpoint is invalid: %w", nightingaleNotifierName(cfg), err)
+		return "", fmt.Errorf("endpoint is invalid: %w", err)
 	}
 	if !parsed.IsAbs() || parsed.Host == "" {
-		return "", fmt.Errorf("nightingale notifier %q endpoint must be an absolute URL", nightingaleNotifierName(cfg))
+		return "", errors.New("endpoint must be an absolute URL")
 	}
 	if parsed.User != nil {
-		return "", fmt.Errorf("nightingale notifier %q endpoint must not contain credentials", nightingaleNotifierName(cfg))
+		return "", errors.New("endpoint must not contain credentials")
 	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "https":
 	case "http":
 		if strings.TrimSpace(cfg.Token) != "" {
-			return "", fmt.Errorf("nightingale notifier %q requires an HTTPS endpoint when a token is configured", nightingaleNotifierName(cfg))
+			return "", errors.New("endpoint must use HTTPS when a token is configured")
 		}
 	default:
-		return "", fmt.Errorf("nightingale notifier %q endpoint must use HTTP or HTTPS", nightingaleNotifierName(cfg))
+		return "", errors.New("endpoint must use HTTP or HTTPS")
 	}
 	parsed.Fragment = ""
 	return parsed.String(), nil
-}
-
-func nightingaleNotifierName(cfg config.NotifierConfig) string {
-	if id := strings.TrimSpace(cfg.ID); id != "" {
-		return id
-	}
-	return "nightingale"
 }
 
 // nightingaleSeverity maps CheeseWAF severities onto Nightingale's numeric

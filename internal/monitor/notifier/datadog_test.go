@@ -49,7 +49,10 @@ func TestDatadogPublishesEvent(t *testing.T) {
 		Token:    "dd-api-key",
 		Headers:  map[string]string{"DD-APPLICATION-KEY": "dd-application-key"},
 	}
-	notifier := NewDatadog(cfg, server.Client())
+	notifier, err := NewProvider(cfg, server.Client())
+	if err != nil {
+		t.Fatalf("create datadog provider: %v", err)
+	}
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
@@ -66,10 +69,10 @@ func TestDatadogPublishesEvent(t *testing.T) {
 	if gotContentType != "application/json" {
 		t.Fatalf("Content-Type = %q", gotContentType)
 	}
-	if received.Title != "Auth burst" {
+	if received.Title != "PHP upload blocked" {
 		t.Fatalf("title = %q", received.Title)
 	}
-	for _, want := range []string{"Auth burst", "auth_failures", "too many failures"} {
+	for _, want := range []string{"PHP upload blocked", "cheesewaf_php2shell_blocks", "multipart upload blocked"} {
 		if !strings.Contains(received.Text, want) {
 			t.Fatalf("text missing %q: %q", want, received.Text)
 		}
@@ -80,7 +83,7 @@ func TestDatadogPublishesEvent(t *testing.T) {
 	if received.SourceTypeName != "cheesewaf" {
 		t.Fatalf("source_type_name = %q", received.SourceTypeName)
 	}
-	for _, want := range []string{"source:cheesewaf", "severity:high", "rule:rule-1", "metric:auth_failures"} {
+	for _, want := range []string{"source:cheesewaf", "severity:critical", "rule:php2shell-upload", "metric:cheesewaf_php2shell_blocks"} {
 		if !slices.Contains(received.Tags, want) {
 			t.Fatalf("tags %#v missing %q", received.Tags, want)
 		}
@@ -93,32 +96,37 @@ func TestDatadogRequiresHTTPSForAPIKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := NewDatadog(config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "dd",
 		Type:     "datadog",
 		Endpoint: server.URL,
 		Token:    "dd-api-key",
 	}, server.Client())
-
-	err := notifier.Notify(context.Background(), testAlert())
-	if err == nil || !strings.Contains(err.Error(), "requires an HTTPS endpoint") {
+	if err != nil {
+		t.Fatalf("create datadog provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
+	if err == nil || !strings.Contains(err.Error(), "must use HTTPS") {
 		t.Fatalf("expected HTTPS credential guard error, got %v", err)
 	}
 }
 
 func TestDatadogAllowsPlainHTTPWithoutAPIKey(t *testing.T) {
-	var gotAPIKey = "unset"
+	gotAPIKey := "unset"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAPIKey = r.Header.Get("DD-API-KEY")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	notifier := NewDatadog(config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "dd",
 		Type:     "datadog",
 		Endpoint: server.URL,
 	}, server.Client())
+	if err != nil {
+		t.Fatalf("create datadog provider: %v", err)
+	}
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
@@ -128,8 +136,11 @@ func TestDatadogAllowsPlainHTTPWithoutAPIKey(t *testing.T) {
 }
 
 func TestDatadogRejectsInvalidEndpoint(t *testing.T) {
-	notifier := NewDatadog(config.NotifierConfig{ID: "dd", Endpoint: "not-a-url"}, nil)
-	err := notifier.Notify(context.Background(), testAlert())
+	notifier, err := NewProvider(config.NotifierConfig{ID: "dd", Type: "datadog", Endpoint: "not-a-url"}, nil)
+	if err != nil {
+		t.Fatalf("create datadog provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
 	if err == nil || !strings.Contains(err.Error(), "absolute URL") {
 		t.Fatalf("expected absolute URL error, got %v", err)
 	}
@@ -141,13 +152,16 @@ func TestDatadogReportsDeliveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := NewDatadog(config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "dd",
 		Type:     "datadog",
 		Endpoint: server.URL,
 		Token:    "dd-api-key",
 	}, server.Client())
-	err := notifier.Notify(context.Background(), testAlert())
+	if err != nil {
+		t.Fatalf("create datadog provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
 	if err == nil {
 		t.Fatal("expected delivery error")
 	}
@@ -159,7 +173,10 @@ func TestDatadogReportsDeliveryFailure(t *testing.T) {
 }
 
 func TestDatadogSkipsEmptyEndpoint(t *testing.T) {
-	notifier := NewDatadog(config.NotifierConfig{ID: "dd"}, nil)
+	notifier, err := NewProvider(config.NotifierConfig{ID: "dd", Type: "datadog"}, nil)
+	if err != nil {
+		t.Fatalf("create datadog provider: %v", err)
+	}
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("expected no-op for empty endpoint, got %v", err)
 	}

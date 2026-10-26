@@ -3,6 +3,7 @@ package notifier
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,79 +13,59 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 )
 
-// Datadog publishes alerts as Datadog events through the v1 events API. The
-// API key is stored in config.NotifierConfig.Token and sent as DD-API-KEY; it
-// is never placed in the JSON body. Application keys can be supplied through
-// config.NotifierConfig.Headers.
-type Datadog struct {
+// datadogNotifier publishes alerts as Datadog events through the v1 events
+// API. The API key is stored in config.NotifierConfig.Token and sent as
+// DD-API-KEY; it is never placed in the JSON body. Application keys can be
+// supplied through config.NotifierConfig.Headers.
+type datadogNotifier struct {
 	cfg    config.NotifierConfig
 	client *http.Client
 }
 
-func NewDatadog(cfg config.NotifierConfig, client *http.Client) *Datadog {
-	if client == nil {
-		client = newNotifierHTTPClient(cfg.AllowPrivateEndpoint)
-	}
-	return &Datadog{cfg: cfg, client: client}
+func newDatadogNotifier(cfg config.NotifierConfig, client *http.Client) *datadogNotifier {
+	return &datadogNotifier{cfg: cfg, client: notifierHTTPClient(cfg, client)}
 }
 
-func (d *Datadog) Notify(ctx context.Context, alert monitor.Alert) error {
+func (d *datadogNotifier) Notify(ctx context.Context, alert monitor.Alert) error {
 	if d == nil || strings.TrimSpace(d.cfg.Endpoint) == "" {
 		return nil
 	}
 	endpoint, err := datadogEventsEndpoint(d.cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("notifier %q: %w", d.cfg.ID, err)
 	}
-	title, text := alertTitleText(alert)
 	payload := map[string]any{
-		"title":            title,
-		"text":             text,
+		"title":            alertTitle(alert),
+		"text":             alertText(alert),
 		"alert_type":       datadogAlertType(alert.Severity),
 		"source_type_name": "cheesewaf",
 		"tags":             datadogAlertTags(alert),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("datadog notifier %q could not encode event: %w", datadogNotifierName(d.cfg), err)
+		return fmt.Errorf("notifier %q could not encode event: %w", d.cfg.ID, err)
 	}
-	headers := make(map[string]string, len(d.cfg.Headers)+1)
-	for key, value := range d.cfg.Headers {
-		if strings.TrimSpace(key) == "" {
-			continue
-		}
-		headers[key] = value
-	}
-	if apiKey := strings.TrimSpace(d.cfg.Token); apiKey != "" {
-		headers["DD-API-KEY"] = apiKey
-	}
-	if err := deliverJSON(ctx, d.client, endpoint, body, headers); err != nil {
-		return fmt.Errorf("datadog notifier %q: %w", datadogNotifierName(d.cfg), err)
-	}
-	return nil
+	return sendJSON(ctx, d.cfg, d.client, jsonDelivery{
+		endpoint: endpoint,
+		body:     body,
+		headers:  notifierHeaders(d.cfg, "DD-API-KEY", d.cfg.Token),
+	})
 }
 
 func datadogEventsEndpoint(cfg config.NotifierConfig) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(cfg.Endpoint))
 	if err != nil {
-		return "", fmt.Errorf("datadog notifier %q endpoint is invalid: %w", datadogNotifierName(cfg), err)
+		return "", fmt.Errorf("endpoint is invalid: %w", err)
 	}
 	if !parsed.IsAbs() || parsed.Host == "" {
-		return "", fmt.Errorf("datadog notifier %q endpoint must be an absolute URL", datadogNotifierName(cfg))
+		return "", errors.New("endpoint must be an absolute URL")
 	}
 	if strings.TrimSpace(cfg.Token) != "" && !strings.EqualFold(parsed.Scheme, "https") {
-		return "", fmt.Errorf("datadog notifier %q requires an HTTPS endpoint when an API key is configured", datadogNotifierName(cfg))
+		return "", errors.New("endpoint must use HTTPS when an API key is configured")
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/api/v1/events"
 	parsed.RawPath = ""
 	return parsed.String(), nil
-}
-
-func datadogNotifierName(cfg config.NotifierConfig) string {
-	if id := strings.TrimSpace(cfg.ID); id != "" {
-		return id
-	}
-	return "datadog"
 }
 
 // datadogAlertType maps alert severities onto the alert_type values accepted

@@ -48,7 +48,10 @@ func TestGrafanaCreatesAnnotation(t *testing.T) {
 		Headers:  map[string]string{"X-Scope-OrgID": "tenant-1"},
 	}
 	alert := testAlert()
-	notifier := NewGrafana(cfg, server.Client())
+	notifier, err := NewProvider(cfg, server.Client())
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
 	if err := notifier.Notify(context.Background(), alert); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
@@ -65,12 +68,12 @@ func TestGrafanaCreatesAnnotation(t *testing.T) {
 	if gotOrgID != "tenant-1" {
 		t.Fatalf("X-Scope-OrgID = %q", gotOrgID)
 	}
-	for _, want := range []string{"Auth burst", "severity: high", "too many failures"} {
+	for _, want := range []string{"PHP upload blocked", "[critical]", "multipart upload blocked"} {
 		if !strings.Contains(received.Text, want) {
 			t.Fatalf("text missing %q: %q", want, received.Text)
 		}
 	}
-	for _, want := range []string{"cheesewaf", "severity:high", "rule:rule-1", "metric:auth_failures"} {
+	for _, want := range []string{"cheesewaf", "severity:critical", "rule:php2shell-upload", "metric:cheesewaf_php2shell_blocks"} {
 		if !slices.Contains(received.Tags, want) {
 			t.Fatalf("tags %#v missing %q", received.Tags, want)
 		}
@@ -96,12 +99,19 @@ func TestGrafanaUsesNowWhenStartsAtMissing(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := NewGrafana(config.NotifierConfig{
+	provider, err := NewProvider(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
 		Token:    "grafana-token",
 	}, server.Client())
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
+	notifier, ok := provider.(*grafanaNotifier)
+	if !ok {
+		t.Fatalf("unexpected grafana provider type %T", provider)
+	}
 	notifier.now = func() time.Time { return fixed }
 
 	alert := testAlert()
@@ -120,32 +130,37 @@ func TestGrafanaRequiresHTTPSForAPIToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := NewGrafana(config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
 		Token:    "grafana-token",
 	}, server.Client())
-
-	err := notifier.Notify(context.Background(), testAlert())
-	if err == nil || !strings.Contains(err.Error(), "requires an HTTPS endpoint") {
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
+	if err == nil || !strings.Contains(err.Error(), "must use HTTPS") {
 		t.Fatalf("expected HTTPS credential guard error, got %v", err)
 	}
 }
 
 func TestGrafanaAllowsPlainHTTPWithoutAPIToken(t *testing.T) {
-	var gotAuthorization = "unset"
+	gotAuthorization := "unset"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuthorization = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	notifier := NewGrafana(config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
 	}, server.Client())
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
@@ -160,13 +175,16 @@ func TestGrafanaReportsDeliveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier := NewGrafana(config.NotifierConfig{
+	notifier, err := NewProvider(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
 		Token:    "grafana-token",
 	}, server.Client())
-	err := notifier.Notify(context.Background(), testAlert())
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
 	if err == nil {
 		t.Fatal("expected delivery error")
 	}
@@ -178,15 +196,21 @@ func TestGrafanaReportsDeliveryFailure(t *testing.T) {
 }
 
 func TestGrafanaRejectsInvalidEndpoint(t *testing.T) {
-	notifier := NewGrafana(config.NotifierConfig{ID: "grafana", Endpoint: "not-a-url"}, nil)
-	err := notifier.Notify(context.Background(), testAlert())
+	notifier, err := NewProvider(config.NotifierConfig{ID: "grafana", Type: "grafana", Endpoint: "not-a-url"}, nil)
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
 	if err == nil || !strings.Contains(err.Error(), "absolute URL") {
 		t.Fatalf("expected absolute URL error, got %v", err)
 	}
 }
 
 func TestGrafanaSkipsEmptyEndpoint(t *testing.T) {
-	notifier := NewGrafana(config.NotifierConfig{ID: "grafana"}, nil)
+	notifier, err := NewProvider(config.NotifierConfig{ID: "grafana", Type: "grafana"}, nil)
+	if err != nil {
+		t.Fatalf("create grafana provider: %v", err)
+	}
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("expected no-op for empty endpoint, got %v", err)
 	}

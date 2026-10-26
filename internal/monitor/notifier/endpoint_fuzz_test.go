@@ -1,15 +1,17 @@
 package notifier
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 )
 
-// FuzzWebhookEndpoint checks the notifier endpoint gate: when credentials are
-// configured the endpoint must be HTTPS, and invalid URLs must not panic.
-func FuzzWebhookEndpoint(f *testing.F) {
+// FuzzCredentialedEndpoints checks the notifier endpoint gate: a provider that
+// carries a credential must reject a non-HTTPS endpoint, and malformed URLs
+// must not panic.
+func FuzzCredentialedEndpoints(f *testing.F) {
 	for _, seed := range []string{
 		"https://example.test/hook",
 		"http://example.test/hook",
@@ -22,20 +24,31 @@ func FuzzWebhookEndpoint(f *testing.F) {
 		f.Add(seed)
 	}
 
+	builders := map[string]func(config.NotifierConfig) (string, error){
+		"dingtalk":    dingTalkEndpoint,
+		"telegram":    telegramEndpoint,
+		"datadog":     datadogEventsEndpoint,
+		"grafana":     grafanaAnnotationsEndpoint,
+		"flashcat":    flashcatEventEndpoint,
+		"nightingale": nightingaleCallbackEndpoint,
+	}
 	f.Fuzz(func(t *testing.T, endpoint string) {
 		if len(endpoint) > 8192 {
 			t.Skip()
 		}
 		cfg := config.NotifierConfig{ID: "fuzz", Endpoint: endpoint, Token: "secret"}
-		parsed, err := validateWebhookEndpoint(cfg)
-		if err != nil {
-			return
-		}
-		if parsed == nil {
-			t.Fatal("nil URL without error")
-		}
-		if !strings.EqualFold(parsed.Scheme, "https") {
-			t.Fatalf("credentialed endpoint accepted non-HTTPS scheme %q", parsed.Scheme)
+		for name, build := range builders {
+			built, err := build(cfg)
+			if err != nil {
+				continue
+			}
+			parsed, err := url.Parse(built)
+			if err != nil {
+				t.Fatalf("%s returned unparsable endpoint %q: %v", name, built, err)
+			}
+			if !strings.EqualFold(parsed.Scheme, "https") {
+				t.Fatalf("%s accepted non-HTTPS scheme %q", name, parsed.Scheme)
+			}
 		}
 	})
 }

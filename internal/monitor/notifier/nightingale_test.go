@@ -35,7 +35,11 @@ func TestNightingalePostsCallbackEvent(t *testing.T) {
 		Token:    "n9e-token",
 	}
 	alert := testAlert()
-	if err := NewNightingale(cfg, server.Client()).Notify(context.Background(), alert); err != nil {
+	notifier, err := NewProvider(cfg, server.Client())
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	if err := notifier.Notify(context.Background(), alert); err != nil {
 		t.Fatal(err)
 	}
 	if gotMethod != http.MethodPost {
@@ -50,7 +54,7 @@ func TestNightingalePostsCallbackEvent(t *testing.T) {
 	if gotAuth != "Bearer n9e-token" {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
-	if gotBody.Cate != "cheesewaf" || gotBody.RuleName != "Auth burst" {
+	if gotBody.Cate != "cheesewaf" || gotBody.RuleName != "PHP upload blocked" {
 		t.Fatalf("event = %#v", gotBody)
 	}
 	if gotBody.Severity != 1 {
@@ -65,19 +69,19 @@ func TestNightingalePostsCallbackEvent(t *testing.T) {
 	if gotBody.IsRecovered {
 		t.Fatal("new alerts must not be marked recovered")
 	}
-	if gotBody.TagsMap["rule_id"] != "rule-1" || gotBody.TagsMap["source"] != "cheesewaf" {
+	if gotBody.TagsMap["rule_id"] != "php2shell-upload" || gotBody.TagsMap["source"] != "cheesewaf" {
 		t.Fatalf("tags_map = %#v", gotBody.TagsMap)
 	}
 	foundRuleTag := false
 	for _, tag := range gotBody.Tags {
-		if tag == "rule_id=rule-1" {
+		if tag == "rule_id=php2shell-upload" {
 			foundRuleTag = true
 		}
 	}
 	if !foundRuleTag {
 		t.Fatalf("tags = %#v", gotBody.Tags)
 	}
-	if gotBody.Annotations["message"] != "too many failures" || gotBody.Annotations["rule_id"] != "rule-1" {
+	if gotBody.Annotations["message"] != "multipart upload blocked" || gotBody.Annotations["rule_id"] != "php2shell-upload" {
 		t.Fatalf("annotations = %#v", gotBody.Annotations)
 	}
 	body, _ := json.Marshal(gotBody)
@@ -104,8 +108,12 @@ func TestNightingaleSeverityMapping(t *testing.T) {
 }
 
 func TestNightingaleRequiresHTTPSWithToken(t *testing.T) {
-	cfg := config.NotifierConfig{ID: "n9e", Endpoint: "http://n9e.example.test/callback", Token: "secret"}
-	err := NewNightingale(cfg, http.DefaultClient).Notify(context.Background(), testAlert())
+	cfg := config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: "http://n9e.example.test/callback", Token: "secret"}
+	notifier, err := NewProvider(cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
 	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("expected HTTPS rejection, got %v", err)
 	}
@@ -116,18 +124,25 @@ func TestNightingaleAllowsHTTPWithoutToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	cfg := config.NotifierConfig{ID: "n9e", Endpoint: server.URL + "/callback"}
-	if err := NewNightingale(cfg, server.Client()).Notify(context.Background(), testAlert()); err != nil {
+	notifier, err := NewProvider(config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: server.URL + "/callback"}, server.Client())
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestNightingaleHandlesNilAndEmptyConfig(t *testing.T) {
-	var notifier *Nightingale
+func TestNightingaleHandlesEmptyConfig(t *testing.T) {
+	var notifier *nightingaleNotifier
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("nil notifier: %v", err)
 	}
-	if err := NewNightingale(config.NotifierConfig{}, nil).Notify(context.Background(), testAlert()); err != nil {
+	provider, err := NewProvider(config.NotifierConfig{ID: "n9e", Type: "nightingale"}, nil)
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	if err := provider.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("empty endpoint: %v", err)
 	}
 	if _, err := nightingaleCallbackEndpoint(config.NotifierConfig{Endpoint: "ftp://n9e.example.test"}); err == nil {
