@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -1697,5 +1698,54 @@ func TestUpdateSystemPreservesLokiPasswordWhenRedactedDocumentIsEchoed(t *testin
 	}
 	if cfg.Storage.Loki.Password != "loki-shared-secret" {
 		t.Fatalf("redacted echo cleared the Loki password: %q", cfg.Storage.Loki.Password)
+	}
+}
+
+// A typo in a notifier type must be rejected at save time: accepting it would
+// persist a configuration that fails on the next restart.
+func TestUpdateSystemRejectsUnresolvableNotifierType(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	registry := monitornotify.NewRegistry()
+	handler := New(Options{Config: &cfg, ConfigPath: configPath, NotifierRegistry: registry})
+
+	payload := map[string]any{"monitor": map[string]any{
+		"notifiers": []map[string]any{{
+			"id": "hook", "type": "webhok", "endpoint": "https://example.test/hook", "enabled": true,
+		}},
+	}}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", recorder.Code, recorder.Body.String())
+	}
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(persisted), "webhok") {
+		t.Fatalf("rejected notifier was written to disk: %s", persisted)
+	}
+
+	// A pack-provided type resolves once its factory is registered.
+	if err := registry.RegisterPack("teams_webhook", func(config.NotifierConfig) (monitornotify.Notifier, error) {
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("register pack: %v", err)
+	}
+	payload = map[string]any{"monitor": map[string]any{
+		"notifiers": []map[string]any{{
+			"id": "teams", "type": "teams_webhook", "endpoint": "https://example.test/hook", "enabled": true,
+		}},
+	}}
+	raw, _ = json.Marshal(payload)
+	recorder = httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("pack type status = %d body=%s, want 200", recorder.Code, recorder.Body.String())
 	}
 }

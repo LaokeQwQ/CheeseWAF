@@ -194,6 +194,27 @@ func (p *timeSyncPayload) apply(base config.TimeSyncConfig) config.TimeSyncConfi
 	return base
 }
 
+// validateNotifierTypeCoverage rejects a management save whose enabled
+// notifiers cannot be resolved by the live registry (built-in providers plus
+// packs loaded from the index). Configuration parsing cannot decide this, but
+// persisting an unresolvable type would only fail on the next restart.
+func (h *Handler) validateNotifierTypeCoverage(cfg *config.Config) error {
+	if cfg == nil || h.NotifierRegistry == nil {
+		return nil
+	}
+	missing := make([]string, 0)
+	for _, notifier := range cfg.Monitor.Notifiers {
+		if !notifier.Enabled || h.NotifierRegistry.Supports(notifier.Type) {
+			continue
+		}
+		missing = append(missing, fmt.Sprintf("%q (%s)", notifier.ID, notifier.Type))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("invalid notifier type: no provider for %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
@@ -212,7 +233,10 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
-		return applySystemPayload(candidate, req)
+		if err := applySystemPayload(candidate, req); err != nil {
+			return err
+		}
+		return h.validateNotifierTypeCoverage(candidate)
 	}, func(candidate *config.Config) error {
 		return h.applySystemRuntime(req, candidate)
 	})
