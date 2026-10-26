@@ -106,14 +106,16 @@ func TestEDRSidecarEmitsAuthBurstHint(t *testing.T) {
 		if err := session.SendEvent(ctx, raw); err != nil {
 			t.Fatalf("event %d: %v", i, err)
 		}
-		select {
-		case result := <-session.Results():
-			hint = result
-		default:
-		}
 	}
-	if hint.Kind != hostapi.ResultHint {
-		t.Fatalf("no hint produced: %#v", hint)
+	// The sidecar runs in a child process, so under a loaded CI host the hint
+	// arrives after all events are queued. Wait for it instead of sampling the
+	// channel non-blocking and racing the scheduler.
+	for hint.Kind != hostapi.ResultHint {
+		select {
+		case hint = <-session.Results():
+		case <-ctx.Done():
+			t.Fatalf("no hint produced before the deadline: %#v", hint)
+		}
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal(hint.Payload, &decoded); err != nil {

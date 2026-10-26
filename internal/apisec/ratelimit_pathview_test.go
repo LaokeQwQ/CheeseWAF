@@ -58,13 +58,14 @@ func TestAllowRequestsKeepsRawPathViewForExistingPatterns(t *testing.T) {
 	}
 }
 
-// TestAllowRequestsIgnoresUnnormalizablePath covers the fallback: a path that
-// fails normalization must not panic and must not gain a second view.
-func TestAllowRequestsIgnoresUnnormalizablePath(t *testing.T) {
+// TestAllowRequestsDeniesUnnormalizablePath pins the fail-closed choice: a
+// path that cannot be normalized has no trustworthy policy view, so it must
+// not be granted a budget slot.
+func TestAllowRequestsDeniesUnnormalizablePath(t *testing.T) {
 	limiter := newAdminLimiter(t)
 	req := httptest.NewRequest("GET", "https://example.test/x/..;/y", nil)
-	if !limiter.AllowRequests([]*http.Request{req}, "client-3") {
-		t.Fatal("unnormalizable path should fall back to the raw view and pass this rule")
+	if limiter.AllowRequests([]*http.Request{req}, "client-3") {
+		t.Fatal("unnormalizable path must be denied, not granted")
 	}
 }
 

@@ -79,15 +79,16 @@ func TestNormalizeRequestPath(t *testing.T) {
 		{"/api/v1/x/..;/..;/admin", "", false},
 		{"/..%3b/admin", "", false},
 		{"/%2e%2e%3b/admin", "", false},
-		// Ordinary matrix parameters are stripped so policy matching sees the
-		// path the backend will route on.
-		{"/a;b=c/d", "/a/d", true},
-		{"/;jsessionid=ABC123/admin", "/admin", true},
-		{"/a/;/b", "/a/b", true},
-		{"/matrix;x=1;y=2/z", "/matrix/z", true},
+		// NormalizeRequestPath deliberately keeps matrix parameters: allowlist
+		// patterns are written against the visible path, and the stripped
+		// routing view is what SecurityPathViews adds for protective checks.
+		{"/a;b=c/d", "/a;b=c/d", true},
+		{"/;jsessionid=ABC123/admin", "/;jsessionid=ABC123/admin", true},
+		{"/a/;/b", "/a/;/b", true},
+		{"/matrix;x=1;y=2/z", "/matrix;x=1;y=2/z", true},
 		// ".." not immediately followed by ";" is not a traversal; rejecting it
 		// would break legitimate paths.
-		{"/..foo;bar/z", "/..foo/z", true},
+		{"/..foo;bar/z", "/..foo;bar/z", true},
 	}
 	for _, tc := range cases {
 		got, ok := NormalizeRequestPath(tc.in)
