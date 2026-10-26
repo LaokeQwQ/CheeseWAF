@@ -184,28 +184,12 @@ func TestHealthRegistryUpdateSitesPreservesKnownStateAndDropsRemoved(t *testing.
 }
 
 func TestHealthCheckerUpdateSitesStopsOldGeneration(t *testing.T) {
-	var firstHits atomic.Int32
-	// A probe already in flight when the generation is cancelled may complete
-	// afterwards; that is allowed. What must not happen is a new probe starting
-	// for the retired generation, so the handler records requests that begin
-	// after the update returned instead of comparing a counter sample.
-	var updated atomic.Bool
-	var lateProbes atomic.Int32
-	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if updated.Load() {
-			lateProbes.Add(1)
-		}
-		firstHits.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer firstServer.Close()
-	var secondHits atomic.Int32
-	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		secondHits.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer secondServer.Close()
-
+	// Probe starts are measured inside the checker. Observing them at the HTTP
+	// handler measures transport delivery instead: a request the retired
+	// generation sent before cancellation can reach the handler afterwards, so
+	// the handler cannot distinguish "new probe" from "late delivery".
+	var firstProbes atomic.Int32
+	var secondProbes atomic.Int32
 	makeSite := func(address string) config.SiteConfig {
 		site := config.Default().Sites[0]
 		site.Upstreams = []config.UpstreamConfig{{Address: address}}
@@ -214,21 +198,41 @@ func TestHealthCheckerUpdateSitesStopsOldGeneration(t *testing.T) {
 		site.WAF.HealthCheck.Timeout = time.Second
 		return site
 	}
-	first := makeSite(firstServer.URL)
-	second := makeSite(secondServer.URL)
+	first := makeSite("first.example")
+	second := makeSite("second.example")
 	registry := NewHealthRegistry([]config.SiteConfig{first})
 	checker := NewHealthChecker([]config.SiteConfig{first}, registry)
+	checker.probe = func(_ context.Context, site config.SiteConfig) {
+		if site.Upstreams[0].Address == "first.example" {
+			firstProbes.Add(1)
+			return
+		}
+		secondProbes.Add(1)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	checker.Start(ctx)
-	waitForHealthHits(t, &firstHits)
-	registry.UpdateSites([]config.SiteConfig{second})
+	waitForProbes(t, &firstProbes)
+
 	checker.UpdateSites([]config.SiteConfig{second})
-	updated.Store(true)
-	waitForHealthHits(t, &secondHits)
+	afterUpdate := firstProbes.Load()
+	waitForProbes(t, &secondProbes)
+	// UpdateSites waits for the retired generation's loops to exit, so no probe
+	// for the old upstream may start after it returns.
 	time.Sleep(20 * time.Millisecond)
-	if got := lateProbes.Load(); got != 0 {
-		t.Fatalf("old checker generation started %d probes after the update", got)
+	if got := firstProbes.Load(); got != afterUpdate {
+		t.Fatalf("old checker generation started %d probes after the update", got-afterUpdate)
+	}
+}
+
+func waitForProbes(t *testing.T, probes *atomic.Int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for probes.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if probes.Load() == 0 {
+		t.Fatal("health checker did not run a probe")
 	}
 }
 
