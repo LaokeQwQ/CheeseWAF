@@ -91,7 +91,11 @@ func (t *webSocketFrameTunnel) frameLength(raw []byte, client bool) (int, error)
 		}
 		length = uint64(binary.BigEndian.Uint16(raw[2:4]))
 		header = 4
-		if length < 126 {
+		// RFC 6455 requires the minimal length encoding. A 16-bit length of 127
+		// is noncanonical and, without this check, falls through to the 64-bit
+		// branch below: the parser would consume eight more header bytes and
+		// derive a different frame boundary than the peer intended.
+		if length < 126 || length == 127 {
 			return 0, errors.New("noncanonical WebSocket length")
 		}
 	}

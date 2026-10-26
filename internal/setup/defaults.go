@@ -642,7 +642,8 @@ func missing(path string) bool {
 // DefaultConfigPath is the generated/runtime config file under the data
 // directory's config subdirectory, not next to the SQLite file.
 func DefaultConfigPath(dataDir string) string {
-	if strings.TrimSpace(dataDir) == "" {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" || strings.ContainsAny(dataDir, "\x00\r\n") {
 		dataDir = DefaultDataDir
 	}
 	return filepath.Join(dataDir, DefaultConfigDirName, DefaultConfigFile)

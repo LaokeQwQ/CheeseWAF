@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/protection/tamper"
 )
 
@@ -274,6 +275,149 @@ func TestTamperSnapshotSkipsHEADAndFlagsStreamingGET(t *testing.T) {
 		if tc.wantReason != "" && (finding == nil || finding.Reason != tc.wantReason) {
 			t.Fatalf("streaming finding = %+v", finding)
 		}
+	}
+}
+
+// A coverage gap (size limit, streaming media, unsupported encoding) is not
+// evidence of sensitive data, but it is also not proof of absence. The fail
+// mode decides which of those two facts wins. `closed` is the default: an
+// uninspectable body must not reach the client.
+func TestInspectionIncompleteSizeLimitFailModes(t *testing.T) {
+	body := "SECRET-" + strings.Repeat("x", 64)
+	for _, tc := range []struct {
+		mode       string
+		wantAction string
+	}{
+		{mode: config.ResponseFailModeOpen, wantAction: ""},
+		{mode: config.ResponseFailModeObserve, wantAction: engine.ActionLog.String()},
+		{mode: config.ResponseFailModeClosed, wantAction: engine.ActionBlock.String()},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			inspector := newFailModeInspector(t, tc.mode)
+			resp := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+			finding, err := inspector.InspectHTTP(resp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertIncompleteFinding(t, finding, tc.mode, tc.wantAction, "size_limit")
+			replayed, err := io.ReadAll(resp.Body)
+			if err != nil || string(replayed) != body {
+				t.Fatalf("body must stay replayable for the proxy: len=%d err=%v", len(replayed), err)
+			}
+		})
+	}
+}
+
+func TestInspectionIncompleteStreamingFailModes(t *testing.T) {
+	const body = "event: ping\n\n"
+	for _, tc := range []struct {
+		mode       string
+		wantNil    bool
+		wantAction string
+	}{
+		{mode: config.ResponseFailModeOpen, wantNil: true},
+		{mode: config.ResponseFailModeObserve, wantAction: engine.ActionLog.String()},
+		{mode: config.ResponseFailModeClosed, wantAction: engine.ActionBlock.String()},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			inspector := newFailModeInspector(t, tc.mode)
+			resp := &http.Response{
+				Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:   io.NopCloser(strings.NewReader(body)),
+			}
+			finding, err := inspector.InspectHTTP(resp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantNil {
+				if finding != nil {
+					t.Fatalf("open mode must keep the pre-policy streaming behaviour, got %+v", finding)
+				}
+				return
+			}
+			assertIncompleteFinding(t, finding, tc.mode, tc.wantAction, "streaming_response")
+		})
+	}
+}
+
+func TestInspectionIncompleteUnsupportedEncodingFailModes(t *testing.T) {
+	for _, tc := range []struct {
+		mode       string
+		wantAction string
+	}{
+		{mode: config.ResponseFailModeOpen, wantAction: ""},
+		{mode: config.ResponseFailModeObserve, wantAction: engine.ActionLog.String()},
+		{mode: config.ResponseFailModeClosed, wantAction: engine.ActionBlock.String()},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			inspector := newFailModeInspector(t, tc.mode)
+			resp := &http.Response{
+				Header: http.Header{"Content-Encoding": []string{"zstd"}},
+				Body:   io.NopCloser(strings.NewReader("SECRET-x")),
+			}
+			finding, err := inspector.InspectHTTP(resp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertIncompleteFinding(t, finding, tc.mode, tc.wantAction, "unsupported_or_invalid_encoding")
+		})
+	}
+}
+
+func TestNewDefaultsFailModeToObserve(t *testing.T) {
+	inspector, err := New(config.ResponseInspectionConfig{Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inspector.FailMode(); got != config.ResponseFailModeObserve {
+		t.Fatalf("default fail mode = %q, want %q", got, config.ResponseFailModeObserve)
+	}
+}
+
+// A typo must not silently select a different exposure policy.
+func TestNewRejectsUnknownFailMode(t *testing.T) {
+	inspector, err := New(config.ResponseInspectionConfig{
+		Enabled:    true,
+		Inspection: config.ResponseInspectionPolicy{FailMode: "clossed"},
+	})
+	if err == nil || inspector != nil {
+		t.Fatalf("got %#v, %v", inspector, err)
+	}
+}
+
+func newFailModeInspector(t *testing.T, mode string) *Inspector {
+	t.Helper()
+	inspector, err := New(config.ResponseInspectionConfig{
+		Enabled:           true,
+		MaxBodyBytes:      8,
+		SensitivePatterns: []string{`SECRET-`},
+		Inspection:        config.ResponseInspectionPolicy{FailMode: mode},
+	})
+	if err != nil {
+		t.Fatalf("New(fail_mode=%q): %v", mode, err)
+	}
+	return inspector
+}
+
+func assertIncompleteFinding(t *testing.T, finding *Finding, mode, wantAction, wantReason string) {
+	t.Helper()
+	if finding == nil {
+		t.Fatalf("fail_mode=%s reported no coverage gap", mode)
+	}
+	if !finding.Incomplete {
+		t.Fatalf("fail_mode=%s finding is not marked incomplete: %+v", mode, finding)
+	}
+	if finding.Reason != wantReason {
+		t.Fatalf("fail_mode=%s reason = %q, want %q", mode, finding.Reason, wantReason)
+	}
+	if finding.FailMode != mode {
+		t.Fatalf("fail_mode=%s recorded as %q", mode, finding.FailMode)
+	}
+	if finding.Action != wantAction {
+		t.Fatalf("fail_mode=%s action = %q, want %q", mode, finding.Action, wantAction)
+	}
+	if mode == config.ResponseFailModeClosed && finding.Severity != "high" {
+		t.Fatalf("closed finding severity = %q, want high", finding.Severity)
 	}
 }
 

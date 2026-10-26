@@ -194,6 +194,27 @@ func (p *timeSyncPayload) apply(base config.TimeSyncConfig) config.TimeSyncConfi
 	return base
 }
 
+// validateNotifierTypeCoverage rejects a management save whose enabled
+// notifiers cannot be resolved by the live registry (built-in providers plus
+// packs loaded from the index). Configuration parsing cannot decide this, but
+// persisting an unresolvable type would only fail on the next restart.
+func (h *Handler) validateNotifierTypeCoverage(cfg *config.Config) error {
+	if cfg == nil || h.NotifierRegistry == nil {
+		return nil
+	}
+	missing := make([]string, 0)
+	for _, notifier := range cfg.Monitor.Notifiers {
+		if !notifier.Enabled || h.NotifierRegistry.Supports(notifier.Type) {
+			continue
+		}
+		missing = append(missing, fmt.Sprintf("%q (%s)", notifier.ID, notifier.Type))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("invalid notifier type: no provider for %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 	if h.rejectClusterConfigWriteIfFrozen(w, r) {
 		return
@@ -212,7 +233,10 @@ func (h *Handler) UpdateSystem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
-		return applySystemPayload(candidate, req)
+		if err := applySystemPayload(candidate, req); err != nil {
+			return err
+		}
+		return h.validateNotifierTypeCoverage(candidate)
 	}, func(candidate *config.Config) error {
 		return h.applySystemRuntime(req, candidate)
 	})
@@ -387,6 +411,11 @@ func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config
 	}
 	if req.TimeSync != nil && h.OnTimeSyncChanged != nil {
 		if err := h.OnTimeSyncChanged(candidate.TimeSync); err != nil {
+			return err
+		}
+	}
+	if req.Server != nil && h.OnServerChanged != nil {
+		if err := h.OnServerChanged(candidate.Server); err != nil {
 			return err
 		}
 	}
@@ -764,6 +793,11 @@ func testStorageWithDataDir(ctx context.Context, backend string, storage config.
 			return fmt.Errorf("victorialogs is disabled")
 		}
 		return testHTTP(ctx, storage.VictoriaLogs.Endpoint, "", "", "", storage.VictoriaLogs.AllowPrivateEndpoint, "victorialogs endpoint")
+	case "loki":
+		if !storage.Loki.Enabled {
+			return fmt.Errorf("loki is disabled")
+		}
+		return testHTTP(ctx, storage.Loki.Endpoint, storage.Loki.Username, storage.Loki.Password, "", storage.Loki.AllowPrivateEndpoint, "loki endpoint")
 	case "elasticsearch", "elastic":
 		if !storage.Elasticsearch.Enabled {
 			return fmt.Errorf("elasticsearch is disabled")

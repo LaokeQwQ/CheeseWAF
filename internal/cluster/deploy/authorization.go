@@ -147,7 +147,7 @@ func (s *AuthorizationStore) consume(h string, t AuthorizationTarget, requireBin
 	return cloneAuthorizationTarget(r.target), nil
 }
 func NormalizeAuthorizationTarget(t AuthorizationTarget) AuthorizationTarget {
-	t.Host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(t.Host)), ".")
+	t.Host = strings.TrimSpace(strings.TrimRight(strings.ToLower(strings.TrimSpace(t.Host)), "."))
 	t.User = strings.TrimSpace(t.User)
 	if t.Port <= 0 {
 		t.Port = 22

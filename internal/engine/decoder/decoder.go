@@ -96,6 +96,24 @@ func decodeWithDepth(raw string, maxDepth int, stripNUL bool) Decoded {
 		}
 		break
 	}
+	// NUL-stripping can expose another escape layer after each replacement
+	// (for example "\x00" followed by hex digits). Finish that peeling here so
+	// one Decode call reaches a fixed point instead of depending on caller passes.
+	stabilized := false
+	for pass := 0; pass < MaxDecodeDepth; pass++ {
+		if stripNUL {
+			text = strings.ReplaceAll(text, "\x00", "")
+		}
+		unescaped, changed := unescapeUnicode(text)
+		if !changed {
+			break
+		}
+		text = unescaped
+		stabilized = true
+	}
+	if stabilized && (len(layers) == 0 || layers[len(layers)-1] != "unicode") {
+		layers = append(layers, "unicode")
+	}
 	text = strings.TrimSpace(text)
 	if stripNUL {
 		// Strip NULs introduced by URL/HTML/unicode decoding so downstream
@@ -136,6 +154,11 @@ func unescapeUnicode(raw string) (string, bool) {
 	if !strings.Contains(raw, `\u`) && !strings.Contains(raw, `\x`) {
 		return raw, false
 	}
+	// Exactly one replacement pass. An input such as "\\x5c" followed by bare
+	// "x5c" groups exposes one new escape per pass, so looping here re-scanned
+	// and re-copied the whole remaining string per layer and turned a bounded
+	// decode into quadratic work. Each pass is one counted decode layer for the
+	// callers' depth loop instead.
 	changed := false
 	out := unicodeEscPattern.ReplaceAllStringFunc(raw, func(match string) string {
 		parts := unicodeEscPattern.FindStringSubmatch(match)

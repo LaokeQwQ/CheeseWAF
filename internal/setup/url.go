@@ -67,7 +67,8 @@ func browserURLWithHost(scheme, adminListen, publicHost, token string, includeTo
 	} else if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	if scheme == "" {
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme != "http" && scheme != "https" {
 		scheme = "http"
 	}
 	page := fmt.Sprintf("%s://%s/setup", scheme, net.JoinHostPort(host, port))

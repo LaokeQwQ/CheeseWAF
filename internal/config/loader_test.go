@@ -197,6 +197,88 @@ sites:
 	}
 }
 
+// A switch that is never decoded is worse than no switch: `webshell: true`
+// looked configured while the analyzer's webshell category stayed unmounted.
+func TestLoadDecodesWebshellSemanticEngineSwitch(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      semantic_engines:
+        webshell: true
+`)
+
+	engines := cfg.Sites[0].WAF.SemanticEngines
+	if !engines.Webshell {
+		t.Fatalf("waf.semantic_engines.webshell: true was silently ignored: %+v", engines)
+	}
+	// Other engines keep their backfilled defaults.
+	if !engines.SQL || !engines.RCE {
+		t.Fatalf("unrelated semantic engines lost their defaults: %+v", engines)
+	}
+}
+
+// Webshell detection stays opt-in until Gate 1 clears it, so an omitted switch
+// must not enable it as a side effect of the other engines defaulting on.
+func TestLoadDefaultsWebshellSemanticEngineOff(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      semantic_engines:
+        sql: true
+`)
+
+	if cfg.Sites[0].WAF.SemanticEngines.Webshell {
+		t.Fatalf("webshell must stay opt-in when omitted: %+v", cfg.Sites[0].WAF.SemanticEngines)
+	}
+}
+
+func TestLoadDecodesResponseInspectionFailMode(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      response:
+        enabled: true
+        max_body_bytes: 1024
+        inspection:
+          fail_mode: observe
+`)
+
+	responseCfg := cfg.Sites[0].WAF.Response
+	if responseCfg.Inspection.FailMode != ResponseFailModeObserve {
+		t.Fatalf("waf.response.inspection.fail_mode = %q, want %q", responseCfg.Inspection.FailMode, ResponseFailModeObserve)
+	}
+	if !responseCfg.Enabled || responseCfg.MaxBodyBytes != 1024 {
+		t.Fatalf("response inspection settings drifted: %+v", responseCfg)
+	}
+}
+
 func TestLoadTrustedProxyProviderBindings(t *testing.T) {
 	cfg := loadTempConfig(t, `
 sites:
@@ -1038,3 +1120,144 @@ var errWatchApply = errString("keep previous")
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func TestLoadSemanticActionThresholdsAndRouteOverrides(t *testing.T) {
+	cfg := loadTempConfig(t, `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      mode: block
+      semantic_policy:
+        action_thresholds:
+          block: 0.92
+          challenge: 0.85
+          log: 0.65
+        route_overrides:
+          - path: ^/search$
+            params: [q]
+            block: 0.97
+            challenge: 0.90
+            action: ""
+          - path: ^/admin
+            action: observe
+`)
+
+	policy := cfg.Sites[0].WAF.SemanticPolicy
+	if got, want := policy.ActionThresholds, (SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}); got != want {
+		t.Fatalf("action_thresholds = %+v, want %+v", got, want)
+	}
+	if len(policy.RouteOverrides) != 2 {
+		t.Fatalf("route_overrides = %+v, want two entries", policy.RouteOverrides)
+	}
+	search := policy.RouteOverrides[0]
+	if search.Path != "^/search$" || len(search.Params) != 1 || search.Params[0] != "q" ||
+		search.Block != 0.97 || search.Challenge != 0.90 || search.Log != 0 || search.Action != "" {
+		t.Fatalf("search override mismatch: %+v", search)
+	}
+	admin := policy.RouteOverrides[1]
+	if admin.Path != "^/admin" || len(admin.Params) != 0 || admin.Action != SemanticActionObserve {
+		t.Fatalf("admin override mismatch: %+v", admin)
+	}
+}
+
+func TestLoadRejectsInvalidSemanticActionPolicy(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "inverted ladder",
+			raw: `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      semantic_policy:
+        action_thresholds:
+          block: 0.70
+          challenge: 0.90
+`,
+		},
+		{
+			name: "invalid route regexp",
+			raw: `
+sites:
+  - id: default
+    name: default
+    domains: ["localhost"]
+    upstreams:
+      - address: "127.0.0.1:9000"
+        weight: 1
+    enabled: true
+    waf:
+      enabled: true
+      semantic_policy:
+        route_overrides:
+          - path: "[unterminated"
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+			if err := os.WriteFile(path, []byte(tc.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatalf("Load accepted invalid semantic policy: %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestSaveRoundTripsSemanticActionPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	cfg := Default()
+	cfg.Sites[0].WAF.SemanticPolicy.ActionThresholds = SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}
+	cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []SemanticRouteOverride{
+		{Path: `^/search$`, Params: []string{"q"}, Block: 0.97, Challenge: 0.90},
+		{Path: `^/admin`, Action: SemanticActionObserve},
+	}
+	if err := Save(path, &cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	policy := reloaded.Sites[0].WAF.SemanticPolicy
+	if policy.ActionThresholds != (SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}) {
+		t.Fatalf("action_thresholds lost in round trip: %+v", policy.ActionThresholds)
+	}
+	if len(policy.RouteOverrides) != 2 {
+		t.Fatalf("route_overrides lost in round trip: %+v", policy.RouteOverrides)
+	}
+	if search := policy.RouteOverrides[0]; search.Path != `^/search$` || len(search.Params) != 1 || search.Params[0] != "q" || search.Block != 0.97 || search.Challenge != 0.90 {
+		t.Fatalf("search override mismatch after round trip: %+v", search)
+	}
+	if admin := policy.RouteOverrides[1]; admin.Path != `^/admin` || admin.Action != SemanticActionObserve {
+		t.Fatalf("admin override mismatch after round trip: %+v", admin)
+	}
+	// config.Clone (used by every console mutation) round-trips through YAML too.
+	cloned, err := Clone(reloaded)
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if len(cloned.Sites[0].WAF.SemanticPolicy.RouteOverrides) != 2 ||
+		cloned.Sites[0].WAF.SemanticPolicy.ActionThresholds.Block != 0.92 {
+		t.Fatalf("clone dropped the semantic action policy: %+v", cloned.Sites[0].WAF.SemanticPolicy)
+	}
+}

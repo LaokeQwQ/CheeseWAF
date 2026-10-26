@@ -39,6 +39,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
@@ -160,6 +161,13 @@ type Handler struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	// OnServerChanged applies server-scoped settings that can take effect
+	// without rebinding listeners. The adapter credential is the current case:
+	// rotating server.adapter_token must reach the running handler.
+	OnServerChanged func(config.ServerConfig) error
+	// NotifierRegistry carries the plugin-index pack table into notification
+	// paths that are not built from the monitoring manager (ACME alerts).
+	NotifierRegistry *monitornotify.Registry
 	// OnConfigChanged publishes a completed setup/config snapshot to the
 	// serving composition root. Setup changes the entrance gate itself.
 	OnConfigChanged func(*config.Config) error
@@ -403,6 +411,8 @@ type Options struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	OnServerChanged                    func(config.ServerConfig) error
+	NotifierRegistry                   *monitornotify.Registry
 	OnConfigChanged                    func(*config.Config) error
 	CAPTCHAAssets                      captchaassets.Store
 	// Passkey is nil when WebAuthn login is not configured. Public routes then
@@ -526,6 +536,8 @@ func New(opts Options) *Handler {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnServerChanged:                     opts.OnServerChanged,
+		NotifierRegistry:                    opts.NotifierRegistry,
 		OnConfigChanged:                     opts.OnConfigChanged,
 	}
 	if opts.ConfigSnapshot != nil {

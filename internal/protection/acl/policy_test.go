@@ -62,3 +62,29 @@ func TestPolicyEvaluateHandlesInactiveInputs(t *testing.T) {
 		t.Fatal("inactive input matched")
 	}
 }
+
+func TestPolicyEvaluateMatchesPathAfterMatrixStripping(t *testing.T) {
+	policy := NewPolicy(config.ACLProtectionConfig{Enabled: true, Rules: []config.ACLRuleConfig{
+		{ID: "admin", Method: "GET", PathPrefix: "/admin", Action: "block", Severity: "high", Enabled: true},
+	}})
+	// Both spellings route to /admin on a servlet backend, so both must hit the rule.
+	for _, target := range []string{"/admin;x=1/panel", "/;jsessionid=ABC/admin/panel"} {
+		result := policy.Evaluate(httptest.NewRequest("GET", "https://example.test"+target, nil))
+		if result == nil || result.DetectorID != "acl.admin" || result.Action != engine.ActionBlock {
+			t.Fatalf("%s bypassed the /admin ACL rule: %#v", target, result)
+		}
+	}
+}
+
+func TestPolicyEvaluateRejectsMatrixTraversalSegment(t *testing.T) {
+	policy := NewPolicy(config.ACLProtectionConfig{Enabled: true, Rules: []config.ACLRuleConfig{
+		{ID: "admin", Method: "GET", PathPrefix: "/admin", Action: "block", Severity: "high", Enabled: true},
+	}})
+	// "..;" fails path normalization, so the rule cannot match. The request is
+	// rejected earlier by the server's invalid_path guard; assert the ACL layer
+	// does not silently treat it as a match on the un-normalized spelling.
+	result := policy.Evaluate(httptest.NewRequest("GET", "https://example.test/api/v1/x/..;/..;/admin/panel", nil))
+	if result != nil {
+		t.Fatalf("matrix traversal reached ACL evaluation instead of failing normalization: %#v", result)
+	}
+}

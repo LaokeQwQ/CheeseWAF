@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -1277,7 +1278,7 @@ func validDigest(value string) bool {
 }
 
 func validIdentifier(value string) bool {
-	if value == "" || strings.TrimSpace(value) != value {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return false
 	}
 	for _, r := range value {

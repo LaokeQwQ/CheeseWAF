@@ -99,21 +99,34 @@ type Finding struct {
 	Category   string `json:"category"`
 	Severity   string `json:"severity"`
 	Reason     string `json:"reason,omitempty"`
+	// Incomplete marks a coverage gap: the inspector could not read the whole
+	// body, so the finding is not evidence of sensitive data either way.
+	Incomplete bool `json:"incomplete,omitempty"`
+	// Action is the failure policy's decision for an incomplete inspection
+	// ("block" or "log"). Empty means the proxy keeps its own default.
+	Action string `json:"action,omitempty"`
+	// FailMode records which response.inspection.fail_mode produced Action.
+	FailMode string `json:"fail_mode,omitempty"`
 }
 
 type Inspector struct {
 	enabled  bool
 	maxBody  int64
+	failMode string
 	rules    []*regexp.Regexp
 	verifier *tamper.Verifier
 }
 
 func New(cfg config.ResponseInspectionConfig) (*Inspector, error) {
+	failMode, err := config.NormalizeResponseFailMode(cfg.Inspection.FailMode)
+	if err != nil {
+		return nil, err
+	}
 	if len(cfg.TamperSnapshots) > 0 && !cfg.Enabled {
 		return nil, fmt.Errorf("response inspection must be enabled when tamper snapshots are configured")
 	}
 	if !cfg.Enabled {
-		return &Inspector{}, nil
+		return &Inspector{failMode: failMode}, nil
 	}
 	if cfg.MaxBodyBytes < 0 || cfg.MaxBodyBytes > 1<<30 {
 		return nil, fmt.Errorf("response inspection max body must be between 0 and 1 GiB")
@@ -130,7 +143,7 @@ func New(cfg config.ResponseInspectionConfig) (*Inspector, error) {
 			`(?i)BEGIN\s+(?:RSA|EC|OPENSSH)\s+PRIVATE\s+KEY`,
 		}
 	}
-	inspector := &Inspector{enabled: true, maxBody: cfg.MaxBodyBytes}
+	inspector := &Inspector{enabled: true, maxBody: cfg.MaxBodyBytes, failMode: failMode}
 	for _, pattern := range patterns {
 		// CompileSafe is a construction-time gate: it rejects patterns whose
 		// complexity score exceeds the budget before any response is scanned.
@@ -164,6 +177,14 @@ func New(cfg config.ResponseInspectionConfig) (*Inspector, error) {
 
 func (i *Inspector) Enabled() bool {
 	return i != nil && i.enabled
+}
+
+// FailMode reports the resolved failure policy for an uninspectable body.
+func (i *Inspector) FailMode() string {
+	if i == nil || i.failMode == "" {
+		return config.DefaultResponseFailMode
+	}
+	return i.failMode
 }
 
 func (i *Inspector) Inspect(body []byte) *Finding {
@@ -213,12 +234,23 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 	if resp.Body == nil {
 		return nil, nil
 	}
+	// A HEAD response carries no body to inspect, so there is nothing to fail
+	// open or closed over. Reporting a coverage gap here would block requests
+	// whose body never existed.
+	if request != nil && request.Method == http.MethodHead {
+		return nil, nil
+	}
 	resourceURL, tamperTarget := i.tamperResourceURL(request)
 	if IsStreamingContentType(resp.Header.Get("Content-Type")) {
 		if tamperTarget {
 			return tamperUnavailableFinding(resourceURL, "streaming_response"), nil
 		}
-		return nil, nil
+		// open preserves the pre-policy behaviour: streaming bodies are never
+		// buffered, so the coverage gap is not reported at all.
+		if i.FailMode() == config.ResponseFailModeOpen {
+			return nil, nil
+		}
+		return i.incompleteFinding("streaming_response"), nil
 	}
 	limit := i.maxBody
 	if limit <= 0 {
@@ -234,7 +266,7 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 		if tamperTarget {
 			return tamperUnavailableFinding(resourceURL, "memory_budget"), nil
 		}
-		return inspectionIncompleteFinding("memory_budget"), nil
+		return i.incompleteFinding("memory_budget"), nil
 	}
 	if err != nil {
 		return nil, err
@@ -244,7 +276,7 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 		if tamperTarget {
 			return tamperUnavailableFinding(resourceURL, "size_limit"), nil
 		}
-		return inspectionIncompleteFinding("size_limit"), nil
+		return i.incompleteFinding("size_limit"), nil
 	}
 	originalBody.Close()
 	resp.Body = io.NopCloser(newReplayReader(raw))
@@ -261,12 +293,12 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 				if tamperTarget {
 					return tamperUnavailableFinding(resourceURL, "memory_budget"), nil
 				}
-				return inspectionIncompleteFinding("memory_budget"), nil
+				return i.incompleteFinding("memory_budget"), nil
 			}
 			if tamperTarget {
 				return tamperUnavailableFinding(resourceURL, "unsupported_encoding"), nil
 			}
-			return inspectionIncompleteFinding("unsupported_or_invalid_encoding"), nil
+			return i.incompleteFinding("unsupported_or_invalid_encoding"), nil
 		}
 		inspectBody = plain
 		complete = decodedComplete
@@ -291,13 +323,31 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 		}
 	}
 	if !complete {
-		return inspectionIncompleteFinding("size_limit"), nil
+		return i.incompleteFinding("size_limit"), nil
 	}
 	return i.Inspect(inspectBody), nil
 }
 
-func inspectionIncompleteFinding(reason string) *Finding {
-	return &Finding{Message: "response inspection incomplete", DetectorID: "response.inspector", Category: "response", Severity: "high", Reason: reason}
+// incompleteFinding reports a coverage gap under the site's fail mode. The gap
+// itself is not evidence of sensitive data, but it is also not evidence of
+// absence, so the policy — not the detector — decides what happens next:
+//
+//	closed  - carry a block action; the proxy withholds the body
+//	observe - carry a log action; the proxy delivers it and records the gap
+//	open    - carry no action; the proxy keeps its historical log-only path
+func (i *Inspector) incompleteFinding(reason string) *Finding {
+	finding := &Finding{
+		Message: "response inspection incomplete", DetectorID: "response.inspector",
+		Category: "response", Severity: "high", Reason: reason,
+		Incomplete: true, FailMode: i.FailMode(),
+	}
+	switch finding.FailMode {
+	case config.ResponseFailModeClosed:
+		finding.Action = engine.ActionBlock.String()
+	case config.ResponseFailModeObserve:
+		finding.Action = engine.ActionLog.String()
+	}
+	return finding
 }
 
 // InspectCaptured applies the same inline checks to an in-memory cache hit.

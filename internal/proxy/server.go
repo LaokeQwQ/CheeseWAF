@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,13 @@ var preflightBodySlots = make(chan struct{}, maxInflightPreflightReads)
 
 type requestDetectionPipeline interface {
 	Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error)
+}
+
+// incompleteInputMarker is implemented by the real pipeline. Test doubles that
+// only stub Detect keep working: a truncated adapter body then reports the
+// plain detection result instead of silently claiming full coverage.
+type incompleteInputMarker interface {
+	MarkInputIncomplete(*engine.RequestContext, *engine.DetectionResult, string) *engine.DetectionResult
 }
 
 type Server struct {
@@ -907,7 +915,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if result != nil && result.Detected {
-			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results, site.WAF.ParanoiaLevel)
+			decision := evaluateWebAttackPolicyForSite(policy.WebAttack, result, reqCtx.Results, site, reqCtx)
 			reqCtx.Metadata["waf_policy_decision"] = decision
 			reqCtx.Metadata["detection"] = result
 			switch decision.Action {
@@ -1240,11 +1248,19 @@ func recordResponseFinding(reqCtx *engine.RequestContext, finding *response.Find
 	reqCtx.Metadata["response_finding"] = finding
 
 	action := engine.ActionLog
-	// Incomplete inspection is a coverage signal, not evidence that the body
-	// contains sensitive data. Keep it visible in logs without turning an
-	// oversized or otherwise uninspectable harmless response into a 403.
-	incomplete := finding.DetectorID == "response.inspector" && finding.Message == "response inspection incomplete"
-	if !incomplete && strings.EqualFold(strings.TrimSpace(wafMode), "block") {
+	// An inspection gap is not evidence that the body contains sensitive data,
+	// but it is not evidence of absence either. response.inspection.fail_mode
+	// now owns that decision: closed carries a block action, observe and open
+	// stay log-only. A monitor/log site never blocks, whatever the policy says.
+	switch {
+	case !strings.EqualFold(strings.TrimSpace(wafMode), "block"):
+		action = engine.ActionLog
+	case finding.Action == engine.ActionBlock.String():
+		action = engine.ActionBlock
+	case finding.Incomplete:
+		// open/observe coverage gap: recorded below, never blocked.
+		action = engine.ActionLog
+	default:
 		action = engine.ActionBlock
 	}
 	result := &engine.DetectionResult{
@@ -1299,6 +1315,9 @@ func requestBodyTooLarge(err error) bool {
 func requestBodyReadErrorStatus(err error, fallback int) int {
 	if errors.Is(err, engine.ErrRequestBodyReadOverload) {
 		return http.StatusServiceUnavailable
+	}
+	if errors.Is(err, engine.ErrUnsupportedContentEncoding) {
+		return http.StatusUnsupportedMediaType
 	}
 	return fallback
 }
@@ -1615,7 +1634,7 @@ func (s *Server) inspectWebSocketMessage(r *http.Request, site config.SiteConfig
 	globalPolicy := s.protectionPolicy
 	s.runtimeMu.RUnlock()
 	policy := config.EffectiveProtectionPolicy(globalPolicy, site.WAF.ProtectionPolicy)
-	decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, ctx.Results, site.WAF.ParanoiaLevel)
+	decision := evaluateWebAttackPolicyForSite(policy.WebAttack, result, ctx.Results, site, ctx)
 	if decision.Action == engine.ActionBlock.String() || decision.Action == engine.ActionChallenge.String() {
 		return fmt.Errorf("WebSocket message rejected: %s", result.Message)
 	}
@@ -1654,6 +1673,40 @@ type webAttackPolicyDecision struct {
 	DetectorAction    string  `json:"detector_action"`
 	DetectorCategory  string  `json:"detector_category"`
 	DetectorID        string  `json:"detector_id"`
+	// BlockThreshold/ChallengeThreshold/LogThreshold are the resolved ladder
+	// after waf.semantic_policy.action_thresholds and any matching
+	// route_overrides were applied. Zero ChallengeThreshold/LogThreshold means
+	// "no such tier", i.e. everything below BlockThreshold is logged.
+	BlockThreshold     float64 `json:"block_threshold"`
+	ChallengeThreshold float64 `json:"challenge_threshold"`
+	LogThreshold       float64 `json:"log_threshold"`
+	// ActionOverride is the pinned action of the matched route override
+	// ("observe"/"challenge"), RouteOverride its path pattern.
+	ActionOverride string `json:"action_override,omitempty"`
+	RouteOverride  string `json:"route_override,omitempty"`
+}
+
+// webAttackLadder is the resolved block/challenge/log confidence ladder for one
+// request. A zero Challenge or Log rung means the tier is not configured.
+type webAttackLadder struct {
+	Block     float64
+	Challenge float64
+	Log       float64
+	// blockSet/challengeSet/logSet record which rungs a scope configured.
+	// Without a challenge rung, raising block alone must not open a challenge
+	// band that the preset never had.
+	blockSet     bool
+	challengeSet bool
+	logSet       bool
+	// Explicit records that an operator configured any rung or pinned an
+	// action for this site or route. An explicit ladder is authoritative: the
+	// aggregate risk-score escalation that exists for the bare preset must not
+	// silently overrule "below log means log".
+	Explicit bool
+	// Action pins the outcome ("" | observe | challenge).
+	Action string
+	// RoutePath is the matched override pattern, for diagnostics.
+	RoutePath string
 }
 
 func evaluateWebAttackPolicy(level string, result *engine.DetectionResult) webAttackPolicyDecision {
@@ -1666,21 +1719,207 @@ func evaluateWebAttackPolicyWithEvidence(
 	results []engine.DetectionResult,
 	siteParanoiaLevel int,
 ) webAttackPolicyDecision {
+	return evaluateWebAttackPolicyWithLadder(level, result, results, siteParanoiaLevel, webAttackLadder{})
+}
+
+// evaluateWebAttackPolicyForSite is the production entry point. It resolves the
+// site's waf.semantic_policy action thresholds and the first matching route
+// override for this request, then maps the detection onto block/challenge/log.
+//
+// Only the action a hit is mapped to changes. Detection (severity, confidence,
+// detector categories) is untouched, so paranoia_level keeps meaning "how much
+// is detected" while this policy decides "how hard to answer".
+func evaluateWebAttackPolicyForSite(
+	level string,
+	result *engine.DetectionResult,
+	results []engine.DetectionResult,
+	site config.SiteConfig,
+	reqCtx *engine.RequestContext,
+) webAttackPolicyDecision {
+	return evaluateWebAttackPolicyWithLadder(
+		level,
+		result,
+		results,
+		site.WAF.ParanoiaLevel,
+		resolveWebAttackLadder(level, site.WAF.SemanticPolicy, reqCtx),
+	)
+}
+
+// resolveWebAttackLadder derives the effective confidence ladder. The base rung
+// comes from the web_attack preset; action_thresholds refine it for the site and
+// the first matching route override refines it again for one path/parameter.
+func resolveWebAttackLadder(level string, policy config.SemanticPolicyConfig, reqCtx *engine.RequestContext) webAttackLadder {
+	_, base := webAttackThreshold(level)
+	ladder := webAttackLadder{Block: base, Challenge: base}
+	if thresholds := policy.ActionThresholds; !thresholds.IsZero() {
+		ladder = ladder.withThresholds(thresholds.Block, thresholds.Challenge, thresholds.Log)
+	}
+	if override, ok := matchSemanticRouteOverride(policy.RouteOverrides, reqCtx); ok {
+		ladder.RoutePath = strings.TrimSpace(override.Path)
+		ladder.Action = config.NormalizeSemanticAction(override.Action)
+		ladder = ladder.withThresholds(override.Block, override.Challenge, override.Log)
+	}
+	// Reconcile with the preset so a single relaxed rung cannot leave the ladder
+	// inverted (e.g. block below an inherited challenge rung).
+	if ladder.Challenge > ladder.Block {
+		ladder.Challenge = ladder.Block
+	}
+	if ladder.Log > ladder.Challenge {
+		ladder.Log = ladder.Challenge
+	}
+	ladder.Explicit = ladder.blockSet || ladder.challengeSet || ladder.logSet || ladder.Action != ""
+	return ladder
+}
+
+// withThresholds applies the non-zero rungs of one scope. A zero rung inherits
+// the value from the broader scope (web_attack preset, then action_thresholds),
+// so a route override can relax a single rung without restating the others.
+func (l webAttackLadder) withThresholds(block, challenge, log float64) webAttackLadder {
+	if block > 0 {
+		l.Block = block
+		l.blockSet = true
+		if !l.challengeSet {
+			l.Challenge = block
+		}
+	}
+	if challenge > 0 {
+		l.Challenge = challenge
+		l.challengeSet = true
+	}
+	if log > 0 {
+		l.Log = log
+		l.logSet = true
+	}
+	return l
+}
+
+// maxCachedSemanticRoutePatterns bounds the compiled route-override cache; a
+// config reload may introduce new patterns, so the cache must not grow forever.
+const maxCachedSemanticRoutePatterns = 512
+
+// semanticRoutePatternCache memoises compiled route-override patterns. The
+// policy runs per detected request, so recompiling a regexp there would put a
+// parser allocation on the hot path.
+var (
+	semanticRoutePatternCache sync.Map
+	semanticRoutePatternCount atomic.Int64
+)
+
+func compileSemanticRoutePattern(pattern string) (*regexp.Regexp, bool) {
+	if cached, ok := semanticRoutePatternCache.Load(pattern); ok {
+		compiled, _ := cached.(*regexp.Regexp)
+		return compiled, compiled != nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, false
+	}
+	if semanticRoutePatternCount.Load() < maxCachedSemanticRoutePatterns {
+		if _, loaded := semanticRoutePatternCache.LoadOrStore(pattern, compiled); !loaded {
+			semanticRoutePatternCount.Add(1)
+		}
+	}
+	return compiled, true
+}
+
+// matchSemanticRouteOverride returns the first override whose path pattern and
+// (optional) parameter list match this request.
+func matchSemanticRouteOverride(overrides []config.SemanticRouteOverride, reqCtx *engine.RequestContext) (config.SemanticRouteOverride, bool) {
+	if len(overrides) == 0 || reqCtx == nil {
+		return config.SemanticRouteOverride{}, false
+	}
+	path := semanticRequestPath(reqCtx)
+	if path == "" {
+		return config.SemanticRouteOverride{}, false
+	}
+	param := semanticReviewParamName(reqCtx)
+	for _, override := range overrides {
+		pattern := strings.TrimSpace(override.Path)
+		if pattern == "" {
+			continue
+		}
+		compiled, ok := compileSemanticRoutePattern(pattern)
+		if !ok || !compiled.MatchString(path) {
+			continue
+		}
+		if !semanticOverrideMatchesParam(override.Params, param) {
+			continue
+		}
+		return override, true
+	}
+	return config.SemanticRouteOverride{}, false
+}
+
+// semanticRequestPath prefers the canonical path the rest of the WAF policies
+// use, and falls back to the raw URL path for contexts built without one.
+func semanticRequestPath(reqCtx *engine.RequestContext) string {
+	if path := strings.TrimSpace(reqCtx.NormalizedPath); path != "" {
+		return path
+	}
+	if reqCtx.Request != nil && reqCtx.Request.URL != nil {
+		return reqCtx.Request.URL.Path
+	}
+	return ""
+}
+
+// semanticReviewParamName reads the parameter that produced the analyzer's
+// review candidate. A params-filtered override only applies when the offending
+// parameter is known: guessing would silently widen a narrowly scoped rule.
+func semanticReviewParamName(reqCtx *engine.RequestContext) string {
+	candidate, ok := reqCtx.Metadata["review_candidate"].(map[string]any)
+	if !ok || candidate == nil {
+		return ""
+	}
+	name, _ := candidate["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func semanticOverrideMatchesParam(params []string, param string) bool {
+	if len(params) == 0 {
+		return true
+	}
+	if param == "" {
+		return false
+	}
+	for _, candidate := range params {
+		if strings.TrimSpace(candidate) == param {
+			return true
+		}
+	}
+	return false
+}
+
+func evaluateWebAttackPolicyWithLadder(
+	level string,
+	result *engine.DetectionResult,
+	results []engine.DetectionResult,
+	siteParanoiaLevel int,
+	ladder webAttackLadder,
+) webAttackPolicyDecision {
 	if level == "" {
 		level = config.ProtectionLevelSmart
 	}
 	minSeverity, minConfidence := webAttackThreshold(level)
+	if ladder.Block <= 0 {
+		// Preset behaviour: block at the preset confidence, no extra tiers.
+		ladder = webAttackLadder{Block: minConfidence, Challenge: minConfidence}
+	}
 	riskThreshold := webAttackRiskThreshold(level)
 	decision := webAttackPolicyDecision{
-		Level:             level,
-		Action:            engine.ActionLog.String(),
-		Reason:            "detected below policy threshold",
-		ParanoiaLevel:     config.EffectiveParanoiaLevel(siteParanoiaLevel),
-		PolicyTier:        webAttackParanoiaLevel(level),
-		MinimumSeverity:   minSeverity.String(),
-		MinimumConfidence: minConfidence,
-		MinimumRiskScore:  riskThreshold,
-		DetectorAction:    engine.ActionPass.String(),
+		Level:              level,
+		Action:             engine.ActionLog.String(),
+		Reason:             "detected below policy threshold",
+		ParanoiaLevel:      config.EffectiveParanoiaLevel(siteParanoiaLevel),
+		PolicyTier:         webAttackParanoiaLevel(level),
+		MinimumSeverity:    minSeverity.String(),
+		MinimumConfidence:  ladder.Block,
+		MinimumRiskScore:   riskThreshold,
+		DetectorAction:     engine.ActionPass.String(),
+		BlockThreshold:     ladder.Block,
+		ChallengeThreshold: ladder.Challenge,
+		LogThreshold:       ladder.Log,
+		ActionOverride:     ladder.Action,
+		RouteOverride:      ladder.RoutePath,
 	}
 	if result == nil {
 		decision.Reason = "no detection result"
@@ -1744,7 +1983,26 @@ func evaluateWebAttackPolicyWithEvidence(
 		decision.Reason = "web attack protection disabled"
 		return decision
 	}
-	if result.Severity >= minSeverity && result.Confidence >= minConfidence {
+	// A route override may pin the outcome: observe keeps the hit in the log,
+	// challenge answers with a challenge page (still gated on the preset
+	// minimum severity, so an override cannot promote a weak signal). Neither
+	// may fall through to a block: "challenge this route" means the operator
+	// does not want a hard block there.
+	switch ladder.Action {
+	case config.SemanticActionObserve:
+		decision.Action = engine.ActionLog.String()
+		decision.Reason = "route override forces log"
+		return decision
+	case config.SemanticActionChallenge:
+		if result.Severity >= minSeverity {
+			decision.Action = engine.ActionChallenge.String()
+			decision.Reason = "route override forces challenge"
+		} else {
+			decision.Reason = "route override forces challenge but severity is below policy minimum"
+		}
+		return decision
+	}
+	if result.Severity >= minSeverity && result.Confidence >= ladder.Block {
 		if result.Action == engine.ActionChallenge {
 			decision.Action = engine.ActionChallenge.String()
 		} else {
@@ -1753,7 +2011,24 @@ func evaluateWebAttackPolicyWithEvidence(
 		decision.Reason = "severity and confidence meet policy threshold"
 		return decision
 	}
-	if evidence.Score >= riskThreshold {
+	// The challenge tier only exists when it sits strictly below the block rung;
+	// otherwise any hit at the block confidence would fall through to it.
+	// Per the design, the severity floor gates blocking and a pinned
+	// action=challenge; the configured challenge rung is confidence-only.
+	if ladder.Challenge > 0 && ladder.Challenge < ladder.Block && result.Confidence >= ladder.Challenge {
+		decision.Action = engine.ActionChallenge.String()
+		decision.Reason = "confidence meets challenge threshold"
+		return decision
+	}
+	if ladder.Log > 0 && result.Confidence >= ladder.Log {
+		decision.Action = engine.ActionLog.String()
+		decision.Reason = "confidence meets log threshold"
+		return decision
+	}
+	// Aggregate risk exists to promote a weak single signal. An operator who
+	// configured an explicit ladder for this site/route has already stated how
+	// hard such hits should be answered, so the escalation must not overrule it.
+	if !ladder.Explicit && evidence.Score >= riskThreshold {
 		if evidence.Action == engine.ActionChallenge {
 			decision.Action = engine.ActionChallenge.String()
 		} else {
@@ -2353,6 +2628,15 @@ func (s *Server) writeLog(ctx context.Context, reqCtx *engine.RequestContext, ac
 				entry.Metadata = map[string]any{}
 			}
 			entry.Metadata["response_finding_reason"] = finding.Reason
+		}
+		// The failure policy is the operator's exposure decision, so an
+		// observe-mode coverage gap has to be visible in the log stream even
+		// though it never turns into a block.
+		if finding.FailMode != "" {
+			if entry.Metadata == nil {
+				entry.Metadata = map[string]any{}
+			}
+			entry.Metadata["response_fail_mode"] = finding.FailMode
 		}
 	}
 	if isPlainAccessLog(entry) && !s.siteAccessLogEnabled(reqCtx.SiteID) {

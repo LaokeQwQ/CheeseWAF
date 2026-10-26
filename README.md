@@ -212,6 +212,7 @@ The setup wizard tests system performance and recommends an operational tier, wh
 In addition to built-in features, CheeseWAF connects to external monitoring and storage services (testable during setup or configured later):
 - **PostgreSQL**: Centralized access logs and audit trails.
 - **VictoriaLogs**: High-performance structured log ingestion and querying.
+- **Grafana Loki**: Label-indexed log shipping and LogQL queries for existing Loki stacks.
 - **Prometheus**: Metrics scraping endpoint.
 
 ---
@@ -433,7 +434,7 @@ If your infrastructure already uses a reverse proxy or API gateway, you can inte
 
 ### Architecture
 
-`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries CheeseWAF at `/api/v1/check`.
+`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries the versioned adapter contract endpoint at `/api/v1/adapter/inspect` (override with `CHEESEWAF_CORE_INSPECT_PATH`). The core serves that endpoint, `/api/v1/adapter/telemetry`, and `/healthz` on both the proxy and admin listeners. Set `server.adapter_token` to the same value as the adapter's `CHEESEWAF_CORE_TOKEN`; an empty token permits only loopback adapter clients.
 
 ### NGINX Integration Example
 
@@ -453,12 +454,19 @@ location / {
 
 location = /cheesewaf-check {
     internal;
-    proxy_pass http://127.0.0.1:9080/check;
+    proxy_pass http://127.0.0.1:9080/nginx/auth;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $request_method;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_connect_timeout 100ms;
+    proxy_read_timeout 1s;
+    # If CHEESEWAF_ADAPTER_TOKEN is configured, inject
+    # X-CheeseWAF-Adapter-Token from a secret-backed variable here.
 }
 ```
 

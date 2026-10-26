@@ -473,7 +473,7 @@ func DecodeSecret(encoded string) ([]byte, error) {
 	if !strict(encoded) {
 		return nil, ErrInvalidInput
 	}
-	b, err := base64.RawURLEncoding.DecodeString(encoded)
+	b, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
 	if err != nil || len(b) != DEKSize {
 		return nil, ErrInvalidInput
 	}

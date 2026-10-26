@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBudgetExhaustedPolicyFromWebAttack(t *testing.T) {
 	cases := map[string]string{
@@ -52,6 +55,41 @@ func TestBudgetExhaustedPolicyMonotonic(t *testing.T) {
 	}
 }
 
+// The response inspection fail-mode decides whether an uninspectable response
+// (size limit, streaming media, unsupported encoding) is delivered. An omitted
+// value resolves to the documented default, observe: the body is delivered and
+// the coverage gap is logged. Withholding needs an explicit closed, and a typo
+// must never silently pick a different exposure policy.
+func TestNormalizeResponseFailMode(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{raw: "", want: ResponseFailModeObserve},
+		{raw: "   ", want: ResponseFailModeObserve},
+		{raw: ResponseFailModeOpen, want: ResponseFailModeOpen},
+		{raw: " observe ", want: ResponseFailModeObserve},
+		{raw: "CLOSED", want: ResponseFailModeClosed},
+		{raw: "clossed", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeResponseFailMode(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("NormalizeResponseFailMode(%q) = %q, want error", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("NormalizeResponseFailMode(%q) returned %v", tc.raw, err)
+		}
+		if got != tc.want {
+			t.Fatalf("NormalizeResponseFailMode(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestResolveDecodeDepth(t *testing.T) {
 	if got := ResolveDecodeDepth(0); got != DefaultDecodeDepth {
 		t.Fatalf("omitted depth=%d, want %d", got, DefaultDecodeDepth)
@@ -61,5 +99,53 @@ func TestResolveDecodeDepth(t *testing.T) {
 	}
 	if got := ResolveDecodeDepth(MaxDecodeDepth + 1); got != MaxDecodeDepth {
 		t.Fatalf("clamped depth=%d, want %d", got, MaxDecodeDepth)
+	}
+}
+
+func TestValidateNotifierTypes(t *testing.T) {
+	for _, typeName := range NotifierTypes() {
+		notifier := NotifierConfig{
+			ID:       typeName,
+			Type:     typeName,
+			Endpoint: "https://hooks.example.com/notify",
+			Enabled:  true,
+		}
+		if typeName == "email" {
+			notifier.Endpoint = "smtp://smtp.example.com:587"
+			notifier.To = "ops@example.com"
+			notifier.Headers = map[string]string{"from": "waf@example.com"}
+		}
+
+		cfg := Default()
+		cfg.Monitor.Notifiers = []NotifierConfig{notifier}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("notifier type %q rejected: %v", typeName, err)
+		}
+	}
+
+	// A pack-provided type has to survive configuration parsing: whether a
+	// provider exists is decided by the registry after the plugin index loads.
+	cfg := Default()
+	cfg.Monitor.Notifiers = []NotifierConfig{{
+		ID:       "pager",
+		Type:     "pagerduty_events",
+		Endpoint: "https://events.example.com/notify",
+		Enabled:  true,
+	}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("pack-shaped notifier type rejected: %v", err)
+	}
+
+	for _, invalid := range []string{"", "Webhook", "pager-duty", "pager duty", strings.Repeat("a", 65), "1pager"} {
+		cfg := Default()
+		cfg.Monitor.Notifiers = []NotifierConfig{{
+			ID:       "pager",
+			Type:     invalid,
+			Endpoint: "https://events.example.com/notify",
+			Enabled:  true,
+		}}
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("type %q must be rejected by shape validation", invalid)
+		}
 	}
 }

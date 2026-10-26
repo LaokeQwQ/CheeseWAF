@@ -248,8 +248,7 @@ func NewMemoryIdentityService(opts ServiceOptions) (*MemoryIdentityService, erro
 }
 
 func (s *MemoryIdentityService) CreateJoinToken(role string, ttl time.Duration, maxUses int) (JoinToken, error) {
-	role = strings.TrimSpace(role)
-	if role != "waf" && role != "monitor" {
+	if role != strings.TrimSpace(role) || (role != "waf" && role != "monitor") {
 		return JoinToken{}, fmt.Errorf("role must be waf or monitor")
 	}
 	if ttl <= 0 || ttl > 24*time.Hour {

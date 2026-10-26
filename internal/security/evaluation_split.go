@@ -1224,6 +1224,7 @@ func BuildEvaluationSplit(records []EvaluationRecord, cfg SplitConfig) (Evaluati
 	if err != nil {
 		return EvaluationSplitArtifact{}, err
 	}
+	records = normalizeEvaluationRecordIDs(records)
 	assigned, summary, err := GroupAwareSplit(records, normalized)
 	if err != nil {
 		return EvaluationSplitArtifact{}, err
@@ -1250,6 +1251,23 @@ func BuildEvaluationSplit(records []EvaluationRecord, cfg SplitConfig) (Evaluati
 		RecordsSHA256: recordsSHA256,
 		Records:       assigned,
 	}, nil
+}
+
+func normalizeEvaluationRecordIDs(records []EvaluationRecord) []EvaluationRecord {
+	out := append([]EvaluationRecord(nil), records...)
+	for i := range out {
+		if strings.TrimSpace(out[i].ID) != "" {
+			continue
+		}
+		if name := strings.TrimSpace(out[i].Case.Name); name != "" {
+			out[i].ID = name
+			continue
+		}
+		if fingerprint := strings.TrimSpace(out[i].Fingerprint); fingerprint != "" {
+			out[i].ID = fingerprint
+		}
+	}
+	return out
 }
 
 func evaluationRecordsGoverned(records []EvaluationRecord) bool {

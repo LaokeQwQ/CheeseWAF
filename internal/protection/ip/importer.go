@@ -911,6 +911,9 @@ func CanonicalIndicator(typ, value string) (string, string, bool) {
 	switch typ {
 	case "ip":
 		if ip := net.ParseIP(value); ip != nil {
+			if ip.IsUnspecified() || ip.IsMulticast() {
+				return "", "", false
+			}
 			return typ, ip.String(), true
 		}
 		_, network, err := net.ParseCIDR(value)
@@ -923,7 +926,7 @@ func CanonicalIndicator(typ, value string) (string, string, bool) {
 		}
 		// Threat feeds are public-source indicators. Never let an import turn
 		// RFC1918, loopback, or link-local space into a site-wide deny rule.
-		if network.IP.IsPrivate() || network.IP.IsLoopback() || network.IP.IsLinkLocalUnicast() {
+		if network.IP.IsPrivate() || network.IP.IsLoopback() || network.IP.IsLinkLocalUnicast() || network.IP.IsUnspecified() || network.IP.IsMulticast() {
 			return "", "", false
 		}
 		return typ, network.String(), true

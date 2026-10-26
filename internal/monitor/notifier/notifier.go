@@ -3,9 +3,6 @@ package notifier
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
-	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
@@ -21,12 +18,22 @@ type Manager struct {
 }
 
 func NewManager(configs []config.NotifierConfig) *Manager {
+	return NewManagerWithRegistry(configs, nil)
+}
+
+// NewManagerWithRegistry lets the caller share one registry with the rest of
+// the process, so a plugin-index reload reaches every notifier the manager
+// builds afterwards. A nil registry uses the compiled-in providers only.
+func NewManagerWithRegistry(configs []config.NotifierConfig, registry *Registry) *Manager {
+	if registry == nil {
+		registry = NewRegistry()
+	}
 	manager := &Manager{}
 	for _, cfg := range configs {
 		if !cfg.Enabled {
 			continue
 		}
-		notifier, err := NewProvider(cfg, nil)
+		notifier, err := registry.New(cfg, nil)
 		if err != nil {
 			manager.configErrors = append(manager.configErrors, err)
 			continue
@@ -50,28 +57,6 @@ func (m *Manager) Notify(ctx context.Context, alerts []monitor.Alert) error {
 		}
 	}
 	return errors.Join(deliveryErrors...)
-}
-
-// NewProvider creates the notifier implementation selected by cfg.Type.
-// Unknown provider types are rejected instead of falling back to a generic
-// webhook, so a typo cannot silently deliver alerts to the wrong endpoint.
-func NewProvider(cfg config.NotifierConfig, client *http.Client) (Notifier, error) {
-	switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
-	case "webhook":
-		return NewWebhook(cfg, client), nil
-	case "dingtalk":
-		return newDingTalkNotifier(cfg, client), nil
-	case "feishu":
-		return newFeishuNotifier(cfg, client), nil
-	case "wecom":
-		return newWeComNotifier(cfg, client), nil
-	case "telegram":
-		return newTelegramNotifier(cfg, client), nil
-	case "email":
-		return newEmailNotifier(cfg), nil
-	default:
-		return nil, fmt.Errorf("notifier %q has unsupported type %q", cfg.ID, cfg.Type)
-	}
 }
 
 func errorsJoin(values []error) error {

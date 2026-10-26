@@ -182,9 +182,11 @@ export default function DashboardPage() {
   const yMid = formatNumber(Math.round(yMax / 2));
   // Enforce min scale so 24h/7d axis labels (e.g. 08:42) stay readable and scroll instead of crushing.
   const chartMinWidthPx = Math.max(visibleTraffic.length * CHART_MIN_BAR_WIDTH_PX, 0);
-  const monitorState: { variant: 'success' | 'default' | 'warning'; label: string } = snapshot
-    ? { variant: 'success', label: t('common.online') }
-    : { variant: loadingMonitor ? 'default' : 'warning', label: loadingMonitor ? t('common.loading') : t('shell.connectionReconnecting') };
+  const monitorState: { variant: 'success' | 'default' | 'destructive'; state: 'online' | 'loading' | 'offline'; label: string } = snapshot && !monitorError
+    ? { variant: 'success', state: 'online', label: t('common.online') }
+    : loadingMonitor
+      ? { variant: 'default', state: 'loading', label: t('common.loading') }
+      : { variant: 'destructive', state: 'offline', label: t('shell.connectionOffline') };
   const manualRefresh = () => {
     void refetchMonitor();
     void refetchLiveLogs();
@@ -223,9 +225,9 @@ export default function DashboardPage() {
           <h1>{t('dashboard.title')}</h1>
           <p>{t('dashboard.subtitle')}</p>
         </div>
-        <Badge variant={monitorState.variant} className="inline-flex items-center gap-1">
-          <ShieldCheck size={14} />
-          {monitorState.label}
+        <Badge variant={monitorState.variant} className="dashboard-monitor-status" data-state={monitorState.state} role="status" aria-live="polite">
+          <ShieldCheck size={14} aria-hidden="true" />
+          <span>{monitorState.label}</span>
         </Badge>
       </header>
 
@@ -587,7 +589,7 @@ export default function DashboardPage() {
                     <strong>{formatPercent(host?.disk_percent ?? 0)}</strong>
                     <small>{formatCapacity(host?.disk_used ?? 0, host?.disk_total ?? 0, t)}</small>
                   </div>
-                  <div className="resource-row" aria-label={t('dashboard.processRuntime')}>
+                  <div className="resource-row resource-row-runtime-start" aria-label={t('dashboard.processRuntime')}>
                     <Server size={18} />
                     <span>{t('dashboard.runtimeServiceProcesses')}</span>
                     <span className="resource-row-track" aria-hidden="true" />

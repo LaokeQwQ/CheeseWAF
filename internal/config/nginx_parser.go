@@ -93,7 +93,11 @@ func ParseNginxServerBlock(contents []byte) ([]SiteConfig, error) {
 			continue
 		}
 		if match := proxyPassRE.FindStringSubmatch(line); len(match) == 2 {
-			current.Upstreams = append(current.Upstreams, UpstreamConfig{Address: match[1], Weight: 1})
+			address := strings.TrimSpace(match[1])
+			if address == "" || strings.ContainsAny(address, "\r\n\t\x00") {
+				return nil, fmt.Errorf("invalid nginx proxy_pass address %q", match[1])
+			}
+			current.Upstreams = append(current.Upstreams, UpstreamConfig{Address: address, Weight: 1})
 			continue
 		}
 		if match := rewriteRE.FindStringSubmatch(line); len(match) >= 3 {
@@ -169,7 +173,11 @@ func parseNginxInlineServer(line string, current *SiteConfig, rewrites *[]Rewrit
 			continue
 		}
 		if match := proxyPassRE.FindStringSubmatch(statement); len(match) == 2 {
-			current.Upstreams = append(current.Upstreams, UpstreamConfig{Address: strings.TrimSpace(match[1]), Weight: 1})
+			address := strings.TrimSpace(match[1])
+			if address == "" || strings.ContainsAny(address, "\r\n\t\x00") {
+				continue
+			}
+			current.Upstreams = append(current.Upstreams, UpstreamConfig{Address: address, Weight: 1})
 			continue
 		}
 		if match := rewriteRE.FindStringSubmatch(statement); len(match) >= 3 {
@@ -430,7 +438,7 @@ func parseListenPort(value string) int {
 	}
 	var port int
 	_, _ = fmt.Sscanf(item, "%d", &port)
-	if port == 0 {
+	if port < 1 || port > 65535 {
 		port = 80
 	}
 	return port

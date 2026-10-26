@@ -68,7 +68,7 @@ func (h *Handler) TestNotifierProvider(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "provider_disabled", "provider is disabled")
 			return
 		}
-		provider, err := monitornotify.NewProvider(item, nil)
+		provider, err := monitornotify.NewRegistry().New(item, nil)
 		if err != nil {
 			writeError(w, http.StatusUnprocessableEntity, "provider_invalid", "provider configuration is invalid")
 			return

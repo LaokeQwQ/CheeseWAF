@@ -153,6 +153,9 @@ func (m *TokenManager) Verify(token string) (*Claims, error) {
 	if claims.Expires <= claims.IssuedAt {
 		return nil, fmt.Errorf("token lifetime is invalid")
 	}
+	if m.ttl > 0 && time.Duration(claims.Expires-claims.IssuedAt)*time.Second > m.ttl {
+		return nil, fmt.Errorf("token lifetime exceeds the manager maximum")
+	}
 	return &claims, nil
 }
 

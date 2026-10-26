@@ -268,3 +268,36 @@ func TestUpdateCandidateRejectsStaleExpectedState(t *testing.T) {
 		t.Fatalf("state=%s, want shadow", stored.State)
 	}
 }
+
+// The approval HTTP layer runs on an injected clock. The transition timestamp
+// must follow it, otherwise a shadow window is measured against wall-clock
+// time and the window check can go negative.
+func TestUpdateCandidateUsesCallerClock(t *testing.T) {
+	_, store := newSQLiteIntelStore(t)
+	ctx := context.Background()
+	candidate := testCandidate(t)
+	if _, _, err := store.InsertCandidate(ctx, candidate); err != nil {
+		t.Fatalf("insert candidate: %v", err)
+	}
+	transition := candidate.CreatedAt.Add(30 * time.Minute)
+	shadow := intel.CandidateShadow
+	updated, err := store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{
+		State:         &shadow,
+		ApprovedBy:    "alice",
+		ExpectedState: &candidate.State,
+		Now:           transition,
+	})
+	if err != nil {
+		t.Fatalf("update candidate: %v", err)
+	}
+	if !updated.UpdatedAt.Equal(transition) {
+		t.Fatalf("updated_at = %s, want %s", updated.UpdatedAt, transition)
+	}
+	reloaded, err := store.GetCandidate(ctx, candidate.ID)
+	if err != nil {
+		t.Fatalf("reload candidate: %v", err)
+	}
+	if !reloaded.UpdatedAt.Equal(transition) {
+		t.Fatalf("stored updated_at = %s, want %s", reloaded.UpdatedAt, transition)
+	}
+}

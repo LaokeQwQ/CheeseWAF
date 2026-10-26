@@ -12,7 +12,7 @@ func SaveKeyringFile(ctx context.Context, path string, keyring *EncryptedKeyring
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
-	if keyring == nil || !validPath(path) {
+	if keyring == nil || !validPath(path) || !filepath.IsAbs(path) {
 		return ErrInvalidConfig
 	}
 	if fi, err := os.Lstat(path); err == nil {

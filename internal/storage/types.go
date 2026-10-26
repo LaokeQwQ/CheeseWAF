@@ -32,8 +32,8 @@ type LogEntry struct {
 }
 
 // LogSink is the interface for log output backends.
-// Implementations include: local file, ClickHouse, VictoriaLogs, PostgreSQL.
-// 日志输出后端接口。实现包括：本地文件、ClickHouse、VictoriaLogs、PostgreSQL。
+// Implementations include: local file, ClickHouse, VictoriaLogs, Loki, Elasticsearch, PostgreSQL.
+// 日志输出后端接口。实现包括：本地文件、ClickHouse、VictoriaLogs、Loki、Elasticsearch、PostgreSQL。
 type LogSink interface {
 	// Write writes a log entry to the sink.
 	// 写入一条日志。
@@ -385,6 +385,30 @@ type SiteSemanticPolicy struct {
 	PromoteSeconds        int      `json:"promote_seconds"`
 	AutoAgree             bool     `json:"auto_agree"`
 	FingerprintDeny       []string `json:"fingerprint_deny,omitempty"`
+	// ActionThresholds and RouteOverrides carry waf.semantic_policy's
+	// block/challenge/log ladder. They are persisted so a console site edit
+	// cannot silently reset a route policy that was written in the config file.
+	// The ladder is a pointer because omitempty has no effect on a struct value:
+	// an unset ladder must not appear as a zero object in every stored site.
+	ActionThresholds *SiteSemanticActionThresholds `json:"action_thresholds,omitempty"`
+	RouteOverrides   []SiteSemanticRouteOverride   `json:"route_overrides,omitempty"`
+}
+
+// SiteSemanticActionThresholds mirrors config.SemanticActionThresholds.
+type SiteSemanticActionThresholds struct {
+	Block     float64 `json:"block"`
+	Challenge float64 `json:"challenge"`
+	Log       float64 `json:"log"`
+}
+
+// SiteSemanticRouteOverride mirrors config.SemanticRouteOverride.
+type SiteSemanticRouteOverride struct {
+	Path      string   `json:"path"`
+	Params    []string `json:"params,omitempty"`
+	Block     float64  `json:"block"`
+	Challenge float64  `json:"challenge"`
+	Log       float64  `json:"log"`
+	Action    string   `json:"action,omitempty"`
 }
 
 type CertificateConfig struct {
@@ -458,11 +482,19 @@ type SiteProtectionPolicy struct {
 }
 
 type SiteResponseConfig struct {
-	Enabled           bool                 `json:"enabled"`
-	MaxBodyBytes      int64                `json:"max_body_bytes"`
-	SensitivePatterns []string             `json:"sensitive_patterns"`
-	TamperKey         string               `json:"tamper_key,omitempty"`
-	TamperSnapshots   []SiteTamperSnapshot `json:"tamper_snapshots,omitempty"`
+	Enabled           bool                         `json:"enabled"`
+	MaxBodyBytes      int64                        `json:"max_body_bytes"`
+	SensitivePatterns []string                     `json:"sensitive_patterns"`
+	Inspection        SiteResponseInspectionPolicy `json:"inspection"`
+	TamperKey         string                       `json:"tamper_key,omitempty"`
+	TamperSnapshots   []SiteTamperSnapshot         `json:"tamper_snapshots,omitempty"`
+}
+
+// SiteResponseInspectionPolicy stores the raw configured fail mode. The
+// default for an empty value is resolved by internal/config, so the storage
+// layer must not substitute one and silently change exposure policy.
+type SiteResponseInspectionPolicy struct {
+	FailMode string `json:"fail_mode,omitempty"`
 }
 
 type SiteTamperSnapshot struct {
