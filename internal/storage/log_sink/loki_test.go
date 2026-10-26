@@ -265,8 +265,8 @@ func TestLokiQueryDecodesSortsAndPagesRows(t *testing.T) {
 	if rangeRequest == nil || countRequest == nil {
 		t.Fatalf("expected range and count requests, got %d", len(recorder.snapshot()))
 	}
-	if got := rangeRequest.query.Get("limit"); got != "3" {
-		t.Fatalf("expected limit offset+page+1 rows, got %q", got)
+	if got := rangeRequest.query.Get("limit"); got != strconv.Itoa(lokiQueryPageSize) {
+		t.Fatalf("expected one page of rows, got %q", got)
 	}
 	if got := rangeRequest.query.Get("direction"); got != "backward" {
 		t.Fatalf("unexpected direction %q", got)
@@ -326,10 +326,16 @@ func TestLokiQueryAppliesLogQLFiltersAndVerifiesRows(t *testing.T) {
 		t.Fatalf("expected a single range request, got %d", len(requests))
 	}
 	query := requests[0].query.Get("query")
-	for _, want := range []string{`client_ip`, `198`, `|~ "(?i)blocked"`} {
+	for _, want := range []string{`client_ip`, `198`} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("logql %q missing %q", query, want)
 		}
+	}
+	// Search is applied to decoded field values, so no raw-line filter may be
+	// generated for it: a phrase containing quotes is stored escaped in the
+	// JSON line and a raw-line regex would drop rows the local matcher accepts.
+	if strings.Contains(query, "(?i)blocked") {
+		t.Fatalf("logql %q must not pre-filter on the search phrase", query)
 	}
 }
 
@@ -493,4 +499,98 @@ func parseBasicAuth(header string) (string, string, bool) {
 	}
 	username, password, ok := strings.Cut(string(decoded), ":")
 	return username, password, ok
+}
+
+// A local-only filter (ID is not expressible in LogQL) must keep walking the
+// window instead of judging only the newest page. Otherwise looking up an old
+// log by ID returns nothing as soon as the newest rows do not match.
+func TestLokiQueryPagesPastNonMatchingRows(t *testing.T) {
+	base := time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC)
+	newest := make([][2]string, 0, lokiQueryPageSize)
+	for index := 0; index < lokiQueryPageSize; index++ {
+		at := base.Add(-time.Duration(index) * time.Second)
+		newest = append(newest, [2]string{
+			strconv.FormatInt(at.UnixNano(), 10),
+			lokiLine(t, storage.LogEntry{ID: "new-" + strconv.Itoa(index), Timestamp: at, Message: "recent"}),
+		})
+	}
+	oldestAt := base.Add(-time.Duration(lokiQueryPageSize) * time.Second)
+	older := [][2]string{{
+		strconv.FormatInt(oldestAt.UnixNano(), 10),
+		lokiLine(t, storage.LogEntry{ID: "target-old", Timestamp: oldestAt, Message: "the row the operator is looking for"}),
+	}}
+
+	recorder := newLokiRecorder(func(request lokiRequest) (int, string) {
+		if request.path != lokiQueryRangePath {
+			return http.StatusNotFound, ""
+		}
+		// The second page is requested with an end bound before the oldest row
+		// of the first page; anything else would re-read the same rows.
+		end, err := strconv.ParseInt(request.query.Get("end"), 10, 64)
+		if err != nil {
+			t.Fatalf("end parameter %q: %v", request.query.Get("end"), err)
+		}
+		if end < base.Add(-time.Duration(lokiQueryPageSize-1)*time.Second).UnixNano() {
+			return http.StatusOK, lokiRangeBody(t, older)
+		}
+		return http.StatusOK, lokiRangeBody(t, newest)
+	})
+	server := httptest.NewServer(recorder)
+	defer server.Close()
+
+	sink := newLokiTestSink(t, server, config.LokiConfig{})
+	items, total, err := sink.Query(t.Context(), storage.LogFilter{
+		ID: "target-old", Limit: 10,
+		StartTime: base.Add(-time.Hour), EndTime: base.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "target-old" {
+		t.Fatalf("older matching row not returned: %+v", items)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if requests := recorder.snapshot(); len(requests) != 2 {
+		t.Fatalf("expected two pages, got %d", len(requests))
+	}
+}
+
+// A search phrase that contains quotes only matches the decoded field value.
+// The row is stored JSON-escaped, so the sink must not filter it out on the
+// raw line before the local matcher runs.
+func TestLokiQuerySearchMatchesDecodedFieldValues(t *testing.T) {
+	base := time.Date(2026, 5, 28, 8, 0, 0, 0, time.UTC)
+	row := storage.LogEntry{ID: "quoted", Timestamp: base, Message: `probe sent "admin" token`}
+	rows := [][2]string{{strconv.FormatInt(base.UnixNano(), 10), lokiLine(t, row)}}
+
+	recorder := newLokiRecorder(func(request lokiRequest) (int, string) {
+		return http.StatusOK, lokiRangeBody(t, rows)
+	})
+	server := httptest.NewServer(recorder)
+	defer server.Close()
+
+	sink := newLokiTestSink(t, server, config.LokiConfig{})
+	items, _, err := sink.Query(t.Context(), storage.LogFilter{Search: `"admin"`, Limit: 10})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "quoted" {
+		t.Fatalf("quoted search did not match the decoded value: %+v", items)
+	}
+}
+
+func lokiRangeBody(t *testing.T, values [][2]string) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"status": "success",
+		"data": map[string]any{"resultType": "streams", "result": []map[string]any{
+			{"stream": map[string]string{"job": lokiDefaultJobLabel}, "values": values},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal range response: %v", err)
+	}
+	return string(raw)
 }

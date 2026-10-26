@@ -1676,3 +1676,26 @@ func TestUpdateSystemPreservesAdapterTokenWhenRedactedDocumentIsEchoed(t *testin
 		t.Fatalf("redacted echo cleared the adapter token: %q", cfg.Server.AdapterToken)
 	}
 }
+
+func TestUpdateSystemPreservesLokiPasswordWhenRedactedDocumentIsEchoed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Storage.Loki.Password = "loki-shared-secret"
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	// The console reads the redacted storage view and saves it back unchanged.
+	storage := cfg.Storage
+	storage.Loki.Password = ""
+	raw, _ := json.Marshal(map[string]any{"storage": storage})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Storage.Loki.Password != "loki-shared-secret" {
+		t.Fatalf("redacted echo cleared the Loki password: %q", cfg.Storage.Loki.Password)
+	}
+}

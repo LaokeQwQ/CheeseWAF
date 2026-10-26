@@ -114,31 +114,31 @@ func (c *Client) Run(ctx context.Context, handler Handler) error {
 	}
 	c.state = StateHandshaking
 	c.mu.Unlock()
+	// Run is the single writer to receipts, so closing it here cannot race a
+	// send and lets consumers range over Receipts until the session ends.
+	defer close(c.receipts)
+	// A blocked read on an owned pipe never observes ctx, so cancellation has
+	// to tear the connection down to make readFrame return.
+	stopCancellation := context.AfterFunc(ctx, func() { c.fail(ctx.Err()) })
+	defer stopCancellation()
 
 	first, err := c.readFrame()
 	if err != nil {
-		c.fail(err)
-		return err
+		return c.failRun(ctx, err)
 	}
 	if first.Type != FrameHello {
-		err := fmt.Errorf("%w: expected hello, got %s", ErrClientHello, first.Type)
-		c.fail(err)
-		return err
+		return c.failRun(ctx, fmt.Errorf("%w: expected hello, got %s", ErrClientHello, first.Type))
 	}
 	var hello HelloPayload
 	if err := json.Unmarshal(first.Payload, &hello); err != nil {
-		c.fail(err)
-		return fmt.Errorf("%w: %v", ErrClientHello, err)
+		return c.failRun(ctx, fmt.Errorf("%w: %v", ErrClientHello, err))
 	}
 	if hello.Plugin.PluginID != c.opts.Identity.PluginID || hello.Plugin.Version != c.opts.Identity.Version || hello.Plugin.Namespace != c.opts.Identity.Namespace {
-		err := fmt.Errorf("%w: host identity mismatch", ErrClientHello)
-		c.fail(err)
-		return err
+		return c.failRun(ctx, fmt.Errorf("%w: host identity mismatch", ErrClientHello))
 	}
 	accepted, err := negotiateClientCapabilities(c.opts.Capabilities, hello.Capabilities)
 	if err != nil {
-		c.fail(err)
-		return err
+		return c.failRun(ctx, err)
 	}
 	ready := Frame{
 		Type: FrameReady, SchemaVersion: ProtocolVersion,
@@ -148,32 +148,37 @@ func (c *Client) Run(ctx context.Context, handler Handler) error {
 		}),
 	}
 	if err := c.writeFrame(ready); err != nil {
-		c.fail(err)
-		return err
+		return c.failRun(ctx, err)
 	}
 	c.mu.Lock()
 	c.state = StateReady
 	c.mu.Unlock()
 
 	for {
-		if err := ctx.Err(); err != nil {
-			c.fail(err)
-			return err
-		}
 		frame, err := c.readFrame()
 		if err != nil {
-			c.fail(err)
-			return err
+			return c.failRun(ctx, err)
 		}
 		if err := c.dispatch(ctx, handler, frame); err != nil {
-			c.fail(err)
-			return err
+			return c.failRun(ctx, err)
 		}
 		if frame.Type == FrameShutdown {
 			c.closeSession()
 			return nil
 		}
 	}
+}
+
+// failRun records the terminal error. When cancellation tore the connection
+// down under a blocked read or write, the context cause is the real reason and
+// the transport error is only its symptom.
+func (c *Client) failRun(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		c.fail(ctxErr)
+		return ctxErr
+	}
+	c.fail(err)
+	return err
 }
 
 func negotiateClientCapabilities(requested, granted []Capability) ([]Capability, error) {
@@ -372,4 +377,41 @@ func mustMarshal(value any) json.RawMessage {
 		panic(err)
 	}
 	return raw
+}
+
+// drainReceipts consumes acknowledgements until the channel closes and reports
+// the rejected ones. It is separate so the drain contract is testable without
+// standing up a full data-plane session.
+func drainReceipts(receipts <-chan Receipt, label string, log io.Writer) {
+	for receipt := range receipts {
+		if receipt.Accepted || log == nil {
+			continue
+		}
+		fmt.Fprintf(log, "%s: host rejected %s receipt %d: %s\n", label, receipt.Kind, receipt.Sequence, receipt.Code)
+	}
+}
+
+// StartDataPlane runs the client until the context is cancelled or the host
+// shuts the session down, and drains the receipt stream for the same lifetime.
+// A receipt acknowledges a hint or analysis draft; the client refuses further
+// work once 64 receipts queue up, so an undrained stream would disconnect the
+// sidecar at receipt 65 while its lifecycle process stayed alive. Rejections
+// are written to log instead of being dropped silently.
+func StartDataPlane(ctx context.Context, client *Client, handler Handler, label string, log io.Writer) {
+	if client == nil {
+		return
+	}
+	go func() {
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			drainReceipts(client.Receipts(), label, log)
+		}()
+		if err := client.Run(ctx, handler); err != nil && ctx.Err() == nil && log != nil {
+			fmt.Fprintf(log, "%s: %v\n", label, err)
+		}
+		// Run closes the receipt channel, so this only waits for the last
+		// queued acknowledgements to be reported.
+		<-drained
+	}()
 }

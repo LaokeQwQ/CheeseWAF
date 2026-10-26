@@ -54,8 +54,9 @@ func TestBudgetExhaustedPolicyMonotonic(t *testing.T) {
 
 // The response inspection fail-mode decides whether an uninspectable response
 // (size limit, streaming media, unsupported encoding) is delivered. An omitted
-// value must fail closed, and a typo must never silently pick a different
-// exposure policy.
+// value resolves to the documented default, observe: the body is delivered and
+// the coverage gap is logged. Withholding needs an explicit closed, and a typo
+// must never silently pick a different exposure policy.
 func TestNormalizeResponseFailMode(t *testing.T) {
 	cases := []struct {
 		raw     string

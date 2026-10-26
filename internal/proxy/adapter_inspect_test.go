@@ -227,3 +227,44 @@ func TestInspectAdapterReadsProtectionPolicyUnderLock(t *testing.T) {
 	}
 	<-done
 }
+
+// A truncated body is a prefix, not a verdict. The site's incomplete-input
+// fail mode must decide, otherwise a clean prefix returns allow for a payload
+// the WAF never saw.
+func TestInspectAdapterRoutesTruncatedBodyThroughIncompletePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		policy string
+		want   adapterapi.Action
+	}{
+		{config.BudgetPolicyClosed, adapterapi.ActionChallenge},
+		{config.BudgetPolicyObserve, adapterapi.ActionLog},
+		{config.BudgetPolicyOpen, adapterapi.ActionAllow},
+	} {
+		t.Run(tc.policy, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Sites = []config.SiteConfig{{
+				ID: "site-1", Name: "truncated", Domains: []string{"trunc.example"}, Enabled: true,
+				WAF: config.WAFConfig{
+					Enabled: true, Mode: "block", ParanoiaLevel: 3,
+					SemanticPolicy: config.SemanticPolicyConfig{BudgetExhaustedPolicy: tc.policy},
+				},
+			}}
+			server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision, err := server.InspectAdapter(context.Background(), adapterapi.Request{
+				ContractVersion: adapterapi.Version, Source: adapterapi.SourceGeneric,
+				Method: http.MethodPost, Path: "/upload", Authority: "trunc.example",
+				BodyState: adapterapi.BodyStateTruncated, BodyForwarded: true, BodyTruncated: true,
+				Body: []byte("harmless prefix"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Action != tc.want {
+				t.Fatalf("truncated body action = %q, want %q (reason %q)", decision.Action, tc.want, decision.Reason)
+			}
+		})
+	}
+}

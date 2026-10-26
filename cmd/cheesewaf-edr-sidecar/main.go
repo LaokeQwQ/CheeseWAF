@@ -149,11 +149,7 @@ func run() error {
 				return err
 			}
 			handler = &edrHandler{client: client, engine: edr.NewEngine(), mode: mode}
-			go func() {
-				if err := client.Run(ctx, handler); err != nil && ctx.Err() == nil {
-					_, _ = io.WriteString(os.Stderr, "edr data plane: "+err.Error()+"\n")
-				}
-			}()
+			hostapi.StartDataPlane(ctx, client, handler, "edr data plane", os.Stderr)
 		case "probe":
 			// health is reported by the data plane
 		case "mode":

@@ -154,28 +154,26 @@ func unescapeUnicode(raw string) (string, bool) {
 	if !strings.Contains(raw, `\u`) && !strings.Contains(raw, `\x`) {
 		return raw, false
 	}
-	changedAny := false
-	out := raw
-	for {
-		changed := false
-		out = unicodeEscPattern.ReplaceAllStringFunc(out, func(match string) string {
-			parts := unicodeEscPattern.FindStringSubmatch(match)
-			hex := parts[1]
-			if hex == "" {
-				hex = parts[2]
-			}
-			value, err := strconv.ParseInt(hex, 16, 32)
-			if err != nil {
-				return match
-			}
-			changed = true
-			return string(rune(value))
-		})
-		if !changed {
-			return out, changedAny
+	// Exactly one replacement pass. An input such as "\\x5c" followed by bare
+	// "x5c" groups exposes one new escape per pass, so looping here re-scanned
+	// and re-copied the whole remaining string per layer and turned a bounded
+	// decode into quadratic work. Each pass is one counted decode layer for the
+	// callers' depth loop instead.
+	changed := false
+	out := unicodeEscPattern.ReplaceAllStringFunc(raw, func(match string) string {
+		parts := unicodeEscPattern.FindStringSubmatch(match)
+		hex := parts[1]
+		if hex == "" {
+			hex = parts[2]
 		}
-		changedAny = true
-	}
+		value, err := strconv.ParseInt(hex, 16, 32)
+		if err != nil {
+			return match
+		}
+		changed = true
+		return string(rune(value))
+	})
+	return out, changed
 }
 
 // Patterns that mark text as plausibly carrying another encoding layer. Named

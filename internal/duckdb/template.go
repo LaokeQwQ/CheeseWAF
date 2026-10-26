@@ -31,6 +31,11 @@ type Template struct {
 }
 
 // LoadTemplate validates a fixed analysis template and computes its digest.
+//
+// Accepted bodies start with SELECT or WITH and read audit_events. Runner.Run
+// composes every accepted body as a derived table under its own audit_events
+// CTE, so both shapes execute with a single top-level WITH; the accepted set
+// here and the executable set in Runner.Run stay the same.
 func LoadTemplate(id string, sql []byte) (Template, error) {
 	text := strings.TrimSpace(string(sql))
 	if id == "" || text == "" {

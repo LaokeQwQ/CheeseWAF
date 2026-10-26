@@ -51,6 +51,13 @@ type requestDetectionPipeline interface {
 	Detect(context.Context, *engine.RequestContext) (*engine.DetectionResult, error)
 }
 
+// incompleteInputMarker is implemented by the real pipeline. Test doubles that
+// only stub Detect keep working: a truncated adapter body then reports the
+// plain detection result instead of silently claiming full coverage.
+type incompleteInputMarker interface {
+	MarkInputIncomplete(*engine.RequestContext, *engine.DetectionResult, string) *engine.DetectionResult
+}
+
 type Server struct {
 	config           *config.Config
 	runtimeMu        sync.RWMutex

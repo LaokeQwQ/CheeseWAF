@@ -298,6 +298,11 @@ func preserveSystemSecrets(current config.Config, next *config.Config) {
 	if next.Storage.ClickHouse.Password == "" {
 		next.Storage.ClickHouse.Password = current.Storage.ClickHouse.Password
 	}
+	if next.Storage.Loki.Password == "" {
+		// storageConfigView clears the Loki password too; without this the next
+		// console save persists an empty password and Loki authentication fails.
+		next.Storage.Loki.Password = current.Storage.Loki.Password
+	}
 	if next.Storage.PostgreSQL.DSN == "" {
 		next.Storage.PostgreSQL.DSN = current.Storage.PostgreSQL.DSN
 	}

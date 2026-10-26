@@ -865,8 +865,12 @@ type ResponseInspectionConfig struct {
 //	observe - deliver the body, log it as a coverage gap, never block
 //	closed  - withhold the body when the inspector could not cover it
 //
-// A site that serves large downloads or media streams has to set open or
-// observe explicitly; the default protects confidentiality.
+// The default is observe (DefaultResponseFailMode): an omitted fail_mode still
+// delivers bodies the inspector could not cover, and the gap is only recorded
+// in the log. A site that must withhold uninspected bodies - sensitive APIs,
+// anything where an unchecked body is itself the exposure - has to select
+// closed explicitly. open is the pre-policy pass-through: it never carries an
+// action and drops the gap entirely for streaming responses.
 const (
 	ResponseFailModeOpen    = "open"
 	ResponseFailModeObserve = "observe"

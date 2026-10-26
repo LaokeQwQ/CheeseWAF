@@ -373,9 +373,9 @@ type processSidecarProcess struct {
 	stdout   *bufio.Reader
 	done     chan struct{}
 
-	dataPlaneMu   sync.Mutex
-	dataPlane     ProcessDataPlane
-	dataPlaneOnce sync.Once
+	dataPlaneMu     sync.Mutex
+	dataPlane       ProcessDataPlane
+	dataPlaneClosed bool
 
 	waitMu  sync.Mutex
 	waitErr error
@@ -392,8 +392,15 @@ type processSidecarProcess struct {
 	stopErr       error
 }
 
+// setDataPlane installs the data plane, or closes it immediately when the
+// child has already been reaped. Both orders must end with exactly one Close.
 func (p *processSidecarProcess) setDataPlane(dataPlane ProcessDataPlane) {
 	p.dataPlaneMu.Lock()
+	if p.dataPlaneClosed {
+		p.dataPlaneMu.Unlock()
+		_ = dataPlane.Close()
+		return
+	}
 	p.dataPlane = dataPlane
 	p.dataPlaneMu.Unlock()
 }
@@ -405,15 +412,17 @@ func (p *processSidecarProcess) DataPlane() ProcessDataPlane {
 	return p.dataPlane
 }
 
+// closeDataPlane closes the installed data plane at most once and marks the
+// slot closed so a later install cannot leak a live connection.
 func (p *processSidecarProcess) closeDataPlane() {
-	p.dataPlaneOnce.Do(func() {
-		p.dataPlaneMu.Lock()
-		dataPlane := p.dataPlane
-		p.dataPlaneMu.Unlock()
-		if dataPlane != nil {
-			_ = dataPlane.Close()
-		}
-	})
+	p.dataPlaneMu.Lock()
+	dataPlane := p.dataPlane
+	p.dataPlane = nil
+	p.dataPlaneClosed = true
+	p.dataPlaneMu.Unlock()
+	if dataPlane != nil {
+		_ = dataPlane.Close()
+	}
 }
 
 func (p *processSidecarProcess) SetMode(ctx context.Context, mode SidecarMode) error {
@@ -485,11 +494,13 @@ func (p *processSidecarProcess) Stop(ctx context.Context) error {
 }
 
 func (p *processSidecarProcess) wait() {
-	p.closeDataPlane()
 	err := p.cmd.Wait()
 	p.waitMu.Lock()
 	p.waitErr = err
 	p.waitMu.Unlock()
+	// Reap first: closing the data plane while the child still runs would make
+	// the close and the install race on which side wins.
+	p.closeDataPlane()
 	close(p.done)
 	if p.backend != nil {
 		p.backend.mu.Lock()

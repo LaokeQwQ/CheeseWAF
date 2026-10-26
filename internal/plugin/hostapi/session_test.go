@@ -84,7 +84,10 @@ func TestSessionHandshakeEventAndHint(t *testing.T) {
 			t.Errorf("event frame = %s", event.Type)
 			return
 		}
-		writeTestFrame(t, hostInW, Frame{Type: FrameEventAck, SchemaVersion: ProtocolVersion, Sequence: event.Sequence})
+		writeTestFrame(t, hostInW, Frame{
+			Type: FrameEventAck, SchemaVersion: ProtocolVersion, Sequence: event.Sequence,
+			Payload: mustJSON(t, EventAck{Sequence: event.Sequence, Accepted: true}),
+		})
 		writeTestFrame(t, hostInW, Frame{
 			Type: FrameHint, SchemaVersion: ProtocolVersion, Sequence: 1,
 			Payload: json.RawMessage(`{"hint_id":"hint-1"}`),

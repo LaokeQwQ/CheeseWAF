@@ -26,6 +26,14 @@ const (
 	lokiPushPath        = "/loki/api/v1/push"
 	lokiQueryRangePath  = "/loki/api/v1/query_range"
 	lokiQueryPath       = "/loki/api/v1/query"
+	// lokiQueryPageSize is the row budget for one query_range request. Loki has
+	// no offset, so paging walks the time window backwards (or forwards).
+	lokiQueryPageSize = 1000
+	// lokiMaxQueryPages bounds how many requests one Query may issue. Row
+	// filters are applied after the fetch, so a lower cap would silently miss
+	// older matches; the window itself is already bounded by the caller's
+	// range and by lokiDefaultQueryWindow.
+	lokiMaxQueryPages = 10
 	// lokiDefaultQueryWindow bounds reads that arrive without an explicit time
 	// range so a single API call cannot ask Loki for its full retention.
 	lokiDefaultQueryWindow = 24 * time.Hour
@@ -274,36 +282,46 @@ func lokiBaseURL(endpoint string) (string, error) {
 }
 
 // Query implements storage.LogSink. Loki has no offset parameter, so the sink
-// fetches offset+limit rows from the selected time window and then applies the
-// shared filter matcher, ordering and paging locally.
+// pages through the selected time window and applies the shared filter matcher,
+// ordering and paging locally. A single fetch of offset+limit rows is not
+// enough: filters LogQL cannot express (ID, Kind, Tags) are applied after the
+// fetch, so the newest page may match nothing while older rows still do.
 func (s *LokiSink) Query(ctx context.Context, filter storage.LogFilter) ([]storage.LogEntry, int64, error) {
 	window, err := s.queryWindow(filter)
 	if err != nil {
 		return nil, 0, err
 	}
 	limit := normalizedLimit(filter.Limit)
-	windowRows, err := boundedQueryWindow(filter.Offset, limit)
-	if err != nil {
-		return nil, 0, err
-	}
 	direction := "backward"
 	if filter.Ascending {
 		direction = "forward"
 	}
-	rows, err := s.queryRange(ctx, window, windowRows, direction)
-	if err != nil {
-		return nil, 0, err
-	}
-	matched := make([]storage.LogEntry, 0, len(rows))
-	for _, row := range rows {
-		entry, err := lokiDecodeRow(row)
+	matched := make([]storage.LogEntry, 0, normalizedLimit(filter.Offset+limit))
+	pageWindow := window
+	for page := 0; page < lokiMaxQueryPages; page++ {
+		rows, err := s.queryRange(ctx, pageWindow, lokiQueryPageSize, direction)
 		if err != nil {
 			return nil, 0, err
 		}
-		if !matches(entry, filter) {
-			continue
+		for _, row := range rows {
+			entry, err := lokiDecodeRow(row)
+			if err != nil {
+				return nil, 0, err
+			}
+			if matches(entry, filter) {
+				matched = append(matched, entry)
+			}
 		}
-		matched = append(matched, entry)
+		// A short page is the last page of the window; anything else is a full
+		// page that may still have unread rows behind it.
+		if len(rows) < lokiQueryPageSize {
+			break
+		}
+		next, ok := advanceLokiPage(pageWindow, rows, direction)
+		if !ok {
+			break
+		}
+		pageWindow = next
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
 		comparison := compareLogEntries(matched[i], matched[j])
@@ -449,9 +467,11 @@ func lokiLineFilters(filter storage.LogFilter) []string {
 	addField("client_ip", filter.ClientIP)
 	addField("category", filter.Category)
 	addField("action", filter.Action)
-	if search := strings.TrimSpace(filter.Search); search != "" {
-		filters = append(filters, "|~ "+lokiQuote("(?i)"+regexp.QuoteMeta(search)))
-	}
+	// Search is matched against decoded field values by matches(), so a LogQL
+	// line filter cannot express it: a phrase containing quotes is stored
+	// escaped in the JSON line and the raw-line regex would drop a row that the
+	// local matcher accepts. Field filters above match JSON literals and are
+	// still verified locally, so they stay as a transfer optimisation.
 	return filters
 }
 
@@ -514,6 +534,51 @@ func (s *LokiSink) queryRange(ctx context.Context, window lokiQueryWindow, limit
 		}
 	}
 	return rows, nil
+}
+
+// advanceLokiPage moves the window past the rows just read. Loki returns
+// nanosecond timestamps as decimal strings. It reports false when the window
+// cannot move — an empty page, no parsable timestamp, or every row sharing one
+// timestamp — because continuing would re-read the same rows forever.
+func advanceLokiPage(window lokiQueryWindow, rows []lokiValueRow, direction string) (lokiQueryWindow, bool) {
+	var boundary int64
+	found := false
+	for _, row := range rows {
+		stamp, err := strconv.ParseInt(strings.TrimSpace(row.timestamp), 10, 64)
+		if err != nil {
+			continue
+		}
+		if !found {
+			boundary = stamp
+			found = true
+			continue
+		}
+		if direction == "forward" {
+			if stamp > boundary {
+				boundary = stamp
+			}
+			continue
+		}
+		if stamp < boundary {
+			boundary = stamp
+		}
+	}
+	if !found {
+		return lokiQueryWindow{}, false
+	}
+	next := window
+	if direction == "forward" {
+		next.start = time.Unix(0, boundary).UTC().Add(time.Nanosecond)
+		if next.start.After(window.end) {
+			return lokiQueryWindow{}, false
+		}
+		return next, true
+	}
+	next.end = time.Unix(0, boundary).UTC().Add(-time.Nanosecond)
+	if next.end.Before(window.start) {
+		return lokiQueryWindow{}, false
+	}
+	return next, true
 }
 
 func decodeLokiValue(raw json.RawMessage) (lokiValueRow, error) {

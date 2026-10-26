@@ -109,6 +109,13 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 	reqCtx.Metadata["adapter_body_state"] = string(request.BodyState)
 	reqCtx.Metadata["adapter_body_encoding"] = request.BodyEncoding
 	reqCtx.Metadata["adapter_source"] = string(request.Source)
+	if request.BodyState == adapterapi.BodyStateTruncated {
+		// The gateway forwarded only a prefix. Detecting on that prefix and
+		// returning allow would report a clean verdict for a body the WAF never
+		// saw, so route the request through the incomplete-input decision path:
+		// the site's fail mode then decides between challenge, log, and pass.
+		reqCtx.Metadata["adapter_body_truncated"] = true
+	}
 
 	s.runtimeMu.RLock()
 	protectionPolicy := s.protectionPolicy
@@ -126,6 +133,13 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 	result, err := pipeline.Detect(ctx, reqCtx)
 	if err != nil {
 		return adapterapi.Decision{}, err
+	}
+	if request.BodyState == adapterapi.BodyStateTruncated {
+		// Applied after detection so a real block still wins: the incomplete
+		// path keeps an existing block/challenge and only fills the gap.
+		if marker, ok := pipeline.(incompleteInputMarker); ok {
+			result = marker.MarkInputIncomplete(reqCtx, result, "adapter_body_truncated")
+		}
 	}
 	if result == nil || !result.Detected {
 		return adapterapi.Decision{Action: adapterapi.ActionAllow}.Normalized(), nil

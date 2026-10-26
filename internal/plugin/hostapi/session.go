@@ -20,6 +20,7 @@ var (
 	ErrSessionClosed = errors.New("plugin host session is closed")
 	ErrProtocol      = errors.New("plugin host protocol violation")
 	ErrAckTimeout    = errors.New("plugin host acknowledgement timed out")
+	ErrAckRejected   = errors.New("plugin host request was rejected")
 	ErrResultBacklog = errors.New("plugin host result backlog is full")
 )
 
@@ -192,8 +193,7 @@ func (s *Session) Start(ctx context.Context) error {
 		MaxFrameBytes: s.opts.MaxFrameBytes,
 	})
 	s.mu.Unlock()
-	if err := s.writeFrame(hello); err != nil {
-		s.fail(err)
+	if err := s.writeFrameContext(ctx, hello); err != nil {
 		return err
 	}
 
@@ -319,8 +319,7 @@ func (s *Session) Drain(ctx context.Context) error {
 	sequence := s.nextSeq
 	s.nextSeq++
 	s.mu.Unlock()
-	if err := s.writeFrame(Frame{Type: FrameDrain, SchemaVersion: ProtocolVersion, Sequence: sequence}); err != nil {
-		s.fail(err)
+	if err := s.writeFrameContext(ctx, Frame{Type: FrameDrain, SchemaVersion: ProtocolVersion, Sequence: sequence}); err != nil {
 		return err
 	}
 	select {
@@ -353,10 +352,8 @@ func (s *Session) sendAndWait(ctx context.Context, frameType FrameType, payload 
 	s.pending[sequence] = ackCh
 	s.mu.Unlock()
 
-	err := s.writeFrame(Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: payload})
-	if err != nil {
+	if err := s.writeFrameContext(ctx, Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: payload}); err != nil {
 		s.dropPending(sequence)
-		s.fail(err)
 		return err
 	}
 	select {
@@ -365,7 +362,11 @@ func (s *Session) sendAndWait(ctx context.Context, frameType FrameType, payload 
 			s.fail(fmt.Errorf("%w: ack %s for %s", ErrProtocol, ack.Type, frameType))
 			return ErrProtocol
 		}
-		return nil
+		err := ackVerdict(ackType, ack.Payload)
+		if errors.Is(err, ErrProtocol) {
+			s.fail(err)
+		}
+		return err
 	case <-time.After(s.opts.AckTimeout):
 		s.dropPending(sequence)
 		s.fail(ErrAckTimeout)
@@ -399,19 +400,66 @@ func (s *Session) sendOneWay(ctx context.Context, frameType FrameType, sequence 
 	if err != nil {
 		return err
 	}
-	return s.writeFrame(Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: raw})
+	return s.writeFrameContext(ctx, Frame{Type: frameType, SchemaVersion: ProtocolVersion, Sequence: sequence, Payload: raw})
 }
 
-func (s *Session) writeFrame(frame Frame) error {
+// ackVerdict interprets a plugin acknowledgement payload. The plugin reports
+// handler failures as accepted:false instead of a protocol error, so a matching
+// frame type alone does not mean the host request succeeded.
+func ackVerdict(ackType FrameType, payload json.RawMessage) error {
+	var body struct {
+		Accepted  *bool     `json:"accepted"`
+		ErrorCode ErrorCode `json:"error_code"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return fmt.Errorf("%w: %s payload: %v", ErrProtocol, ackType, err)
+	}
+	if body.Accepted == nil {
+		return fmt.Errorf("%w: %s payload has no accepted field", ErrProtocol, ackType)
+	}
+	if *body.Accepted {
+		return nil
+	}
+	if body.ErrorCode == "" {
+		return fmt.Errorf("%w: %s rejected the request", ErrAckRejected, ackType)
+	}
+	return fmt.Errorf("%w: %s rejected the request with %s", ErrAckRejected, ackType, body.ErrorCode)
+}
+
+func (s *Session) writeFrameContext(ctx context.Context, frame Frame) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	raw, err := EncodeFrame(frame, s.opts.MaxFrameBytes)
 	if err != nil {
 		return err
 	}
 	raw = append(raw, '\n')
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err = s.out.Write(raw)
-	return err
+	written := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		_, err := s.out.Write(raw)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			s.fail(err)
+		}
+		return err
+	case <-ctx.Done():
+		// A blocked pipe write cannot observe ctx, so the only way to release
+		// it is to close the owned connection. The interrupted frame may be
+		// partially written, which leaves the stream unusable.
+		s.fail(ctx.Err())
+		return ctx.Err()
+	case <-s.done:
+		return ErrSessionClosed
+	}
 }
 
 func (s *Session) readFrame() (Frame, error) {

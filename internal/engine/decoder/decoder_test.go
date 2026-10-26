@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDeepDecodeRevealsNestedBase64AndURLPayload(t *testing.T) {
@@ -195,4 +196,31 @@ func TestDeepDecodeAndDecodeAllStripNUL(t *testing.T) {
 			t.Fatalf("DecodeAll[%d] Text still contains NUL: %q", i, v.Text)
 		}
 	}
+}
+
+// A nested escape that exposes one new escape per pass must not make the
+// decoder rescan the whole string per layer. One pass per counted layer keeps
+// the work linear in the number of layers.
+func TestUnescapeUnicodeDoesNotLoopToFixedPoint(t *testing.T) {
+	// "\x5c" becomes a backslash, which forms a new escape with the following
+	// bare "x5c" groups; the old implementation rescanned once per group.
+	raw := `\x5c` + strings.Repeat(`x5c`, 20000)
+	start := time.Now()
+	out, changed := unescapeUnicode(raw)
+	elapsed := time.Since(start)
+	if !changed {
+		t.Fatal("expected the first escape to be replaced")
+	}
+	if out == raw {
+		t.Fatal("output must differ from input")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("single pass took %s; the replacement loop is still quadratic", elapsed)
+	}
+	// The remaining escapes are exposed to the depth-bounded outer loop, so the
+	// result is intentionally not fully unescaped here.
+	if strings.Contains(out, `\x5c`) {
+		return
+	}
+	t.Fatalf("expected remaining escapes to stay for the next layer, got %q", out[:min(40, len(out))])
 }

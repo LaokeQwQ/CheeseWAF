@@ -84,9 +84,13 @@ type eventRecord struct {
 	family string
 }
 
+// keyState keeps one bounded event window per subject key. Route fan-out is
+// derived from that window (see countDistinctRoutes) instead of a separate
+// route map: an unbounded map keyed by attacker-controlled route_ref let a
+// scanner with many distinct paths grow the correlator without limit while
+// pruneLocked walked it on every event.
 type keyState struct {
 	events     []eventRecord
-	routes     map[string]time.Time
 	lastHintAt time.Time
 }
 
@@ -129,15 +133,12 @@ func (e *Engine) Observe(event Event, policyEpoch uint64) []Hint {
 		if len(e.states) >= e.maxKeys {
 			return nil
 		}
-		state = &keyState{events: make([]eventRecord, 0, 16), routes: make(map[string]time.Time)}
+		state = &keyState{events: make([]eventRecord, 0, 16)}
 		e.states[key] = state
 	}
 	state.events = append(state.events, eventRecord{at: now, route: event.RouteRef, kind: event.EventType, family: event.Metadata.RuleFamily})
 	if len(state.events) > e.maxPerKey {
 		state.events = state.events[len(state.events)-e.maxPerKey:]
-	}
-	if event.RouteRef != "" {
-		state.routes[event.RouteRef] = now
 	}
 	if !state.lastHintAt.IsZero() && now.Sub(state.lastHintAt) < suppressionTTL {
 		return nil
@@ -169,7 +170,7 @@ func (e *Engine) evaluateLocked(key string, state *keyState, event Event, now ti
 	case countEvents(state.events, now, 2*time.Minute, "rate_limit_exceeded") >= 1 &&
 		countEvents(state.events, now, 2*time.Minute, "origin_error") >= 1:
 		ruleID, score, confidence, band, disposition, window = "rate-limit-origin", 50, 55, "medium", "observe", 2*time.Minute
-	case countDistinctRoutes(state.routes, now, 5*time.Minute) >= 20:
+	case countDistinctRoutes(state.events, now, 5*time.Minute) >= 20:
 		ruleID, score, confidence, band, disposition, window = "multi-route-probe", 55, 60, "medium", "review", 5*time.Minute
 	default:
 		return nil
@@ -201,12 +202,6 @@ func (e *Engine) pruneLocked(now time.Time) {
 	for key, state := range e.states {
 		if len(state.events) > 0 && state.events[len(state.events)-1].at.Before(cutoff) {
 			delete(e.states, key)
-			continue
-		}
-		for route, at := range state.routes {
-			if at.Before(cutoff) {
-				delete(state.routes, route)
-			}
 		}
 	}
 }
@@ -222,15 +217,22 @@ func countEvents(events []eventRecord, now time.Time, window time.Duration, kind
 	return total
 }
 
-func countDistinctRoutes(routes map[string]time.Time, now time.Time, window time.Duration) int {
+// countDistinctRoutes counts the routes seen inside the window. It reads the
+// bounded per-key event window, so route tracking inherits maxEventsPerKey and
+// cannot grow beyond it; the 5 minute fan-out window is unchanged. The only
+// behaviour change is that a route whose last event has already been evicted by
+// the per-key event cap no longer counts - that is the point of the cap, and a
+// 20-route fan-out still trips long before 256 events.
+func countDistinctRoutes(events []eventRecord, now time.Time, window time.Duration) int {
 	cutoff := now.Add(-window)
-	total := 0
-	for _, at := range routes {
-		if !at.Before(cutoff) {
-			total++
+	seen := make(map[string]struct{}, len(events))
+	for _, event := range events {
+		if event.route == "" || event.at.Before(cutoff) {
+			continue
 		}
+		seen[event.route] = struct{}{}
 	}
-	return total
+	return len(seen)
 }
 
 func stableHintID(key, rule string, now time.Time) string {

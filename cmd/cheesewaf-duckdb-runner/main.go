@@ -162,11 +162,7 @@ func run() error {
 				client: client,
 				runner: duckdb.NewRunner(&duckdb.CLIExecutor{Binary: os.Getenv("CHEESEWAF_DUCKDB_BIN")}),
 			}
-			go func() {
-				if err := client.Run(ctx, handler); err != nil && ctx.Err() == nil {
-					_, _ = io.WriteString(os.Stderr, "duckdb data plane: "+err.Error()+"\n")
-				}
-			}()
+			hostapi.StartDataPlane(ctx, client, handler, "duckdb data plane", os.Stderr)
 		case "probe":
 			// health is reported by the data plane
 		case "mode":
