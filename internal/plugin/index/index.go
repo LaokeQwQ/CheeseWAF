@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,12 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/crp"
 )
+
+// maxIndexedFileBytes bounds one descriptor. A manifest or provider pack is a
+// small JSON document; anything larger is not something the index should hold
+// in memory, and reading it eagerly would let a stray file exhaust the process
+// before validation ever runs.
+const maxIndexedFileBytes = 1 << 20
 
 // Entry is one candidate file in the plugin directory. A malformed file is
 // recorded with Err set and never fails the whole scan.
@@ -151,6 +158,12 @@ func isManifestCandidate(entry os.DirEntry) bool {
 	if entry.IsDir() {
 		return false
 	}
+	// Only regular files are candidates. A symlink would be read through, but
+	// the watcher fingerprints the link itself, so a changed target would never
+	// trigger a reload; a FIFO would block the read and could hang startup.
+	if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+		return false
+	}
 	return strings.EqualFold(filepath.Ext(entry.Name()), ".json")
 }
 
@@ -158,9 +171,32 @@ func isManifestCandidate(entry os.DirEntry) bool {
 // remaining files stay indexed.
 func loadEntry(path, hostVersion string) Entry {
 	entry := Entry{Path: path}
-	raw, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		entry.Err = fmt.Errorf("%s: %w", path, err)
+		return entry
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		entry.Err = fmt.Errorf("%s: %w", path, err)
+		return entry
+	}
+	if !info.Mode().IsRegular() {
+		entry.Err = fmt.Errorf("%s: not a regular file", path)
+		return entry
+	}
+	if info.Size() > maxIndexedFileBytes {
+		entry.Err = fmt.Errorf("%s: exceeds %d bytes", path, maxIndexedFileBytes)
+		return entry
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maxIndexedFileBytes+1))
+	if err != nil {
+		entry.Err = fmt.Errorf("%s: %w", path, err)
+		return entry
+	}
+	if int64(len(raw)) > maxIndexedFileBytes {
+		entry.Err = fmt.Errorf("%s: exceeds %d bytes", path, maxIndexedFileBytes)
 		return entry
 	}
 	entry.Raw = raw

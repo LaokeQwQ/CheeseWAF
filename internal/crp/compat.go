@@ -19,6 +19,12 @@ type HostCompatibility struct {
 	Max string `json:"max,omitempty"`
 }
 
+// IsZero reports whether no bound is declared. encoding/json omits the field
+// with omitzero when this is true, which keeps older manifests byte-identical.
+func (h HostCompatibility) IsZero() bool {
+	return strings.TrimSpace(h.Min) == "" && strings.TrimSpace(h.Max) == ""
+}
+
 // Check reports whether hostVersion satisfies the declared range. Both bounds
 // are inclusive. An unparsable bound or host version is an error: a typo must
 // not silently widen the range.

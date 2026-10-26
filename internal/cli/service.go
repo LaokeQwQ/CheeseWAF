@@ -136,6 +136,9 @@ func runServe(ctx context.Context) error {
 	// is already resolvable at startup, and the watcher keeps it current.
 	pluginIndex := startPluginIndex(ctx, cfg, cfg.Setup.DataDir, version.Version)
 	defer pluginIndex.Close()
+	if err := validateConfiguredNotifierTypes(cfg, pluginIndex.Registry()); err != nil {
+		return err
+	}
 	var store storage.Store
 	var productionDeps *ProductionDependencies
 	var productionWiring ProductionServeWiring

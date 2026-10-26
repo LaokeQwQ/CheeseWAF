@@ -1,6 +1,7 @@
 package crp
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -55,5 +56,30 @@ func TestManifestValidateRejectsMalformedCompatibility(t *testing.T) {
 	manifest.HostCompatibility = HostCompatibility{Min: "0.4.0", Max: "0.5.0"}
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("valid range rejected: %v", err)
+	}
+}
+
+// Manifests signed before host_compatibility existed must keep identical bytes:
+// the field is omitted entirely when no bound is declared.
+func TestEmptyHostCompatibilityIsOmittedFromSigningBytes(t *testing.T) {
+	manifest := Manifest{
+		APIVersion: APIVersion, Kind: Kind, Name: "demo", Version: "1.0.0",
+		Namespace: "official/demo", SourceRoot: "root", Source: "offline", ReleaseSequence: 1,
+		Digests: Digests{MD5: strings.Repeat("a", 32), SHA1: strings.Repeat("b", 40), SHA256: strings.Repeat("c", 64)},
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "host_compatibility") {
+		t.Fatalf("empty range leaked into the signed bytes: %s", raw)
+	}
+	manifest.HostCompatibility = HostCompatibility{Min: "0.4.5"}
+	raw, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal with range: %v", err)
+	}
+	if !strings.Contains(string(raw), `"host_compatibility":{"min":"0.4.5"}`) {
+		t.Fatalf("declared range missing from the signed bytes: %s", raw)
 	}
 }

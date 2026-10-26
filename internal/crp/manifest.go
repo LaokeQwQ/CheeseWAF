@@ -72,8 +72,10 @@ type Manifest struct {
 	Digests         Digests  `json:"digests,omitempty"`
 	Artifact        Artifact `json:"artifact,omitempty"`
 	// HostCompatibility rejects a package installed on a host version it was
-	// not published for. Empty bounds keep the historical behaviour.
-	HostCompatibility HostCompatibility `json:"host_compatibility,omitempty"`
+	// not published for. omitzero is required: omitempty does not drop a struct,
+	// and emitting "host_compatibility":{} would change the signed bytes of
+	// every manifest published before the field existed.
+	HostCompatibility HostCompatibility `json:"host_compatibility,omitzero"`
 }
 
 // ValidationOptions controls the deployment-context checks that cannot be

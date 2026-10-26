@@ -123,14 +123,29 @@ func TestValidateNotifierTypes(t *testing.T) {
 		}
 	}
 
+	// A pack-provided type has to survive configuration parsing: whether a
+	// provider exists is decided by the registry after the plugin index loads.
 	cfg := Default()
 	cfg.Monitor.Notifiers = []NotifierConfig{{
 		ID:       "pager",
-		Type:     "pagerduty",
+		Type:     "pagerduty_events",
 		Endpoint: "https://events.example.com/notify",
 		Enabled:  true,
 	}}
-	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), `notifier "pager" has invalid type "pagerduty"`) {
-		t.Fatalf("unknown notifier type must be rejected, got %v", err)
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("pack-shaped notifier type rejected: %v", err)
+	}
+
+	for _, invalid := range []string{"", "Webhook", "pager-duty", "pager duty", strings.Repeat("a", 65), "1pager"} {
+		cfg := Default()
+		cfg.Monitor.Notifiers = []NotifierConfig{{
+			ID:       "pager",
+			Type:     invalid,
+			Endpoint: "https://events.example.com/notify",
+			Enabled:  true,
+		}}
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("type %q must be rejected by shape validation", invalid)
+		}
 	}
 }

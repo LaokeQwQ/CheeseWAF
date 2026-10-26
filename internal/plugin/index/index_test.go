@@ -1,6 +1,7 @@
 package index
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -170,5 +171,43 @@ func TestSnapshotNilReceiverIsSafe(t *testing.T) {
 	var snapshot *Snapshot
 	if snapshot.Plugins(testHostVersion) != nil || snapshot.Problems() != nil {
 		t.Fatal("nil snapshot must not panic or return entries")
+	}
+}
+
+// A descriptor is a small JSON document. An oversized file must be reported
+// instead of read into memory, and a symlink must be ignored: the watcher
+// fingerprints the link, so a changed target would never trigger a reload.
+func TestScanSkipsOversizedFilesAndSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	valid := `{"api_version":"crp.cheesewaf.io/v1","kind":"CheeseWAFResourcePackage","name":"demo","version":"1.0.0","namespace":"official/demo","source_root":"root","source":"offline","release_sequence":1}`
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(valid), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link.json")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	big := filepath.Join(dir, "big.json")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("a"), maxIndexedFileBytes+1), 0o600); err != nil {
+		t.Fatalf("write big: %v", err)
+	}
+
+	snapshot := Scan(dir, "0.4.5")
+	if len(snapshot.Entries) != 2 {
+		t.Fatalf("expected only regular files, got %d entries", len(snapshot.Entries))
+	}
+	for _, entry := range snapshot.Entries {
+		if filepath.Base(entry.Path) == "link.json" {
+			t.Fatal("symlinked descriptor must not be indexed")
+		}
+	}
+	var oversize *Entry
+	for index := range snapshot.Entries {
+		if filepath.Base(snapshot.Entries[index].Path) == "big.json" {
+			oversize = &snapshot.Entries[index]
+		}
+	}
+	if oversize == nil || oversize.Err == nil || !strings.Contains(oversize.Err.Error(), "exceeds") {
+		t.Fatalf("oversized file was not rejected: %+v", oversize)
 	}
 }

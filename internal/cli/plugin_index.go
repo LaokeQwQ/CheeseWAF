@@ -75,6 +75,26 @@ func startPluginIndex(ctx context.Context, cfg *config.Config, dataDir, hostVers
 	return runtime
 }
 
+// validateConfiguredNotifierTypes fails startup when a configured notifier
+// type is neither compiled in nor provided by a loaded pack. Configuration
+// parsing cannot decide this: packs are discovered afterwards.
+func validateConfiguredNotifierTypes(cfg *config.Config, registry *monitornotify.Registry) error {
+	if cfg == nil || registry == nil {
+		return nil
+	}
+	missing := make([]string, 0)
+	for _, notifier := range cfg.Monitor.Notifiers {
+		if !notifier.Enabled || registry.Supports(notifier.Type) {
+			continue
+		}
+		missing = append(missing, fmt.Sprintf("%q (%s)", notifier.ID, notifier.Type))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("notifier types are not provided by this build or the plugin index: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // Registry returns the shared notifier registry.
 func (r *pluginIndexRuntime) Registry() *monitornotify.Registry {
 	if r == nil {
@@ -107,6 +127,12 @@ func notifierPackFactories(snapshot *index.Snapshot, hostVersion string) map[str
 		// result: the two formats share a directory.
 		pack, err := notifierpack.Parse(entry.Raw)
 		if err != nil {
+			// A file that declares the notifier schema but fails to load is an
+			// operator error, not a file for another loader: say so instead of
+			// letting the provider disappear.
+			if strings.HasPrefix(entry.APIVersion, "crp.cheesewaf.io/notifier/") {
+				log.Printf("plugin index: %s: %v", entry.Path, err)
+			}
 			continue
 		}
 		if err := pack.CheckHost(hostVersion); err != nil {

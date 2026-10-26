@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"regexp/syntax"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,6 +69,24 @@ const (
 // validatePlugins bounds the index watcher. A zero interval keeps the default;
 // anything below the floor or above the ceiling is an operator mistake that
 // would either spin the filesystem or hide a change for an hour.
+// validNotifierTypeName accepts the shape a built-in or pack type must have.
+// Whether the type exists is decided by the notifier registry at startup.
+func validNotifierTypeName(value string) bool {
+	if len(value) < 2 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= '0' && char <= '9' && index > 0:
+		case char == '_' && index > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func validatePlugins(cfg PluginsConfig) error {
 	dir := strings.TrimSpace(cfg.IndexDir)
 	if strings.ContainsRune(dir, 0) {
@@ -723,7 +740,10 @@ func Validate(cfg *Config) error {
 		if !notifier.Enabled {
 			continue
 		}
-		if !slices.Contains(NotifierTypes(), notifier.Type) {
+		// The type is resolved against the live registry at startup, because a
+		// plugin provider pack can add one after the configuration is parsed.
+		// This layer only rejects a name no provider could ever declare.
+		if !validNotifierTypeName(notifier.Type) {
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
 		}
 		if strings.TrimSpace(notifier.Endpoint) == "" {

@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/crp"
 )
 
@@ -104,16 +105,16 @@ var (
 	highEntropyPattern = regexp.MustCompile(`[A-Za-z0-9]{32,}`)
 )
 
-// coreProviderTypes are implemented by the core notifier; a pack claiming one
-// of them would shadow code that already owns retries, signing and secret
-// handling.
-var coreProviderTypes = map[string]struct{}{
-	"webhook":  {},
-	"dingtalk": {},
-	"feishu":   {},
-	"wecom":    {},
-	"telegram": {},
-	"email":    {},
+// isCoreProviderType reports whether the core already implements the type. The
+// list comes from config.NotifierTypes so a new built-in cannot be forgotten
+// here and silently shadowed by a pack.
+func isCoreProviderType(value string) bool {
+	for _, builtin := range config.NotifierTypes() {
+		if strings.EqualFold(builtin, value) {
+			return true
+		}
+	}
+	return false
 }
 
 // Parse strictly decodes and validates one pack. Unknown fields are rejected
@@ -211,7 +212,7 @@ func validateType(value string) error {
 	if len(value) > maxTypeLength || !typePattern.MatchString(value) {
 		return fmt.Errorf("%w: type %q must be 1..64 lowercase letters, digits or '.', '_', '-' separators", ErrInvalidPack, value)
 	}
-	if _, builtin := coreProviderTypes[value]; builtin {
+	if isCoreProviderType(value) {
 		return fmt.Errorf("%w: type %q is delivered by the core notifier; a pack may only add provider types the core does not own", ErrUnsupported, value)
 	}
 	return nil

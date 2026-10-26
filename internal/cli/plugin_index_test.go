@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,3 +131,34 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 }
 
 var _ = context.Background
+
+// Startup must fail loudly when a configured notifier has no provider, instead
+// of accepting the configuration and only failing when an alert fires.
+func TestValidateConfiguredNotifierTypes(t *testing.T) {
+	registry := monitornotify.NewRegistry()
+	if err := registry.ReplacePacks(map[string]monitornotify.PackFactory{
+		"teams_webhook": func(config.NotifierConfig) (monitornotify.Notifier, error) { return nil, nil },
+	}); err != nil {
+		t.Fatalf("register pack: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Monitor.Notifiers = []config.NotifierConfig{
+		{ID: "hook", Type: "webhook", Enabled: true},
+		{ID: "teams", Type: "teams_webhook", Enabled: true},
+	}
+	if err := validateConfiguredNotifierTypes(&cfg, registry); err != nil {
+		t.Fatalf("resolvable types rejected: %v", err)
+	}
+
+	cfg.Monitor.Notifiers = append(cfg.Monitor.Notifiers, config.NotifierConfig{ID: "ghost", Type: "ghost_hook", Enabled: true})
+	err := validateConfiguredNotifierTypes(&cfg, registry)
+	if err == nil || !strings.Contains(err.Error(), "ghost_hook") {
+		t.Fatalf("unresolvable type was accepted: %v", err)
+	}
+
+	cfg.Monitor.Notifiers = []config.NotifierConfig{{ID: "off", Type: "ghost_hook", Enabled: false}}
+	if err := validateConfiguredNotifierTypes(&cfg, registry); err != nil {
+		t.Fatalf("disabled notifier must not block startup: %v", err)
+	}
+}
