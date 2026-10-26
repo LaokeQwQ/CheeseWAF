@@ -208,6 +208,7 @@ export type SiteResponseConfig = {
   sensitive_patterns: string[];
   tamper_key?: string;
   tamper_snapshots?: SiteTamperSnapshot[];
+  inspection?: { fail_mode?: string };
 };
 
 export type SiteTamperSnapshot = {

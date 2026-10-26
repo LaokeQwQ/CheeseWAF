@@ -252,6 +252,22 @@ describe('SiteDetailPage save success', () => {
     for (const [inheritedKey] of inheritedProtectionControls) expect(protection).not.toHaveProperty(inheritedKey);
   });
 
+  it('shows and saves the response coverage failure mode', async () => {
+    const initial = makeSite('initial-site');
+    initial.advanced.response.inspection = { fail_mode: 'closed' };
+    apiMocks.fetchSite.mockResolvedValue(initial);
+    apiMocks.updateSite.mockResolvedValue(initial);
+    renderSiteDetail();
+    await openProtectionTab();
+
+    expect(protectionSelect('sites.responseFailMode').textContent).toBe('sites.responseFailModeClosed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }));
+
+    await waitFor(() => expect(apiMocks.updateSite).toHaveBeenCalledTimes(1));
+    expect(apiMocks.updateSite.mock.calls[0]?.[1].advanced.response.inspection.fail_mode).toBe('closed');
+  });
+
   it('invalidates and rereads the persisted site after saving', async () => {
     const initial = makeSite('initial-site');
     const saved = makeSite('edited-site');
