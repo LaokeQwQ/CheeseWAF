@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -492,6 +493,67 @@ type SemanticPolicyConfig struct {
 	AutoAgree bool `yaml:"auto_agree" json:"auto_agree"`
 	// FingerprintDeny blocks requests whose client fingerprint matches.
 	FingerprintDeny []string `yaml:"fingerprint_deny" json:"fingerprint_deny"`
+	// ActionThresholds maps semantic confidence onto block/challenge/log.
+	// All-zero keeps the web_attack preset (block at the preset confidence and
+	// no extra challenge/log tier), so an unconfigured site is unchanged.
+	ActionThresholds SemanticActionThresholds `yaml:"action_thresholds" json:"action_thresholds"`
+	// RouteOverrides narrow the same ladder for one path (and optionally one
+	// parameter). The first match wins and only changes the action a hit is
+	// mapped to, never whether it is detected.
+	RouteOverrides []SemanticRouteOverride `yaml:"route_overrides" json:"route_overrides"`
+}
+
+// Semantic action modes accepted by SemanticRouteOverride.Action.
+const (
+	// SemanticActionInherit defers to the confidence ladder.
+	SemanticActionInherit = ""
+	// SemanticActionObserve forces a matched route to log only.
+	SemanticActionObserve = "observe"
+	// SemanticActionChallenge forces a matched route to challenge (still
+	// gated on the preset minimum severity).
+	SemanticActionChallenge = "challenge"
+)
+
+// SemanticActionThresholds is the confidence ladder that decides what a
+// semantic detection is allowed to do.
+//
+// Zero means "not configured": the rung inherits the broader scope (web_attack
+// preset, then action_thresholds, then the route override). The ladder must
+// stay monotonic (0 <= log <= challenge <= block <= 1).
+type SemanticActionThresholds struct {
+	// Block blocks at or above this confidence.
+	Block float64 `yaml:"block" json:"block"`
+	// Challenge challenges at or above this confidence when it is below Block.
+	Challenge float64 `yaml:"challenge" json:"challenge"`
+	// Log is the confidence floor for recording a hit. Below it the policy
+	// still logs, so the rung only stops a weak signal from being escalated by
+	// the aggregate risk score.
+	Log float64 `yaml:"log" json:"log"`
+}
+
+// IsZero reports whether the ladder was left at the web_attack preset.
+func (t SemanticActionThresholds) IsZero() bool {
+	return t.Block == 0 && t.Challenge == 0 && t.Log == 0
+}
+
+// SemanticRouteOverride narrows the action ladder for one path (and optionally
+// one parameter). It never changes detection: it only maps a hit to
+// block/challenge/log.
+type SemanticRouteOverride struct {
+	// Path is matched against the request's normalized path. It is a Go
+	// regular expression; anchor it (^/search$) to avoid substring matches.
+	Path string `yaml:"path" json:"path"`
+	// Params restricts the override to these parameter names. Empty matches
+	// the whole path.
+	Params []string `yaml:"params" json:"params"`
+	// Block, Challenge and Log override the site ladder. Zero inherits.
+	Block     float64 `yaml:"block" json:"block"`
+	Challenge float64 `yaml:"challenge" json:"challenge"`
+	Log       float64 `yaml:"log" json:"log"`
+	// Action pins the outcome regardless of confidence:
+	// observe -> log only, challenge -> challenge page. Empty inherits the
+	// confidence ladder.
+	Action string `yaml:"action" json:"action"`
 }
 
 type SemanticEngineSwitches struct {
@@ -503,6 +565,9 @@ type SemanticEngineSwitches struct {
 	SSRF  bool `yaml:"ssrf" json:"ssrf"`
 	NoSQL bool `yaml:"nosql" json:"nosql"`
 	SSTI  bool `yaml:"ssti" json:"ssti"`
+	// Webshell mounts the analyzer's webshell category. It is opt-in: the
+	// switch stays off unless a site sets it explicitly.
+	Webshell bool `yaml:"webshell" json:"webshell"`
 }
 
 func (s *SemanticEngineSwitches) UnmarshalYAML(value *yaml.Node) error {
@@ -529,6 +594,9 @@ func (s *SemanticEngineSwitches) UnmarshalYAML(value *yaml.Node) error {
 		SSRF  *bool `yaml:"ssrf"`
 		NoSQL *bool `yaml:"nosql"`
 		SSTI  *bool `yaml:"ssti"`
+		// Webshell must be decoded explicitly: the custom unmarshaler replaces
+		// the struct wholesale, so a field missing here is silently dropped.
+		Webshell *bool `yaml:"webshell"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -557,6 +625,9 @@ func (s *SemanticEngineSwitches) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if raw.SSTI != nil {
 		s.SSTI = *raw.SSTI
+	}
+	if raw.Webshell != nil {
+		s.Webshell = *raw.Webshell
 	}
 	return nil
 }
@@ -741,10 +812,49 @@ type ResponseInspectionConfig struct {
 	Enabled           bool     `yaml:"enabled" json:"enabled"`
 	MaxBodyBytes      int64    `yaml:"max_body_bytes" json:"max_body_bytes"`
 	SensitivePatterns []string `yaml:"sensitive_patterns" json:"sensitive_patterns"`
+	// Inspection decides what happens when a response body cannot be covered
+	// (size limit, streaming media, unsupported content-encoding). Configured
+	// as response.inspection.fail_mode.
+	Inspection ResponseInspectionPolicy `yaml:"inspection" json:"inspection"`
 	// TamperKey authenticates exact-URL response baselines. It must contain at
 	// least 32 bytes whenever TamperSnapshots is non-empty.
 	TamperKey       string                 `yaml:"tamper_key,omitempty" json:"tamper_key,omitempty"`
 	TamperSnapshots []TamperSnapshotConfig `yaml:"tamper_snapshots,omitempty" json:"tamper_snapshots,omitempty"`
+}
+
+// Response inspection failure modes.
+//
+//	open    - deliver the body and log, as before the policy existed
+//	observe - deliver the body, log it as a coverage gap, never block
+//	closed  - withhold the body when the inspector could not cover it
+//
+// A site that serves large downloads or media streams has to set open or
+// observe explicitly; the default protects confidentiality.
+const (
+	ResponseFailModeOpen    = "open"
+	ResponseFailModeObserve = "observe"
+	ResponseFailModeClosed  = "closed"
+
+	DefaultResponseFailMode = ResponseFailModeObserve
+)
+
+type ResponseInspectionPolicy struct {
+	FailMode string `yaml:"fail_mode" json:"fail_mode"`
+}
+
+// NormalizeResponseFailMode resolves the configured failure mode. Empty means
+// the default. An unrecognised value is an error rather than a silent fallback:
+// a typo must not quietly pick a different exposure policy.
+func NormalizeResponseFailMode(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	switch mode {
+	case "":
+		return DefaultResponseFailMode, nil
+	case ResponseFailModeOpen, ResponseFailModeObserve, ResponseFailModeClosed:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("response inspection fail_mode %q must be one of open, observe, closed", value)
+	}
 }
 
 type TamperSnapshotConfig struct {

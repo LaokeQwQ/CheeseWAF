@@ -382,6 +382,9 @@ func runServe(ctx context.Context) error {
 		return fmt.Errorf("prepare admin entrance configuration: %w", err)
 	}
 	gateConfig.Store(initialGateConfig)
+	// Declared before the router so OnServerChanged can rotate the credential on
+	// a running process; the handler itself is built once the proxy exists.
+	var adapterHandler *adapterapi.Handler
 	adminRouter, apiHandler := api.NewRouterWithAPI(api.Options{
 		Config:                             cfg,
 		IsolateConfig:                      true,
@@ -414,6 +417,12 @@ func runServe(ctx context.Context) error {
 		OnBlockPageChanged:                 proxyServer.UpdateBlockPage,
 		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
+		},
+		OnServerChanged: func(next config.ServerConfig) error {
+			if adapterHandler != nil {
+				adapterHandler.SetToken(next.AdapterToken)
+			}
+			return nil
 		},
 		OnConfigChanged: func(next *config.Config) error {
 			if next == nil {
@@ -456,7 +465,7 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	adapterHandler, err := adapterapi.NewHandler(proxyServer, cfg.Server.AdapterToken, sink)
+	adapterHandler, err = adapterapi.NewHandler(proxyServer, cfg.Server.AdapterToken, sink)
 	if err != nil {
 		return fmt.Errorf("configure adapter API: %w", err)
 	}
@@ -486,6 +495,12 @@ func runServe(ctx context.Context) error {
 	tlsServer, err := proxyServer.TLSServer(altSvc)
 	if err != nil {
 		return err
+	}
+	if http3Server != nil {
+		http3Server.Handler = withAdapterAPI(adapterHandler, http3Server.Handler)
+	}
+	if tlsServer != nil {
+		tlsServer.Handler = withAdapterAPI(adapterHandler, tlsServer.Handler)
 	}
 	if err := timeSync.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start application clock: %w", err)
@@ -847,12 +862,17 @@ func firstInstallPending(ctx context.Context, dataDir string, store storage.User
 // the gateway or admin handler. The adapter API has its own token/loopback
 // authentication and must not inherit the admin entrance gate or site routing.
 func withAdapterAPI(adapter, fallback http.Handler) http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/api/v1/adapter/inspect", adapter)
-	mux.Handle("/api/v1/adapter/telemetry", adapter)
-	mux.Handle("/healthz", adapter)
-	mux.Handle("/", fallback)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/adapter/inspect", "/api/v1/adapter/telemetry", "/healthz":
+			adapter.ServeHTTP(w, r)
+		default:
+			// Do not use http.ServeMux here: it cleans repeated slashes and
+			// dot segments before dispatch, which would redirect proxy paths
+			// that the WAF must inspect and forward unchanged.
+			fallback.ServeHTTP(w, r)
+		}
+	})
 }
 
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
@@ -1550,6 +1570,12 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		}
 		if switches.SSTI {
 			semanticCategories = append(semanticCategories, "ssti")
+		}
+		// Webshell is its own switch: the analyzer's webshell category was
+		// never mounted, so the only production webshell coverage was the
+		// upload scanner mounted under RCE.
+		if switches.Webshell {
+			semanticCategories = append(semanticCategories, "webshell")
 		}
 		if len(semanticCategories) > 0 {
 			paranoiaLevel := config.EffectiveParanoiaLevel(site.WAF.ParanoiaLevel)

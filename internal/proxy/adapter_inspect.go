@@ -25,11 +25,16 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 	}
 	site := s.lb.SiteForHost(request.Authority)
 	if site.ID == "" {
-		return adapterapi.Decision{
-			Action:     adapterapi.ActionBlock,
-			StatusCode: http.StatusForbidden,
-			Reason:     "no matching site",
-		}.Normalized(), nil
+		// SiteForHost only indexes enabled sites. Distinguish a configured
+		// disabled site (explicitly allow) from an unknown host (block).
+		site = s.lb.ConfiguredSiteForHost(request.Authority)
+		if site.ID == "" {
+			return adapterapi.Decision{
+				Action:     adapterapi.ActionBlock,
+				StatusCode: http.StatusForbidden,
+				Reason:     "no matching site",
+			}.Normalized(), nil
+		}
 	}
 	if !site.Enabled || !site.WAF.Enabled || strings.EqualFold(site.WAF.Mode, "off") {
 		return adapterapi.Decision{Action: adapterapi.ActionAllow}.Normalized(), nil
@@ -105,6 +110,15 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 	reqCtx.Metadata["adapter_body_encoding"] = request.BodyEncoding
 	reqCtx.Metadata["adapter_source"] = string(request.Source)
 
+	s.runtimeMu.RLock()
+	protectionPolicy := s.protectionPolicy
+	s.runtimeMu.RUnlock()
+	policy := config.EffectiveProtectionPolicy(protectionPolicy, site.WAF.ProtectionPolicy)
+	reqCtx.Metadata["budget_exhausted_policy"] = config.ResolveBudgetExhaustedPolicy(
+		site.WAF.SemanticPolicy.BudgetExhaustedPolicy,
+		policy.WebAttack,
+	)
+
 	pipeline := s.currentPipeline()
 	if pipeline == nil {
 		return adapterapi.Decision{}, errors.New("detection pipeline is unavailable")
@@ -117,8 +131,7 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 		return adapterapi.Decision{Action: adapterapi.ActionAllow}.Normalized(), nil
 	}
 
-	policy := config.EffectiveProtectionPolicy(s.protectionPolicy, site.WAF.ProtectionPolicy)
-	decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, reqCtx.Results, site.WAF.ParanoiaLevel)
+	decision := evaluateWebAttackPolicyForSite(policy.WebAttack, result, reqCtx.Results, site, reqCtx)
 	out := adapterapi.Decision{
 		Action:        adapterapi.ActionAllow,
 		Reason:        result.Message,

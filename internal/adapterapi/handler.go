@@ -11,13 +11,18 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
 const (
-	maxInspectJSONBytes   = maxInspectBodyBytes + 1<<20
+	// Base64 inflates a body by 4/3, and the surrounding JSON (path, query,
+	// headers, metadata) adds a bounded amount on top. Sizing this as
+	// maxInspectBodyBytes+1MiB rejected any base64 body above ~24.75 MiB before
+	// Request.Validate could enforce the real 32 MiB contract limit.
+	maxInspectJSONBytes   = (maxInspectBodyBytes+2)/3*4 + 4<<20
 	maxTelemetryJSONBytes = 1 << 20
 )
 
@@ -27,6 +32,7 @@ type Inspector interface {
 
 type Handler struct {
 	inspector Inspector
+	tokenMu   sync.RWMutex
 	token     string
 	sink      storage.LogSink
 	now       func() time.Time
@@ -42,6 +48,28 @@ func NewHandler(inspector Inspector, token string, sink storage.LogSink) (*Handl
 		sink:      sink,
 		now:       time.Now,
 	}, nil
+}
+
+// SetToken replaces the shared adapter credential. The serving process calls it
+// when server.adapter_token changes so a rotation takes effect without a
+// restart; an empty token restores the loopback-only mode.
+func (h *Handler) SetToken(token string) {
+	if h == nil {
+		return
+	}
+	h.tokenMu.Lock()
+	h.token = strings.TrimSpace(token)
+	h.tokenMu.Unlock()
+}
+
+func (h *Handler) currentToken() string {
+	if h == nil {
+		return ""
+	}
+	h.tokenMu.RLock()
+	token := h.token
+	h.tokenMu.RUnlock()
+	return token
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +194,8 @@ func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) authorized(w http.ResponseWriter, r *http.Request) bool {
-	if h.token == "" {
+	token := h.currentToken()
+	if token == "" {
 		if loopbackPeer(r.RemoteAddr) {
 			return true
 		}
@@ -183,7 +212,7 @@ func (h *Handler) authorized(w http.ResponseWriter, r *http.Request) bool {
 			provided = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 		}
 	}
-	if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(h.token)) != 1 {
+	if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(w, http.StatusUnauthorized, "adapter authentication required")
 		return false

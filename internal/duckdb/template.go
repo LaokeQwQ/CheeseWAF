@@ -61,9 +61,14 @@ func BindWindow(template Template, from, to string) (string, error) {
 	if strings.Count(template.SQL, "?") != 2 {
 		return "", fmt.Errorf("duckdb template must contain exactly two window parameters")
 	}
-	sql := strings.Replace(template.SQL, "?", "TIMESTAMP '"+escapeLiteral(from)+"'", 1)
-	sql = strings.Replace(sql, "?", "TIMESTAMP '"+escapeLiteral(to)+"'", 1)
-	return sql, nil
+	parts := strings.SplitN(template.SQL, "?", 3)
+	if len(parts) != 3 {
+		return "", fmt.Errorf("duckdb template must contain exactly two window parameters")
+	}
+	// Bind both placeholders from the original split. Sequential strings.Replace
+	// would substitute into the literal just inserted when from/to contains "?".
+	return parts[0] + "TIMESTAMP '" + escapeLiteral(from) + "'" +
+		parts[1] + "TIMESTAMP '" + escapeLiteral(to) + "'" + parts[2], nil
 }
 
 func escapeLiteral(value string) string {

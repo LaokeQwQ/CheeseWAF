@@ -156,6 +156,10 @@ type Handler struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	// OnServerChanged applies server-scoped settings that can take effect
+	// without rebinding listeners. The adapter credential is the current case:
+	// rotating server.adapter_token must reach the running handler.
+	OnServerChanged func(config.ServerConfig) error
 	// OnConfigChanged publishes a completed setup/config snapshot to the
 	// serving composition root. Setup changes the entrance gate itself.
 	OnConfigChanged func(*config.Config) error
@@ -398,6 +402,7 @@ type Options struct {
 	OnAPISecChanged                     func(config.APISecConfig) error
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
+	OnServerChanged                     func(config.ServerConfig) error
 	OnConfigChanged                     func(*config.Config) error
 	CAPTCHAAssets                       captchaassets.Store
 	Clock                               timekeeper.Clock
@@ -512,6 +517,7 @@ func New(opts Options) *Handler {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnServerChanged:                     opts.OnServerChanged,
 		OnConfigChanged:                     opts.OnConfigChanged,
 	}
 	if opts.ConfigSnapshot != nil {

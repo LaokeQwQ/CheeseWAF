@@ -96,6 +96,24 @@ func decodeWithDepth(raw string, maxDepth int, stripNUL bool) Decoded {
 		}
 		break
 	}
+	// NUL-stripping can expose another escape layer after each replacement
+	// (for example "\x00" followed by hex digits). Finish that peeling here so
+	// one Decode call reaches a fixed point instead of depending on caller passes.
+	stabilized := false
+	for pass := 0; pass < MaxDecodeDepth; pass++ {
+		if stripNUL {
+			text = strings.ReplaceAll(text, "\x00", "")
+		}
+		unescaped, changed := unescapeUnicode(text)
+		if !changed {
+			break
+		}
+		text = unescaped
+		stabilized = true
+	}
+	if stabilized && (len(layers) == 0 || layers[len(layers)-1] != "unicode") {
+		layers = append(layers, "unicode")
+	}
 	text = strings.TrimSpace(text)
 	if stripNUL {
 		// Strip NULs introduced by URL/HTML/unicode decoding so downstream
@@ -136,21 +154,28 @@ func unescapeUnicode(raw string) (string, bool) {
 	if !strings.Contains(raw, `\u`) && !strings.Contains(raw, `\x`) {
 		return raw, false
 	}
-	changed := false
-	out := unicodeEscPattern.ReplaceAllStringFunc(raw, func(match string) string {
-		parts := unicodeEscPattern.FindStringSubmatch(match)
-		hex := parts[1]
-		if hex == "" {
-			hex = parts[2]
+	changedAny := false
+	out := raw
+	for {
+		changed := false
+		out = unicodeEscPattern.ReplaceAllStringFunc(out, func(match string) string {
+			parts := unicodeEscPattern.FindStringSubmatch(match)
+			hex := parts[1]
+			if hex == "" {
+				hex = parts[2]
+			}
+			value, err := strconv.ParseInt(hex, 16, 32)
+			if err != nil {
+				return match
+			}
+			changed = true
+			return string(rune(value))
+		})
+		if !changed {
+			return out, changedAny
 		}
-		value, err := strconv.ParseInt(hex, 16, 32)
-		if err != nil {
-			return match
-		}
-		changed = true
-		return string(rune(value))
-	})
-	return out, changed
+		changedAny = true
+	}
 }
 
 // Patterns that mark text as plausibly carrying another encoding layer. Named

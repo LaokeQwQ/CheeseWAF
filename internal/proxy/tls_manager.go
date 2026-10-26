@@ -26,7 +26,7 @@ func TLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 }
 
 func HasCertificate(cfg config.TLSConfig) bool {
-	return cfg.CertFile != "" && cfg.KeyFile != ""
+	return strings.TrimSpace(cfg.CertFile) != "" && strings.TrimSpace(cfg.KeyFile) != ""
 }
 
 type SiteCertificateStore struct {

@@ -1515,3 +1515,77 @@ func TestWriteErrorIncludesTraceID(t *testing.T) {
 		t.Fatalf("event id mismatch header=%q body=%q", recorder.Header().Get("X-CheeseWAF-Event-ID"), body.Error.EventID)
 	}
 }
+
+func TestSystemRedactsAdapterTokenAndReportsPresence(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.AdapterToken = "adapter-shared-secret"
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	handler.System(recorder, httptest.NewRequest(http.MethodGet, "/api/system", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("system status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "adapter-shared-secret") {
+		t.Fatalf("system response leaked the adapter token: %s", body)
+	}
+	if !strings.Contains(body, `"adapter_api":{"available":true,"configured":true,"loopback_only":false}`) {
+		t.Fatalf("system response should report adapter presence without the value: %s", body)
+	}
+}
+
+func TestUpdateSystemAppliesRotatedAdapterToken(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var applied []string
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnServerChanged: func(next config.ServerConfig) error {
+			applied = append(applied, next.AdapterToken)
+			return nil
+		},
+	})
+
+	server := cfg.Server
+	server.AdapterToken = "rotated-token"
+	raw, _ := json.Marshal(map[string]any{"server": server})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(applied) != 1 || applied[0] != "rotated-token" {
+		t.Fatalf("OnServerChanged calls = %v, want [rotated-token]", applied)
+	}
+	if cfg.Server.AdapterToken != "rotated-token" {
+		t.Fatalf("persisted adapter token = %q", cfg.Server.AdapterToken)
+	}
+}
+
+func TestUpdateSystemPreservesAdapterTokenWhenRedactedDocumentIsEchoed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.AdapterToken = "original-adapter-token"
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	// The console reads the redacted document and saves it back unchanged.
+	server := cfg.Server
+	server.AdapterToken = ""
+	raw, _ := json.Marshal(map[string]any{"server": server})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Server.AdapterToken != "original-adapter-token" {
+		t.Fatalf("redacted echo cleared the adapter token: %q", cfg.Server.AdapterToken)
+	}
+}

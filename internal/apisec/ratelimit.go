@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 )
 
 const (
@@ -79,7 +80,7 @@ func (l *RateLimiter) AllowRequests(requests []*http.Request, key string) bool {
 			if r == nil || (rule.cfg.Method != "" && !strings.EqualFold(rule.cfg.Method, r.Method)) {
 				continue
 			}
-			if !rule.pattern.MatchString(r.URL.Path) {
+			if !matchesRateLimitPath(rule.pattern, r.URL.Path) {
 				continue
 			}
 			if !l.allow(rule.cfg, key) {
@@ -160,4 +161,20 @@ func (l *RateLimiter) KeyCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return len(l.hits)
+}
+
+// matchesRateLimitPath keeps the raw path view that existing endpoint patterns
+// were written against and adds the normalized view, so a request cannot escape
+// its budget through a spelling the pattern does not match. Matching is
+// additive on purpose: replacing the raw view would silently break patterns
+// administrators already configured.
+func matchesRateLimitPath(pattern *regexp.Regexp, rawPath string) bool {
+	if pattern.MatchString(rawPath) {
+		return true
+	}
+	normalized, ok := engine.NormalizeRequestPath(rawPath)
+	if !ok || normalized == rawPath {
+		return false
+	}
+	return pattern.MatchString(normalized)
 }

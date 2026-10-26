@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -392,6 +393,7 @@ func TestSiteConfigRoundTripPreservesTamperSnapshots(t *testing.T) {
 			Enabled: true, Mode: "block",
 			Response: config.ResponseInspectionConfig{
 				Enabled: true, MaxBodyBytes: 1024, TamperKey: "01234567890123456789012345678901",
+				Inspection: config.ResponseInspectionPolicy{FailMode: config.ResponseFailModeClosed},
 				TamperSnapshots: []config.TamperSnapshotConfig{{
 					URL: "/index.html", MAC: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Size: 5, CapturedAt: capturedAt,
 				}},
@@ -404,6 +406,9 @@ func TestSiteConfigRoundTripPreservesTamperSnapshots(t *testing.T) {
 	if got := stored.Advanced.Response.TamperSnapshots[0].URL; got != "/index.html" {
 		t.Fatalf("storage conversion did not clone snapshots: %q", got)
 	}
+	if got := stored.Advanced.Response.Inspection.FailMode; got != config.ResponseFailModeClosed {
+		t.Fatalf("stored fail_mode = %q, want %q", got, config.ResponseFailModeClosed)
+	}
 	converted := SiteToConfig(stored)
 	stored.Advanced.Response.TamperSnapshots[0].URL = "/changed-again"
 	if got := converted.WAF.Response.TamperSnapshots[0]; got.URL != "/index.html" || got.CapturedAt != capturedAt {
@@ -411,5 +416,121 @@ func TestSiteConfigRoundTripPreservesTamperSnapshots(t *testing.T) {
 	}
 	if converted.WAF.Response.TamperKey != original.WAF.Response.TamperKey {
 		t.Fatal("tamper key did not round trip")
+	}
+	if got := converted.WAF.Response.Inspection.FailMode; got != config.ResponseFailModeClosed {
+		t.Fatalf("fail_mode round trip = %q, want %q", got, config.ResponseFailModeClosed)
+	}
+}
+
+// Storage must not invent a fail mode when the config never set one: the
+// default lives in internal/config.NormalizeResponseFailMode, and a stored
+// default would make an operator's unset value indistinguishable from an
+// explicit choice.
+func TestSiteConfigRoundTripPreservesUnsetResponseFailMode(t *testing.T) {
+	original := config.SiteConfig{
+		ID: "site-response-default", Name: "site-response-default", Enabled: true,
+		Domains: []string{"example.test"}, Upstreams: []config.UpstreamConfig{{Address: "127.0.0.1:9000", Weight: 1}},
+		WAF: config.WAFConfig{
+			Enabled: true, Mode: "block",
+			Response: config.ResponseInspectionConfig{Enabled: true, MaxBodyBytes: 1024},
+		},
+	}
+
+	stored := SiteFromConfig(original)
+	if got := stored.Advanced.Response.Inspection.FailMode; got != "" {
+		t.Fatalf("storage filled fail_mode = %q, want empty", got)
+	}
+	converted := SiteToConfig(stored)
+	if got := converted.WAF.Response.Inspection.FailMode; got != "" {
+		t.Fatalf("config read back fail_mode = %q, want empty", got)
+	}
+}
+
+// A console site edit rewrites the whole config document from storage
+// (internal/api/handler/site.go). If the semantic action policy is not
+// persisted, editing any unrelated site field silently drops the operator's
+// waf.semantic_policy.action_thresholds and route_overrides.
+func TestSiteConfigRoundTripPreservesSemanticActionPolicy(t *testing.T) {
+	original := config.SiteConfig{
+		ID:      "site-policy",
+		Name:    "site-policy",
+		Domains: []string{"policy.example"},
+		WAF: config.WAFConfig{
+			Enabled: true,
+			Mode:    "block",
+			SemanticPolicy: config.SemanticPolicyConfig{
+				ActionThresholds: config.SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65},
+				RouteOverrides: []config.SemanticRouteOverride{
+					{Path: `^/search$`, Params: []string{"q"}, Block: 0.97, Challenge: 0.90},
+					{Path: `^/legacy/report$`, Action: config.SemanticActionObserve},
+				},
+			},
+		},
+	}
+
+	stored := SiteFromConfig(original)
+	if stored.Advanced.SemanticPolicy.ActionThresholds == nil {
+		t.Fatalf("action_thresholds were not persisted: %+v", stored.Advanced.SemanticPolicy)
+	}
+	if got := *stored.Advanced.SemanticPolicy.ActionThresholds; got != (SiteSemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}) {
+		t.Fatalf("stored action_thresholds = %+v", got)
+	}
+	if len(stored.Advanced.SemanticPolicy.RouteOverrides) != 2 {
+		t.Fatalf("route_overrides were not persisted: %+v", stored.Advanced.SemanticPolicy.RouteOverrides)
+	}
+
+	converted := SiteToConfig(stored)
+	if got := converted.WAF.SemanticPolicy.ActionThresholds; got != original.WAF.SemanticPolicy.ActionThresholds {
+		t.Fatalf("action_thresholds round trip = %+v, want %+v", got, original.WAF.SemanticPolicy.ActionThresholds)
+	}
+	if len(converted.WAF.SemanticPolicy.RouteOverrides) != 2 {
+		t.Fatalf("route_overrides round trip = %+v", converted.WAF.SemanticPolicy.RouteOverrides)
+	}
+	search := converted.WAF.SemanticPolicy.RouteOverrides[0]
+	if search.Path != `^/search$` || len(search.Params) != 1 || search.Params[0] != "q" || search.Block != 0.97 || search.Challenge != 0.90 {
+		t.Fatalf("search override round trip = %+v", search)
+	}
+	observe := converted.WAF.SemanticPolicy.RouteOverrides[1]
+	if observe.Path != `^/legacy/report$` || observe.Action != config.SemanticActionObserve || len(observe.Params) != 0 {
+		t.Fatalf("observe override round trip = %+v", observe)
+	}
+
+	// The params slice must be a copy: mutating the stored site afterwards must
+	// not reach back into the source config (and vice versa).
+	stored.Advanced.SemanticPolicy.RouteOverrides[0].Params[0] = "mutated"
+	if original.WAF.SemanticPolicy.RouteOverrides[0].Params[0] != "q" {
+		t.Fatal("stored params alias the source config slice")
+	}
+	original.WAF.SemanticPolicy.RouteOverrides[0].Params[0] = "source-mutated"
+	if got := SiteFromConfig(original).Advanced.SemanticPolicy.RouteOverrides[0].Params[0]; got != "source-mutated" {
+		t.Fatalf("config params did not reach storage: %q", got)
+	}
+	if stored.Advanced.SemanticPolicy.RouteOverrides[0].Params[0] != "mutated" {
+		t.Fatal("previously stored params changed when the source config was mutated")
+	}
+}
+
+// An unset ladder must stay unset so a round trip cannot turn "inherit the
+// web_attack preset" into an explicit zero threshold.
+func TestSiteConfigOmitsUnsetSemanticActionPolicy(t *testing.T) {
+	stored := SiteFromConfig(config.SiteConfig{ID: "plain", Name: "plain", Domains: []string{"plain.example"}})
+	if stored.Advanced.SemanticPolicy.ActionThresholds != nil {
+		t.Fatalf("unset action_thresholds must stay nil: %+v", stored.Advanced.SemanticPolicy.ActionThresholds)
+	}
+	if stored.Advanced.SemanticPolicy.RouteOverrides != nil {
+		t.Fatalf("unset route_overrides must stay nil: %+v", stored.Advanced.SemanticPolicy.RouteOverrides)
+	}
+	raw, err := json.Marshal(stored.Advanced.SemanticPolicy)
+	if err != nil {
+		t.Fatalf("marshal stored policy: %v", err)
+	}
+	for _, key := range []string{"action_thresholds", "route_overrides"} {
+		if strings.Contains(string(raw), key) {
+			t.Fatalf("unset %s leaked into stored JSON: %s", key, raw)
+		}
+	}
+	converted := SiteToConfig(stored)
+	if !converted.WAF.SemanticPolicy.ActionThresholds.IsZero() || len(converted.WAF.SemanticPolicy.RouteOverrides) != 0 {
+		t.Fatalf("unset policy must round trip as the preset: %+v", converted.WAF.SemanticPolicy)
 	}
 }

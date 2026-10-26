@@ -11,19 +11,21 @@ import (
 )
 
 type LoadBalancer struct {
-	mu       sync.RWMutex
-	next     map[string]uint64
-	inflight map[string]int
-	sites    []config.SiteConfig
-	byHost   map[string]config.SiteConfig
-	health   *HealthRegistry
+	mu        sync.RWMutex
+	next      map[string]uint64
+	inflight  map[string]int
+	sites     []config.SiteConfig
+	byHost    map[string]config.SiteConfig
+	allByHost map[string]config.SiteConfig
+	health    *HealthRegistry
 }
 
 func NewLoadBalancer(sites []config.SiteConfig) *LoadBalancer {
 	lb := &LoadBalancer{
-		next:     map[string]uint64{},
-		inflight: map[string]int{},
-		sites:    sites,
+		next:      map[string]uint64{},
+		inflight:  map[string]int{},
+		sites:     sites,
+		allByHost: map[string]config.SiteConfig{},
 	}
 	lb.rebuildHostIndexLocked()
 	return lb
@@ -69,6 +71,29 @@ func (lb *LoadBalancer) SiteForHost(host string) config.SiteConfig {
 	return config.SiteConfig{}
 }
 
+// ConfiguredSiteForHost returns a site by domain even when the site is
+// disabled. Callers that need enabled routing must use SiteForHost; adapter
+// inspection uses this to distinguish "unknown host" from "configured but
+// disabled site" and avoid turning a disabled site into a hard block.
+func (lb *LoadBalancer) ConfiguredSiteForHost(host string) config.SiteConfig {
+	host = normalizeRequestHost(host)
+	if lb == nil {
+		return config.SiteConfig{}
+	}
+	lb.mu.RLock()
+	site, ok := lb.allByHost[host]
+	if !ok {
+		if dot := strings.IndexByte(host, '.'); dot > 0 {
+			site, ok = lb.allByHost["*"+host[dot:]]
+		}
+	}
+	lb.mu.RUnlock()
+	if ok {
+		return site
+	}
+	return config.SiteConfig{}
+}
+
 func normalizeRequestHost(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if parsed, _, err := net.SplitHostPort(host); err == nil {
@@ -82,13 +107,20 @@ func normalizeRequestHost(host string) string {
 
 func (lb *LoadBalancer) rebuildHostIndexLocked() {
 	index := make(map[string]config.SiteConfig, len(lb.sites)*2)
+	all := make(map[string]config.SiteConfig, len(lb.sites)*2)
 	for _, site := range lb.sites {
-		if !site.Enabled {
-			continue
-		}
 		for _, domain := range site.Domains {
 			key := normalizeRequestHost(domain)
 			if key == "" {
+				continue
+			}
+			// Prefer an enabled site when both an enabled and disabled entry
+			// share a domain; the full index is only used for diagnostics and
+			// disabled-site adapter semantics.
+			if _, exists := all[key]; !exists || site.Enabled {
+				all[key] = site
+			}
+			if !site.Enabled {
 				continue
 			}
 			// First enabled site wins for a domain (stable with previous linear scan).
@@ -98,6 +130,7 @@ func (lb *LoadBalancer) rebuildHostIndexLocked() {
 		}
 	}
 	lb.byHost = index
+	lb.allByHost = all
 }
 
 func (lb *LoadBalancer) Next(site config.SiteConfig, clientIP string) (*url.URL, error) {

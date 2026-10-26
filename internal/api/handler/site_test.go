@@ -896,3 +896,60 @@ func (i *recordingACMEIssuer) Issue(_ context.Context, req acme.IssueRequest) (a
 		Notify:     req.Notify,
 	}, nil
 }
+
+// A console site edit rewrites the whole config document from storage. Before
+// the semantic action policy was persisted, editing any unrelated site field
+// silently dropped waf.semantic_policy.action_thresholds and route_overrides.
+func TestUpdateSitePreservesSemanticActionPolicy(t *testing.T) {
+	handler, store, site := newSiteTestHandler(t)
+	site.Advanced.SemanticPolicy.ActionThresholds = &storage.SiteSemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}
+	site.Advanced.SemanticPolicy.RouteOverrides = []storage.SiteSemanticRouteOverride{
+		{Path: `^/search$`, Params: []string{"q"}, Block: 0.97, Challenge: 0.90},
+		{Path: `^/legacy/report$`, Action: config.SemanticActionObserve},
+	}
+	if err := store.UpdateSite(context.Background(), &site); err != nil {
+		t.Fatalf("seed site policy: %v", err)
+	}
+
+	payload := site
+	payload.Name = "policy-kept-site"
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal update payload: %v", err)
+	}
+	router := chi.NewRouter()
+	router.Put("/sites/{id}", handler.UpdateSite)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/sites/"+site.ID, bytes.NewReader(raw))
+	request = withSiteAdminClaims(request)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected site update success, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	loaded, err := config.Load(handler.ConfigPath)
+	if err != nil {
+		t.Fatalf("reload config from disk: %v", err)
+	}
+	if len(loaded.Sites) != 1 {
+		t.Fatalf("reloaded config site count=%d, want 1", len(loaded.Sites))
+	}
+	policy := loaded.Sites[0].WAF.SemanticPolicy
+	if got := policy.ActionThresholds; got != (config.SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}) {
+		t.Fatalf("console edit dropped action_thresholds: %+v", got)
+	}
+	if len(policy.RouteOverrides) != 2 {
+		t.Fatalf("console edit dropped route_overrides: %+v", policy.RouteOverrides)
+	}
+	if search := policy.RouteOverrides[0]; search.Path != `^/search$` || len(search.Params) != 1 || search.Params[0] != "q" || search.Block != 0.97 || search.Challenge != 0.90 {
+		t.Fatalf("search override changed across a console edit: %+v", search)
+	}
+	if observe := policy.RouteOverrides[1]; observe.Path != `^/legacy/report$` || observe.Action != config.SemanticActionObserve {
+		t.Fatalf("observe override changed across a console edit: %+v", observe)
+	}
+	// The persisted config must still validate: an inverted ladder would mean
+	// the mapping mangled the values.
+	if err := config.Validate(loaded); err != nil {
+		t.Fatalf("reloaded config no longer validates: %v", err)
+	}
+}

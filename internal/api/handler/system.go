@@ -379,6 +379,11 @@ func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config
 			return err
 		}
 	}
+	if req.Server != nil && h.OnServerChanged != nil {
+		if err := h.OnServerChanged(candidate.Server); err != nil {
+			return err
+		}
+	}
 	if (req.Server != nil || req.TLS != nil) && h.OnSitesChanged != nil {
 		if err := h.OnSitesChanged(candidate.Sites); err != nil {
 			return err

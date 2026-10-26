@@ -2813,7 +2813,7 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 		scores["rce"] += 2
 	}
 	if hints&hintLFI != 0 {
-		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "zip://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
+		if strings.Contains(text, "../") || strings.Contains(text, `..\`) || strings.Contains(text, "..//") || strings.Contains(text, `..\/`) || strings.Contains(text, "..;") || lfiEncodedTraversal.MatchString(text) || lfiSensitiveTarget.MatchString(text) || lfiWindowsSystemPathMatch(text) || lfiFileReadSink.MatchString(text) || lfiCommandReadSink.MatchString(text) || strings.Contains(text, "file://") || strings.Contains(text, "php://") || strings.Contains(text, "data://") || strings.Contains(text, "phar://") || strings.Contains(text, "zip://") || strings.Contains(text, "expect://") || strings.Contains(text, "docker.sock") || strings.Contains(text, ".aws/") || strings.Contains(text, ".git/") || strings.Contains(text, "/.env") || lfiDotEnvTarget.MatchString(text) || strings.Contains(text, "wp-config") || strings.Contains(text, ".ssh/") || strings.Contains(text, "/var/run/secrets/kubernetes.io/") || lfiSSIDirective.MatchString(text) ||
 			lfiHexPathEscapeCandidate(foldedRaw, inputSource, inputName) ||
 			// RFI-shaped remote includes: http(s) value often only scores SSRF unless LFI is also opened.
 			((strings.Contains(text, "http://") || strings.Contains(text, "https://")) && (strings.Contains(text, ".php") || strings.Contains(text, "shell") || strings.Contains(text, "passwd") || strings.HasSuffix(text, "?"))) {
@@ -4016,6 +4016,17 @@ func candidateDocumentContextAllowed(candidate semanticCandidate) bool {
 	return documentSourceAllowed(candidate.input.Source)
 }
 
+// sqlInjectionIndicators anchors the SQL document guards on the payload itself.
+// Both the evidence window and the explanatory-prose gate read it, so the two
+// cannot drift apart.
+var sqlInjectionIndicators = []string{
+	"xp_cmdshell", "exec master", "union select", "union all select",
+	"into outfile", "load_file", "information_schema", "sleep(",
+	"benchmark(", "waitfor delay", "pg_sleep", "1=1", "1=0",
+	"' or", "\" or", "or 1=", "and 1=",
+	"'||", "|| (select", "receive_message", "rdb$database",
+}
+
 func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// Probe surfaces before comment-bridging so SELECT/**/WHERE and IF((SELECT
 	// shapes stay visible; full analysis still uses bridged executable text.
@@ -4193,13 +4204,7 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 	// technicalDocumentationContext run on this window so that a prose prefix
 	// + filler padding separated from the payload cannot suppress detection
 	// via either guard.
-	sqlWin := evidenceWindow(doc, []string{
-		"xp_cmdshell", "exec master", "union select", "union all select",
-		"into outfile", "load_file", "information_schema", "sleep(",
-		"benchmark(", "waitfor delay", "pg_sleep", "1=1", "1=0",
-		"' or", "\" or", "or 1=", "and 1=",
-		"'||", "|| (select", "receive_message", "rdb$database",
-	})
+	sqlWin := evidenceWindow(doc, sqlInjectionIndicators)
 
 	// Security document context: vulnerability reports, CTF writeups, training
 	// material, academic papers, Chinese technical articles, and source files all
@@ -4246,6 +4251,13 @@ func analyzeSQL(candidate semanticCandidate) (Hit, bool) {
 		if confidence < 0.7 {
 			return Hit{}, false
 		}
+	}
+
+	// Technical documentation quotes query grammar as subject matter ("the
+	// payload UNION SELECT 1,2,3 has many spellings"). Keep the evidence for
+	// review without letting a quoted example block a document upload.
+	if explanatoryDocumentContext(candidate, doc, sqlInjectionIndicators) {
+		reasons[docContextReason] = true
 	}
 
 	return hit(candidate, "sqli", severity, confidence, reasons), true
@@ -5267,6 +5279,12 @@ func analyzeNoSQL(candidate semanticCandidate) (Hit, bool) {
 	if nosqlContainsOperator(combined, "$ne", "$nin", "$gt", "$gte", "$lt", "$lte", "$not") && nosqlSensitiveContext(name) {
 		reasons["semantics: comparison operator can replace credential or filter equality"] = true
 	}
+	// Structural evidence: the whole value is an operator document. A client does
+	// not send "{"$ne":null}" as a filter unless it is trying to widen one, so the
+	// value carries the predicate semantics the field name used to supply.
+	if nosqlWholeValueOperatorDocument(lowerText) {
+		reasons["semantics: whole-value query operator document replaces the expected filter"] = true
+	}
 	if nosqlJSBehavior.MatchString(lowerText) && (nosqlContainsOperator(combined, "$where", "$function") || strings.Contains(name, "$where") || strings.Contains(name, "$function")) {
 		reasons["semantics: query predicate contains executable JavaScript behavior"] = true
 	}
@@ -5376,10 +5394,11 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 		strings.Contains(lowerText, "classloader.loadclass") || strings.Contains(lowerText, "objectspace.each_object") {
 		reasons["semantics: template expression can reach host runtime command execution"] = true
 	}
-	// An integer-only arithmetic probe is only credible when the value is the
-	// whole template expression. A sentence such as "{{7*7}} in documentation"
-	// is a search query, not a server-side evaluation probe.
-	if arithmeticProbe && sstiArithmeticStandalone(text) {
+	// An integer-only arithmetic probe is credible when the value *is* the
+	// template expression: "{{7*7}}" alone, or one whole path segment of it.
+	// A sentence such as "{{7*7}} in documentation" is a search query, not a
+	// server-side evaluation probe.
+	if arithmeticProbe && sstiArithmeticProbeWholeValue(candidate, text) {
 		reasons["syntax: arithmetic template evaluation probe"] = true
 		reasons["semantics: probe attempts to confirm server-side template evaluation"] = true
 	}
@@ -5399,10 +5418,12 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 		severity = engine.SeverityCritical
 		confidence += 0.02
 	}
-	if arithmeticProbe && !dangerous {
-		severity = engine.SeverityMedium
-		confidence = 0.78 + confidenceBonus(reasons)
-	}
+	// The integer probe used to be downgraded to Medium/0.78 because its only
+	// evidence is a multiplication. That left the canonical confirmation probe
+	// below the default High/0.85 policy threshold, so "{{7*7}}" passed as a
+	// query value. The value-is-the-expression gate above already excludes prose,
+	// and the document gate below still suppresses tutorials; the downgrade was
+	// buying nothing but misses.
 
 	// Template-expression syntax appears verbatim in webshell writeups, exploit
 	// sources, and SSTI tutorials. A document-scale article is not a template.
@@ -5438,6 +5459,43 @@ func analyzeSSTI(candidate semanticCandidate) (Hit, bool) {
 	}
 
 	return hit(candidate, "ssti", severity, confidence, reasons), true
+}
+
+// sstiArithmeticProbeWholeValue reports that an integer arithmetic probe is the
+// entire value, or an entire segment of a request path.
+//
+// "?q={{7*7}}" and "/search/{{7*7}}" both send nothing but the expression; the
+// second one decodes to a path whose segment is the probe. A sentence that
+// happens to quote the probe keeps its surrounding words and fails both checks.
+// sstiArithmeticStandalone already trims ASCII whitespace, so the segment scan
+// needs no allocation.
+func sstiArithmeticProbeWholeValue(candidate semanticCandidate, text string) bool {
+	if sstiArithmeticStandalone(text) {
+		return true
+	}
+	switch strings.ToLower(candidate.input.Source) {
+	case "uri", "path":
+	default:
+		return false
+	}
+	for start := 0; start < len(text); {
+		end := strings.IndexByte(text[start:], '/')
+		if end < 0 {
+			end = len(text) - start
+		}
+		if sstiArithmeticStandalone(text[start : start+end]) {
+			return true
+		}
+		start += end + 1
+	}
+	return false
+}
+
+// xssExecutableIndicators anchors the XSS document guards on executable markup.
+var xssExecutableIndicators = []string{
+	"<script", "onerror=", "onload=", "javascript:", "alert(",
+	"prompt(", "confirm(", "document.cookie", "eval(", "<iframe",
+	"svg onload",
 }
 
 func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
@@ -5526,11 +5584,7 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 	// Compute the attack-evidence window so that a prose prefix + filler padding
 	// separated from the payload cannot suppress detection via techdoc markers
 	// appearing only in the outer document, not adjacent to the XSS payload.
-	xssWin := evidenceWindow(text, []string{
-		"<script", "onerror=", "onload=", "javascript:", "alert(",
-		"prompt(", "confirm(", "document.cookie", "eval(", "<iframe",
-		"svg onload",
-	})
+	xssWin := evidenceWindow(text, xssExecutableIndicators)
 
 	// Technical documentation keyword guard: AND-gate — full document AND local window.
 	if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(text) && technicalDocumentationContext(xssWin) {
@@ -5538,6 +5592,13 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 		if confidence < 0.7 {
 			return Hit{}, false
 		}
+	}
+
+	// Technical documentation quotes complete markup as subject matter ("blocked
+	// <script>alert(1)</script> in the echo endpoint"). Keep the evidence for
+	// review without letting the quoted example block the request.
+	if explanatoryDocumentContext(candidate, text, xssExecutableIndicators) {
+		reasons[docContextReason] = true
 	}
 
 	return hit(candidate, "xss", engine.SeverityHigh, confidence, reasons), true
@@ -7791,6 +7852,19 @@ func rceVersionedInterpreterToken(token string) bool {
 	return false
 }
 
+// lfiPathIndicators anchors the LFI document guards on the path payload. The
+// matrix-segment form is included so a quoted "..;/etc/passwd" is anchored where
+// it appears, not silently skipped.
+var lfiPathIndicators = []string{
+	"../", "....//", `..\/`, "..;/", ".htaccess",
+	"/etc/passwd", "/etc/shadow", "/proc/self", "/root/",
+	"php://", "phar://", "zip://", "expect://", "data://",
+	".ssh/id_rsa", ".aws/credentials", ".git/config", ".env",
+	"web-inf/web.xml", "boot.ini", "win.ini", "wp-config",
+	"docker.sock", "/var/log/", "#include", "#exec", "#echo",
+	"#fsize", "#flastmod", "#config", "#printenv", "#set",
+}
+
 func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	// Fold overlong UTF-8 before anything normalises the text.
 	//
@@ -7830,6 +7904,14 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 			continue
 		}
 		if pattern.MatchString(text) {
+			if pattern == lfiMatrixTraversalPattern {
+				// A matrix segment is its own syntax observation, and the reason
+				// text must say only that. blockableHit promotes an lfi hit whose
+				// syntax mentions "traversal" or "wrapper"; a bare "..;/" with no
+				// sensitive target is review material, not a block.
+				reasons["syntax: matrix-segment path expression"] = true
+				continue
+			}
 			reasons["syntax: traversal or wrapper path expression"] = true
 		}
 	}
@@ -7898,6 +7980,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	}
 	// Require either (traversal/wrapper) or (sensitive target) — not a lone weak token.
 	hasPathSignal := reasons["syntax: traversal or wrapper path expression"] ||
+		reasons["syntax: matrix-segment path expression"] ||
 		reasons["syntax: encoded or overlong traversal path"] ||
 		reasons["syntax: null-byte path suffix bypass"] ||
 		reasons["syntax: server-side include directive"] ||
@@ -7934,15 +8017,7 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 	// technicalDocumentationContext both run on this window so that a prose
 	// prefix + filler padding separated from the payload cannot suppress
 	// detection via either guard.
-	lfiWin := evidenceWindow(text, []string{
-		"../", "....//", `..\/`, ".htaccess",
-		"/etc/passwd", "/etc/shadow", "/proc/self", "/root/",
-		"php://", "phar://", "zip://", "expect://", "data://",
-		".ssh/id_rsa", ".aws/credentials", ".git/config", ".env",
-		"web-inf/web.xml", "boot.ini", "win.ini", "wp-config",
-		"docker.sock", "/var/log/", "#include", "#exec", "#echo",
-		"#fsize", "#flastmod", "#config", "#printenv", "#set",
-	})
+	lfiWin := evidenceWindow(text, lfiPathIndicators)
 
 	// Security document context: reports, writeups, papers, and source files
 	// quote paths like /etc/passwd and file:// URIs as subject matter.
@@ -7988,6 +8063,14 @@ func analyzeLFI(candidate semanticCandidate) (Hit, bool) {
 		if confidence < 0.7 {
 			return Hit{}, false
 		}
+	}
+
+	// Technical documentation quotes traversal paths as subject matter ("passing
+	// ../../etc/passwd returns a 400"). Keep the evidence for review without
+	// letting a quoted example block a document upload. A raw HTTP capture with an
+	// executable SSI command is exempt: the request line is not prose.
+	if !lfiRawHTTPSSICommandShape(candidate, lower) && explanatoryDocumentContext(candidate, text, lfiPathIndicators) {
+		reasons[docContextReason] = true
 	}
 
 	return hit(candidate, "lfi", engine.SeverityHigh, confidence, reasons), true
@@ -8334,12 +8417,12 @@ func analyzeSSRF(candidate semanticCandidate) (Hit, bool) {
 
 func ssrfFetchSink(candidate semanticCandidate) bool {
 	name := strings.ToLower(strings.TrimSpace(candidate.input.Name))
-	// A raw body that is nothing but a URL is a fetch target whatever the field
-	// is called. This is the one input position where a metadata-service address
-	// was previously invisible: the corpora that deliver a bare SSRF target with
-	// no request line have it moved into the body by the adapter, and requiring
-	// a parameter name meant "169.254.169.254" in the body scored nothing.
-	if candidate.input.Source == "body.raw" && ssrfWholeBodyTarget(candidate.text) {
+	// Structural evidence: a value that is nothing but a URL is a fetch target
+	// whatever the field is called. The field-name gate below exists to keep
+	// prose and documentation out, but the name is not the only way to prove
+	// intent — "http://169.254.169.254/" carries no name-independent ambiguity.
+	// Whether the value is *dangerous* is still decided by ssrfDangerousTarget.
+	if ssrfWholeValueURL(candidate.text) {
 		return true
 	}
 	if name == "" || name == "path_query" || name == "path" || name == "raw_query" || name == "body" || name == "text" || name == "content" || name == "message" || name == "description" {
@@ -8365,24 +8448,27 @@ func ssrfFetchSink(candidate semanticCandidate) bool {
 	return false
 }
 
-// ssrfWholeBodyTarget reports a body consisting entirely of a single URL.
+// ssrfWholeValueURL reports a value consisting entirely of a single URL.
 //
 // The "entirely" is the whole point: a URL embedded in a sentence is ordinary
-// content, but a body whose every byte is "http://169.254.169.254/latest/meta-data/"
+// content, but a value whose every byte is "http://169.254.169.254/latest/meta-data/"
 // is a fetch request with nowhere to hide. The length bound keeps it cheap and
-// rules out bodies that merely begin with a URL.
-func ssrfWholeBodyTarget(text string) bool {
+// rules out values that merely begin with a URL.
+//
+// This started as the raw-body rule for corpora that deliver a bare SSRF target
+// with no request line. The same shape is equally conclusive in a named
+// parameter or header, so the check is no longer source-restricted: a field
+// called "q" carrying nothing but a metadata URL is a fetch sink too.
+//
+// It deliberately does not accept a bare host token. "q=localhost" is a search
+// term as often as it is a target, so a bare internal hostname still needs the
+// field-name gate; only the unmistakable URL shape is name-independent.
+func ssrfWholeValueURL(text string) bool {
 	t := strings.TrimSpace(text)
 	if t == "" || len(t) > 512 || !strings.Contains(t, "://") {
 		return false
 	}
-	for i := 0; i < len(t); i++ {
-		switch t[i] {
-		case ' ', '\t', '\n', '\r':
-			return false
-		}
-	}
-	return true
+	return !strings.ContainsAny(t, " \t\n\r")
 }
 
 func hit(candidate semanticCandidate, category string, severity engine.Severity, confidence float64, reasons map[string]bool) Hit {
@@ -8463,6 +8549,23 @@ func hasSyntaxReason(reasons map[string]bool) bool {
 	return false
 }
 
+// docContextReason marks a hit whose evidence is quoted as explanatory
+// documentation prose rather than sent as a value.
+//
+// The marker is internal: it is set by explanatoryDocumentContext, never read
+// from input, so an attacker cannot spell it into a payload. blockableHit
+// refuses any hit carrying it, which keeps the request out of the block path
+// while the hit still reaches the review queue through the analyzer's
+// strongestHit fallback.
+//
+// docContextSemantics is the bare reason text; docContextReason is the key
+// stored in the reasons map. blockableHit matches the bare text because hit()
+// joins semantics reasons after a single "semantics: " prefix.
+const (
+	docContextSemantics = "quoted as explanatory documentation prose"
+	docContextReason    = "semantics: " + docContextSemantics
+)
+
 // blockableHit enforces the FP-first policy for production block mode:
 // weak single-signal hits must not block legitimate traffic.
 // Prefer miss over wrong block.
@@ -8473,6 +8576,12 @@ func (a *Analyzer) blockableHit(h Hit) bool {
 	}
 
 	if h.Category == "" || h.Payload == "" {
+		return false
+	}
+	// Documentation that quotes attack syntax is review material at every level.
+	// This is not an isolation call: the payload may be perfectly isolated and
+	// still be an example the article is explaining.
+	if strings.Contains(h.Semantics, docContextSemantics) {
 		return false
 	}
 	// Embedded (gadget inside other text) blocks only at 5.

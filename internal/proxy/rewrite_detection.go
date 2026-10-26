@@ -53,7 +53,7 @@ func (s *Server) detectRequestIdentities(ctx context.Context, pipeline requestDe
 			// lets it enforce the candidate without ordinary detection thresholds.
 			rank = 3
 		} else if result != nil && result.Detected {
-			decision := evaluateWebAttackPolicyWithEvidence(policy.WebAttack, result, view.Results, site.WAF.ParanoiaLevel)
+			decision := evaluateWebAttackPolicyForSite(policy.WebAttack, result, view.Results, site, view)
 			switch decision.Action {
 			case engine.ActionBlock.String():
 				rank = 3

@@ -25,6 +25,21 @@ func TestNormalizeRequestPath(t *testing.T) {
 		{"/api%2Fusers", "/api/users", true},
 		// Invalid percent sequences fail closed.
 		{"/%zz", "", false},
+		// Matrix segments: "..;" is a parent-directory reference that path.Clean
+		// cannot see (Tomcat/Jetty/Spring resolve it), so it fails closed.
+		{"/a/..;/b", "", false},
+		{"/api/v1/x/..;/..;/admin", "", false},
+		{"/..%3b/admin", "", false},
+		{"/%2e%2e%3b/admin", "", false},
+		// Ordinary matrix parameters are stripped so policy matching sees the
+		// path the backend will route on.
+		{"/a;b=c/d", "/a/d", true},
+		{"/;jsessionid=ABC123/admin", "/admin", true},
+		{"/a/;/b", "/a/b", true},
+		{"/matrix;x=1;y=2/z", "/matrix/z", true},
+		// ".." not immediately followed by ";" is not a traversal; rejecting it
+		// would break legitimate paths.
+		{"/..foo;bar/z", "/..foo/z", true},
 	}
 	for _, tc := range cases {
 		got, ok := NormalizeRequestPath(tc.in)

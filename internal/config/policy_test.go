@@ -52,6 +52,40 @@ func TestBudgetExhaustedPolicyMonotonic(t *testing.T) {
 	}
 }
 
+// The response inspection fail-mode decides whether an uninspectable response
+// (size limit, streaming media, unsupported encoding) is delivered. An omitted
+// value must fail closed, and a typo must never silently pick a different
+// exposure policy.
+func TestNormalizeResponseFailMode(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{raw: "", want: ResponseFailModeObserve},
+		{raw: "   ", want: ResponseFailModeObserve},
+		{raw: ResponseFailModeOpen, want: ResponseFailModeOpen},
+		{raw: " observe ", want: ResponseFailModeObserve},
+		{raw: "CLOSED", want: ResponseFailModeClosed},
+		{raw: "clossed", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeResponseFailMode(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("NormalizeResponseFailMode(%q) = %q, want error", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("NormalizeResponseFailMode(%q) returned %v", tc.raw, err)
+		}
+		if got != tc.want {
+			t.Fatalf("NormalizeResponseFailMode(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestResolveDecodeDepth(t *testing.T) {
 	if got := ResolveDecodeDepth(0); got != DefaultDecodeDepth {
 		t.Fatalf("omitted depth=%d, want %d", got, DefaultDecodeDepth)

@@ -136,3 +136,86 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 }
+
+func TestInspectJSONLimitAllowsBase64Body(t *testing.T) {
+	minimum := int64(maxInspectBodyBytes)*4/3 + 1024
+	if int64(maxInspectJSONBytes) < minimum {
+		t.Fatalf("inspection JSON limit %d cannot carry a base64 %d-byte body (needs >= %d)", maxInspectJSONBytes, maxInspectBodyBytes, minimum)
+	}
+}
+
+func TestSetTokenRotatesCredentialWithoutRestart(t *testing.T) {
+	inspector := &fakeInspector{decision: Decision{Action: ActionAllow}}
+	handler := newTestHandler(t, inspector, "first-token", &fakeSink{})
+
+	post := func(token string) int {
+		body, _ := json.Marshal(Request{
+			ContractVersion: Version,
+			Source:          SourceGeneric,
+			Method:          http.MethodGet,
+			Path:            "/",
+			BodyState:       BodyStateAbsent,
+		})
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/adapter/inspect", bytes.NewReader(body))
+		if token == "" {
+			request.RemoteAddr = "127.0.0.1:54321"
+		} else {
+			request.RemoteAddr = "203.0.113.10:54321"
+		}
+		if token != "" {
+			request.Header.Set("X-CheeseWAF-Adapter-Token", token)
+		}
+		handler.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+
+	if code := post("first-token"); code != http.StatusOK {
+		t.Fatalf("initial token status = %d", code)
+	}
+	handler.SetToken("second-token")
+	if code := post("first-token"); code != http.StatusUnauthorized {
+		t.Fatalf("retired token status = %d, want 401", code)
+	}
+	if code := post("second-token"); code != http.StatusOK {
+		t.Fatalf("rotated token status = %d, want 200", code)
+	}
+	handler.SetToken("")
+	if code := post(""); code != http.StatusOK {
+		t.Fatalf("empty token from loopback status = %d, want 200", code)
+	}
+}
+
+// A body at the contract maximum must survive base64 + JSON framing. The old
+// limit rejected anything above roughly 24.75 MiB before validation ran.
+func TestInspectAcceptsBodyAtContractLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates a 32 MiB body")
+	}
+	inspector := &fakeInspector{decision: Decision{Action: ActionAllow}}
+	handler := newTestHandler(t, inspector, "token", &fakeSink{})
+	body := make([]byte, maxInspectBodyBytes)
+	for i := range body {
+		body[i] = 'a'
+	}
+	payload, err := json.Marshal(Request{
+		ContractVersion: Version,
+		Source:          SourceGeneric,
+		Method:          http.MethodPost,
+		Path:            "/upload",
+		BodyState:       BodyStateForwarded,
+		BodyForwarded:   true,
+		Body:            body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/adapter/inspect", bytes.NewReader(payload))
+	request.RemoteAddr = "203.0.113.10:54321"
+	request.Header.Set("X-CheeseWAF-Adapter-Token", "token")
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("contract-limit body status = %d body=%s", recorder.Code, recorder.Body.String()[:min(200, recorder.Body.Len())])
+	}
+}
