@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -123,6 +124,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if cfg.Console.Login.CAPTCHA.Enabled {
+		if err := validateCAPTCHAProvider("console.login.captcha.provider", cfg.Console.Login.CAPTCHA.Provider); err != nil {
+			return err
+		}
 		switch strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Mode)) {
 		case "", "slider", "pow":
 		default:
@@ -141,6 +145,27 @@ func Validate(cfg *Config) error {
 	if cfg.Console.Login.SessionTTL != 0 && (cfg.Console.Login.SessionTTL < 15*time.Minute || cfg.Console.Login.SessionTTL > 30*24*time.Hour) {
 		return fmt.Errorf("console.login.session_ttl must be between 15m and 720h")
 	}
+	if cfg.Console.Login.Passkey.Enabled {
+		pk := cfg.Console.Login.Passkey
+		if strings.TrimSpace(pk.RPDisplayName) == "" {
+			return fmt.Errorf("console.login.passkey.rp_display_name is required when passkey is enabled")
+		}
+		if strings.TrimSpace(pk.RPID) == "" || strings.ContainsAny(pk.RPID, " /:") {
+			return fmt.Errorf("console.login.passkey.rp_id must be a domain without scheme, path, or spaces")
+		}
+		if len(pk.RPOrigins) == 0 {
+			return fmt.Errorf("console.login.passkey.rp_origins is required when passkey is enabled")
+		}
+		for _, origin := range pk.RPOrigins {
+			parsed, err := url.Parse(strings.TrimSpace(origin))
+			if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+				return fmt.Errorf("console.login.passkey.rp_origins entry %q is invalid", origin)
+			}
+			if !strings.EqualFold(parsed.Scheme, "https") && !(pk.AllowInsecureLocalhost && strings.EqualFold(parsed.Scheme, "http") && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1")) {
+				return fmt.Errorf("console.login.passkey.rp_origins entry %q must be HTTPS", origin)
+			}
+		}
+	}
 	if err := validateSecurityEntry(cfg.Console.Login.SecurityEntry); err != nil {
 		return err
 	}
@@ -157,6 +182,9 @@ func Validate(cfg *Config) error {
 		return err
 	}
 	if err := validateBotProtection(cfg.Protection.Bot); err != nil {
+		return err
+	}
+	if err := validateCAPTCHAProviders(cfg); err != nil {
 		return err
 	}
 	if err := validateACME(cfg.ACME); err != nil {
@@ -242,6 +270,41 @@ func Validate(cfg *Config) error {
 	if err := validateAISelfLearning(cfg.AI.SelfLearning); err != nil {
 		return err
 	}
+	if cfg.Intel.ShadowWindow < 0 || cfg.Intel.ShadowWindow > 30*24*time.Hour {
+		return fmt.Errorf("intel.shadow_window must be between 0 and 720h")
+	}
+	if cfg.Intel.PollInterval < 10*time.Second || cfg.Intel.PollInterval > 24*time.Hour {
+		return fmt.Errorf("intel.poll_interval must be between 10s and 24h")
+	}
+	if cfg.Intel.MaxFetchBytes < 1 || cfg.Intel.MaxFetchBytes > 256<<10 {
+		return fmt.Errorf("intel.max_fetch_bytes must be between 1 and %d", 256<<10)
+	}
+	if cfg.Intel.MaxCandidatesPerItem < 1 || cfg.Intel.MaxCandidatesPerItem > 32 {
+		return fmt.Errorf("intel.max_candidates_per_item must be between 1 and 32")
+	}
+	if cfg.Intel.AutoApply && !cfg.Intel.RequireHumanApproval {
+		return fmt.Errorf("intel.auto_apply requires intel.require_human_approval for block actions")
+	}
+	seenIntelSources := make(map[string]struct{}, len(cfg.Intel.Sources))
+	for _, source := range cfg.Intel.Sources {
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			return fmt.Errorf("intel.sources entries require an id")
+		}
+		if _, exists := seenIntelSources[id]; exists {
+			return fmt.Errorf("intel.sources id %q is duplicated", id)
+		}
+		seenIntelSources[id] = struct{}{}
+		switch strings.ToLower(strings.TrimSpace(source.Trust)) {
+		case "official", "vendor", "community", "unknown":
+		default:
+			return fmt.Errorf("intel.sources %q has invalid trust %q", id, source.Trust)
+		}
+		parsed, err := url.Parse(strings.TrimSpace(source.URL))
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+			return fmt.Errorf("intel.sources %q has an invalid URL", id)
+		}
+	}
 	if err := validateUpdateConfig(cfg.Update); err != nil {
 		return err
 	}
@@ -318,6 +381,20 @@ func Validate(cfg *Config) error {
 		}
 		if site.WAF.ParanoiaLevel < 0 || site.WAF.ParanoiaLevel > 5 {
 			return fmt.Errorf("site %q waf.paranoia_level must be between 0 and 5", site.Name)
+		}
+		if site.WAF.PHP2Shell.MaxParts < 0 || site.WAF.PHP2Shell.MaxParts > 1024 {
+			return fmt.Errorf("site %q waf.php2shell.max_parts must be between 0 and 1024", site.Name)
+		}
+		if site.WAF.PHP2Shell.MaxArrayDepth < 0 || site.WAF.PHP2Shell.MaxArrayDepth > 32 {
+			return fmt.Errorf("site %q waf.php2shell.max_array_depth must be between 0 and 32", site.Name)
+		}
+		if site.WAF.PHP2Shell.MaxEmptyFilenameParts < 0 || site.WAF.PHP2Shell.MaxEmptyFilenameParts > 512 {
+			return fmt.Errorf("site %q waf.php2shell.max_empty_filename_parts must be between 0 and 512", site.Name)
+		}
+		for _, allowed := range site.WAF.PHP2Shell.AllowPaths {
+			if !strings.HasPrefix(strings.TrimSpace(allowed), "/") {
+				return fmt.Errorf("site %q waf.php2shell.allow_paths entry %q must start with /", site.Name, allowed)
+			}
 		}
 		if site.WAF.Performance.MaxBodyBytes < 0 {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)
@@ -627,10 +704,28 @@ func Validate(cfg *Config) error {
 		default:
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
 		}
-		if strings.TrimSpace(notifier.Endpoint) != "" {
-			if err := validateNotifierEndpoint(notifier.Endpoint, notifier.AllowPrivateEndpoint); err != nil {
+		if strings.TrimSpace(notifier.Endpoint) == "" {
+			return fmt.Errorf("notifier %q endpoint is required when enabled", notifier.ID)
+		}
+		if strings.EqualFold(notifier.Type, "email") {
+			if err := validateSMTPNotifierEndpoint(notifier.Endpoint); err != nil {
 				return fmt.Errorf("notifier %q endpoint is invalid: %w", notifier.ID, err)
 			}
+			if _, err := mail.ParseAddress(strings.TrimSpace(notifier.To)); err != nil || strings.TrimSpace(notifier.To) == "" {
+				return fmt.Errorf("notifier %q requires a valid email recipient in to", notifier.ID)
+			}
+			from := strings.TrimSpace(notifier.Headers["from"])
+			username := strings.TrimSpace(notifier.Headers["username"])
+			if from == "" && username == "" {
+				return fmt.Errorf("notifier %q requires headers.from or headers.username", notifier.ID)
+			}
+			if from != "" {
+				if _, err := mail.ParseAddress(from); err != nil {
+					return fmt.Errorf("notifier %q headers.from is invalid: %w", notifier.ID, err)
+				}
+			}
+		} else if err := validateNotifierEndpoint(notifier.Endpoint, notifier.AllowPrivateEndpoint); err != nil {
+			return fmt.Errorf("notifier %q endpoint is invalid: %w", notifier.ID, err)
 		}
 	}
 	seenTaskIDs := make(map[string]struct{}, len(cfg.Scheduler.Tasks))
@@ -2045,6 +2140,79 @@ func validateSliderCAPTCHA(slider LoginSliderCAPTCHAConfig) error {
 	return nil
 }
 
+func validateCAPTCHAProviders(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	loginProvider := strings.ToLower(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Provider))
+	if loginProvider == "" {
+		loginProvider = "builtin"
+	}
+	if err := validateCAPTCHAProvider("console.login.captcha.provider", loginProvider); err != nil {
+		return err
+	}
+	botProvider := strings.ToLower(strings.TrimSpace(cfg.Protection.Bot.CAPTCHAProvider))
+	if botProvider == "" {
+		botProvider = "builtin"
+	}
+	if err := validateCAPTCHAProvider("protection.bot.captcha_provider", botProvider); err != nil {
+		return err
+	}
+	if !(cfg.Console.Login.CAPTCHA.Enabled && loginProvider == "cap") &&
+		!(cfg.Protection.Bot.Enabled && cfg.Protection.Bot.CAPTCHA && botProvider == "cap") {
+		return nil
+	}
+
+	capConfig := cfg.CAPTCHAProviders.Cap
+	if strings.TrimSpace(capConfig.SecretFile) == "" {
+		return fmt.Errorf("captcha_providers.cap.secret_file is required when Cap is enabled")
+	}
+	if capConfig.Timeout < 100*time.Millisecond || capConfig.Timeout > 30*time.Second {
+		return fmt.Errorf("captcha_providers.cap.timeout must be between 100ms and 30s")
+	}
+	if err := validateCAPublicURL("captcha_providers.cap.api_endpoint", capConfig.APIEndpoint, true); err != nil {
+		return err
+	}
+	if err := validateCAPublicURL("captcha_providers.cap.widget_url", capConfig.WidgetURL, false); err != nil {
+		return err
+	}
+	if err := validateCAPublicURL("captcha_providers.cap.wasm_url", capConfig.WASMURL, false); err != nil {
+		return err
+	}
+	return validateCAPublicURL("captcha_providers.cap.hashwx_url", capConfig.HashWXURL, false)
+}
+
+func validateCAPTCHAProvider(field, value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "builtin", "cap":
+		return nil
+	default:
+		return fmt.Errorf("%s must be builtin or cap", field)
+	}
+}
+
+func validateCAPublicURL(field, raw string, trailingSlash bool) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s must be an absolute HTTPS URL without credentials, query, or fragment", field)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackCAPHost(u.Hostname())) {
+		return fmt.Errorf("%s must use HTTPS (HTTP is allowed only for loopback)", field)
+	}
+	if trailingSlash && (!strings.HasSuffix(u.Path, "/") || strings.Trim(u.Path, "/") == "") {
+		return fmt.Errorf("%s must include a Cap site key and end with a slash", field)
+	}
+	return nil
+}
+
+func isLoopbackCAPHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func validateBotProtection(bot BotProtectionConfig) error {
 	if bot.Enabled && bot.Secret != "" && bot.Secret != BotSecretPlaceholder && IsWeakBotSecret(bot.Secret) {
 		return fmt.Errorf("protection.bot.secret must contain at least 32 bytes of high-entropy key material")
@@ -2674,6 +2842,38 @@ func validateSiteCertificate(site SiteConfig) error {
 		}
 	default:
 		return fmt.Errorf("site %q has unsupported certificate mode %q", site.Name, site.Certificate.Mode)
+	}
+	return nil
+}
+
+func validateSMTPNotifierEndpoint(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return errors.New("SMTP endpoint is required")
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(parsed.Scheme, "smtp") {
+			return errors.New("SMTP endpoint must use the smtp scheme")
+		}
+		if parsed.User != nil {
+			return errors.New("SMTP endpoint must not contain credentials")
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return errors.New("SMTP endpoint must contain only host and port")
+		}
+		value = parsed.Host
+	}
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return errors.New("SMTP endpoint must be smtp://host:port or host:port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("SMTP endpoint port is invalid")
 	}
 	return nil
 }

@@ -30,6 +30,7 @@ import {
   BrainCircuit,
   Bot,
   FileCode2,
+  Fingerprint,
   Bell,
   Clock3,
   LogOut,
@@ -61,10 +62,11 @@ import {
   ChevronRight,
   type LucideIcon,
 } from 'lucide-react';
-import i18n from '../i18n';
+import i18n, { ensureLanguage } from '../i18n';
 import { clearNotifications, fetchAuditEntries, fetchHealth, fetchLogs, fetchNotifications, fetchUsers, fetchVersion, isSessionInvalidAuthFailure, logout, markAllNotificationsRead as markAllNotificationsReadAPI, sanitizeInternalReturnPath, updateNotification } from '../api/client';
 import AIAssistantEntry from '../components/AIAssistant/AIAssistantEntry';
 import BrandLogo from '../components/BrandLogo';
+import PasskeyManager from '../components/PasskeyManager';
 import { useAppStore, type Language } from '../stores';
 import { themeOptions, type ThemeName } from '../themes/tokens';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -230,6 +232,7 @@ export default function MainLayout() {
   const [searchValue, setSearchValue] = useState('');
   const [searchHighlight, setSearchHighlight] = useState(0);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [passkeyManagerOpen, setPasskeyManagerOpen] = useState(false);
   const notificationShellRef = useRef<HTMLDivElement | null>(null);
   const notificationTriggerRef = useRef<HTMLSpanElement | null>(null);
   const mobileNavRef = useRef<HTMLElement | null>(null);
@@ -813,7 +816,13 @@ export default function MainLayout() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={language} onValueChange={(value) => setLanguage(value as Language)}>
+              <Select
+                value={language}
+                onValueChange={(value) => setLanguage(value as Language)}
+                onOpenChange={(open) => {
+                  if (open) void ensureLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN');
+                }}
+              >
                 <SelectTrigger className="language-select" aria-label={t('system.language')}>
                   <span className="flex min-w-0 items-center gap-1.5">
                     <Languages size={15} className="shrink-0" />
@@ -837,6 +846,10 @@ export default function MainLayout() {
                 <DropdownMenuItem onClick={() => navigate('/users')}>
                   <UserCog size={14} />
                   {t('shell.admin')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setPasskeyManagerOpen(true)}>
+                  <Fingerprint size={14} />
+                  {t('passkeys.menu')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => void handleLogout()}>
                   <LogOut size={14} />
@@ -873,6 +886,7 @@ export default function MainLayout() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <PasskeyManager open={passkeyManagerOpen} onOpenChange={setPasskeyManagerOpen} />
     </div>
   );
 }

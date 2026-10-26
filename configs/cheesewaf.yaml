@@ -88,6 +88,7 @@ console:
         session_ttl: 24h0m0s
         captcha:
             enabled: true
+            provider: builtin
             mode: slider
             max_number: 75000
             ttl: 2m0s
@@ -140,6 +141,20 @@ captcha_assets:
         max_pixels: 16000000
         max_assets: 512
         max_total_bytes: 536870912
+# Optional Cap Standalone integration for console login and classic Bot
+# challenge pages. Select it with console.login.captcha.provider and/or
+# protection.bot.captcha_provider. The API endpoint is the site-key URL with
+# a trailing slash; CheeseWAF appends siteverify for server-side verification.
+# Keep the secret in a restricted file; the management API never returns its
+# path or contents. Cap Standalone's asset server must be enabled for /assets.
+captcha_providers:
+    cap:
+        api_endpoint: "https://cap.example.com/site-key/"
+        widget_url: "https://cap.example.com/assets/widget.js"
+        wasm_url: "https://cap.example.com/assets/cap_wasm_bg.wasm"
+        hashwx_url: "https://cap.example.com/assets/hashwx.wasm"
+        secret_file: "./data/secrets/cap-siteverify.secret"
+        timeout: 5s
 sites:
     - id: default
       name: localhost
@@ -312,6 +327,7 @@ protection:
         risk_confidence_min: 0.6
         js_challenge: true
         captcha: false
+        captcha_provider: builtin
         captcha_type: pow
         captcha_types:
             - pow

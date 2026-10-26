@@ -117,15 +117,9 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 	slow := &countingDetector{
 		id: "slow-pre", priority: 10,
 		fn: func(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
-			// Exceed the 100ms pipeline budget.
-			timer := time.NewTimer(150 * time.Millisecond)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-timer.C:
-				return nil, nil
-			}
+			// Remain incomplete until the pipeline budget cancels the context.
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 	}
 
@@ -200,14 +194,8 @@ func TestPipelineBudgetExhaustedPolicies(t *testing.T) {
 		slowSemantic := &countingDetector{
 			id: "slow-semantic", priority: 290,
 			fn: func(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error) {
-				timer := time.NewTimer(150 * time.Millisecond)
-				defer timer.Stop()
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-timer.C:
-					return nil, nil
-				}
+				<-ctx.Done()
+				return nil, ctx.Err()
 			},
 		}
 		reqCtx := &RequestContext{Metadata: map[string]any{"budget_exhausted_policy": "closed"}}

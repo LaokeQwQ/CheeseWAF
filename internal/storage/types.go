@@ -357,9 +357,22 @@ type SiteAdvanced struct {
 	Rewrite          []SiteRewriteRule     `json:"rewrite"`
 	CustomRules      []SiteCustomRule      `json:"custom_rules,omitempty"`
 	AccessControl    SiteAccessControl     `json:"access_control"`
+	PHP2Shell        SitePHP2ShellConfig   `json:"php2shell"`
 	// AccessLogEnabled records normal pass/cache/redirect traffic. Security events always log.
 	// Omitted/nil defaults to true for backward compatibility.
 	AccessLogEnabled *bool `json:"access_log_enabled,omitempty"`
+}
+
+// SitePHP2ShellConfig persists per-site PHP2Shell detector settings so editing
+// an unrelated site field cannot silently reset the detector to defaults.
+type SitePHP2ShellConfig struct {
+	Enabled               *bool    `json:"enabled,omitempty"`
+	BlockUploadProgress   bool     `json:"block_upload_progress"`
+	BlockAllMultipart     bool     `json:"block_all_multipart"`
+	MaxParts              int      `json:"max_parts"`
+	MaxArrayDepth         int      `json:"max_array_depth"`
+	MaxEmptyFilenameParts int      `json:"max_empty_filename_parts"`
+	AllowPaths            []string `json:"allow_paths,omitempty"`
 }
 
 // SiteSemanticPolicy is commercial ops config for the staged analyzer.

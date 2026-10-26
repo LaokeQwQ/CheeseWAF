@@ -436,6 +436,9 @@ func RenderSecurityReport(summary ReportSummary, format string) []byte {
 	}
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "# CheeseWAF Security %s Report\n\n", reportTitle(summary.Period))
+	if summary.Partial {
+		fmt.Fprint(&buf, "> Warning: This report is incomplete because the log scan limit was reached. Counts reflect only scanned entries; matching events may be missing.\n\n")
+	}
 	fmt.Fprintf(&buf, "- Generated: %s\n", summary.GeneratedAt.Format(time.RFC3339))
 	if !summary.WindowStart.IsZero() && !summary.WindowEnd.IsZero() {
 		fmt.Fprintf(&buf, "- Window: %s to %s\n", summary.WindowStart.Format(time.RFC3339), summary.WindowEnd.Format(time.RFC3339))

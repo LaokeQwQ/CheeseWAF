@@ -1,7 +1,8 @@
-// Package ratelimit implements per-key sliding window request limits.
+// Package ratelimit implements per-key fixed-window request limits.
 package ratelimit
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 
@@ -16,8 +17,9 @@ const (
 	evictionBudget = 8
 )
 
-// Limiter is a sharded sliding-window rate limiter with window expiry and a
-// hard per-shard key capacity (oldest last-access keys are dropped when full).
+// Limiter is a sharded fixed-window rate limiter with window expiry and a
+// hard per-shard key capacity. Full shards deny new keys until a window expires;
+// live quotas are never discarded to admit a different client.
 type Limiter struct {
 	enabled  bool
 	requests int
@@ -29,14 +31,40 @@ type Limiter struct {
 }
 
 type limiterShard struct {
-	mu   sync.Mutex
-	keys map[string]*bucket
+	mu          sync.Mutex
+	keys        map[string]*bucket
+	expirations bucketExpiryHeap
 }
 
 type bucket struct {
+	key         string
 	windowStart time.Time
-	lastAccess  time.Time
 	count       int
+	heapIndex   int
+}
+
+type bucketExpiryHeap []*bucket
+
+func (h bucketExpiryHeap) Len() int           { return len(h) }
+func (h bucketExpiryHeap) Less(i, j int) bool { return h[i].windowStart.Before(h[j].windowStart) }
+func (h bucketExpiryHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+func (h *bucketExpiryHeap) Push(value any) {
+	b := value.(*bucket)
+	b.heapIndex = len(*h)
+	*h = append(*h, b)
+}
+func (h *bucketExpiryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	b := old[last]
+	old[last] = nil
+	b.heapIndex = -1
+	*h = old[:last]
+	return b
 }
 
 func New(profile config.RateLimitProfile, enabled bool) *Limiter {
@@ -90,25 +118,25 @@ func (l *Limiter) Allow(key string) bool {
 	b := sh.keys[key]
 	if b == nil || now.Sub(b.windowStart) >= l.window {
 		if b == nil && len(sh.keys) >= capPer {
-			l.evictOldestLocked(sh, now)
+			return false
 		}
-		// After eviction still full: replace one entry (prefer allow path).
-		if b == nil && len(sh.keys) >= capPer {
-			for k := range sh.keys {
-				delete(sh.keys, k)
-				break
-			}
+		if b == nil {
+			b = &bucket{key: key, windowStart: now, count: 1}
+			sh.keys[key] = b
+			heap.Push(&sh.expirations, b)
+		} else {
+			// Cleanup is bounded, so this expired key may still be indexed.
+			// Update its one record instead of retaining stale heap entries.
+			b.windowStart, b.count = now, 1
+			heap.Fix(&sh.expirations, b.heapIndex)
 		}
-		sh.keys[key] = &bucket{windowStart: now, lastAccess: now, count: 1}
 		return true
 	}
 	limit := l.requests + l.burst
 	if b.count >= limit {
-		b.lastAccess = now
 		return false
 	}
 	b.count++
-	b.lastAccess = now
 	return true
 }
 
@@ -172,40 +200,14 @@ func (l *Limiter) perShardCap() int {
 }
 
 func (l *Limiter) expireLocked(sh *limiterShard, now time.Time) {
-	// Bound scan work under the shard lock, including live keys.
-	budget := evictionBudget
-	for key, b := range sh.keys {
-		if budget <= 0 {
+	// Oldest windows come first, so one due bucket always makes room even
+	// when every other key is live. Keep removal work bounded per request.
+	for n := 0; n < evictionBudget && len(sh.expirations) > 0; n++ {
+		b := sh.expirations[0]
+		if now.Sub(b.windowStart) < l.window {
 			break
 		}
-		budget--
-		if now.Sub(b.windowStart) >= l.window {
-			delete(sh.keys, key)
-		}
-	}
-}
-
-func (l *Limiter) evictOldestLocked(sh *limiterShard, now time.Time) {
-	l.expireLocked(sh, now)
-	if len(sh.keys) < l.perShardCap() {
-		return
-	}
-	var oldestKey string
-	var oldest time.Time
-	first := true
-	budget := evictionBudget
-	for key, b := range sh.keys {
-		if budget <= 0 {
-			break
-		}
-		budget--
-		if first || b.lastAccess.Before(oldest) {
-			oldest = b.lastAccess
-			oldestKey = key
-			first = false
-		}
-	}
-	if oldestKey != "" {
-		delete(sh.keys, oldestKey)
+		heap.Pop(&sh.expirations)
+		delete(sh.keys, b.key)
 	}
 }

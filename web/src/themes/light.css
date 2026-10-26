@@ -16,21 +16,24 @@
   --text-primary: var(--text);
   --text-secondary: var(--text-muted);
   --accent: #165dff;
-  --accent-success: #16a34a;
+  --accent-success: #15803d;
   --accent-contrast: #ffffff;
   --accent-strong: #0e46c9;
   --accent-soft: rgba(22, 93, 255, 0.12);
-  --accent-danger: #dd3b3b;
+  --accent-danger: #c62828;
   --danger: var(--accent-danger);
-  --accent-warning: #d98912;
+  --accent-warning: #925700;
   --accent-info: #2563eb;
   --accent-purple: #7b4fd6;
-  --shadow: 0 18px 60px rgba(39, 54, 73, 0.1);
+  --shadow-offset-y: 18px;
+  --shadow-blur: 60px;
   --shadow-color: rgba(39, 54, 73, 0.1);
   --highlight-color: rgba(255, 255, 255, 0.72);
   --map-canvas-3d-bg: linear-gradient(180deg, #eef4fb 0%, #f7faff 58%, #ffffff 100%);
   --auth-media-bg: #102033;
-  --auth-shade: linear-gradient(90deg, rgba(11, 22, 35, 0.76), rgba(11, 22, 35, 0.48) 42%, rgba(11, 22, 35, 0.72));
+  --auth-shade-start: rgba(11, 22, 35, 0.76);
+  --auth-shade-mid: rgba(11, 22, 35, 0.48);
+  --auth-shade-end: rgba(11, 22, 35, 0.72);
   --preview-page-bg: #ffffff;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   --mono-font: var(--font-mono);
@@ -39,4 +42,5 @@
   --color-bg-2: #f6f8fb;
   --color-text-1: #182232;
   --color-text-2: #334155;
+  --destructive-foreground: #ffffff;
 }

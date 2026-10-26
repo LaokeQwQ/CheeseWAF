@@ -213,10 +213,11 @@ func (a *Analyzer) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*
 	}()
 
 	path, pathOK := engine.NormalizeRequestPath(reqCtx.Request.URL.Path)
+	cleanedPath := path
 	if reqCtx.NormalizedPath != "" {
 		path, pathOK = reqCtx.NormalizedPath, true
 	}
-	if pathOK && pathAllowlisted(path, a.pathAllowlist) {
+	if pathOK && pathAllowlisted(path, a.pathAllowlist) && routingPathsAllowlisted(reqCtx.Request.URL.Path, cleanedPath, a.pathAllowlist) {
 		if reqCtx.Metadata == nil {
 			reqCtx.Metadata = map[string]any{}
 		}
@@ -920,6 +921,28 @@ func pathAllowlisted(path string, rules []string) bool {
 	return false
 }
 
+// Allowlist skips must hold for every routing interpretation. Preserve the
+// historical cleaned-path meaning for ordinary dot segments; only additional
+// matrix routing views can narrow an existing exemption, never broaden it.
+func routingPathsAllowlisted(raw, cleaned string, rules []string) bool {
+	if !strings.ContainsAny(raw, ";%") {
+		return true
+	}
+	views, ok := engine.SecurityPathViews(raw)
+	if !ok {
+		return false
+	}
+	for i, view := range views {
+		if i == 0 && view == raw && raw != cleaned {
+			continue
+		}
+		if !pathAllowlisted(view, rules) {
+			return false
+		}
+	}
+	return true
+}
+
 // paramAllowlisted skips query/form/json/cookie/multipart parameter names only.
 func paramAllowlisted(source, name string, allow map[string]struct{}) bool {
 	if len(allow) == 0 || name == "" {
@@ -1049,6 +1072,9 @@ func extractCandidatesWithOptions(reqCtx *engine.RequestContext, allow map[strin
 	sort.Strings(headerKeys)
 	for _, key := range headerKeys {
 		for _, value := range r.Header[key] {
+			if plainBodyMediaTypeHeader(key, value) {
+				continue
+			}
 			add(&headerInputs, InputPoint{Source: "header", Name: key, Raw: clipInput(value), Layers: rawLayersOnly})
 		}
 	}
@@ -1370,12 +1396,19 @@ func hasInspectableHeaders(header http.Header) bool {
 			continue
 		}
 		for _, value := range values {
-			if value != "" {
+			if value != "" && !plainBodyMediaTypeHeader(key, value) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// A known, parameterless body media type has no payload-bearing part. Preserve
+// its old fast path and candidate budget without excluding quoted parameters,
+// encoded values, or unknown media types from inspection.
+func plainBodyMediaTypeHeader(key, value string) bool {
+	return strings.EqualFold(key, "Content-Type") && strings.IndexByte(value, ';') < 0 && requestMediaType(value) != ""
 }
 
 func clipRaw(raw string) string {
@@ -2686,6 +2719,10 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	if looksCleanASCIIField(raw) && !rceBareCommandSinkValueForSource(inputSource, inputName, raw) {
 		return nil
 	}
+	// Candidate admission must see the same separators as the LFI analyzer.
+	// Folding only after either hint gate can discard the category before its
+	// decoder runs. Ordinary ASCII input is returned without an allocation.
+	foldedRaw := foldOverlongUTF8(raw)
 	// Long unstructured values are commonly security articles, logs, or source
 	// listings. Running every category's regexp suite on those values makes the
 	// hot path proportional to document length even when there is no request
@@ -2697,12 +2734,12 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 	// syntax/semantic and document-context guards still decide block/pass.
 	longMask := 0
 	if len(raw) >= longCandidateThreshold {
-		longMask = longCandidateStrongHints(raw, inputName, inputSource)
+		longMask = longCandidateStrongHints(foldedRaw, inputName, inputSource)
 		if longMask == 0 {
 			return nil
 		}
 	}
-	hints := scanAttackHints(raw)
+	hints := scanAttackHints(foldedRaw)
 	if hints == 0 {
 		hints = hintSQL | hintXSS | hintRCE | hintLFI | hintXXE | hintSSRF | hintNoSQL | hintSSTI
 	}
@@ -2715,11 +2752,6 @@ func guessCategoriesForSource(raw, inputName, inputSource string) []string {
 			hints = longMask
 		}
 	}
-	// Fold overlong UTF-8 before normalising, for the same reason analyzeLFI
-	// does: NFKC turns the invalid bytes 0xC0 0xAF into U+FFFD, and the scoring
-	// gates here would then see no "../" and give lfi zero score — so
-	// analyzeLFI was never called on the very payload it was written to catch.
-	foldedRaw := foldOverlongUTF8(raw)
 	if lfiUnicodeSeparatorCandidate(foldedRaw, inputSource, inputName) {
 		if foldedUnicode, ok := foldLFIUnicodeSeparators(foldedRaw); ok {
 			foldedRaw = foldedUnicode
@@ -8824,13 +8856,15 @@ func printableRatio(value string) float64 {
 	return float64(printable) / float64(len([]rune(value)))
 }
 
-// skippedHeaders holds the lowercase header names that carry no
-// attacker-controlled semantics worth scanning. Kept as a set so skipHeader can
+// skippedHeaders holds lowercase transport-header names excluded from semantic
+// analysis. Content-Type is intentionally inspected: legal quoted parameters
+// remain attacker-controlled data even when the media type itself is ordinary.
+// Kept as a set so skipHeader can
 // fold the key into a stack buffer instead of allocating a lowercased copy
 // (strings.ToLower allocated once per request for every canonical header).
 var skippedHeaders = map[string]struct{}{
 	"accept": {}, "accept-encoding": {}, "accept-language": {}, "connection": {},
-	"content-length": {}, "content-type": {}, "host": {}, "cache-control": {},
+	"content-length": {}, "host": {}, "cache-control": {},
 	"pragma": {}, "upgrade-insecure-requests": {}, "sec-fetch-site": {},
 	"sec-fetch-mode": {}, "sec-fetch-dest": {}, "sec-fetch-user": {},
 	"sec-ch-ua": {}, "sec-ch-ua-mobile": {}, "sec-ch-ua-platform": {},

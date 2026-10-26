@@ -27,18 +27,23 @@ import (
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/adapterapi"
+	"github.com/LaokeQwQ/CheeseWAF/internal/adapterinspect"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	climigration "github.com/LaokeQwQ/CheeseWAF/internal/cli/migration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/php2shell"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intel"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intelapi"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
@@ -360,6 +365,52 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	passkeyStore := storage.AsPasskeyStore(store)
+	passkeyService, err := api.NewPasskeyService(cfg.Console.Login.Passkey, passkeyStore, authSecret)
+	if err != nil {
+		return err
+	}
+	var intelHandler http.Handler
+	if cfg.Intel.Enabled {
+		intelStore, intelErr := storage.AsIntelStore(store)
+		if intelErr != nil {
+			log.Printf("intel: persistence unavailable: %v", intelErr)
+		} else {
+			for _, source := range cfg.Intel.Sources {
+				if err := intelStore.UpsertSource(runtimeCtx, intel.Source{
+					ID: source.ID, Type: source.Type, URL: source.URL,
+					Trust: intel.ParseTrustLevel(source.Trust), Enabled: source.Enabled,
+				}); err != nil {
+					log.Printf("intel: register source %q: %v", source.ID, err)
+				}
+			}
+			var intelExtractor intel.Extractor
+			if schedulerAIClient != nil {
+				intelExtractor = ai.NewIntelExtractor(schedulerAIClient)
+			}
+			startIntelScheduler(runtimeCtx, cfg.Intel, intelStore)
+			intelHandler = intelapi.NewHandler(intelapi.HandlerOptions{
+				Store:            intelStore,
+				Extractor:        intelExtractor,
+				MaxFetchBytes:    cfg.Intel.MaxFetchBytes,
+				DisableURLImport: !cfg.Intel.URLImport,
+			})
+		}
+	}
+	adapterInspectHandler := adapterinspect.New(adapterinspect.Options{
+		ResolveSite: func(host string) (string, int64, bool) {
+			site := proxyServer.SiteForHost(host)
+			if site.ID == "" {
+				return "", 0, false
+			}
+			maxBody := site.WAF.Performance.MaxBodyBytes
+			if maxBody <= 0 {
+				maxBody = 8 << 20
+			}
+			return site.ID, maxBody, true
+		},
+		Detect: proxyServer.Detect,
+	})
 	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
 		return err
@@ -394,6 +445,10 @@ func runServe(ctx context.Context) error {
 		Sink:                               sink,
 		Hub:                                hub,
 		Secret:                             authSecret,
+		Passkey:                            passkeyService,
+		PasskeyStore:                       passkeyStore,
+		IntelHandler:                       intelHandler,
+		AdapterInspect:                     adapterInspectHandler,
 		SetupToken:                         setupToken,
 		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
@@ -412,6 +467,7 @@ func runServe(ctx context.Context) error {
 		OnSitesChanged:                     reloadSites,
 		OnEdgeChanged:                      proxyServer.UpdateEdge,
 		OnProtectionChanged:                proxyServer.UpdateProtection,
+		OnCAPTCHAProvidersChanged:          proxyServer.UpdateCAPTCHAProviders,
 		RequireProtectionPolicyCoordinator: productionDeps != nil,
 		OnAPISecChanged:                    proxyServer.UpdateAPISec,
 		OnBlockPageChanged:                 proxyServer.UpdateBlockPage,
@@ -471,7 +527,7 @@ func runServe(ctx context.Context) error {
 	}
 	admin := &http.Server{
 		Addr:              cfg.Server.AdminListen,
-		Handler:           withAdapterAPI(adapterHandler, adminHandler),
+		Handler:           withAdapterHealth(adapterHandler, adminHandler),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -858,9 +914,23 @@ func firstInstallPending(ctx context.Context, dataDir string, store storage.User
 	return len(users) == 0, nil
 }
 
+// withAdapterHealth serves only the adapter health endpoint on the admin
+// listener. The admin API exposes /api/v1/adapter/inspect behind its own
+// JWT scope at the same path, and mounting the token-authenticated adapter
+// handler there would shadow it and drop that gate.
+func withAdapterHealth(adapter, fallback http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			adapter.ServeHTTP(w, r)
+			return
+		}
+		fallback.ServeHTTP(w, r)
+	})
+}
+
 // withAdapterAPI serves the adapter inspection/telemetry/health routes before
-// the gateway or admin handler. The adapter API has its own token/loopback
-// authentication and must not inherit the admin entrance gate or site routing.
+// the gateway handler. The adapter API has its own token/loopback
+// authentication and must not inherit site routing.
 func withAdapterAPI(adapter, fallback http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -897,10 +967,16 @@ func adminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, a
 	withRecovery := func(next http.Handler) http.Handler {
 		return middleware.Recovery(panicAuditor)(next)
 	}
+	securityConfigSource := func() *config.Config {
+		if current := configSource(); current != nil {
+			return current
+		}
+		return cfg
+	}
 	uiFS, _ := resolveAdminUIFS()
 	if uiFS == nil {
 		fmt.Printf("admin UI assets not found; /setup and static files return 404 (install web/dist or rebuild after scripts/ci/build-web.sh)\n")
-		return adminSecurityHeaders(withRecovery(adminEntranceGateWithConfigSource(cfg, authSecret, apiHandler, clock, configSource)))
+		return adminSecurityHeaders(withRecovery(adminEntranceGateWithConfigSource(cfg, authSecret, apiHandler, clock, configSource)), securityConfigSource)
 	}
 	metricsPath := "/metrics"
 	metricsPublic := false
@@ -940,7 +1016,7 @@ func adminHandlerWithConfigSource(cfg *config.Config, apiHandler http.Handler, a
 		}
 		apiHandler.ServeHTTP(w, r)
 	})
-	return adminSecurityHeaders(withRecovery(adminGzip(handler, metricsPath)))
+	return adminSecurityHeaders(withRecovery(adminGzip(handler, metricsPath)), securityConfigSource)
 }
 
 func serveAdminStaticFile(w http.ResponseWriter, r *http.Request, ui fs.FS, name string) bool {
@@ -1035,9 +1111,13 @@ func adminEntranceGateWithConfigSource(cfg *config.Config, authSecret string, ne
 	})
 }
 
-func adminSecurityHeaders(next http.Handler) http.Handler {
+func adminSecurityHeaders(next http.Handler, sources ...func() *config.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", adminContentSecurityPolicy())
+		var cfg *config.Config
+		if len(sources) > 0 && sources[0] != nil {
+			cfg = sources[0]()
+		}
+		w.Header().Set("Content-Security-Policy", adminContentSecurityPolicy(cfg))
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -1309,18 +1389,38 @@ func adminShouldGzip(r *http.Request, metricsPath string) bool {
 	}
 }
 
-func adminContentSecurityPolicy() string {
+func adminContentSecurityPolicy(configs ...*config.Config) string {
+	scriptSources := "script-src 'self'"
+	connectSources := []string{"'self'", "ws:", "wss:"}
+	if len(configs) > 0 && configs[0] != nil {
+		cfg := configs[0]
+		if cfg.Console.Login.CAPTCHA.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Provider), "cap") {
+			scriptSources += " 'wasm-unsafe-eval'"
+			capConfig := cfg.CAPTCHAProviders.Cap
+			for _, resource := range []string{capConfig.APIEndpoint, capConfig.WASMURL, capConfig.HashWXURL} {
+				if origin := captcha.CapResourceOrigin(resource); origin != "" {
+					duplicate := false
+					for _, source := range connectSources {
+						duplicate = duplicate || source == origin
+					}
+					if !duplicate {
+						connectSources = append(connectSources, origin)
+					}
+				}
+			}
+		}
+	}
 	return strings.Join([]string{
 		"default-src 'self'",
 		"base-uri 'none'",
 		"object-src 'none'",
 		"frame-ancestors 'none'",
 		"form-action 'self'",
-		"script-src 'self'",
+		scriptSources,
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob: https: http:",
 		"font-src 'self' data:",
-		"connect-src 'self' ws: wss:",
+		"connect-src " + strings.Join(connectSources, " "),
 		"worker-src 'self' blob:",
 		"manifest-src 'self'",
 		"media-src 'self' data: blob: https: http:",
@@ -1531,6 +1631,20 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 			return nil, err
 		} else if len(compiled) > 0 {
 			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: enginerules.New(compiled)})
+		}
+		if site.WAF.PHP2Shell.IsEnabled() {
+			detectors = append(detectors, siteScopedDetector{
+				siteID: site.ID,
+				detector: php2shell.New(php2shell.Config{
+					Enabled:               true,
+					MaxParts:              site.WAF.PHP2Shell.MaxParts,
+					MaxArrayDepth:         site.WAF.PHP2Shell.MaxArrayDepth,
+					MaxEmptyFilenameParts: site.WAF.PHP2Shell.MaxEmptyFilenameParts,
+					BlockUploadProgress:   site.WAF.PHP2Shell.BlockUploadProgress,
+					BlockAllMultipart:     site.WAF.PHP2Shell.BlockAllMultipart,
+					AllowPaths:            site.WAF.PHP2Shell.AllowPaths,
+				}),
+			})
 		}
 		switches := site.WAF.SemanticEngines
 		// Single decision path: staged Analyzer covers all enabled categories.

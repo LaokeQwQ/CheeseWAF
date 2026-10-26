@@ -3,6 +3,7 @@ package nativeraft
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,17 +81,23 @@ func waitForCurrent(t *testing.T, node *Runtime, want controlplane.Revision) con
 
 func openTestNode(t *testing.T, dir, nodeID string, mode StartMode) *Runtime {
 	t.Helper()
+	return openTestNodeWithRaftConfig(t, dir, nodeID, mode, nil)
+}
+
+func openTestNodeWithRaftConfig(t *testing.T, dir, nodeID string, mode StartMode, configure func(*raft.Config)) *Runtime {
+	t.Helper()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatalf("chmod test data dir: %v", err)
 	}
 	node, err := New(Options{
-		Profile:          controlplane.StorageProfileProduction,
-		ClusterID:        "cluster-a",
-		NodeID:           nodeID,
-		DataDir:          dir,
-		BindAddress:      "127.0.0.1:0",
-		Mode:             mode,
-		InsecureTestMode: true,
+		Profile:           controlplane.StorageProfileProduction,
+		ClusterID:         "cluster-a",
+		NodeID:            nodeID,
+		DataDir:           dir,
+		BindAddress:       "127.0.0.1:0",
+		Mode:              mode,
+		InsecureTestMode:  true,
+		configureTestRaft: configure,
 	})
 	if err != nil {
 		t.Fatalf("New(%s): %v", mode, err)
@@ -191,6 +198,37 @@ func TestNewRejectsIncompleteRaftTLSConfiguration(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ca") {
 		t.Fatalf("incomplete TLS configuration error=%v, want material rejection", err)
+	}
+}
+
+func TestRaftConfigurationHookRequiresExplicitTestMode(t *testing.T) {
+	for _, insecure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("insecure=%t", insecure), func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			opts := Options{
+				Profile: controlplane.StorageProfileProduction, ClusterID: "cluster-a", NodeID: "node-hook",
+				DataDir: dir, BindAddress: "127.0.0.1:0", Mode: ModeBootstrap, InsecureTestMode: insecure,
+				configureTestRaft: func(*raft.Config) {
+					called = true
+				},
+			}
+			if !insecure {
+				_, paths := securityTLSConfig(t, securityIdentityService(t), opts.NodeID)
+				opts.TLS = &paths
+			}
+			node, err := New(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer node.Close()
+			if called != insecure {
+				t.Fatalf("configuration hook called=%t with InsecureTestMode=%t", called, insecure)
+			}
+		})
 	}
 }
 
@@ -550,11 +588,19 @@ func TestCoordinatorRetriesExactInitialCommitAfterRaftResponseIsLost(t *testing.
 }
 
 func TestJoinRequiresExplicitLeaderOperationAndReplicatesCommit(t *testing.T) {
-	leader := openTestNode(t, t.TempDir(), "leader-a", ModeBootstrap)
+	// This tests membership and replication, not sub-50ms leader failure detection.
+	// Race-instrumented runners need a lease that tolerates local I/O scheduling.
+	configure := func(cfg *raft.Config) {
+		defaults := raft.DefaultConfig()
+		cfg.HeartbeatTimeout = defaults.HeartbeatTimeout
+		cfg.ElectionTimeout = defaults.ElectionTimeout
+		cfg.LeaderLeaseTimeout = defaults.LeaderLeaseTimeout
+	}
+	leader := openTestNodeWithRaftConfig(t, t.TempDir(), "leader-a", ModeBootstrap, configure)
 	defer leader.Close()
 	waitForLeader(t, leader)
 
-	follower := openTestNode(t, t.TempDir(), "follower-b", ModeJoin)
+	follower := openTestNodeWithRaftConfig(t, t.TempDir(), "follower-b", ModeJoin, configure)
 	defer follower.Close()
 	ctx, cancel := testContext(t, time.Second)
 	if err := follower.Health(ctx); err == nil {

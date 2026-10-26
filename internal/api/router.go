@@ -15,6 +15,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
@@ -39,6 +40,7 @@ type Options struct {
 	OnSitesChanged                      func([]config.SiteConfig) error
 	OnEdgeChanged                       func(config.EdgeConfig) error
 	OnProtectionChanged                 func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged           func(config.CAPTCHAProvidersConfig) error
 	ProtectionPolicyCoordinator         handler.ProtectionPolicyCoordinatorConsumer
 	RequireProtectionPolicyCoordinator  bool
 	OnAPISecChanged                     func(config.APISecConfig) error
@@ -60,6 +62,16 @@ type Options struct {
 	CWEDPDownload                       consumer.Executor
 	CRPActivation                       handler.CRPActivationExecutor
 	ManagementTokenConfirmationVerifier handler.ManagementTokenConfirmationVerifier
+	// Passkey is the WebAuthn service used by public login and authenticated
+	// credential management. PasskeyStore backs credential listing/deletion.
+	// Both are nil when console.login.passkey.enabled is false.
+	Passkey      *passkey.Service
+	PasskeyStore passkey.Store
+	// IntelHandler is the review-first intelligence API, mounted under the
+	// authenticated management group. It must not be exposed publicly.
+	IntelHandler http.Handler
+	// AdapterInspect is the body-capable adapter inspection endpoint.
+	AdapterInspect http.Handler
 	// AssistantGateApproval is the same durable high-risk boundary used by AI
 	// destructive tools. The composition root must provide it in production.
 	AssistantGateApproval *ai.GateApprovalAdapter
@@ -144,6 +156,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		OnSitesChanged:                      opts.OnSitesChanged,
 		OnEdgeChanged:                       opts.OnEdgeChanged,
 		OnProtectionChanged:                 opts.OnProtectionChanged,
+		OnCAPTCHAProvidersChanged:           opts.OnCAPTCHAProvidersChanged,
 		ProtectionPolicyCoordinator:         opts.ProtectionPolicyCoordinator,
 		RequireProtectionPolicyCoordinator:  opts.RequireProtectionPolicyCoordinator,
 		OnAPISecChanged:                     opts.OnAPISecChanged,
@@ -160,6 +173,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		CWEDPDownload:                       opts.CWEDPDownload,
 		CRPActivation:                       opts.CRPActivation,
 		ManagementTokenConfirmationVerifier: opts.ManagementTokenConfirmationVerifier,
+		Passkey:                             opts.Passkey,
+		PasskeyStore:                        opts.PasskeyStore,
 		ApprovalHTTP:                        opts.ApprovalHTTP,
 	})
 	h.SetClusterApprovalHTTP(opts.ApprovalHTTP)
@@ -191,6 +206,9 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		r.Post("/auth/captcha", h.LoginCAPTCHA)
 		r.Post("/auth/captcha/verify", h.VerifyLoginCAPTCHA)
 		r.Post("/auth/login", h.Login)
+		r.With(h.ConfigReadMiddleware).Get("/auth/passkey/options", h.PasskeyOptions)
+		r.Post("/auth/passkey/login/begin", h.PasskeyLoginBegin)
+		r.Post("/auth/passkey/login/finish", h.PasskeyLoginFinish)
 		r.With(h.ConfigReadMiddleware).Get("/setup/status", h.SetupStatus)
 		r.Post("/setup", h.Setup)
 		r.Post("/setup/probe", h.SetupProbe)
@@ -221,6 +239,19 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			}
 			r.Use(middleware.CSRFMiddleware)
 			r.Use(h.ConfigReadMiddleware)
+			// Every authenticated account manages its own passkeys; no
+			// administrative permission is required or sufficient for another
+			// account's credentials.
+			r.Post("/auth/passkey/register/begin", h.PasskeyRegisterBegin)
+			r.Post("/auth/passkey/register/finish", h.PasskeyRegisterFinish)
+			r.Get("/auth/passkey/credentials", h.PasskeyCredentials)
+			r.Delete("/auth/passkey/credentials/{id}", h.PasskeyCredentialDelete)
+			if opts.AdapterInspect != nil {
+				r.With(require("write:protection")).Post("/v1/adapter/inspect", opts.AdapterInspect.ServeHTTP)
+			}
+			if opts.IntelHandler != nil {
+				r.With(requireAny("write:protection", "write:rules")).Mount("/intel", opts.IntelHandler)
+			}
 			r.With(require("read:realtime"), h.ConfigReadMiddleware).Get("/realtime/events", hub.SSEHandler)
 			r.With(require("read:realtime"), h.ConfigReadMiddleware).Get("/realtime/ws", hub.WSHandler)
 			r.With(require("read:monitor"), h.ConfigReadMiddleware).Get("/stats", h.Stats)
@@ -229,6 +260,8 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 			r.With(require("read:apisec"), h.ConfigReadMiddleware).Get("/apisec/endpoints", h.APIEndpoints)
 			r.With(require("read:apisec")).Post("/apisec/validate", h.ValidateAPIRequest)
 			r.With(require("read:audit"), h.ConfigReadMiddleware).Get("/audit", h.AuditEntries)
+			r.With(require("read:monitor"), h.ConfigReadMiddleware).Get("/monitor/notifiers", h.ListNotifierProviders)
+			r.With(require("write:monitor")).Post("/monitor/notifiers/test", h.TestNotifierProvider)
 			r.With(require("read:monitor"), h.ConfigReadMiddleware).Get("/notifications", h.ListNotifications)
 			r.With(require("write:monitor")).Patch("/notifications/{id}", h.UpdateNotification)
 			r.With(require("write:monitor")).Post("/notifications/read-all", h.MarkAllNotificationsRead)

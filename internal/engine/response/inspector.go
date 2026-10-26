@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -21,11 +23,74 @@ import (
 
 const maxDecompressionRatio = 20
 
-// Bound aggregate response-buffer admission as well as each representation.
-// Charge both encoded/decoded buffers and read growth before any body I/O.
+// Bound encoded/decoded working buffers, including allocation growth.
 const maxInspectionMemory = 64 << 20
 
 var inspectionMemory atomic.Int64
+
+var errInspectionMemory = errors.New("response inspection memory budget exhausted")
+
+type inspectionReservation struct{ held int64 }
+
+func (r *inspectionReservation) reserve(size int64) bool {
+	for {
+		used := inspectionMemory.Load()
+		if size > maxInspectionMemory || used > maxInspectionMemory-size {
+			return false
+		}
+		if inspectionMemory.CompareAndSwap(used, used+size) {
+			r.held += size
+			return true
+		}
+	}
+}
+
+func (r *inspectionReservation) release(size int64) {
+	inspectionMemory.Add(-size)
+	r.held -= size
+}
+
+// readInspectionBytes reserves each new allocation before growing. The old
+// buffer remains charged during the copy, and encoded/decoded buffers share r.
+func readInspectionBytes(reader io.Reader, limit int64, r *inspectionReservation) ([]byte, error) {
+	var body []byte
+	emptyReads := 0
+	for int64(len(body)) < limit {
+		if len(body) == cap(body) {
+			capacity := int64(cap(body)) * 2
+			if capacity == 0 {
+				capacity = 32 << 10
+			}
+			if capacity > limit {
+				capacity = limit
+			}
+			if !r.reserve(capacity) {
+				return body, errInspectionMemory
+			}
+			next := make([]byte, len(body), int(capacity))
+			copy(next, body)
+			r.release(int64(cap(body)))
+			body = next
+		}
+		n, err := reader.Read(body[len(body):cap(body)])
+		body = body[:len(body)+n]
+		if err == io.EOF {
+			return body, nil
+		}
+		if err != nil {
+			return body, err
+		}
+		if n == 0 {
+			emptyReads++
+			if emptyReads >= 100 {
+				return body, io.ErrNoProgress
+			}
+		} else {
+			emptyReads = 0
+		}
+	}
+	return body, nil
+}
 
 type Finding struct {
 	Pattern    string `json:"pattern,omitempty"`
@@ -154,6 +219,11 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 	}
 	for name, values := range resp.Header {
 		for _, value := range values {
+			if strings.EqualFold(name, "Set-Cookie") {
+				if finding := php2shellCookieFinding(value); finding != nil {
+					return finding, nil
+				}
+			}
 			if finding := i.Inspect([]byte(value)); finding != nil {
 				finding.Message = "sensitive response header matched: " + name
 				finding.Reason = "response_header"
@@ -186,20 +256,18 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 	if limit <= 0 {
 		limit = 1 << 20
 	}
-	charge := 4 * (limit + 1)
-	for {
-		used := inspectionMemory.Load()
-		if charge > maxInspectionMemory || used+charge > maxInspectionMemory {
-			return i.incompleteFinding("memory_budget"), nil
-		}
-		if inspectionMemory.CompareAndSwap(used, used+charge) {
-			break
-		}
-	}
-	defer inspectionMemory.Add(-charge)
+	reservation := &inspectionReservation{}
+	defer func() { reservation.release(reservation.held) }()
 	originalBody := resp.Body
 	// Read transfer-encoded bytes; keep them for the client.
-	raw, err := io.ReadAll(io.LimitReader(originalBody, limit+1))
+	raw, err := readInspectionBytes(originalBody, limit+1, reservation)
+	if errors.Is(err, errInspectionMemory) {
+		resp.Body = replayThenClose(raw, originalBody)
+		if tamperTarget {
+			return tamperUnavailableFinding(resourceURL, "memory_budget"), nil
+		}
+		return i.incompleteFinding("memory_budget"), nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -219,8 +287,14 @@ func (i *Inspector) InspectHTTPForRequest(resp *http.Response, request *http.Req
 	complete := true
 	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
 	if encoding != "" && encoding != "identity" {
-		plain, decodedComplete, derr := decodeResponseContent(raw, encoding, limit)
+		plain, decodedComplete, derr := decodeResponseContent(raw, encoding, limit, reservation)
 		if derr != nil {
+			if errors.Is(derr, errInspectionMemory) {
+				if tamperTarget {
+					return tamperUnavailableFinding(resourceURL, "memory_budget"), nil
+				}
+				return i.incompleteFinding("memory_budget"), nil
+			}
 			if tamperTarget {
 				return tamperUnavailableFinding(resourceURL, "unsupported_encoding"), nil
 			}
@@ -342,7 +416,7 @@ func IsStreamingContentType(contentType string) bool {
 		strings.HasPrefix(mediaType, "video/")
 }
 
-func decodeResponseContent(raw []byte, encoding string, maxPlain int64) ([]byte, bool, error) {
+func decodeResponseContent(raw []byte, encoding string, maxPlain int64, reservation *inspectionReservation) ([]byte, bool, error) {
 	if strings.Contains(encoding, ",") {
 		return nil, false, fmt.Errorf("multi-layer content-encoding")
 	}
@@ -368,7 +442,7 @@ func decodeResponseContent(raw []byte, encoding string, maxPlain int64) ([]byte,
 	if ratioCap := int64(len(raw)) * maxDecompressionRatio; ratioCap > 0 && ratioCap < limit {
 		limit = ratioCap
 	}
-	plain, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	plain, err := readInspectionBytes(reader, limit+1, reservation)
 	if err != nil {
 		return nil, false, err
 	}
@@ -391,5 +465,35 @@ func replayThenClose(prefix []byte, rest io.ReadCloser) io.ReadCloser {
 	return replayReadCloser{
 		Reader: io.MultiReader(bytes.NewReader(prefix), rest),
 		closer: rest,
+	}
+}
+
+// php2shellCookieFinding detects the memory-disclosure artifact produced when a
+// corrupted PHP worker leaks heap bytes into a PHPSESSID response cookie. Normal
+// PHP session IDs are short alphanumeric values; a large or heavily
+// percent-encoded value is a high-confidence signal. This check is header-only
+// so it runs before any response body buffering.
+func php2shellCookieFinding(setCookie string) *Finding {
+	lower := strings.ToLower(setCookie)
+	idx := strings.Index(lower, "phpsessid=")
+	if idx < 0 {
+		return nil
+	}
+	value := strings.TrimSpace(setCookie[idx+len("phpsessid="):])
+	if cut := strings.IndexAny(value, ";,"); cut >= 0 {
+		value = value[:cut]
+	}
+	value = strings.TrimSpace(value)
+	if len(value) < 256 {
+		return nil
+	}
+	encoded := strings.Count(value, "%")
+	return &Finding{
+		Pattern:    "PHPSESSID length=" + strconv.Itoa(len(value)) + " encoded=" + strconv.Itoa(encoded),
+		Message:    "oversized PHPSESSID response cookie indicates PHP worker memory disclosure",
+		DetectorID: "response.php2shell",
+		Category:   "rce",
+		Severity:   "critical",
+		Reason:     "php2shell_memory_disclosure",
 	}
 }

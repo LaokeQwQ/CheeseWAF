@@ -20,6 +20,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/apisec"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
+	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -53,6 +54,8 @@ type requestDetectionPipeline interface {
 type Server struct {
 	config           *config.Config
 	runtimeMu        sync.RWMutex
+	policyUpdateMu   sync.Mutex
+	captchaProviders config.CAPTCHAProvidersConfig
 	pipeline         requestDetectionPipeline
 	pipelineMu       sync.RWMutex
 	logSink          storage.LogSink
@@ -143,6 +146,12 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if clock == nil {
 		clock = timekeeper.SystemClock{}
 	}
+	if cfg.Console.Login.CAPTCHA.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Console.Login.CAPTCHA.Provider), "cap") {
+		provider := cfg.CAPTCHAProviders.Cap
+		if _, err := captcha.NewCapVerifierFromFile(provider.SiteVerifyEndpoint(), provider.SecretFile, provider.Timeout); err != nil {
+			return nil, fmt.Errorf("console login CAPTCHA provider is invalid: %w", err)
+		}
+	}
 	siteRuntimes, err := newSiteRuntimeSet(cfg.Sites)
 	if err != nil {
 		return nil, err
@@ -198,8 +207,13 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 	if pipeline != nil {
 		activePipeline = pipeline
 	}
+	botPolicy, err := bot.NewPolicyWithCAPTCHAProviders(cfg.Protection.Bot, cfg.CAPTCHAProviders, clock)
+	if err != nil {
+		return nil, fmt.Errorf("create bot policy: %w", err)
+	}
 	server := &Server{
 		config:           cfg,
+		captchaProviders: cfg.CAPTCHAProviders,
 		pipeline:         activePipeline,
 		logSink:          sink,
 		renderer:         renderer,
@@ -208,7 +222,7 @@ func NewServerWithClock(cfg *config.Config, pipeline *engine.Pipeline, sink stor
 		geoip:            geoip,
 		intel:            intel,
 		acl:              acl.NewPolicy(cfg.Protection.ACL),
-		bot:              bot.NewPolicyWithClock(cfg.Protection.Bot, clock),
+		bot:              botPolicy,
 		limiter:          ratelimit.New(cfg.Protection.RateLimit.Default, cfg.Protection.RateLimit.Enabled),
 		health:           health,
 		apiSchema:        apiSchema,
@@ -301,6 +315,24 @@ func (s *Server) currentPipeline() requestDetectionPipeline {
 	return s.pipeline
 }
 
+// SiteForHost resolves the enabled site for an adapter-supplied authority.
+func (s *Server) SiteForHost(host string) config.SiteConfig {
+	if s == nil || s.lb == nil {
+		return config.SiteConfig{}
+	}
+	return s.lb.SiteForHost(host)
+}
+
+// Detect runs the live request detection pipeline without proxying. It is used
+// by the adapter inspection endpoint; callers own request-body loading.
+func (s *Server) Detect(ctx context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
+	pipeline := s.currentPipeline()
+	if pipeline == nil {
+		return nil, nil
+	}
+	return pipeline.Detect(ctx, reqCtx)
+}
+
 func (s *Server) wallNow() time.Time {
 	if s != nil && s.clock != nil {
 		return s.clock.Now()
@@ -349,6 +381,8 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	if s == nil {
 		return nil
 	}
+	s.policyUpdateMu.Lock()
+	defer s.policyUpdateMu.Unlock()
 	access, err := ip.NewAccessPolicy(protection.IP)
 	if err != nil {
 		return err
@@ -362,14 +396,26 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 		_ = geoip.Close()
 		return err
 	}
+	s.runtimeMu.RLock()
+	providers := s.captchaProviders
+	botChanged := !reflect.DeepEqual(s.protectionConfig.Bot, protection.Bot)
+	s.runtimeMu.RUnlock()
+	var botPolicy *bot.Policy
+	if botChanged {
+		botPolicy, err = bot.NewPolicyWithCAPTCHAProviders(protection.Bot, providers, s.clock)
+		if err != nil {
+			_ = geoip.Close()
+			return fmt.Errorf("create bot policy: %w", err)
+		}
+	}
 	s.runtimeMu.Lock()
 	oldGeoIP := s.geoip
 	s.access = access
 	s.geoip = geoip
 	s.intel = intel
 	s.acl = acl.NewPolicy(protection.ACL)
-	if !reflect.DeepEqual(s.protectionConfig.Bot, protection.Bot) {
-		s.bot = bot.NewPolicyWithClock(protection.Bot, s.clock)
+	if botChanged {
+		s.bot = botPolicy
 	}
 	if !reflect.DeepEqual(s.protectionConfig.RateLimit, protection.RateLimit) {
 		s.limiter = ratelimit.New(protection.RateLimit.Default, protection.RateLimit.Enabled)
@@ -380,6 +426,40 @@ func (s *Server) UpdateProtection(protection config.ProtectionConfig) error {
 	if oldGeoIP != nil {
 		_ = oldGeoIP.Close()
 	}
+	return nil
+}
+
+func (s *Server) UpdateCAPTCHAProviders(providers config.CAPTCHAProvidersConfig) error {
+	if s == nil {
+		return nil
+	}
+	s.policyUpdateMu.Lock()
+	defer s.policyUpdateMu.Unlock()
+	s.runtimeMu.RLock()
+	protection := s.protectionConfig
+	unchanged := reflect.DeepEqual(s.captchaProviders, providers)
+	s.runtimeMu.RUnlock()
+	if unchanged {
+		return nil
+	}
+	// Provider settings may change for console login alone. Preserve pending
+	// challenges and failures unless this Bot policy actually uses Cap.
+	usesCap := protection.Bot.Enabled && protection.Bot.CAPTCHA &&
+		strings.EqualFold(strings.TrimSpace(protection.Bot.CAPTCHAProvider), "cap")
+	var botPolicy *bot.Policy
+	if usesCap {
+		var err error
+		botPolicy, err = bot.NewPolicyWithCAPTCHAProviders(protection.Bot, providers, s.clock)
+		if err != nil {
+			return fmt.Errorf("create bot policy: %w", err)
+		}
+	}
+	s.runtimeMu.Lock()
+	s.captchaProviders = providers
+	if usesCap {
+		s.bot = botPolicy
+	}
+	s.runtimeMu.Unlock()
 	return nil
 }
 
@@ -539,7 +619,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// Rewrites mutate r.URL before the upstream call. Keep the public request
 	// identity for exact tamper snapshots and response telemetry.
 	publicRequest := r.Clone(r.Context())
-	redirect, redirectCode := siteRT.rewriter.Apply(r)
+	redirect, redirectCode := false, 0
+	// This endpoint belongs to the WAF, not the upstream application. Keep its
+	// request identity intact so site rewrites cannot divert challenge answers
+	// or remove the dedicated body limit. IP/Geo gates still run below.
+	if requestPath != botBehaviorVerifyPath {
+		redirect, redirectCode = siteRT.rewriter.Apply(r)
+	}
 	rewritten := publicRequest.URL.RequestURI() != r.URL.RequestURI()
 	if rewritten {
 		requestPath, pathOK = engine.NormalizeRequestPath(r.URL.Path)

@@ -3,6 +3,10 @@
 状态：阶段 2 manifest、签名信任和离线导入准入 contract；本地 `RuntimeStore`、activation/rollback service、mTLS transport/server TLS 与 CLI 入口已实现并有测试；生产 control-plane provider、持久授权/审计、sidecar launcher、集群分发和插件执行仍待接入
 版本：`crp.cheesewaf.io/v1`
 
+通知 Provider Pack 与通知 sidecar 的边界见
+[`notifier-plugins.md`](notifier-plugins.md)：当前 CRP v1 sidecar 禁止出站且没有
+通知能力，通知由核心内置 provider 执行；真正 sidecar 需要 v1.1 契约。
+
 CRP 是离线扩展、OTA 和 CWEDP 分发共同使用的内容寻址包格式。`internal/crp` 只负责确定性校验，不建立网络连接，也不授予插件运行权限。
 
 ## Manifest 门禁

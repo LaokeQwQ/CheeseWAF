@@ -108,10 +108,8 @@
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border-subtle));
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--border-subtle));
   border-radius: 8px;
-  border-left-width: 3px;
-  border-left-color: var(--danger);
   background: color-mix(in srgb, var(--danger) 7%, transparent);
 }
 

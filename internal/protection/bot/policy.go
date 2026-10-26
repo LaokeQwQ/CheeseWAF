@@ -62,6 +62,12 @@ type Policy struct {
 	waitingCookieName      string
 	secret                 []byte
 	secretReady            bool
+	captchaProvider        string
+	capVerifier            *captcha.CapVerifier
+	capAPIEndpoint         string
+	capWidgetURL           string
+	capWASMURL             string
+	capHashWXURL           string
 	pathPrefixes           []string
 	exemptPathPrefixes     []string
 	allowedUserAgents      []string
@@ -128,6 +134,30 @@ func NewPolicy(cfg config.BotProtectionConfig) *Policy {
 }
 
 func NewPolicyWithClock(cfg config.BotProtectionConfig, clock timekeeper.Clock) *Policy {
+	return newPolicyWithRuntimeCAPTCHA(cfg, clock, "builtin", nil, config.CapStandaloneConfig{})
+}
+
+func NewPolicyWithCAPTCHAProviders(cfg config.BotProtectionConfig, providers config.CAPTCHAProvidersConfig, clock timekeeper.Clock) (*Policy, error) {
+	provider := strings.ToLower(strings.TrimSpace(cfg.CAPTCHAProvider))
+	if provider == "" {
+		provider = "builtin"
+	}
+	if provider != "builtin" && provider != "cap" {
+		return nil, errors.New("unsupported bot CAPTCHA provider")
+	}
+	capConfig := providers.Cap
+	var verifier *captcha.CapVerifier
+	if provider == "cap" && cfg.Enabled && cfg.CAPTCHA {
+		var err error
+		verifier, err = captcha.NewCapVerifierFromFile(capConfig.SiteVerifyEndpoint(), capConfig.SecretFile, capConfig.Timeout)
+		if err != nil {
+			return nil, errors.New("initialize Cap bot CAPTCHA provider")
+		}
+	}
+	return newPolicyWithRuntimeCAPTCHA(cfg, clock, provider, verifier, capConfig), nil
+}
+
+func newPolicyWithRuntimeCAPTCHA(cfg config.BotProtectionConfig, clock timekeeper.Clock, provider string, verifier *captcha.CapVerifier, capConfig config.CapStandaloneConfig) *Policy {
 	if cfg.RiskLevel == 0 {
 		cfg.RiskLevel = 2
 	}
@@ -309,6 +339,12 @@ func NewPolicyWithClock(cfg config.BotProtectionConfig, clock timekeeper.Clock) 
 		waitingCookieName:      cfg.CookieName + "_queue",
 		secret:                 []byte(cfg.Secret),
 		secretReady:            secretReady,
+		captchaProvider:        provider,
+		capVerifier:            verifier,
+		capAPIEndpoint:         capConfig.APIEndpoint,
+		capWidgetURL:           capConfig.WidgetURL,
+		capWASMURL:             capConfig.WASMURL,
+		capHashWXURL:           capConfig.HashWXURL,
 		pathPrefixes:           cleanList(cfg.PathPrefixes),
 		exemptPathPrefixes:     cleanList(cfg.ExemptPathPrefixes),
 		allowedUserAgents:      lowerList(cfg.AllowedUserAgents),
@@ -380,13 +416,13 @@ func (p *Policy) evaluateForSite(r *http.Request, clientIP, site string, waiting
 	if !ok {
 		return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "invalid request path", Confidence: 1, Payload: r.URL.Path}
 	}
-	applies := p.applies(path)
+	applies := p.applies(path, r.URL.Path)
 	for _, extra := range additionalPaths {
 		policyPath, ok := engine.NormalizeRequestPath(extra)
 		if !ok {
 			return &engine.DetectionResult{Detected: true, DetectorID: "bot.policy", Category: "bot", Severity: engine.SeverityHigh, Action: engine.ActionBlock, Message: "invalid request path", Confidence: 1, Payload: extra}
 		}
-		applies = applies || p.applies(policyPath)
+		applies = applies || p.applies(policyPath, extra)
 	}
 	if !applies {
 		return nil
@@ -488,10 +524,78 @@ func (p *Policy) serveChallengeForSite(w http.ResponseWriter, r *http.Request, c
 		p.serveImageAudioForSite(w, r, clientIP, site, token)
 		return
 	}
+	if p.captcha && p.captchaProvider == "cap" && r.Method == http.MethodPost {
+		if r.ContentLength > maxBotCapFormBytes {
+			http.Error(w, "challenge response too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxBotCapFormBytes)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid challenge response", http.StatusBadRequest)
+			return
+		}
+	}
 	submittedType := submittedClassicCAPTCHAType(r)
 	selection := p.adaptiveCAPTCHASelection(r, clientIP, site)
-	if submittedType == "" && p.usesBehaviorChallenge(selection, clientIP, site) {
+	behaviorChallenge := p.usesBehaviorChallenge(selection, clientIP, site)
+	if behaviorChallenge && (submittedType == "" || submittedType == "cap") {
 		p.serveBehaviorChallenge(w, r, clientIP, site, selection.kind)
+		return
+	}
+	if p.captcha && p.captchaProvider == "cap" && (submittedType == "cap" || !behaviorChallenge) {
+		if submittedType == "cap" {
+			method, valid, verifyErr := p.verifyCapChallengeForSite(r, clientIP, site)
+			if verifyErr != nil {
+				http.Error(w, "bot challenge unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			// A non-empty method means a bound, single-use proof reached Cap and
+			// received a decision. Invalid/replayed proofs and provider failures
+			// must not spend the user's failure budget.
+			if method != "" {
+				answerRequest := r.WithContext(context.WithValue(r.Context(), captchaSiteKey{}, site))
+				p.recordCAPTCHAAnswer(answerRequest, clientIP, "cap", captchaFormValue(r, "cw_cap_challenge_id"), valid)
+			}
+			if valid {
+				p.recordChallengeMetric(ChallengeMetricSuccess, site, "cap", clientIP)
+				challengeRequest.Method = method
+				risk := p.assessRisk(r, clientIP, site)
+				value, maxAge, err := p.issueClearanceForRiskAndSite(challengeRequest, clientIP, site, risk.band, "cap", method, http.MethodGet)
+				if err != nil {
+					http.Error(w, "bot clearance unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				writeChallengeCookie(w, r, &http.Cookie{
+					Name: p.cookieName, Value: value, Path: "/", MaxAge: maxAge,
+					HttpOnly: true, SameSite: http.SameSiteLaxMode,
+				})
+				status := http.StatusFound
+				if r.Method == http.MethodPost {
+					status = http.StatusSeeOther
+				}
+				redirectLocal(w, r, returnURL, status)
+				return
+			}
+			p.recordChallengeMetric(ChallengeMetricFailure, site, "cap", clientIP)
+			if p.failureTracker.Check(p.failureKey(clientIP, site)).Blocked {
+				p.recordChallengeMetric(ChallengeMetricCAPTCHABlocked, site, "cap", clientIP)
+				http.Error(w, "verification temporarily unavailable", http.StatusTooManyRequests)
+				return
+			}
+			selection = p.adaptiveCAPTCHASelection(r, clientIP, site)
+			if p.usesBehaviorChallenge(selection, clientIP, site) {
+				fallbackRequest := r
+				if method != "" {
+					// Restore only the receipt-bound method, without changing the
+					// submitted POST or trusting an invalid/replayed form field.
+					fallbackRequest = r.Clone(r.Context())
+					fallbackRequest.Method = method
+				}
+				p.serveBehaviorChallenge(w, fallbackRequest, clientIP, site, selection.kind)
+				return
+			}
+		}
+		p.serveCapChallenge(w, r, clientIP, site, returnURL, submittedType != "")
 		return
 	}
 	if p.validChallengeAnswerForSite(r, clientIP, site) {
@@ -1338,7 +1442,7 @@ func (p *Policy) issueClearanceForRisk(r *http.Request, clientIP string, band ri
 	return p.issueClearanceForRiskAndSite(r, clientIP, canonicalSite(r.Host), band, methodName)
 }
 
-func (p *Policy) issueClearanceForRiskAndSite(r *http.Request, clientIP, site string, band riskBand, methodName string) (string, int, error) {
+func (p *Policy) issueClearanceForRiskAndSite(r *http.Request, clientIP, site string, band riskBand, methodName string, requestMethods ...string) (string, int, error) {
 	if p.clearanceSigner == nil || p.clearanceState == nil {
 		return "", 0, errors.New("clearance signer unavailable")
 	}
@@ -1360,10 +1464,37 @@ func (p *Policy) issueClearanceForRiskAndSite(r *http.Request, clientIP, site st
 		return "", 0, err
 	}
 	method := ""
+	var allowedMethods []string
 	if p.clearanceMethodScope {
 		method = r.Method
+		if len(requestMethods) > 0 && requestMethods[0] != "" {
+			method = requestMethods[0]
+		}
+		if !validClearanceRequestMethod(method) {
+			return "", 0, errors.New("invalid clearance request method")
+		}
+		if len(requestMethods) > 1 {
+			for _, candidate := range requestMethods[1:] {
+				if !validClearanceRequestMethod(candidate) {
+					return "", 0, errors.New("invalid clearance request method")
+				}
+				if strings.EqualFold(candidate, method) {
+					continue
+				}
+				duplicate := false
+				for _, existing := range allowedMethods {
+					if strings.EqualFold(existing, candidate) {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					allowedMethods = append(allowedMethods, candidate)
+				}
+			}
+		}
 	}
-	token, err := p.clearanceSigner.Sign(ClearanceClaims{JTI: jti, Site: site, Policy: "bot", PolicyVersion: p.policyVersion, Level: int(band), Method: methodName, Path: mustRequestPath(r), RequestMethod: method, Binding: binding, IssuedAt: now.Unix(), ExpiresAt: now.Add(ttl).Unix()})
+	token, err := p.clearanceSigner.Sign(ClearanceClaims{JTI: jti, Site: site, Policy: "bot", PolicyVersion: p.policyVersion, Level: int(band), Method: methodName, Path: mustRequestPath(r), RequestMethod: method, RequestMethods: allowedMethods, Binding: binding, IssuedAt: now.Unix(), ExpiresAt: now.Add(ttl).Unix()})
 	if err != nil {
 		return "", 0, err
 	}
@@ -1912,6 +2043,8 @@ func submittedClassicCAPTCHAType(r *http.Request) string {
 		return ""
 	}
 	switch {
+	case captchaFormValue(r, "cw_cap_challenge_id") != "" || captchaFormValue(r, "cw_cap_token") != "":
+		return "cap"
 	case captchaFormValue(r, "cw_image_token") != "":
 		return "image"
 	case captchaFormValue(r, "cw_slider_token") != "":
@@ -2136,18 +2269,44 @@ func (p *Policy) effectiveCAPTCHAType(r *http.Request) string {
 	return captchaType
 }
 
-func (p *Policy) applies(path string) bool {
-	for _, prefix := range p.exemptPathPrefixes {
-		if prefix != "" && engine.PathMatchesPrefix(path, prefix) {
+func (p *Policy) applies(path string, original ...string) bool {
+	// A new path interpretation can add a protected scope, never grant an
+	// exemption that the original normalized identity did not already have.
+	views := []string{path}
+	wirePath := path
+	if len(original) > 0 {
+		wirePath = original[0]
+	}
+	if strings.ContainsAny(wirePath, ";%") {
+		var ok bool
+		views, ok = engine.SecurityPathViews(wirePath)
+		if !ok {
 			return false
 		}
-	}
-	for _, prefix := range p.pathPrefixes {
-		if prefix == "" || engine.PathMatchesPrefix(path, prefix) {
-			return true
+		// Matrix stripping precedes Clean for routing, while existing raw
+		// dot-path spellings must not acquire new scope or exemption meaning.
+		if wirePath != path {
+			views = views[1:]
 		}
 	}
-	return false
+	protected, exempt := false, true
+	for _, view := range views {
+		viewExempt := false
+		for _, prefix := range p.exemptPathPrefixes {
+			if prefix != "" && engine.PathMatchesPrefix(view, prefix) {
+				viewExempt = true
+				break
+			}
+		}
+		exempt = exempt && viewExempt
+		for _, prefix := range p.pathPrefixes {
+			if prefix == "" || engine.PathMatchesPrefix(view, prefix) {
+				protected = true
+				break
+			}
+		}
+	}
+	return protected && !exempt
 }
 
 // requestPath returns the cleaned absolute request path used for bot policy,
@@ -2338,6 +2497,14 @@ type challengeData struct {
 	SliderPiece      template.URL
 	SliderToken      string
 	SliderMinDragMS  int
+	UseCap           bool
+	CapAPIEndpoint   string
+	CapWidgetURL     template.URL
+	CapWASMURL       string
+	CapHashWXURL     string
+	CapChallengeID   string
+	CapContext       string
+	CapMethod        string
 	Failed           bool
 }
 
@@ -2716,6 +2883,7 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
     .bar{height:7px;border-radius:999px;background:#e7edf5;overflow:hidden}
     .bar span{display:block;width:45%;height:100%;background:var(--accent);animation:load 1.2s ease-in-out infinite alternate}
     .captcha{display:grid;gap:10px}
+    .cap-widget{display:block;min-height:120px;width:100%}
     .captcha-img,.slider-stage{border:1px solid var(--line);border-radius:10px;background:#dbe9e8;overflow:hidden;box-shadow:0 10px 22px rgba(24,34,52,.13),0 3px 9px rgba(24,34,52,.08),inset 0 1px 0 rgba(255,255,255,.55)}
     .captcha-img{display:block;width:100%;height:auto}
     .captcha-row{display:flex;gap:10px;align-items:center}
@@ -2792,6 +2960,16 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
         <input id="slider-track-data" type="hidden" name="cw_slider_track" value="">
         <div class="captcha-foot"><span class="captcha-brand"><span class="captcha-brand-mark" aria-hidden="true">CW</span><strong>CheeseWAF</strong></span><button type="button" id="slider-refresh" aria-label="{{.RefreshLabel}}">&#8635;</button></div>
       </form>
+    {{else if .UseCap}}
+      <p>{{.SecurityVerification}}</p>
+      <form id="cap-form" class="captcha" method="post" action="{{.ReturnURL}}" autocomplete="off">
+        <cap-widget id="cap-widget" class="cap-widget" data-cap-api-endpoint="{{.CapAPIEndpoint}}"></cap-widget>
+        <input type="hidden" name="cw_cap_challenge_id" value="{{.CapChallengeID}}">
+        <input type="hidden" name="cw_cap_context" value="{{.CapContext}}">
+        <input type="hidden" name="cw_cap_method" value="{{.CapMethod}}">
+        <input id="cap-token" type="hidden" name="cw_cap_token" value="">
+        <button id="cap-submit" type="submit" disabled>{{.Verify}}</button>
+      </form>
     {{else if .UseAltcha}}
       <p>{{.AltchaInstruction}}</p>
       <div class="bar"><span></span></div>
@@ -2802,7 +2980,27 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
     <noscript>{{.NoScript}}</noscript>
   </main>
   <script nonce="{{.Nonce}}">
-    {{if .UseSlider}}
+    {{if .UseCap}}
+    window.CAP_CUSTOM_WASM_URL = "{{.CapWASMURL}}";
+    window.CAP_CUSTOM_HASHWX_URL = "{{.CapHashWXURL}}";
+    window.CAP_CSS_NONCE = "{{.Nonce}}";
+    window.CAP_SCRIPT_NONCE = "{{.Nonce}}";
+    (function(){
+      const widget = document.getElementById("cap-widget");
+      const form = document.getElementById("cap-form");
+      const token = document.getElementById("cap-token");
+      const submit = document.getElementById("cap-submit");
+      if (!widget || !form || !token || !submit) return;
+      widget.addEventListener("solve", function(event){
+        const value = event && event.detail && event.detail.token;
+        if (typeof value !== "string" || value.length === 0 || value.length > 8192) return;
+        token.value = value;
+        submit.disabled = false;
+        form.requestSubmit();
+        submit.disabled = true;
+      });
+    })();
+    {{else if .UseSlider}}
     (function(){
       const piece = document.getElementById("slider-piece");
       const track = document.getElementById("slider-track");
@@ -2923,6 +3121,7 @@ var challengeTemplate = template.Must(template.New("bot-challenge").Parse(`<!doc
     if(window.crypto&&window.crypto.subtle){solve()}
     {{end}}
   </script>
+  {{if .UseCap}}<script src="{{.CapWidgetURL}}" nonce="{{.Nonce}}" defer></script>{{end}}
 </body>
 </html>`))
 

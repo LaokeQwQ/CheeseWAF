@@ -534,3 +534,30 @@ func TestSiteConfigOmitsUnsetSemanticActionPolicy(t *testing.T) {
 		t.Fatalf("unset policy must round trip as the preset: %+v", converted.WAF.SemanticPolicy)
 	}
 }
+
+func TestSiteConfigRoundTripPreservesPHP2Shell(t *testing.T) {
+	disabled := false
+	original := config.SiteConfig{
+		ID: "site-php2shell",
+		WAF: config.WAFConfig{PHP2Shell: config.PHP2ShellConfig{
+			Enabled:               &disabled,
+			BlockUploadProgress:   true,
+			BlockAllMultipart:     true,
+			MaxParts:              64,
+			MaxArrayDepth:         4,
+			MaxEmptyFilenameParts: 8,
+			AllowPaths:            []string{"/upload"},
+		}},
+	}
+	stored := SiteFromConfig(original)
+	if stored.Advanced.PHP2Shell.Enabled == nil || *stored.Advanced.PHP2Shell.Enabled {
+		t.Fatal("explicit disable was not preserved")
+	}
+	restored := SiteToConfig(stored)
+	if restored.WAF.PHP2Shell.Enabled == nil || *restored.WAF.PHP2Shell.Enabled {
+		t.Fatal("explicit disable was lost on conversion back")
+	}
+	if restored.WAF.PHP2Shell.MaxParts != 64 || !restored.WAF.PHP2Shell.BlockAllMultipart || len(restored.WAF.PHP2Shell.AllowPaths) != 1 {
+		t.Fatalf("PHP2Shell settings lost: %+v", restored.WAF.PHP2Shell)
+	}
+}

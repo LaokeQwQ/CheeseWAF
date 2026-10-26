@@ -91,6 +91,7 @@ func Default() Config {
 				SessionTTL: AdminSessionTTL,
 				CAPTCHA: LoginCAPTCHAConfig{
 					Enabled:   true,
+					Provider:  "builtin",
 					Mode:      "slider",
 					MaxNumber: 75000,
 					TTL:       2 * time.Minute,
@@ -131,6 +132,7 @@ func Default() Config {
 			S3:     CAPTCHAAssetS3{Region: "us-east-1", UseTLS: true, RequestTimeout: 15 * time.Second},
 			Limits: CAPTCHAAssetLimits{MaxImageBytes: 8 << 20, MaxFontBytes: 16 << 20, MaxPixels: 16_000_000, MaxAssets: 512, MaxTotalBytes: 512 << 20},
 		},
+		CAPTCHAProviders: CAPTCHAProvidersConfig{Cap: CapStandaloneConfig{Timeout: 5 * time.Second}},
 		Sites: []SiteConfig{
 			{
 				ID:          "default",
@@ -155,6 +157,12 @@ func Default() Config {
 						SSTI:  true,
 					},
 					ProtectionPolicy: ProtectionPolicyConfig{},
+					PHP2Shell: PHP2ShellConfig{
+						Enabled:               boolPtr(true),
+						MaxParts:              256,
+						MaxArrayDepth:         6,
+						MaxEmptyFilenameParts: 32,
+					},
 					Performance: PerformanceTuningConfig{
 						MaxBodyBytes:   8 << 20,
 						MaxHeaderBytes: 1 << 20,
@@ -209,6 +217,7 @@ func Default() Config {
 				RiskConfidenceMin:      0.6,
 				JSChallenge:            true,
 				CAPTCHA:                false,
+				CAPTCHAProvider:        "builtin",
 				CAPTCHAType:            "pow",
 				CAPTCHATypes:           []string{"pow", "shape_slider", "rotate", "text_click"},
 				CAPTCHAChallengeTTL:    2 * time.Minute,
@@ -353,6 +362,20 @@ func Default() Config {
 				Builtin:     true,
 				MaxSnippets: 5,
 				File:        "",
+			},
+		},
+		Intel: IntelConfig{
+			Enabled:              true,
+			AutoApply:            false,
+			URLImport:            true,
+			PollInterval:         15 * time.Minute,
+			ShadowWindow:         24 * time.Hour,
+			MaxFetchBytes:        256 << 10,
+			MaxCandidatesPerItem: 4,
+			RequireHumanApproval: true,
+			Sources: []IntelSourceConfig{
+				{ID: "nvd", Type: "url", URL: "https://nvd.nist.gov", Trust: "official", Enabled: true},
+				{ID: "avd", Type: "url", URL: "https://avd.aliyun.com", Trust: "official", Enabled: true},
 			},
 		},
 		Update: UpdateConfig{
@@ -707,6 +730,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.CAPTCHAAssets.Backend == "" {
 		cfg.CAPTCHAAssets.Backend = def.CAPTCHAAssets.Backend
 	}
+	if cfg.CAPTCHAProviders.Cap.Timeout == 0 {
+		cfg.CAPTCHAProviders.Cap.Timeout = def.CAPTCHAProviders.Cap.Timeout
+	}
 	if cfg.CAPTCHAAssets.Local.Path == "" {
 		cfg.CAPTCHAAssets.Local.Path = filepath.Join(cfg.Setup.DataDir, "captcha-assets")
 	}
@@ -757,6 +783,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Console.Login.CAPTCHA.Mode == "" {
 		cfg.Console.Login.CAPTCHA.Mode = def.Console.Login.CAPTCHA.Mode
+	}
+	if cfg.Console.Login.CAPTCHA.Provider == "" {
+		cfg.Console.Login.CAPTCHA.Provider = def.Console.Login.CAPTCHA.Provider
 	}
 	if cfg.Console.Login.CAPTCHA.TTL == 0 {
 		cfg.Console.Login.CAPTCHA.TTL = def.Console.Login.CAPTCHA.TTL
@@ -988,6 +1017,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Protection.Bot.CAPTCHAType == "" {
 		cfg.Protection.Bot.CAPTCHAType = def.Protection.Bot.CAPTCHAType
 	}
+	if cfg.Protection.Bot.CAPTCHAProvider == "" {
+		cfg.Protection.Bot.CAPTCHAProvider = def.Protection.Bot.CAPTCHAProvider
+	}
 	cfg.Protection.Bot.CAPTCHATypes = migrateBehaviorCAPTCHATypeList(cfg.Protection.Bot.CAPTCHATypes)
 	if len(cfg.Protection.Bot.CAPTCHATypes) == 0 {
 		cfg.Protection.Bot.CAPTCHATypes = append([]string(nil), def.Protection.Bot.CAPTCHATypes...)
@@ -1132,6 +1164,30 @@ func applyDefaults(cfg *Config) {
 		if site.WAF.HealthCheck.UnhealthyThreshold == 0 {
 			site.WAF.HealthCheck.UnhealthyThreshold = 2
 		}
+		if site.WAF.PHP2Shell.Enabled == nil {
+			site.WAF.PHP2Shell.Enabled = boolPtr(true)
+		}
+		if site.WAF.PHP2Shell.MaxParts == 0 {
+			site.WAF.PHP2Shell.MaxParts = 256
+		}
+		if site.WAF.PHP2Shell.MaxArrayDepth == 0 {
+			site.WAF.PHP2Shell.MaxArrayDepth = 6
+		}
+		if site.WAF.PHP2Shell.MaxEmptyFilenameParts == 0 {
+			site.WAF.PHP2Shell.MaxEmptyFilenameParts = 32
+		}
+	}
+	if cfg.Intel.ShadowWindow == 0 {
+		cfg.Intel.ShadowWindow = 24 * time.Hour
+	}
+	if cfg.Intel.PollInterval == 0 {
+		cfg.Intel.PollInterval = 15 * time.Minute
+	}
+	if cfg.Intel.MaxFetchBytes == 0 {
+		cfg.Intel.MaxFetchBytes = 256 << 10
+	}
+	if cfg.Intel.MaxCandidatesPerItem == 0 {
+		cfg.Intel.MaxCandidatesPerItem = 4
 	}
 }
 

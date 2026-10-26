@@ -312,6 +312,7 @@ export type ProtectionConfig = {
   bot: {
     enabled: boolean;
     challenge_backend?: 'memory' | 'redis' | string;
+    captcha_provider?: 'builtin' | 'cap' | string;
     risk_level?: number;
     risk_low_threshold?: number;
     risk_medium_threshold?: number;
@@ -618,6 +619,152 @@ export type AISelfLearningCandidate = {
   evidence_ids: string[];
   reason: string;
   ai_reviewed: boolean;
+};
+
+export type IntelCandidateState = 'draft' | 'shadow' | 'canary' | 'active' | 'expired' | 'rejected';
+
+export type IntelTrustLevel = 'official' | 'vendor' | 'community' | 'unknown' | string;
+
+export type IntelProvenance = {
+  source_id: string;
+  source_trust: IntelTrustLevel;
+  item_id: string;
+  extractor: string;
+  references?: string[];
+  approved?: boolean;
+  approved_by?: string;
+};
+
+/** A compiled rule awaiting review. Imports always start in `draft`, log-only. */
+export type IntelCandidate = {
+  id: string;
+  item_id: string;
+  site_id: string;
+  rule_json: string;
+  action: string;
+  state: IntelCandidateState;
+  confidence: number;
+  provenance: IntelProvenance;
+  ttl: number;
+  created_at: string;
+};
+
+export type IntelItem = {
+  id: string;
+  source_id: string;
+  external_ids?: string[];
+  title?: string;
+  content_hash?: string;
+  published_at?: string;
+  products?: string[];
+  affected_versions?: string[];
+  attack_vector?: string;
+  exploit_status?: string;
+  references?: string[];
+  raw_excerpt?: string;
+  corroborating_source_ids?: string[];
+};
+
+export type IntelImpactVerdict = 'allow-shadow' | 'needs-review' | 'reject';
+
+export type IntelImpactAssessment = {
+  candidate_id: string;
+  observations: number;
+  would_block: number;
+  unique_paths: string[];
+  path_coverage: number;
+  benign_blocks: number;
+  benign_block_rate: number;
+  match_rate: number;
+  broadness: number;
+  multipart_shapes: number;
+  status_distribution?: Record<string, number>;
+  verdict: IntelImpactVerdict;
+  requires_approval_for_block: boolean;
+  reasons?: string[];
+};
+
+export type IntelPlanState = 'draft' | 'shadow' | 'canary' | 'active' | 'rolled_back' | 'expired';
+
+export type IntelRolloutPlan = {
+  candidate_id: string;
+  action: string;
+  state: IntelPlanState;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  shadow_started_at?: string;
+  canary_started_at?: string;
+  activated_at?: string;
+  rolled_back_at?: string;
+  canary_percent?: number;
+  approved?: boolean;
+  approved_by?: string;
+  stable_state: IntelPlanState;
+  stable_revision: number;
+  rollback_reason?: string;
+};
+
+export type IntelImportRequest = {
+  url: string;
+  site_id: string;
+  path_prefix?: string;
+  methods?: string[];
+};
+
+export type IntelImportCandidate = {
+  candidate: IntelCandidate;
+  impact: IntelImpactAssessment;
+};
+
+export type IntelImportResponse = {
+  job_id: string;
+  item: IntelItem;
+  candidate: IntelCandidate;
+  impact: IntelImpactAssessment;
+  candidates: IntelImportCandidate[];
+  item_created: boolean;
+  candidate_created: boolean;
+};
+
+export type IntelItemsResponse = {
+  items: IntelItem[];
+  count: number;
+};
+
+export type IntelCandidatesResponse = {
+  candidates: IntelCandidate[];
+  count: number;
+};
+
+export type IntelCandidateResponse = {
+  candidate: IntelCandidate;
+  plan?: IntelRolloutPlan;
+  impact?: IntelImpactAssessment;
+};
+
+export type IntelImpactResponse = {
+  site_id: string;
+  profiles: number;
+  assessments: IntelImpactAssessment[];
+};
+
+export type IntelCandidateQuery = {
+  site_id?: string;
+  state?: IntelCandidateState | '';
+  limit?: number;
+};
+
+export type IntelApproveRequest = {
+  approved_by: string;
+  confirm: true;
+  action?: 'log' | 'challenge' | 'block';
+};
+
+export type IntelRejectRequest = {
+  rejected_by?: string;
+  reason?: string;
 };
 
 export type AttackAnalysis = {
@@ -1009,10 +1156,24 @@ export type TOTPSetup = {
 
 export type LoginCAPTCHAConfig = {
   enabled: boolean;
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   max_number: number;
   ttl: number | string;
   slider: LoginSliderCAPTCHAConfig;
+};
+
+export type CapStandaloneProviderConfig = {
+  api_endpoint: string;
+  widget_url: string;
+  wasm_url: string;
+  hashwx_url: string;
+  timeout: number | string;
+  secret_set?: boolean;
+};
+
+export type CAPTCHAProvidersConfig = {
+  cap: CapStandaloneProviderConfig;
 };
 
 export type LoginSliderCAPTCHAConfig = {
@@ -1044,9 +1205,12 @@ export type LoginBranding = {
 };
 
 export type LoginCAPTCHAPayload = {
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   receipt?: string;
   username?: string;
+  challenge_id?: string;
+  token?: string;
   algorithm?: string;
   challenge?: string;
   number?: number;
@@ -1088,6 +1252,7 @@ export type LoginSliderCAPTCHAChallenge = {
 export type LoginOptions = {
   captcha: {
     enabled: boolean;
+    provider?: 'builtin' | 'cap' | string;
     mode?: 'slider' | 'pow' | string;
     algorithm?: string;
     max_number?: number;
@@ -1105,11 +1270,64 @@ export type LoginOptions = {
   branding?: LoginBranding;
 };
 
+export type PasskeyOptions = {
+  enabled: boolean;
+  rp_id?: string;
+  rp_display_name?: string;
+  user_verification?: string;
+};
+
+export type PasskeyCredentialDescriptorJSON = {
+  id: string;
+  type?: string;
+  transports?: string[];
+};
+
+export type PasskeyPublicKeyOptions = {
+  publicKey: {
+    challenge: string;
+    rp?: { id?: string; name?: string };
+    user?: { id: string; name: string; displayName?: string };
+    pubKeyCredParams?: Array<{ type: string; alg: number }>;
+    timeout?: number;
+    excludeCredentials?: PasskeyCredentialDescriptorJSON[];
+    allowCredentials?: PasskeyCredentialDescriptorJSON[];
+    authenticatorSelection?: Record<string, unknown>;
+    attestation?: string;
+    extensions?: Record<string, unknown>;
+    rpId?: string;
+    userVerification?: string;
+  };
+  session_token: string;
+};
+
+export type PasskeyCredentialSummary = {
+  id: string;
+  name: string;
+  created_at?: string;
+  last_used_at?: string;
+  transports?: string[];
+  backup_eligible?: boolean;
+};
+
+export type PasskeyCredentialList = {
+  credentials: PasskeyCredentialSummary[];
+};
+
 export type LoginCAPTCHAResponse = {
   enabled: boolean;
+  provider?: 'builtin' | 'cap' | string;
   mode?: 'slider' | 'pow' | string;
   challenge?: LoginCAPTCHAChallenge;
   slider?: LoginSliderCAPTCHAChallenge;
+  cap?: LoginCapCAPTCHAChallenge;
+};
+
+export type LoginCapCAPTCHAChallenge = {
+  challenge_id: string;
+  api_endpoint: string;
+  wasm_url: string;
+  hashwx_url: string;
 };
 
 export type APISecAuthConfig = {
@@ -1253,6 +1471,7 @@ export type SystemConfig = {
       china_boundary: MapBoundaryConfig;
     };
   };
+  captcha_providers: CAPTCHAProvidersConfig;
   server: {
     listen: string;
     listen_tls: string;
@@ -1881,6 +2100,19 @@ export type Alert = {
   severity: string;
   message: string;
   starts_at: string;
+};
+
+export type NotifierProvider = {
+  id: string;
+  name?: string;
+  type: string;
+  enabled: boolean;
+  configured: boolean;
+};
+
+export type NotifierTestResult = {
+  id: string;
+  delivered: boolean;
 };
 
 export type MonitorSummary = {

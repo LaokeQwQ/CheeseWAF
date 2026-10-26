@@ -5,12 +5,15 @@ import type { LoginCAPTCHAResponse, LoginOptions } from '../../types/api';
 
 const api = vi.hoisted(() => ({
   APIRequestError: class APIRequestError extends Error {
-    constructor(public code: string) {
+    constructor(public code: string, public status?: number) {
       super(code);
     }
   },
   fetchLoginCaptcha: vi.fn(),
   fetchLoginOptions: vi.fn(),
+  fetchPasskeyOptions: vi.fn(),
+  beginPasskeyLogin: vi.fn(),
+  finishPasskeyLogin: vi.fn(),
   login: vi.fn(),
   verifyLoginCaptcha: vi.fn(),
   fetchSession: vi.fn(),
@@ -22,9 +25,12 @@ vi.mock('../../api/client', () => ({
   sanitizeInternalReturnPath: (value?: string | null) => value || '/',
 }));
 
+vi.mock('cap-widget', () => ({}));
+
 const translate = (key: string, values?: Record<string, unknown>) => values ? `${key}:${JSON.stringify(values)}` : key;
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({
     t: translate,
   }),
@@ -52,6 +58,25 @@ function captcha(token: string, image = `data:image/png;base64,${token}`): Login
     mode: 'slider',
     slider: { width: 320, height: 150, piece_size: 42, track_width: 278, target_y: 40, tolerance: 6, min_drag_ms: 100, image, piece: image, token },
   };
+}
+
+function capCaptcha(challengeId: string): LoginCAPTCHAResponse {
+  return {
+    enabled: true,
+    provider: 'cap',
+    cap: {
+      challenge_id: challengeId,
+      api_endpoint: 'https://cap.example.test/api',
+      wasm_url: 'https://cap.example.test/assets/cap.wasm',
+      hashwx_url: 'https://cap.example.test/assets/hashwx.wasm',
+    },
+  };
+}
+
+function solveCapWidget(token = 'one-time-cap-token') {
+  const widget = document.querySelector('cap-widget');
+  if (!widget) throw new Error('Cap widget was not mounted');
+  widget.dispatchEvent(new CustomEvent('solve', { bubbles: true, detail: { token } }));
 }
 
 function deferred<T>() {
@@ -85,6 +110,9 @@ beforeEach(() => {
   vi.stubGlobal('Image', LoadedImageMock);
   api.fetchLoginCaptcha.mockReset();
   api.fetchLoginOptions.mockReset().mockResolvedValue(options);
+  api.fetchPasskeyOptions.mockReset().mockResolvedValue({ enabled: false });
+  api.beginPasskeyLogin.mockReset();
+  api.finishPasskeyLogin.mockReset();
   api.login.mockReset();
   api.verifyLoginCaptcha.mockReset();
   api.isAuthenticatedFlag.mockReset().mockReturnValue(false);
@@ -154,6 +182,7 @@ async function verifyCaptcha(receipt = 'captcha-receipt') {
   fireEvent.keyDown(slider, { key: 'Enter' });
   await waitFor(() => expect(api.verifyLoginCaptcha).toHaveBeenCalledTimes(1));
   await screen.findByText('login.captchaWidgetVerified');
+  expect(document.querySelector('.auth-captcha-success-slot')).not.toBeNull();
 }
 
 describe('Login branding footer', () => {
@@ -201,6 +230,42 @@ describe('Login branding footer', () => {
   });
 });
 
+describe('Login options errors', () => {
+  it('renders a typed gateway error with a dedicated icon and retry action', async () => {
+    api.fetchLoginOptions.mockRejectedValueOnce(new api.APIRequestError('gateway', 502));
+    renderLogin();
+
+    expect(await screen.findByText('login.optionsError.gateway.title')).toBeTruthy();
+    const alert = document.querySelector('.login-options-error-gateway');
+    expect(alert).not.toBeNull();
+    expect(alert?.querySelector('.login-options-error-icon svg')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'common.retry' })).toBeTruthy();
+  });
+
+  it('keeps the error alert visible with loading motion while retrying', async () => {
+    const retry = deferred<LoginOptions>();
+    api.fetchLoginOptions
+      .mockRejectedValueOnce(new api.APIRequestError('gateway', 502))
+      .mockReturnValueOnce(retry.promise);
+    renderLogin();
+
+    const retryButton = await screen.findByRole('button', { name: 'common.retry' });
+    fireEvent.click(retryButton);
+
+    await waitFor(() => {
+      const alert = document.querySelector('.login-options-error');
+      expect(alert).not.toBeNull();
+      expect(alert?.className).toContain('login-options-error-loading');
+      expect(alert?.getAttribute('aria-busy')).toBe('true');
+      expect(screen.getByText('login.optionsError.retrying.title')).toBeTruthy();
+      expect((screen.getByRole('button', { name: 'common.retry' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    retry.resolve(options);
+    await waitFor(() => expect(document.querySelector('.login-options-error')).toBeNull());
+  });
+});
+
 describe('Login background motion preference', () => {
   const videoBackgroundOptions: LoginOptions = {
     ...options,
@@ -245,6 +310,113 @@ describe('Login background motion preference', () => {
     expect(video.autoplay).toBe(false);
     expect(video.loop).toBe(false);
     expect(pause).toHaveBeenCalled();
+  });
+});
+
+describe('Login Cap CAPTCHA provider', () => {
+  const capOptions: LoginOptions = {
+    ...options,
+    captcha: { ...options.captcha, provider: 'cap' },
+  };
+
+  beforeEach(() => {
+    api.fetchLoginOptions.mockResolvedValue(capOptions);
+  });
+
+  it('loads the Cap widget, verifies its token server-side, and sends only the receipt to login', async () => {
+    api.fetchLoginCaptcha.mockResolvedValue(capCaptcha('cap-challenge-1'));
+    api.verifyLoginCaptcha.mockResolvedValue({ valid: true, receipt: 'cap-login-receipt' });
+    api.login.mockResolvedValue({ csrf: 'csrf-token', user: { username: 'Cheese', role: 'admin' }, session_cookie: true });
+    renderLogin();
+    fillUsername();
+
+    fireEvent.click(await screen.findByRole('button', { name: /login\.captchaState\.ready/ }));
+    const widget = await waitFor(() => {
+      const element = document.querySelector('cap-widget');
+      if (!element) throw new Error('Cap widget not loaded');
+      return element;
+    });
+    expect(widget.getAttribute('data-cap-api-endpoint')).toBe('https://cap.example.test/api');
+    expect(window.CAP_CUSTOM_WASM_URL).toBe('https://cap.example.test/assets/cap.wasm');
+    expect(window.CAP_CUSTOM_HASHWX_URL).toBe('https://cap.example.test/assets/hashwx.wasm');
+
+    await act(async () => { solveCapWidget(); });
+    expect((await screen.findByRole('status')).textContent).toContain('login.captchaWidgetVerified');
+    expect(api.verifyLoginCaptcha).toHaveBeenCalledWith({
+      provider: 'cap',
+      mode: 'cap',
+      challenge_id: 'cap-challenge-1',
+      token: 'one-time-cap-token',
+      username: 'Cheese',
+    }, expect.any(AbortSignal));
+
+    fireEvent.change(screen.getByLabelText('login.password'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'login.submit' }));
+    await waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+    expect(api.login.mock.calls[0]).toEqual([
+      'Cheese',
+      'secret',
+      undefined,
+      { provider: 'cap', mode: 'cap', receipt: 'cap-login-receipt', username: 'Cheese' },
+    ]);
+    expect(JSON.stringify(api.login.mock.calls[0])).not.toContain('one-time-cap-token');
+  });
+
+  it('surfaces widget errors and refreshes with a new one-time challenge', async () => {
+    api.fetchLoginCaptcha.mockResolvedValueOnce(capCaptcha('cap-challenge-old')).mockResolvedValueOnce(capCaptcha('cap-challenge-new'));
+    renderLogin();
+    fillUsername();
+    fireEvent.click(await screen.findByRole('button', { name: /login\.captchaState\.ready/ }));
+    await waitFor(() => expect(document.querySelector('cap-widget')).not.toBeNull());
+
+    const widget = document.querySelector('cap-widget')!;
+    await act(async () => {
+      widget.dispatchEvent(new CustomEvent('error', { detail: { isCap: true, code: 'network_error', message: 'private detail' } }));
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain('login.captchaUnavailable');
+
+    fireEvent.click(screen.getByRole('button', { name: 'login.captchaRefresh' }));
+    await waitFor(() => expect(api.fetchLoginCaptcha).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('cap-widget-container').getAttribute('data-challenge-id')).toBe('cap-challenge-new'));
+    expect(screen.queryByText('private detail')).toBeNull();
+  });
+
+  it('aborts an in-flight Cap verification when the username changes', async () => {
+    const pendingVerify = deferred<{ valid: boolean; receipt: string }>();
+    api.fetchLoginCaptcha.mockResolvedValue(capCaptcha('cap-pending'));
+    api.verifyLoginCaptcha.mockReturnValueOnce(pendingVerify.promise);
+    renderLogin();
+    fillUsername();
+    fireEvent.click(await screen.findByRole('button', { name: /login\.captchaState\.ready/ }));
+    await waitFor(() => expect(document.querySelector('cap-widget')).not.toBeNull());
+    await act(async () => { solveCapWidget('pending-cap-token'); });
+    await waitFor(() => expect(api.verifyLoginCaptcha).toHaveBeenCalledTimes(1));
+    const signal = api.verifyLoginCaptcha.mock.calls[0]?.[1] as AbortSignal;
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'login.username' }), { target: { value: 'Cheese-2' } });
+    expect(signal.aborted).toBe(true);
+    pendingVerify.resolve({ valid: true, receipt: 'stale-cap-receipt' });
+    await act(async () => { await pendingVerify.promise; });
+
+    expect(screen.queryByText('login.captchaWidgetVerified')).toBeNull();
+    expect(screen.getByRole('button', { name: /login\.captchaState\.loading/ })).toBeTruthy();
+  });
+
+  it('removes the widget and its event listeners on unmount', async () => {
+    api.fetchLoginCaptcha.mockResolvedValue(capCaptcha('cap-unmount'));
+    const view = renderLogin();
+    fillUsername();
+    fireEvent.click(await screen.findByRole('button', { name: /login\.captchaState\.ready/ }));
+    const widget = await waitFor(() => {
+      const element = document.querySelector('cap-widget');
+      if (!element) throw new Error('Cap widget not loaded');
+      return element;
+    });
+
+    view.unmount();
+    expect(document.querySelector('cap-widget')).toBeNull();
+    widget.dispatchEvent(new CustomEvent('solve', { detail: { token: 'after-unmount-token' } }));
+    expect(api.verifyLoginCaptcha).not.toHaveBeenCalled();
   });
 });
 
