@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,5 +210,42 @@ func TestScanSkipsOversizedFilesAndSymlinks(t *testing.T) {
 	}
 	if oversize == nil || oversize.Err == nil || !strings.Contains(oversize.Err.Error(), "exceeds") {
 		t.Fatalf("oversized file was not rejected: %+v", oversize)
+	}
+}
+
+// A per-file cap alone still allows count × cap bytes, so the scan also bounds
+// the total it retains.
+func TestScanStopsAtTotalByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	// Nine files just under the per-file cap exceed the 8 MiB total budget.
+	payload := bytes.Repeat([]byte("a"), maxIndexedFileBytes-1024)
+	for index := 0; index < 9; index++ {
+		path := filepath.Join(dir, fmt.Sprintf("pack-%d.json", index))
+		if err := os.WriteFile(path, payload, 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	snapshot := Scan(dir, "0.4.5")
+	var budgetProblem bool
+	for _, entry := range snapshot.Entries {
+		if entry.Err != nil && strings.Contains(entry.Err.Error(), "index exceeds") {
+			budgetProblem = true
+		}
+		if entry.Err == nil && len(entry.Raw) > 0 && len(snapshot.Entries) > 0 {
+			// Every retained entry must still be inside the budget.
+			if int64(len(entry.Raw)) > maxIndexedTotalBytes {
+				t.Fatalf("entry %s retained beyond the total budget", entry.Path)
+			}
+		}
+	}
+	if !budgetProblem {
+		t.Fatalf("scan did not report the total budget: %+v", snapshot.Entries)
+	}
+	total := int64(0)
+	for _, entry := range snapshot.Entries {
+		total += int64(len(entry.Raw))
+	}
+	if total > maxIndexedTotalBytes {
+		t.Fatalf("retained %d bytes, budget is %d", total, maxIndexedTotalBytes)
 	}
 }

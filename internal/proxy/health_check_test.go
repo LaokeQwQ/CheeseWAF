@@ -185,7 +185,16 @@ func TestHealthRegistryUpdateSitesPreservesKnownStateAndDropsRemoved(t *testing.
 
 func TestHealthCheckerUpdateSitesStopsOldGeneration(t *testing.T) {
 	var firstHits atomic.Int32
+	// A probe already in flight when the generation is cancelled may complete
+	// afterwards; that is allowed. What must not happen is a new probe starting
+	// for the retired generation, so the handler records requests that begin
+	// after the update returned instead of comparing a counter sample.
+	var updated atomic.Bool
+	var lateProbes atomic.Int32
 	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if updated.Load() {
+			lateProbes.Add(1)
+		}
 		firstHits.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -215,11 +224,11 @@ func TestHealthCheckerUpdateSitesStopsOldGeneration(t *testing.T) {
 	waitForHealthHits(t, &firstHits)
 	registry.UpdateSites([]config.SiteConfig{second})
 	checker.UpdateSites([]config.SiteConfig{second})
-	firstAfterUpdate := firstHits.Load()
+	updated.Store(true)
 	waitForHealthHits(t, &secondHits)
 	time.Sleep(20 * time.Millisecond)
-	if got := firstHits.Load(); got != firstAfterUpdate {
-		t.Fatalf("old checker generation continued after update: before=%d after=%d", firstAfterUpdate, got)
+	if got := lateProbes.Load(); got != 0 {
+		t.Fatalf("old checker generation started %d probes after the update", got)
 	}
 }
 

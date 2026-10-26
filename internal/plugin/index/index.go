@@ -27,6 +27,15 @@ import (
 // before validation ever runs.
 const maxIndexedFileBytes = 1 << 20
 
+const (
+	// maxIndexedFiles and maxIndexedTotalBytes bound one scan. A per-file cap
+	// alone still allows count × cap bytes to be retained in the snapshot, so a
+	// directory full of large descriptors could exhaust memory before any
+	// validation runs.
+	maxIndexedFiles      = 512
+	maxIndexedTotalBytes = 8 << 20
+)
+
 // Entry is one candidate file in the plugin directory. A malformed file is
 // recorded with Err set and never fails the whole scan.
 type Entry struct {
@@ -69,11 +78,30 @@ func Scan(dir, hostVersion string) *Snapshot {
 
 	hostVersion = strings.TrimSpace(hostVersion)
 	entries := make([]Entry, 0, len(dirEntries))
+	retained := int64(0)
 	for _, dirEntry := range dirEntries {
 		if !isManifestCandidate(dirEntry) {
 			continue
 		}
-		entries = append(entries, loadEntry(filepath.Join(dir, dirEntry.Name()), hostVersion))
+		if len(entries) >= maxIndexedFiles {
+			entries = append(entries, Entry{
+				Path: dir,
+				Err:  fmt.Errorf("plugin index holds more than %d files; the rest were not read", maxIndexedFiles),
+			})
+			break
+		}
+		entry := loadEntry(filepath.Join(dir, dirEntry.Name()), hostVersion)
+		retained += int64(len(entry.Raw))
+		if retained > maxIndexedTotalBytes {
+			// Keep the entry that crossed the budget as a visible problem
+			// instead of silently dropping it.
+			entry.Err = fmt.Errorf("%s: index exceeds %d bytes", entry.Path, maxIndexedTotalBytes)
+			entry.Raw = nil
+			entry.Manifest = nil
+			entries = append(entries, entry)
+			break
+		}
+		entries = append(entries, entry)
 	}
 	// os.ReadDir already sorts, but the ordering is part of the public
 	// deterministic output contract, so it is enforced here as well.
