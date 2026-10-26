@@ -49,7 +49,7 @@ func TestDatadogPublishesEvent(t *testing.T) {
 		Token:    "dd-api-key",
 		Headers:  map[string]string{"DD-APPLICATION-KEY": "dd-application-key"},
 	}
-	notifier, err := NewProvider(cfg, server.Client())
+	notifier, err := NewRegistry().New(cfg, server.Client())
 	if err != nil {
 		t.Fatalf("create datadog provider: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestDatadogRequiresHTTPSForAPIKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "dd",
 		Type:     "datadog",
 		Endpoint: server.URL,
@@ -119,7 +119,7 @@ func TestDatadogAllowsPlainHTTPWithoutAPIKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "dd",
 		Type:     "datadog",
 		Endpoint: server.URL,
@@ -136,7 +136,7 @@ func TestDatadogAllowsPlainHTTPWithoutAPIKey(t *testing.T) {
 }
 
 func TestDatadogRejectsInvalidEndpoint(t *testing.T) {
-	notifier, err := NewProvider(config.NotifierConfig{ID: "dd", Type: "datadog", Endpoint: "not-a-url"}, nil)
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "dd", Type: "datadog", Endpoint: "not-a-url"}, nil)
 	if err != nil {
 		t.Fatalf("create datadog provider: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestDatadogReportsDeliveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "dd",
 		Type:     "datadog",
 		Endpoint: server.URL,
@@ -173,7 +173,7 @@ func TestDatadogReportsDeliveryFailure(t *testing.T) {
 }
 
 func TestDatadogSkipsEmptyEndpoint(t *testing.T) {
-	notifier, err := NewProvider(config.NotifierConfig{ID: "dd", Type: "datadog"}, nil)
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "dd", Type: "datadog"}, nil)
 	if err != nil {
 		t.Fatalf("create datadog provider: %v", err)
 	}

@@ -445,12 +445,24 @@ func (s *Session) writeFrameContext(ctx context.Context, frame Frame) error {
 		_, err := s.out.Write(raw)
 		written <- err
 	}()
+	// A peer that stops reading never observes ctx. The ack budget is the only
+	// other bound the session owns, so it covers the write as well; otherwise a
+	// caller passing context.Background() could block forever on a full pipe.
+	var ackTimeout <-chan time.Time
+	if budget := s.opts.AckTimeout; budget > 0 {
+		timer := time.NewTimer(budget)
+		defer timer.Stop()
+		ackTimeout = timer.C
+	}
 	select {
 	case err := <-written:
 		if err != nil {
 			s.fail(err)
 		}
 		return err
+	case <-ackTimeout:
+		s.fail(ErrAckTimeout)
+		return ErrAckTimeout
 	case <-ctx.Done():
 		// A blocked pipe write cannot observe ctx, so the only way to release
 		// it is to close the owned connection. The interrupted frame may be

@@ -11,7 +11,7 @@ import (
 // TestEmailRejectsHeaderInjection guards the recipient parsing path: a CRLF in
 // the configured address must never reach the SMTP envelope.
 func TestEmailRejectsHeaderInjection(t *testing.T) {
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "mail",
 		Type:     "email",
 		Endpoint: "smtp://127.0.0.1:2525",

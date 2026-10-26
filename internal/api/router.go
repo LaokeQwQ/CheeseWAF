@@ -14,6 +14,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
@@ -47,6 +48,7 @@ type Options struct {
 	OnBlockPageChanged                  func(config.BlockPageConfig) error
 	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
 	OnServerChanged                     func(config.ServerConfig) error
+	NotifierRegistry                    *monitornotify.Registry
 	OnConfigChanged                     func(*config.Config) error
 	ACMEIssuer                          acme.Issuer
 	AuthState                           *handler.AuthState
@@ -163,6 +165,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
 		OnServerChanged:                     opts.OnServerChanged,
+		NotifierRegistry:                    opts.NotifierRegistry,
 		OnConfigChanged:                     opts.OnConfigChanged,
 		CAPTCHAAssets:                       opts.CAPTCHAAssets,
 		Clock:                               clock,

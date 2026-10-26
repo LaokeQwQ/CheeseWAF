@@ -35,6 +35,17 @@ type Config struct {
 	APISec           APISecConfig           `yaml:"apisec" json:"apisec"`
 	BlockPage        BlockPageConfig        `yaml:"block_page" json:"block_page"`
 	Performance      PerformanceConfig      `yaml:"performance" json:"performance"`
+	Plugins          PluginsConfig          `yaml:"plugins" json:"plugins"`
+}
+
+// PluginsConfig controls the local plugin index. IndexDir is scanned for
+// manifests; a relative path resolves against the process data directory.
+type PluginsConfig struct {
+	IndexDir string `yaml:"index_dir" json:"index_dir"`
+	// WatchInterval is how often the directory fingerprint is compared. Zero
+	// uses the 2s default. Polling avoids a filesystem-notification dependency
+	// and keeps behaviour identical on every platform.
+	WatchInterval time.Duration `yaml:"watch_interval" json:"watch_interval"`
 }
 
 // PerformanceConfig holds runtime tuning that is independent of security policy.
@@ -1475,6 +1486,10 @@ type NotifierConfig struct {
 	From                 string            `yaml:"from" json:"from"`
 	SubjectPrefix        string            `yaml:"subject_prefix" json:"subject_prefix"`
 	Enabled              bool              `yaml:"enabled" json:"enabled"`
+	// Config carries values for fields declared by a notifier pack's
+	// config_schema. Compiled-in providers ignore it. Secrets do not belong
+	// here: packs inject credentials from token/headers at delivery time.
+	Config map[string]string `yaml:"config,omitempty" json:"config,omitempty"`
 }
 
 type APISecConfig struct {

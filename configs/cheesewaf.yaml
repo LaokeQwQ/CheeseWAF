@@ -741,3 +741,10 @@ performance:
         base_gogc: 0
         target_gc_cpu_fraction: 0
         interval: 0s
+
+# Local plugin index. The directory is scanned for CRP manifests and notifier
+# provider packs; a change is picked up within watch_interval without a restart.
+# A relative index_dir resolves against the data directory.
+# plugins:
+#     index_dir: plugins
+#     watch_interval: 2s

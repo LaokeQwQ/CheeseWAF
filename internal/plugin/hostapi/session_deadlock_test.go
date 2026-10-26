@@ -49,7 +49,7 @@ func TestSessionStartReleasesBlockedWriteOnDeadline(t *testing.T) {
 
 	session, err := NewSession(hostInR, newBlockingWriteCloser(), SessionOptions{
 		Identity: testIdentity(), Capabilities: []Capability{CapabilityEventsSubscribe},
-		Challenge: []byte("c"), AckTimeout: 100 * time.Millisecond,
+		Challenge: []byte("c"), AckTimeout: 500 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,5 +156,28 @@ func TestSessionSendEventAcceptsOkAck(t *testing.T) {
 	}
 	if err := session.SendEvent(context.Background(), json.RawMessage(`{"event_id":"e"}`)); err != nil {
 		t.Fatalf("accepted ack returned %v", err)
+	}
+}
+
+// A caller with no deadline must still be released when the peer stops reading:
+// the session's ack budget bounds the write too.
+func TestSessionStartBoundsBlockedWriteWithAckTimeout(t *testing.T) {
+	hostInR, hostInW := io.Pipe()
+	t.Cleanup(func() { _ = hostInR.Close(); _ = hostInW.Close() })
+
+	session, err := NewSession(hostInR, newBlockingWriteCloser(), SessionOptions{
+		Identity: testIdentity(), Capabilities: []Capability{CapabilityEventsSubscribe},
+		Challenge: []byte("c"), AckTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = session.Start(context.Background())
+	if !errors.Is(err, ErrAckTimeout) {
+		t.Fatalf("start error = %v, want ErrAckTimeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("write was bounded after %s", elapsed)
 	}
 }

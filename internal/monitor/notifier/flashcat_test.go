@@ -27,7 +27,7 @@ func TestFlashcatPostsStandardEvent(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: server.URL, Token: "fc-token"}
-	notifier, err := NewProvider(cfg, server.Client())
+	notifier, err := NewRegistry().New(cfg, server.Client())
 	if err != nil {
 		t.Fatalf("create flashcat provider: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestFlashcatPreservesDedicatedPushURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "fc",
 		Type:     "flashcat",
 		Endpoint: server.URL + "/event/push/alert/standard?integration_key=integration-1",
@@ -118,7 +118,7 @@ func TestFlashcatStatusMapping(t *testing.T) {
 
 func TestFlashcatRequiresHTTPSWithToken(t *testing.T) {
 	cfg := config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: "http://flashcat.example.test", Token: "secret"}
-	notifier, err := NewProvider(cfg, http.DefaultClient)
+	notifier, err := NewRegistry().New(cfg, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("create flashcat provider: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestFlashcatAllowsHTTPWithoutToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	notifier, err := NewProvider(config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: server.URL}, server.Client())
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "fc", Type: "flashcat", Endpoint: server.URL}, server.Client())
 	if err != nil {
 		t.Fatalf("create flashcat provider: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestFlashcatHandlesEmptyConfig(t *testing.T) {
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("nil notifier: %v", err)
 	}
-	provider, err := NewProvider(config.NotifierConfig{ID: "fc", Type: "flashcat"}, nil)
+	provider, err := NewRegistry().New(config.NotifierConfig{ID: "fc", Type: "flashcat"}, nil)
 	if err != nil {
 		t.Fatalf("create flashcat provider: %v", err)
 	}

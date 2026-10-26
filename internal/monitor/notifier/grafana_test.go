@@ -48,7 +48,7 @@ func TestGrafanaCreatesAnnotation(t *testing.T) {
 		Headers:  map[string]string{"X-Scope-OrgID": "tenant-1"},
 	}
 	alert := testAlert()
-	notifier, err := NewProvider(cfg, server.Client())
+	notifier, err := NewRegistry().New(cfg, server.Client())
 	if err != nil {
 		t.Fatalf("create grafana provider: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestGrafanaUsesNowWhenStartsAtMissing(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
@@ -130,7 +130,7 @@ func TestGrafanaRequiresHTTPSForAPIToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
@@ -153,7 +153,7 @@ func TestGrafanaAllowsPlainHTTPWithoutAPIToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
@@ -175,7 +175,7 @@ func TestGrafanaReportsDeliveryFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	notifier, err := NewProvider(config.NotifierConfig{
+	notifier, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "grafana",
 		Type:     "grafana",
 		Endpoint: server.URL,
@@ -196,7 +196,7 @@ func TestGrafanaReportsDeliveryFailure(t *testing.T) {
 }
 
 func TestGrafanaRejectsInvalidEndpoint(t *testing.T) {
-	notifier, err := NewProvider(config.NotifierConfig{ID: "grafana", Type: "grafana", Endpoint: "not-a-url"}, nil)
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "grafana", Type: "grafana", Endpoint: "not-a-url"}, nil)
 	if err != nil {
 		t.Fatalf("create grafana provider: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestGrafanaRejectsInvalidEndpoint(t *testing.T) {
 }
 
 func TestGrafanaSkipsEmptyEndpoint(t *testing.T) {
-	notifier, err := NewProvider(config.NotifierConfig{ID: "grafana", Type: "grafana"}, nil)
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "grafana", Type: "grafana"}, nil)
 	if err != nil {
 		t.Fatalf("create grafana provider: %v", err)
 	}

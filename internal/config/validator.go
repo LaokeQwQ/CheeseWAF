@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +67,26 @@ const (
 	maxAIMaxSubjects          = 1_000_000
 )
 
+// validatePlugins bounds the index watcher. A zero interval keeps the default;
+// anything below the floor or above the ceiling is an operator mistake that
+// would either spin the filesystem or hide a change for an hour.
+func validatePlugins(cfg PluginsConfig) error {
+	dir := strings.TrimSpace(cfg.IndexDir)
+	if strings.ContainsRune(dir, 0) {
+		return fmt.Errorf("plugins.index_dir contains a NUL byte")
+	}
+	if cfg.WatchInterval < 0 {
+		return fmt.Errorf("plugins.watch_interval must not be negative")
+	}
+	if cfg.WatchInterval > 0 && cfg.WatchInterval < 100*time.Millisecond {
+		return fmt.Errorf("plugins.watch_interval must be at least 100ms")
+	}
+	if cfg.WatchInterval > time.Hour {
+		return fmt.Errorf("plugins.watch_interval must not exceed 1h")
+	}
+	return nil
+}
+
 func Validate(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -88,6 +109,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Server.AdminTLS.Enabled && (strings.TrimSpace(cfg.Server.AdminTLS.CertFile) == "" || strings.TrimSpace(cfg.Server.AdminTLS.KeyFile) == "") {
 		return fmt.Errorf("server.admin_tls.cert_file and server.admin_tls.key_file are required when admin TLS is enabled")
+	}
+	if err := validatePlugins(cfg.Plugins); err != nil {
+		return err
 	}
 	if cfg.Server.ListenTLS != "" && !hasAnyTLSCertificate(cfg) {
 		return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when server.listen_tls is set")
@@ -699,9 +723,7 @@ func Validate(cfg *Config) error {
 		if !notifier.Enabled {
 			continue
 		}
-		switch notifier.Type {
-		case "webhook", "email", "telegram", "dingtalk", "wecom", "feishu", "datadog", "grafana", "flashcat", "nightingale":
-		default:
+		if !slices.Contains(NotifierTypes(), notifier.Type) {
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
 		}
 		if strings.TrimSpace(notifier.Endpoint) == "" {

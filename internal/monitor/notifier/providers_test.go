@@ -52,7 +52,7 @@ func TestDingTalkPayloadAndSignature(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "dingtalk",
 		Type:     "dingtalk",
 		Endpoint: server.URL + "/robot/send?access_token=token-value",
@@ -89,7 +89,7 @@ func TestDingTalkRejectsHTTPWhenSecretConfigured(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "dingtalk",
 		Type:     "dingtalk",
 		Endpoint: server.URL,
@@ -115,7 +115,7 @@ func TestFeishuPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "feishu",
 		Type:     "feishu",
 		Endpoint: server.URL + "/open-apis/bot/v2/hook/abc",
@@ -143,7 +143,7 @@ func TestWeComPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "wecom",
 		Type:     "wecom",
 		Endpoint: server.URL + "/cgi-bin/webhook/send?key=abc",
@@ -174,7 +174,7 @@ func TestTelegramPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "telegram",
 		Type:     "telegram",
 		Endpoint: server.URL,
@@ -206,7 +206,7 @@ func TestTelegramDoesNotDuplicateEndpointToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "telegram",
 		Type:     "telegram",
 		Endpoint: server.URL + "/bot" + token,
@@ -243,7 +243,7 @@ func TestWebhookProviderPayloadUnchanged(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:                   "webhook",
 		Type:                 "webhook",
 		Endpoint:             server.URL,
@@ -279,7 +279,7 @@ func TestManagerRejectsUnknownProviderType(t *testing.T) {
 }
 
 func TestEmailRequiresExplicitConfiguration(t *testing.T) {
-	provider, err := NewProvider(config.NotifierConfig{ID: "email", Type: "email", Enabled: true}, nil)
+	provider, err := NewRegistry().New(config.NotifierConfig{ID: "email", Type: "email", Enabled: true}, nil)
 	if err != nil {
 		t.Fatalf("create email provider: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestEmailRequiresExplicitConfiguration(t *testing.T) {
 		t.Fatalf("expected missing endpoint error, got %v", err)
 	}
 
-	provider, err = NewProvider(config.NotifierConfig{
+	provider, err = NewRegistry().New(config.NotifierConfig{
 		ID:       "email",
 		Type:     "email",
 		Endpoint: "smtp://127.0.0.1:2525",
@@ -303,7 +303,7 @@ func TestEmailRequiresExplicitConfiguration(t *testing.T) {
 		t.Fatalf("expected missing recipient error, got %v", err)
 	}
 
-	provider, err = NewProvider(config.NotifierConfig{
+	provider, err = NewRegistry().New(config.NotifierConfig{
 		ID:       "email",
 		Type:     "email",
 		Endpoint: "smtp://127.0.0.1:2525",
@@ -429,7 +429,7 @@ func TestEmailDeliversOverSMTP(t *testing.T) {
 		<-serverDone
 	}()
 
-	provider, err := NewProvider(config.NotifierConfig{
+	provider, err := NewRegistry().New(config.NotifierConfig{
 		ID:       "email",
 		Type:     "email",
 		Endpoint: listener.Addr().String(),
@@ -485,17 +485,17 @@ func TestNotifierErrorDoesNotLeakEndpointSecret(t *testing.T) {
 
 func TestFeishuRequiresHTTPS(t *testing.T) {
 	cfg := config.NotifierConfig{ID: "feishu", Type: "feishu", Endpoint: "http://open.feishu.cn/hook"}
-	if _, err := NewProvider(cfg, nil); err != nil {
+	if _, err := NewRegistry().New(cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewProviderMustNotify(t, cfg); err == nil {
+	if err := notifierMustNotify(t, cfg); err == nil {
 		t.Fatal("expected HTTPS rejection")
 	}
 }
 
-func NewProviderMustNotify(t *testing.T, cfg config.NotifierConfig) error {
+func notifierMustNotify(t *testing.T, cfg config.NotifierConfig) error {
 	t.Helper()
-	p, err := NewProvider(cfg, nil)
+	p, err := NewRegistry().New(cfg, nil)
 	if err != nil {
 		return err
 	}

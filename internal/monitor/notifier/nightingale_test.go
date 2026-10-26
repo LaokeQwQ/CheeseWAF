@@ -35,7 +35,7 @@ func TestNightingalePostsCallbackEvent(t *testing.T) {
 		Token:    "n9e-token",
 	}
 	alert := testAlert()
-	notifier, err := NewProvider(cfg, server.Client())
+	notifier, err := NewRegistry().New(cfg, server.Client())
 	if err != nil {
 		t.Fatalf("create nightingale provider: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestNightingaleSeverityMapping(t *testing.T) {
 
 func TestNightingaleRequiresHTTPSWithToken(t *testing.T) {
 	cfg := config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: "http://n9e.example.test/callback", Token: "secret"}
-	notifier, err := NewProvider(cfg, http.DefaultClient)
+	notifier, err := NewRegistry().New(cfg, http.DefaultClient)
 	if err != nil {
 		t.Fatalf("create nightingale provider: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestNightingaleAllowsHTTPWithoutToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	notifier, err := NewProvider(config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: server.URL + "/callback"}, server.Client())
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: server.URL + "/callback"}, server.Client())
 	if err != nil {
 		t.Fatalf("create nightingale provider: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestNightingaleHandlesEmptyConfig(t *testing.T) {
 	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
 		t.Fatalf("nil notifier: %v", err)
 	}
-	provider, err := NewProvider(config.NotifierConfig{ID: "n9e", Type: "nightingale"}, nil)
+	provider, err := NewRegistry().New(config.NotifierConfig{ID: "n9e", Type: "nightingale"}, nil)
 	if err != nil {
 		t.Fatalf("create nightingale provider: %v", err)
 	}

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBudgetExhaustedPolicyFromWebAttack(t *testing.T) {
 	cases := map[string]string{
@@ -96,5 +99,38 @@ func TestResolveDecodeDepth(t *testing.T) {
 	}
 	if got := ResolveDecodeDepth(MaxDecodeDepth + 1); got != MaxDecodeDepth {
 		t.Fatalf("clamped depth=%d, want %d", got, MaxDecodeDepth)
+	}
+}
+
+func TestValidateNotifierTypes(t *testing.T) {
+	for _, typeName := range NotifierTypes() {
+		notifier := NotifierConfig{
+			ID:       typeName,
+			Type:     typeName,
+			Endpoint: "https://hooks.example.com/notify",
+			Enabled:  true,
+		}
+		if typeName == "email" {
+			notifier.Endpoint = "smtp://smtp.example.com:587"
+			notifier.To = "ops@example.com"
+			notifier.Headers = map[string]string{"from": "waf@example.com"}
+		}
+
+		cfg := Default()
+		cfg.Monitor.Notifiers = []NotifierConfig{notifier}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("notifier type %q rejected: %v", typeName, err)
+		}
+	}
+
+	cfg := Default()
+	cfg.Monitor.Notifiers = []NotifierConfig{{
+		ID:       "pager",
+		Type:     "pagerduty",
+		Endpoint: "https://events.example.com/notify",
+		Enabled:  true,
+	}}
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), `notifier "pager" has invalid type "pagerduty"`) {
+		t.Fatalf("unknown notifier type must be rejected, got %v", err)
 	}
 }

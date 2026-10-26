@@ -57,6 +57,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/LaokeQwQ/CheeseWAF/internal/webui"
 )
 
@@ -131,6 +132,10 @@ func runServe(ctx context.Context) error {
 	if err := ensureNoPendingMigration(cfg.Setup.DataDir); err != nil {
 		return err
 	}
+	// The index is scanned before any notifier is built so a pack-provided type
+	// is already resolvable at startup, and the watcher keeps it current.
+	pluginIndex := startPluginIndex(ctx, cfg, cfg.Setup.DataDir, version.Version)
+	defer pluginIndex.Close()
 	var store storage.Store
 	var productionDeps *ProductionDependencies
 	var productionWiring ProductionServeWiring
@@ -348,7 +353,7 @@ func runServe(ctx context.Context) error {
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	defer stopRuntime()
 	healthChecker.Start(runtimeCtx)
-	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub)
+	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub, pluginIndex.Registry())
 	startReviewRetention(runtimeCtx, store)
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
@@ -449,6 +454,7 @@ func runServe(ctx context.Context) error {
 		PasskeyStore:                       passkeyStore,
 		IntelHandler:                       intelHandler,
 		AdapterInspect:                     adapterInspectHandler,
+		NotifierRegistry:                   pluginIndex.Registry(),
 		SetupToken:                         setupToken,
 		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
@@ -1489,13 +1495,13 @@ func resolveWebDir() string {
 	return ""
 }
 
-func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub) {
+func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub, registry *monitornotify.Registry) {
 	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
 	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
 	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
-	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
+	notifiers := monitornotify.NewManagerWithRegistry(cfg.Monitor.Notifiers, registry)
 	interval := cfg.Monitor.RemoteWrite.Interval
 	if interval < minimumMonitorCollectionInterval {
 		interval = minimumMonitorCollectionInterval

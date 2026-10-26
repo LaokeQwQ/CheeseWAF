@@ -431,7 +431,7 @@ func (h *Handler) notifyACMEIssue(r *http.Request, site *storage.Site, result ac
 		StartsAt:  startsAt,
 	}
 	alert.Name = "ACME certificate pipeline: " + name
-	manager := monitornotify.NewManager(h.currentConfig().Monitor.Notifiers)
+	manager := monitornotify.NewManagerWithRegistry(h.currentConfig().Monitor.Notifiers, h.NotifierRegistry)
 	_ = manager.Notify(r.Context(), []monitor.Alert{alert})
 }
 
