@@ -457,8 +457,6 @@ func (s *Session) writeFrameContext(ctx context.Context, frame Frame) error {
 		// partially written, which leaves the stream unusable.
 		s.fail(ctx.Err())
 		return ctx.Err()
-	case <-s.done:
-		return ErrSessionClosed
 	}
 }
 
