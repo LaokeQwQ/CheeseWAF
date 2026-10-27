@@ -80,6 +80,52 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 		writeData(w, status)
 		return
 	}
+	// Serve a recent result instead of calling the release origin on every
+	// console poll; ota.check_interval is the freshness bound.
+	interval := cfg.Update.OTA.CheckInterval
+	channel := cfg.Update.OTA.Channel
+	now := h.nowUTC()
+	if interval > 0 {
+		for {
+			h.otaCacheMu.Lock()
+			if h.otaCache != nil && h.otaCacheChannel == channel && now.Sub(h.otaCacheAt) < interval {
+				cached := make(map[string]any, len(h.otaCache)+1)
+				for key, value := range h.otaCache {
+					cached[key] = value
+				}
+				cached["checked_at"] = h.otaCacheAt
+				cached["cached"] = true
+				h.otaCacheMu.Unlock()
+				writeData(w, cached)
+				return
+			}
+			if wait, running := h.otaInFlight[channel]; running {
+				h.otaCacheMu.Unlock()
+				select {
+				case <-wait:
+					now = h.nowUTC()
+					continue
+				case <-r.Context().Done():
+					// The caller left; another request owns the check and will
+					// publish its result.
+					return
+				}
+			}
+			if h.otaInFlight == nil {
+				h.otaInFlight = make(map[string]chan struct{})
+			}
+			done := make(chan struct{})
+			h.otaInFlight[channel] = done
+			h.otaCacheMu.Unlock()
+			defer func() {
+				h.otaCacheMu.Lock()
+				delete(h.otaInFlight, channel)
+				close(done)
+				h.otaCacheMu.Unlock()
+			}()
+			break
+		}
+	}
 	var currentIndex, currentRelease uint64
 	if h.OTAState != nil {
 		state, err := h.OTAState.Load(r.Context())
@@ -99,13 +145,41 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status["reason"] = otaStatusReason(err)
 		status["message"] = err.Error()
+		status["checked_at"] = now
+		// A canceled request says nothing about the origin; caching it would
+		// hide a healthy next poll for the whole interval.
+		if r.Context().Err() == nil {
+			h.cacheOTAStatus(status, now, interval)
+		}
 		writeData(w, status)
 		return
 	}
 	status["candidate_available"] = true
 	status["candidate"] = candidate
 	status["message"] = "candidate is read-only until CRP/CWEDP activation is wired"
+	status["checked_at"] = now
+	if r.Context().Err() == nil {
+		h.cacheOTAStatus(status, now, interval)
+	}
 	writeData(w, status)
+}
+
+// cacheOTAStatus records one check for ota.check_interval. Errors are cached
+// too: a broken origin should not turn every console refresh into a network
+// round trip.
+func (h *Handler) cacheOTAStatus(status map[string]any, at time.Time, interval time.Duration) {
+	if h == nil || interval <= 0 {
+		return
+	}
+	stored := make(map[string]any, len(status))
+	for key, value := range status {
+		stored[key] = value
+	}
+	h.otaCacheMu.Lock()
+	h.otaCache = stored
+	h.otaCacheChannel = status["channel"].(string)
+	h.otaCacheAt = at
+	h.otaCacheMu.Unlock()
 }
 
 func otaStatusReason(err error) string {
@@ -406,6 +480,11 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 }
 
 func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config) error {
+	if req.Console != nil {
+		if err := h.applyPasskeyChange(candidate.Console.Login.Passkey); err != nil {
+			return err
+		}
+	}
 	if err := h.applyCAPTCHAProtectionRuntime(candidate, req.CAPTCHAProviders != nil, req.Protection != nil); err != nil {
 		return err
 	}

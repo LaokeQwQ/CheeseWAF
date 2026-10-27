@@ -304,6 +304,7 @@ func (h *handler) importPipeline(primary intel.Source) (*pipeline.Pipeline, erro
 	}
 	return pipeline.New(pipeline.Config{
 		Registry:      registry,
+		ImpactPolicy:  h.policy,
 		Extractor:     pipeline.ExcerptExtractor{Next: h.extractor},
 		Profiles:      h.profileProvider(),
 		TrustPolicy:   h.trustPolicy,

@@ -268,3 +268,33 @@ func TestInspectAdapterRoutesTruncatedBodyThroughIncompletePolicy(t *testing.T) 
 		})
 	}
 }
+
+// body_truncated is accepted with an omitted body_state, so the truncation
+// branch must look at the flag as well as the state; otherwise a clean prefix
+// still returns allow.
+func TestInspectAdapterTreatsBodyTruncatedFlagAsIncomplete(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites = []config.SiteConfig{{
+		ID: "site-1", Name: "truncated", Domains: []string{"trunc.example"}, Enabled: true,
+		WAF: config.WAFConfig{
+			Enabled: true, Mode: "block", ParanoiaLevel: 3,
+			SemanticPolicy: config.SemanticPolicyConfig{BudgetExhaustedPolicy: config.BudgetPolicyClosed},
+		},
+	}}
+	server, err := NewServer(&cfg, engine.NewPipeline(), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := server.InspectAdapter(context.Background(), adapterapi.Request{
+		ContractVersion: adapterapi.Version, Source: adapterapi.SourceGeneric,
+		Method: http.MethodPost, Path: "/upload", Authority: "trunc.example",
+		BodyForwarded: true, BodyTruncated: true,
+		Body: []byte("harmless prefix"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != adapterapi.ActionChallenge {
+		t.Fatalf("truncated flag action = %q, want challenge (reason %q)", decision.Action, decision.Reason)
+	}
+}
