@@ -71,7 +71,10 @@ const (
 // would either spin the filesystem or hide a change for an hour.
 // validNotifierTypeName accepts the shape a built-in or pack type must have.
 // Whether the type exists is decided by the notifier registry at startup.
-func validNotifierTypeName(value string) bool {
+// ValidNotifierTypeName is the single rule for notifier type names. Provider
+// packs use it too, so a name the configuration rejects can never be loaded
+// from the index and vice versa.
+func ValidNotifierTypeName(value string) bool {
 	if len(value) < 2 || len(value) > 64 {
 		return false
 	}
@@ -743,7 +746,7 @@ func Validate(cfg *Config) error {
 		// The type is resolved against the live registry at startup, because a
 		// plugin provider pack can add one after the configuration is parsed.
 		// This layer only rejects a name no provider could ever declare.
-		if !validNotifierTypeName(notifier.Type) {
+		if !ValidNotifierTypeName(notifier.Type) {
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
 		}
 		if strings.TrimSpace(notifier.Endpoint) == "" {

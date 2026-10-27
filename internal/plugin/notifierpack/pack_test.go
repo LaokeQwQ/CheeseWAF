@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/crp"
 )
 
@@ -539,5 +540,22 @@ func TestCheckHostBoundaries(t *testing.T) {
 	typoBound := Pack{ProviderID: "lark", HostCompatibility: crp.HostCompatibility{Min: "0.x"}}
 	if err := typoBound.CheckHost("0.6.0"); err == nil {
 		t.Fatalf("unparsable bound must fail closed")
+	}
+}
+
+// A pack that loads must always be usable from configuration: both layers use
+// the same type-name rule, so a dotted or hyphenated name cannot slip in.
+func TestPackTypeFollowsConfigurationNameRule(t *testing.T) {
+	for _, name := range []string{"teams.webhook", "teams-webhook", "Teams", "1teams", "teams webhook"} {
+		if config.ValidNotifierTypeName(name) {
+			t.Fatalf("%q must be rejected by the configuration rule", name)
+		}
+		raw := strings.Replace(validPackJSON, `"type": "lark"`, `"type": "`+name+`"`, 1)
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Fatalf("%q must be rejected by Parse", name)
+		}
+	}
+	if !config.ValidNotifierTypeName("teams_webhook") {
+		t.Fatal("a snake_case type must be accepted")
 	}
 }
