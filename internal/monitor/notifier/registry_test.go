@@ -149,3 +149,41 @@ func TestManagerUsesCurrentRegistryForEachSend(t *testing.T) {
 		t.Fatalf("after reload: first=%d second=%d, want 1/1", first.calls, second.calls)
 	}
 }
+
+// Rebuilding providers on every send would drop connection reuse. The manager
+// caches the instances until the registry generation changes.
+func TestManagerReusesProvidersUntilRegistryChanges(t *testing.T) {
+	cfg := config.NotifierConfig{ID: "pack", Type: "cached_type", Endpoint: "https://example.test/hook", Enabled: true}
+	registry := NewRegistry()
+	built := 0
+	if err := registry.RegisterPack("cached_type", func(config.NotifierConfig) (Notifier, error) {
+		built++
+		return &countingNotifier{}, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	manager := NewManagerWithRegistry([]config.NotifierConfig{cfg}, registry)
+	alert := monitor.Alert{RuleID: "r", Name: "n"}
+	for i := 0; i < 3; i++ {
+		if err := manager.Notify(context.Background(), []monitor.Alert{alert}); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	if built != 1 {
+		t.Fatalf("provider built %d times without a registry change", built)
+	}
+	if err := registry.ReplacePacks(map[string]PackFactory{
+		"cached_type": func(config.NotifierConfig) (Notifier, error) {
+			built++
+			return &countingNotifier{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if err := manager.Notify(context.Background(), []monitor.Alert{alert}); err != nil {
+		t.Fatalf("send after reload: %v", err)
+	}
+	if built != 2 {
+		t.Fatalf("provider built %d times, want a rebuild after the reload", built)
+	}
+}

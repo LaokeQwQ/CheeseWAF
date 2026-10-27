@@ -3,6 +3,7 @@ package notifier
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
@@ -13,8 +14,14 @@ type Notifier interface {
 }
 
 type Manager struct {
+	mu       sync.Mutex
 	configs  []config.NotifierConfig
 	registry *Registry
+	// builtFor is the registry generation the cached instances were built for.
+	builtFor     uint64
+	built        bool
+	cached       []Notifier
+	cachedErrors []error
 	// notifiers and configErrors are the startup snapshot. Notify resolves the
 	// configurations again so a plugin-index reload reaches the alert loop.
 	notifiers    []Notifier
@@ -53,6 +60,13 @@ func (m *Manager) resolve() ([]Notifier, []error) {
 		return m.notifiers, m.configErrors
 	}
 	registry := m.registry
+	m.mu.Lock()
+	if m.built && m.builtFor == registry.Generation() {
+		notifiers, cachedErrors := m.cached, m.cachedErrors
+		m.mu.Unlock()
+		return notifiers, cachedErrors
+	}
+	m.mu.Unlock()
 	notifiers := make([]Notifier, 0, len(m.configs))
 	configErrors := make([]error, 0)
 	for _, cfg := range m.configs {
@@ -66,6 +80,12 @@ func (m *Manager) resolve() ([]Notifier, []error) {
 		}
 		notifiers = append(notifiers, notifier)
 	}
+	m.mu.Lock()
+	m.built = true
+	m.builtFor = registry.Generation()
+	m.cached = notifiers
+	m.cachedErrors = configErrors
+	m.mu.Unlock()
 	return notifiers, configErrors
 }
 
