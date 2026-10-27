@@ -60,8 +60,12 @@ func (m *Manager) resolve() ([]Notifier, []error) {
 		return m.notifiers, m.configErrors
 	}
 	registry := m.registry
+	// Read the generation before building. If a reload lands while the
+	// providers are being constructed, the recorded generation stays behind
+	// and the next call rebuilds instead of caching stale instances.
+	generation := registry.Generation()
 	m.mu.Lock()
-	if m.built && m.builtFor == registry.Generation() {
+	if m.built && m.builtFor == generation {
 		notifiers, cachedErrors := m.cached, m.cachedErrors
 		m.mu.Unlock()
 		return notifiers, cachedErrors
@@ -82,7 +86,7 @@ func (m *Manager) resolve() ([]Notifier, []error) {
 	}
 	m.mu.Lock()
 	m.built = true
-	m.builtFor = registry.Generation()
+	m.builtFor = generation
 	m.cached = notifiers
 	m.cachedErrors = configErrors
 	m.mu.Unlock()

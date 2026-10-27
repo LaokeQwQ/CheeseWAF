@@ -187,3 +187,41 @@ func TestManagerReusesProvidersUntilRegistryChanges(t *testing.T) {
 		t.Fatalf("provider built %d times, want a rebuild after the reload", built)
 	}
 }
+
+// A reload that lands while providers are being built must not be cached under
+// the newer generation: the recorded generation is the one read before the
+// build, so the next send rebuilds.
+func TestManagerDoesNotCacheAcrossReloadDuringBuild(t *testing.T) {
+	cfg := config.NotifierConfig{ID: "pack", Type: "race_type", Endpoint: "https://example.test/hook", Enabled: true}
+	registry := NewRegistry()
+	var reloaded bool
+	if err := registry.RegisterPack("race_type", func(config.NotifierConfig) (Notifier, error) {
+		if !reloaded {
+			reloaded = true
+			if err := registry.ReplacePacks(map[string]PackFactory{
+				"race_type": func(config.NotifierConfig) (Notifier, error) { return &countingNotifier{}, nil },
+			}); err != nil {
+				t.Fatalf("replace during build: %v", err)
+			}
+		}
+		return &countingNotifier{}, nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Construct directly so the first build happens inside Notify; a manager
+	// built by the constructor would already consume the reload.
+	manager := &Manager{configs: []config.NotifierConfig{cfg}, registry: registry}
+	alert := monitor.Alert{RuleID: "r", Name: "n"}
+	if err := manager.Notify(context.Background(), []monitor.Alert{alert}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if manager.builtFor == registry.Generation() {
+		t.Fatal("a reload during the build was cached as current")
+	}
+	if err := manager.Notify(context.Background(), []monitor.Alert{alert}); err != nil {
+		t.Fatalf("send after reload: %v", err)
+	}
+	if manager.builtFor != registry.Generation() {
+		t.Fatalf("cache did not catch up: builtFor=%d generation=%d", manager.builtFor, registry.Generation())
+	}
+}
