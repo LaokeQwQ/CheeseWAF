@@ -82,6 +82,7 @@ export const defaultSiteAdvanced: SiteAdvanced = {
     ],
     tamper_key: '',
     tamper_snapshots: [],
+    inspection: { fail_mode: 'observe' },
   },
   rewrite: [],
   custom_rules: [],
@@ -161,6 +162,10 @@ export function normalizeSite(input?: Partial<Site>): Site {
         ...advanced.response,
         sensitive_patterns: asArray(advanced.response?.sensitive_patterns),
         tamper_snapshots: asArray(advanced.response?.tamper_snapshots),
+        inspection: {
+          ...defaultSiteAdvanced.response.inspection,
+          ...advanced.response?.inspection,
+        },
       },
       rewrite: asArray(advanced.rewrite),
       custom_rules: asArray(advanced.custom_rules),

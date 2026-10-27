@@ -3,6 +3,7 @@ package semantic
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -110,9 +111,13 @@ func TestEnabledCategoryFingerprintIncludesEveryAnalyzerCategory(t *testing.T) {
 func TestAnalyzerCacheCannotReuseNonSinkSSRFResult(t *testing.T) {
 	processCandidateCache.resetForTest()
 	a := NewAnalyzer("block", 2, "ssrf")
+	// A value that is only *part* of a sentence still needs a fetch-shaped field
+	// name: the whole-value URL rule added for field-name independence
+	// deliberately stops at the prose boundary, so the same URL is a sink in one
+	// field and ordinary data in another.
 	target := "http://169.254.169.254/latest/meta-data"
 
-	plainReq, _ := http.NewRequest(http.MethodGet, "/proxy?note="+target, nil)
+	plainReq, _ := http.NewRequest(http.MethodGet, "/proxy?note="+url.QueryEscape("see "+target+" for details"), nil)
 	plainCtx, err := engine.NewRequestContext(plainReq, "default")
 	if err != nil {
 		t.Fatal(err)

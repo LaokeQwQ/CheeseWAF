@@ -564,3 +564,178 @@ func TestValidateBoundsSiteHeaderAndRewriteComplexity(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateRejectsUnknownResponseFailMode(t *testing.T) {
+	cfg := Default()
+	cfg.Sites[0].WAF.Response.Inspection.FailMode = "clossed"
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("Validate accepted unknown response.inspection.fail_mode")
+	}
+}
+
+func TestValidateSemanticActionThresholdLadder(t *testing.T) {
+	t.Run("default ladder is accepted and stays zero", func(t *testing.T) {
+		cfg := Default()
+		if !cfg.Sites[0].WAF.SemanticPolicy.ActionThresholds.IsZero() {
+			t.Fatalf("default action_thresholds must stay zero (web_attack preset), got %+v", cfg.Sites[0].WAF.SemanticPolicy.ActionThresholds)
+		}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("default config rejected: %v", err)
+		}
+	})
+
+	t.Run("ordered ladder is accepted", func(t *testing.T) {
+		cfg := Default()
+		cfg.Sites[0].WAF.SemanticPolicy.ActionThresholds = SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("monotonic ladder rejected: %v", err)
+		}
+	})
+
+	cases := []struct {
+		name       string
+		thresholds SemanticActionThresholds
+		want       string
+	}{
+		{"log above challenge", SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.90}, "log"},
+		{"challenge above block", SemanticActionThresholds{Block: 0.80, Challenge: 0.90}, "challenge"},
+		{"log above block", SemanticActionThresholds{Block: 0.70, Log: 0.90}, "log"},
+		{"block above one", SemanticActionThresholds{Block: 1.5}, "block"},
+		{"negative challenge", SemanticActionThresholds{Challenge: -0.1}, "challenge"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Sites[0].WAF.SemanticPolicy.ActionThresholds = tc.thresholds
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("expected action_thresholds %+v to be rejected", tc.thresholds)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name the offending rung %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateSemanticRouteOverrides(t *testing.T) {
+	base := func() Config {
+		cfg := Default()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []SemanticRouteOverride{{
+			Path:      `^/search$`,
+			Params:    []string{"q"},
+			Block:     0.97,
+			Challenge: 0.90,
+		}}
+		return cfg
+	}
+
+	t.Run("valid override is accepted", func(t *testing.T) {
+		cfg := base()
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("valid route override rejected: %v", err)
+		}
+	})
+
+	t.Run("whole path override without params is accepted", func(t *testing.T) {
+		cfg := base()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Params = nil
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("path-only override rejected: %v", err)
+		}
+	})
+
+	t.Run("invalid regexp is rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Path = `^/search(`
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "regular expression") {
+			t.Fatalf("expected invalid regexp error, got %v", err)
+		}
+	})
+
+	t.Run("empty path is rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Path = "  "
+		if err := Validate(&cfg); err == nil {
+			t.Fatal("expected empty route override path to be rejected")
+		}
+	})
+
+	t.Run("invalid action is rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Action = "drop"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "action") {
+			t.Fatalf("expected invalid action error, got %v", err)
+		}
+	})
+
+	for _, action := range []string{SemanticActionObserve, SemanticActionChallenge, SemanticActionInherit, "  Observe  "} {
+		t.Run("action "+action, func(t *testing.T) {
+			cfg := base()
+			cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Action = action
+			if err := Validate(&cfg); err != nil {
+				t.Fatalf("action %q rejected: %v", action, err)
+			}
+		})
+	}
+
+	t.Run("override ladder order is enforced", func(t *testing.T) {
+		cfg := base()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Challenge = 0.99
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "challenge") {
+			t.Fatalf("expected route override ladder error, got %v", err)
+		}
+	})
+
+	t.Run("empty param name is rejected", func(t *testing.T) {
+		cfg := base()
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides[0].Params = []string{"q", " "}
+		if err := Validate(&cfg); err == nil {
+			t.Fatal("expected empty param name to be rejected")
+		}
+	})
+
+	t.Run("override count is bounded", func(t *testing.T) {
+		cfg := base()
+		overrides := make([]SemanticRouteOverride, maxSemanticRouteOverrides+1)
+		for i := range overrides {
+			overrides[i] = SemanticRouteOverride{Path: fmt.Sprintf("^/p%d$", i)}
+		}
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = overrides
+		if err := Validate(&cfg); err == nil {
+			t.Fatal("expected route override count to be bounded")
+		}
+	})
+}
+
+func TestSampleConfigDocumentsSemanticActionPolicy(t *testing.T) {
+	// The shipped sample is the first config an operator reads; it must keep
+	// documenting the ladder and show the empty default that preserves
+	// existing behaviour.
+	data, err := os.ReadFile("../../configs/cheesewaf.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(data)
+	for _, marker := range []string{
+		"action_thresholds:",
+		"route_overrides: []",
+		"#       params: [q]",
+		"#       action: observe",
+	} {
+		if !strings.Contains(contents, marker) {
+			t.Fatalf("sample config no longer documents %q", marker)
+		}
+	}
+	cfg, err := Load("../../configs/cheesewaf.yaml")
+	if err != nil {
+		t.Fatalf("load sample config: %v", err)
+	}
+	policy := cfg.Sites[0].WAF.SemanticPolicy
+	if !policy.ActionThresholds.IsZero() || len(policy.RouteOverrides) != 0 {
+		t.Fatalf("sample config must ship the behaviour-preserving default, got %+v", policy)
+	}
+}

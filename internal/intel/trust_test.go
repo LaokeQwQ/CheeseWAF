@@ -131,3 +131,17 @@ func TestTrustPolicyEvaluateItemResolvesRegistry(t *testing.T) {
 		t.Fatalf("expected vendor corroboration to allow the item: %+v", decision)
 	}
 }
+
+// A community source may be trusted alone when the operator sets an explicit
+// corroboration of one; the default of two still applies otherwise.
+func TestEvaluateSourcesHonorsSingleSourceOptIn(t *testing.T) {
+	community := Source{ID: "community-a", Trust: TrustCommunity, Enabled: true}
+	decision := TrustPolicy{RequiredCorroboration: 1}.EvaluateSources([]Source{community})
+	if !decision.Allowed {
+		t.Fatalf("single community source was not allowed: %+v", decision)
+	}
+	decision = DefaultTrustPolicy().EvaluateSources([]Source{community})
+	if decision.Allowed {
+		t.Fatalf("default policy allowed a single community source: %+v", decision)
+	}
+}

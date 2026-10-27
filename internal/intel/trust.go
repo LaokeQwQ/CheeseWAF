@@ -73,8 +73,10 @@ func (p TrustPolicy) EvaluateItem(item Item, registry []Source) TrustDecision {
 // EvaluateSources applies the trust policy to the enabled sources that reported
 // an item. Duplicate IDs count once; disabled sources are ignored.
 func (p TrustPolicy) EvaluateSources(sources []Source) TrustDecision {
+	// An explicit 1 is meaningful: the operator opted into single-source
+	// community intelligence. Only an unset value falls back to the default.
 	required := p.RequiredCorroboration
-	if required < DefaultRequiredCorroboration {
+	if required < 1 {
 		required = DefaultRequiredCorroboration
 	}
 	seen := make(map[string]Source, len(sources))

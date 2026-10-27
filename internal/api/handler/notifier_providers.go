@@ -68,7 +68,14 @@ func (h *Handler) TestNotifierProvider(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "provider_disabled", "provider is disabled")
 			return
 		}
-		provider, err := monitornotify.NewProvider(item, nil)
+		// Use the shared registry so a pack-provided type resolves here too; a
+		// fresh registry would reject it and make "Send test" fail with 422 for
+		// a provider that works in production.
+		registry := h.NotifierRegistry
+		if registry == nil {
+			registry = monitornotify.NewRegistry()
+		}
+		provider, err := registry.New(item, nil)
 		if err != nil {
 			writeError(w, http.StatusUnprocessableEntity, "provider_invalid", "provider configuration is invalid")
 			return

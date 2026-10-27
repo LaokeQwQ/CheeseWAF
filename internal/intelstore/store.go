@@ -84,6 +84,10 @@ type CandidateUpdate struct {
 	// ExpectedState makes the update conditional. A concurrent transition
 	// returns ErrConflict instead of overwriting another reviewer's decision.
 	ExpectedState *intel.CandidateState
+	// Now overrides the transition timestamp. The HTTP layer passes its
+	// injected clock so a shadow window is measured on the same timeline as
+	// the approval that opened it; zero falls back to the wall clock.
+	Now time.Time
 }
 
 // ImportJob records one URL import attempt. URL is stored without query or

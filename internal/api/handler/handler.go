@@ -39,6 +39,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
@@ -52,42 +53,46 @@ import (
 )
 
 type Handler struct {
-	Config                 *config.Config
-	configCurrent          atomic.Pointer[config.Config]
-	ConfigPath             string
-	Store                  storage.Store
-	Sink                   storage.LogSink
-	Tokens                 *middleware.TokenManager
-	Secret                 string
-	Auditor                *middleware.Auditor
-	AssistantApprovals     *ai.ApprovalStore
-	AssistantGateApproval  *ai.GateApprovalAdapter
-	clusterApproval        *ApprovalHTTPHandler
-	Realtime               *realtime.Hub
-	approvalStoreError     error
-	TwoFAState             *twoFAState
-	ClusterIdentity        *identity.MemoryIdentityService
-	ClusterDeployTasks     *deploy.TaskManager
-	ClusterDeployAuth      *deploy.AuthorizationStore
-	ClusterDeployRunner    deploy.TaskRunner
-	ClusterHeartbeats      *cluster.HeartbeatRegistry
-	clusterRolling         *orchestrate.RollingManager
-	clusterTraffic         *traffic.Scheduler
-	clusterTrafficMu       sync.Mutex
-	clusterJoinLimiter     *simpleRateLimiter
-	clusterJoinLimiterMu   sync.Mutex
-	clusterConsensus       *consensus.Coordinator
-	clusterConsensusMu     sync.Mutex
-	ACMEIssuer             acme.Issuer
-	TimeSync               TimeSyncService
-	OTAClient              OTAClient
-	OTAState               OTAStateReader
-	TemporaryHTTPExecutor  netlease.TemporaryHTTPExecutor
-	CWEDPDownload          consumer.Executor
-	CRPActivation          CRPActivationExecutor
-	LoginCAPTCHAState      *loginCAPTCHAState
-	Passkey                *passkey.Service
-	PasskeyStore           passkey.Store
+	Config                *config.Config
+	configCurrent         atomic.Pointer[config.Config]
+	ConfigPath            string
+	Store                 storage.Store
+	Sink                  storage.LogSink
+	Tokens                *middleware.TokenManager
+	Secret                string
+	Auditor               *middleware.Auditor
+	AssistantApprovals    *ai.ApprovalStore
+	AssistantGateApproval *ai.GateApprovalAdapter
+	clusterApproval       *ApprovalHTTPHandler
+	Realtime              *realtime.Hub
+	approvalStoreError    error
+	TwoFAState            *twoFAState
+	ClusterIdentity       *identity.MemoryIdentityService
+	ClusterDeployTasks    *deploy.TaskManager
+	ClusterDeployAuth     *deploy.AuthorizationStore
+	ClusterDeployRunner   deploy.TaskRunner
+	ClusterHeartbeats     *cluster.HeartbeatRegistry
+	clusterRolling        *orchestrate.RollingManager
+	clusterTraffic        *traffic.Scheduler
+	clusterTrafficMu      sync.Mutex
+	clusterJoinLimiter    *simpleRateLimiter
+	clusterJoinLimiterMu  sync.Mutex
+	clusterConsensus      *consensus.Coordinator
+	clusterConsensusMu    sync.Mutex
+	ACMEIssuer            acme.Issuer
+	TimeSync              TimeSyncService
+	OTAClient             OTAClient
+	OTAState              OTAStateReader
+	TemporaryHTTPExecutor netlease.TemporaryHTTPExecutor
+	CWEDPDownload         consumer.Executor
+	CRPActivation         CRPActivationExecutor
+	LoginCAPTCHAState     *loginCAPTCHAState
+	Passkey               *passkey.Service
+	PasskeyStore          passkey.Store
+	// passkeyMu guards Passkey: the system API can rebuild it after the console
+	// changes RPID or origins, so readers must not race the swap.
+	passkeyMu              sync.RWMutex
+	passkeyFactory         func(config.PasskeyConfig) (*passkey.Service, error)
 	CAPTCHAAssets          captchaassets.Store
 	CAPTCHAAssetReferences *captchaassets.ReferenceManager
 	CAPTCHAAssetInitError  error
@@ -125,31 +130,40 @@ type Handler struct {
 	managementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
 	acmeRenewMu                         sync.Mutex
 	acmeRenewCancel                     context.CancelFunc
-	configWriteFrozen                   bool
-	configFreezeReason                  string
-	userMutationMu                      sync.Mutex
-	now                                 func() time.Time
-	StartedAt                           time.Time
-	SetupToken                          string
-	SetupTokenSource                    setup.TokenSource
-	SetupDrafts                         *setup.DraftStore
-	runSetupProbe                       func(context.Context, string) setup.ProbeResult
-	geoipMu                             sync.Mutex
-	geoipCacheKey                       string
-	geoipPolicy                         *protectionip.GeoIPPolicy
-	geoipErrorKey                       string
-	geoipRetryAfter                     time.Time
-	diskUsageMu                         sync.Mutex
-	diskUsageCache                      map[string]cachedDirSize
-	memoryStatsMu                       sync.Mutex
-	memoryAlloc                         uint64
-	memoryStatsAt                       time.Time
-	sessionPruneMu                      sync.Mutex
-	nextSessionPrune                    time.Time
-	OnSitesChanged                      func([]config.SiteConfig) error
-	OnEdgeChanged                       func(config.EdgeConfig) error
-	OnProtectionChanged                 func(config.ProtectionConfig) error
-	OnCAPTCHAProvidersChanged           func(config.CAPTCHAProvidersConfig) error
+	// otaCache keeps the last read-only OTA check for ota.check_interval so a
+	// console poll cannot hammer the release origin.
+	otaCacheMu      sync.Mutex
+	otaCache        map[string]any
+	otaCacheChannel string
+	otaCacheAt      time.Time
+	// otaInFlight shares one origin check per channel: console tabs that open
+	// together must not each hit the release server.
+	otaInFlight               map[string]chan struct{}
+	configWriteFrozen         bool
+	configFreezeReason        string
+	userMutationMu            sync.Mutex
+	now                       func() time.Time
+	StartedAt                 time.Time
+	SetupToken                string
+	SetupTokenSource          setup.TokenSource
+	SetupDrafts               *setup.DraftStore
+	runSetupProbe             func(context.Context, string) setup.ProbeResult
+	geoipMu                   sync.Mutex
+	geoipCacheKey             string
+	geoipPolicy               *protectionip.GeoIPPolicy
+	geoipErrorKey             string
+	geoipRetryAfter           time.Time
+	diskUsageMu               sync.Mutex
+	diskUsageCache            map[string]cachedDirSize
+	memoryStatsMu             sync.Mutex
+	memoryAlloc               uint64
+	memoryStatsAt             time.Time
+	sessionPruneMu            sync.Mutex
+	nextSessionPrune          time.Time
+	OnSitesChanged            func([]config.SiteConfig) error
+	OnEdgeChanged             func(config.EdgeConfig) error
+	OnProtectionChanged       func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged func(config.CAPTCHAProvidersConfig) error
 	// Both policy seams are intentionally supplied only by the process that
 	// owns control-plane coordination and node-local materialization. A nil
 	// consumer is fail-closed; HTTP and AI policy writes never fall back to a
@@ -160,6 +174,13 @@ type Handler struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	// OnServerChanged applies server-scoped settings that can take effect
+	// without rebinding listeners. The adapter credential is the current case:
+	// rotating server.adapter_token must reach the running handler.
+	OnServerChanged func(config.ServerConfig) error
+	// NotifierRegistry carries the plugin-index pack table into notification
+	// paths that are not built from the monitoring manager (ACME alerts).
+	NotifierRegistry *monitornotify.Registry
 	// OnConfigChanged publishes a completed setup/config snapshot to the
 	// serving composition root. Setup changes the entrance gate itself.
 	OnConfigChanged func(*config.Config) error
@@ -229,6 +250,57 @@ func closeCAPTCHAAssetStore(store captchaassets.Store) {
 	if closer, ok := store.(io.Closer); ok {
 		_ = closer.Close()
 	}
+}
+
+// passkey returns the current WebAuthn service. Callers must not hold the
+// pointer across a settings save.
+func (h *Handler) passkey() *passkey.Service {
+	if h == nil {
+		return nil
+	}
+	h.passkeyMu.RLock()
+	defer h.passkeyMu.RUnlock()
+	return h.Passkey
+}
+
+// applyPasskeyChange rebuilds the WebAuthn service after the console updates
+// RPID, origins, or the enabled flag; a restart-only deployment is rejected
+// instead of advertising settings the running service does not use.
+func (h *Handler) applyPasskeyChange(next config.PasskeyConfig) error {
+	if h == nil {
+		return nil
+	}
+	h.passkeyMu.RLock()
+	current := h.Passkey
+	factory := h.passkeyFactory
+	h.passkeyMu.RUnlock()
+	if !next.Enabled {
+		if current == nil {
+			return nil
+		}
+	} else if current != nil && passkeySettingsMatch(current.Config(), next) {
+		return nil
+	}
+	if factory == nil {
+		return fmt.Errorf("console.login.passkey changes require a restart")
+	}
+	service, err := factory(next)
+	if err != nil {
+		return fmt.Errorf("rebuild passkey service: %w", err)
+	}
+	h.passkeyMu.Lock()
+	h.Passkey = service
+	h.passkeyMu.Unlock()
+	return nil
+}
+
+// passkeySettingsMatch reports whether a running service already uses the
+// configured relying-party settings, so an unrelated console save is a no-op.
+func passkeySettingsMatch(running passkey.Config, next config.PasskeyConfig) bool {
+	return running.RPDisplayName == next.RPDisplayName &&
+		running.RPID == next.RPID &&
+		strings.Join(running.RPOrigins, "\x00") == strings.Join(next.RPOrigins, "\x00") &&
+		running.AllowInsecureLocalhost == next.AllowInsecureLocalhost
 }
 
 func (h *Handler) nowUTC() time.Time {
@@ -403,6 +475,8 @@ type Options struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	OnServerChanged                    func(config.ServerConfig) error
+	NotifierRegistry                   *monitornotify.Registry
 	OnConfigChanged                    func(*config.Config) error
 	CAPTCHAAssets                      captchaassets.Store
 	// Passkey is nil when WebAuthn login is not configured. Public routes then
@@ -410,7 +484,10 @@ type Options struct {
 	Passkey *passkey.Service
 	// PasskeyStore backs authenticated credential listing and deletion. It is
 	// separate from Passkey because the service does not expose its store.
-	PasskeyStore                        passkey.Store
+	PasskeyStore passkey.Store
+	// PasskeyFactory rebuilds the service when the console changes passkey
+	// settings; nil means such a change requires a restart.
+	PasskeyFactory                      func(config.PasskeyConfig) (*passkey.Service, error)
 	Clock                               timekeeper.Clock
 	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
 	// ApprovalHTTP is the durable approval boundary shared by cluster operations.
@@ -502,6 +579,7 @@ func New(opts Options) *Handler {
 		LoginCAPTCHAState:                   newLoginCAPTCHAState(),
 		Passkey:                             opts.Passkey,
 		PasskeyStore:                        opts.PasskeyStore,
+		passkeyFactory:                      opts.PasskeyFactory,
 		CAPTCHAAssets:                       assetStore,
 		CAPTCHAAssetReferences:              assetRefs,
 		CAPTCHAAssetInitError:               assetErr,
@@ -526,6 +604,8 @@ func New(opts Options) *Handler {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnServerChanged:                     opts.OnServerChanged,
+		NotifierRegistry:                    opts.NotifierRegistry,
 		OnConfigChanged:                     opts.OnConfigChanged,
 	}
 	if opts.ConfigSnapshot != nil {

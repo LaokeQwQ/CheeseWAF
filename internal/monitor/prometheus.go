@@ -197,10 +197,21 @@ func renderLabels(labels map[string]string) string {
 	keys := sortedStringKeys(labels)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		value := strings.ReplaceAll(labels[key], `"`, `\"`)
-		parts = append(parts, fmt.Sprintf(`%s="%s"`, key, value))
+		parts = append(parts, fmt.Sprintf(`%s="%s"`, key, escapeLabelValue(labels[key])))
 	}
 	return strings.Join(parts, ",")
+}
+
+// escapeLabelValue applies the text exposition format escape rules for label
+// values: backslash, double quote, and line feed. A raw line feed would end the
+// sample early, so an unescaped value could append samples of its own and make
+// the whole scrape unparsable; a trailing backslash would escape the closing
+// quote and leave the label unterminated.
+func escapeLabelValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+	return value
 }
 
 func sortedIntKeys(values map[int]int) []int {

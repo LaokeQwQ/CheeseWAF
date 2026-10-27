@@ -282,6 +282,7 @@ func (s *SQLiteStore) UpdateCandidate(ctx context.Context, id string, update Can
 	if err != nil {
 		return intel.Candidate{}, err
 	}
+	previousState := candidate.State
 	if update.State != nil {
 		candidate.State = intel.CandidateState(strings.ToLower(strings.TrimSpace(string(*update.State))))
 	}
@@ -318,10 +319,16 @@ func (s *SQLiteStore) UpdateCandidate(ctx context.Context, id string, update Can
 		return intel.Candidate{}, err
 	}
 	updatedAt := time.Now().UTC()
-	// Re-approving a candidate in the same shadow state must not restart the
+	if !update.Now.IsZero() {
+		updatedAt = update.Now.UTC()
+	}
+	// Re-approving a candidate that is already in shadow must not restart the
 	// observation window; only a real state transition gets a new timestamp.
-	if candidate.State == intel.CandidateShadow && !candidate.UpdatedAt.IsZero() &&
-		(update.State == nil || *update.State == candidate.State) {
+	// Compare against the state before the update: candidate.State already
+	// holds the target state, so using it would preserve the timestamp even
+	// when this call is what opened the window.
+	if previousState == intel.CandidateShadow && !candidate.UpdatedAt.IsZero() &&
+		(update.State == nil || *update.State == previousState) {
 		updatedAt = candidate.UpdatedAt
 	}
 	query := `

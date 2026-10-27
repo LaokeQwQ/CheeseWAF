@@ -19,6 +19,11 @@ type WAFPolicyDecision = {
   detectorAction?: string;
   detectorCategory?: string;
   detectorId?: string;
+  blockThreshold?: number;
+  challengeThreshold?: number;
+  logThreshold?: number;
+  actionOverride?: string;
+  routeOverride?: string;
 };
 
 type PolicyDecisionCardProps = {
@@ -77,6 +82,19 @@ export default function PolicyDecisionCard({ metadata, compact = false }: Policy
           confidence: formatConfidence(decision.minimumConfidence),
           risk: formatNumber(decision.minimumRiskScore),
         })}</span>
+        {decision.blockThreshold !== undefined ? (
+          <span>{t('logs.policyLadder', {
+            block: formatConfidence(decision.blockThreshold),
+            challenge: decision.challengeThreshold !== undefined ? formatConfidence(decision.challengeThreshold) : '-',
+            log: decision.logThreshold !== undefined ? formatConfidence(decision.logThreshold) : '-',
+          })}</span>
+        ) : null}
+        {decision.routeOverride ? (
+          <span>{t('logs.policyRouteOverride', {
+            path: decision.routeOverride,
+            action: decision.actionOverride ? displayAction(decision.actionOverride, t) : t('logs.policyRouteOverrideInherit'),
+          })}</span>
+        ) : null}
         {decision.detectorId ? (
           <span>{t('logs.policyDetector', {
             detector: decision.detectorId,
@@ -117,6 +135,11 @@ export function getWAFPolicyDecision(metadata?: Record<string, unknown>): WAFPol
     detectorAction: readString(raw.detector_action),
     detectorCategory: readString(raw.detector_category),
     detectorId: readString(raw.detector_id),
+    blockThreshold: readNumber(raw.block_threshold),
+    challengeThreshold: readNumber(raw.challenge_threshold),
+    logThreshold: readNumber(raw.log_threshold),
+    actionOverride: readString(raw.action_override),
+    routeOverride: readString(raw.route_override),
   };
 }
 

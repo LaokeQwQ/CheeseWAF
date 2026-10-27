@@ -637,6 +637,17 @@ func finalizeAnalysisIncomplete(reqCtx *RequestContext, firstDetected *Detection
 	}
 }
 
+// MarkInputIncomplete applies the site's incomplete-input fail mode to a
+// request whose detection never covered the whole payload. Embedders that know
+// a body is truncated (the gateway adapter) call this after Detect so a real
+// block still wins and a clean prefix cannot be reported as a clean verdict.
+func (p *Pipeline) MarkInputIncomplete(reqCtx *RequestContext, result *DetectionResult, reason string) *DetectionResult {
+	if reqCtx == nil {
+		return result
+	}
+	return finalizeInputIncomplete(reqCtx, result, reason)
+}
+
 func finalizeGuardOverload(reqCtx *RequestContext, firstDetected *DetectionResult) *DetectionResult {
 	if reqCtx.Metadata == nil {
 		reqCtx.Metadata = map[string]any{}

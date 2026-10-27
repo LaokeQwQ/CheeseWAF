@@ -242,6 +242,14 @@ func SanitizeLocalRedirect(redir string) string {
 	} else {
 		return "/"
 	}
+	// The pre-decode scan cannot see control characters introduced by %XX
+	// escapes (for example %0d%0a or %00). Reject them before they reach a
+	// Location header or a client-side sink.
+	for _, r := range redir {
+		if r < 0x20 || r == 0x7f {
+			return "/"
+		}
+	}
 	if strings.Contains(strings.ToLower(redir), "://") {
 		return "/"
 	}
@@ -277,9 +285,15 @@ func SanitizeLocalRedirect(redir string) string {
 			}
 		}
 		out := pathPart + "?" + query
-		if IsLocalRedirect(out) {
+		if IsLocalRedirect(out) && IsLocalURL(out) {
 			return out
 		}
+		return "/"
+	}
+	// A decoded path can still contain an invalid percent escape (for example
+	// "%25" -> "%"), which url.Parse rejects and http.Redirect cannot use.
+	// Treat that as unsafe rather than returning a malformed Location.
+	if !IsLocalURL(pathPart) {
 		return "/"
 	}
 	return pathPart

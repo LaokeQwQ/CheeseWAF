@@ -71,6 +71,11 @@ type Manifest struct {
 	ReleaseSequence uint64   `json:"release_sequence"`
 	Digests         Digests  `json:"digests,omitempty"`
 	Artifact        Artifact `json:"artifact,omitempty"`
+	// HostCompatibility rejects a package installed on a host version it was
+	// not published for. omitzero is required: omitempty does not drop a struct,
+	// and emitting "host_compatibility":{} would change the signed bytes of
+	// every manifest published before the field existed.
+	HostCompatibility HostCompatibility `json:"host_compatibility,omitzero"`
 }
 
 // ValidationOptions controls the deployment-context checks that cannot be
@@ -224,6 +229,16 @@ func (m Manifest) Validate() error {
 	}
 	if !versionPart.MatchString(strings.TrimSpace(m.Version)) {
 		return fmt.Errorf("%w: version must be semantic version text", ErrInvalidManifest)
+	}
+	// Bounds are validated here so a typo cannot pass activation and only fail
+	// on the first install attempt.
+	for _, bound := range []string{m.HostCompatibility.Min, m.HostCompatibility.Max} {
+		if strings.TrimSpace(bound) == "" {
+			continue
+		}
+		if _, err := parseVersion(bound); err != nil {
+			return fmt.Errorf("%w: host_compatibility %q: %v", ErrInvalidManifest, bound, err)
+		}
 	}
 	if err := validateNamespace(m.Namespace); err != nil {
 		return err

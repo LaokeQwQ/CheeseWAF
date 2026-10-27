@@ -149,6 +149,9 @@ type HealthChecker struct {
 	client     *http.Client
 	parent     context.Context
 	generation *healthGeneration
+	// probe runs one health check. Tests replace it to observe probe starts
+	// without depending on when the HTTP transport delivers them.
+	probe func(context.Context, config.SiteConfig)
 }
 
 type healthGeneration struct {
@@ -234,13 +237,17 @@ func (h *HealthChecker) loop(ctx context.Context, site config.SiteConfig) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	h.checkContext(ctx, site)
+	probe := h.probe
+	if probe == nil {
+		probe = h.checkContext
+	}
+	probe(ctx, site)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			h.checkContext(ctx, site)
+			probe(ctx, site)
 		}
 	}
 }

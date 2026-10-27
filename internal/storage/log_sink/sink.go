@@ -50,6 +50,14 @@ func NewFromConfigWithFile(cfg config.StorageConfig, fileConfig config.FileLogCo
 		}
 		sinks = append(sinks, sink)
 	}
+	if cfg.Loki.Enabled {
+		sink, err := NewLokiSink(cfg.Loki, nil)
+		if err != nil {
+			_ = closeLogSinks(sinks)
+			return nil, err
+		}
+		sinks = append(sinks, sink)
+	}
 	if cfg.PostgreSQL.Enabled {
 		sink, err := NewPostgreSQLSink(cfg.PostgreSQL)
 		if err != nil {

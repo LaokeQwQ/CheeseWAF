@@ -120,6 +120,30 @@ func notifierHTTPClient(cfg config.NotifierConfig, client *http.Client) *http.Cl
 	return newNotifierHTTPClient(cfg)
 }
 
+// notifierHeaders copies the configured headers and adds one credential
+// header. Credentials travel in headers so they never end up in an alert body
+// that the far side may log or forward.
+func notifierHeaders(cfg config.NotifierConfig, name, value string) map[string]string {
+	headers := make(map[string]string, len(cfg.Headers)+1)
+	for key, headerValue := range cfg.Headers {
+		headers[key] = headerValue
+	}
+	if value = strings.TrimSpace(value); value != "" {
+		headers[name] = value
+	}
+	return headers
+}
+
+// bearerValue renders an Authorization header value, or an empty string when
+// no token is configured, so callers never send a bare "Bearer" scheme.
+func bearerValue(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	return "Bearer " + token
+}
+
 func requiredHTTPSEndpoint(raw string) (string, error) {
 	parsed, err := parseHTTPEndpoint(raw)
 	if err != nil {
@@ -204,8 +228,14 @@ func telegramEndpoint(cfg config.NotifierConfig) (string, error) {
 	return parsed.String(), nil
 }
 
+// alertTitle is the heading every provider uses for a single alert, so the
+// same event keeps one name across all delivery channels.
+func alertTitle(alert monitor.Alert) string {
+	return firstNonEmpty(strings.TrimSpace(alert.Name), strings.TrimSpace(alert.RuleID), "Security alert")
+}
+
 func alertText(alert monitor.Alert) string {
-	title := firstNonEmpty(strings.TrimSpace(alert.Name), strings.TrimSpace(alert.RuleID), "Security alert")
+	title := alertTitle(alert)
 	lines := []string{title}
 	if severity := strings.TrimSpace(alert.Severity); severity != "" {
 		lines[0] = "[" + severity + "] " + title

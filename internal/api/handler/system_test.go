@@ -12,10 +12,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -1600,5 +1603,199 @@ func TestWriteErrorIncludesTraceID(t *testing.T) {
 	}
 	if body.Error.EventID == "" || body.Error.EventID != recorder.Header().Get("X-CheeseWAF-Event-ID") {
 		t.Fatalf("event id mismatch header=%q body=%q", recorder.Header().Get("X-CheeseWAF-Event-ID"), body.Error.EventID)
+	}
+}
+
+func TestSystemRedactsAdapterTokenAndReportsPresence(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.AdapterToken = "adapter-shared-secret"
+	handler := New(Options{Config: &cfg})
+
+	recorder := httptest.NewRecorder()
+	handler.System(recorder, httptest.NewRequest(http.MethodGet, "/api/system", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("system status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "adapter-shared-secret") {
+		t.Fatalf("system response leaked the adapter token: %s", body)
+	}
+	if !strings.Contains(body, `"adapter_api":{"available":true,"configured":true,"loopback_only":false}`) {
+		t.Fatalf("system response should report adapter presence without the value: %s", body)
+	}
+}
+
+func TestUpdateSystemAppliesRotatedAdapterToken(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var applied []string
+	handler := New(Options{
+		Config:     &cfg,
+		ConfigPath: configPath,
+		OnServerChanged: func(next config.ServerConfig) error {
+			applied = append(applied, next.AdapterToken)
+			return nil
+		},
+	})
+
+	server := cfg.Server
+	server.AdapterToken = "rotated-token"
+	raw, _ := json.Marshal(map[string]any{"server": server})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(applied) != 1 || applied[0] != "rotated-token" {
+		t.Fatalf("OnServerChanged calls = %v, want [rotated-token]", applied)
+	}
+	if cfg.Server.AdapterToken != "rotated-token" {
+		t.Fatalf("persisted adapter token = %q", cfg.Server.AdapterToken)
+	}
+}
+
+func TestUpdateSystemPreservesAdapterTokenWhenRedactedDocumentIsEchoed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.AdapterToken = "original-adapter-token"
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	// The console reads the redacted document and saves it back unchanged.
+	server := cfg.Server
+	server.AdapterToken = ""
+	raw, _ := json.Marshal(map[string]any{"server": server})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Server.AdapterToken != "original-adapter-token" {
+		t.Fatalf("redacted echo cleared the adapter token: %q", cfg.Server.AdapterToken)
+	}
+}
+
+func TestUpdateSystemPreservesLokiPasswordWhenRedactedDocumentIsEchoed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Storage.Loki.Password = "loki-shared-secret"
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath})
+
+	// The console reads the redacted storage view and saves it back unchanged.
+	storage := cfg.Storage
+	storage.Loki.Password = ""
+	raw, _ := json.Marshal(map[string]any{"storage": storage})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Storage.Loki.Password != "loki-shared-secret" {
+		t.Fatalf("redacted echo cleared the Loki password: %q", cfg.Storage.Loki.Password)
+	}
+}
+
+// A typo in a notifier type must be rejected at save time: accepting it would
+// persist a configuration that fails on the next restart.
+func TestUpdateSystemRejectsUnresolvableNotifierType(t *testing.T) {
+	cfg := config.Default()
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	registry := monitornotify.NewRegistry()
+	handler := New(Options{Config: &cfg, ConfigPath: configPath, NotifierRegistry: registry})
+
+	payload := map[string]any{"monitor": map[string]any{
+		"notifiers": []map[string]any{{
+			"id": "hook", "type": "webhok", "endpoint": "https://example.test/hook", "enabled": true,
+		}},
+	}}
+	raw, _ := json.Marshal(payload)
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", recorder.Code, recorder.Body.String())
+	}
+	persisted, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(persisted), "webhok") {
+		t.Fatalf("rejected notifier was written to disk: %s", persisted)
+	}
+
+	// A pack-provided type resolves once its factory is registered.
+	if err := registry.RegisterPack("teams_webhook", func(config.NotifierConfig) (monitornotify.Notifier, error) {
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("register pack: %v", err)
+	}
+	payload = map[string]any{"monitor": map[string]any{
+		"notifiers": []map[string]any{{
+			"id": "teams", "type": "teams_webhook", "endpoint": "https://example.test/hook", "enabled": true,
+		}},
+	}}
+	raw, _ = json.Marshal(payload)
+	recorder = httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("pack type status = %d body=%s, want 200", recorder.Code, recorder.Body.String())
+	}
+}
+
+// Passkey settings saved through the console must reach the running service:
+// before this, enabling passkeys after startup left login returning
+// PASSKEY_DISABLED until a restart.
+func TestUpdateSystemRebuildsPasskeyService(t *testing.T) {
+	cfg := config.Default()
+	cfg.Console.Login.Passkey.Enabled = false
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var mu sync.Mutex
+	calls := 0
+	var applied config.PasskeyConfig
+	handler := New(Options{
+		Config: &cfg, ConfigPath: configPath,
+		PasskeyFactory: func(next config.PasskeyConfig) (*passkey.Service, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			applied = next
+			return nil, nil
+		},
+	})
+
+	console := cfg.Console
+	console.Login.Passkey.Enabled = true
+	console.Login.Passkey.RPID = "console.example.test"
+	console.Login.Passkey.RPDisplayName = "CheeseWAF"
+	console.Login.Passkey.RPOrigins = []string{"https://console.example.test"}
+	raw, _ := json.Marshal(map[string]any{"console": console})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("passkey factory calls = %d, want 1", calls)
+	}
+	if applied.RPID != "console.example.test" || !applied.Enabled {
+		t.Fatalf("factory received %+v", applied)
+	}
+	if handler.passkey() != nil {
+		t.Fatal("service was not swapped to the factory result")
 	}
 }

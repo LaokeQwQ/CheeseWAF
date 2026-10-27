@@ -128,7 +128,7 @@ func ShardIndexFor(name string, shards int) int {
 		return 0
 	}
 	h := fnv.New32a()
-	_, _ = h.Write([]byte(strings.ToLower(strings.TrimSpace(name))))
+	_, _ = h.Write([]byte(strings.ToLower(strings.ToUpper(strings.TrimSpace(name)))))
 	return int(h.Sum32() % uint32(shards))
 }
 

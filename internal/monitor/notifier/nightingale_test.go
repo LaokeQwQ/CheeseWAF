@@ -1,0 +1,151 @@
+package notifier
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+)
+
+func TestNightingalePostsCallbackEvent(t *testing.T) {
+	var gotMethod, gotPath, gotQuery, gotAuth string
+	var gotBody nightingaleEvent
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Errorf("unmarshal event: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := config.NotifierConfig{
+		ID:       "n9e",
+		Type:     "nightingale",
+		Endpoint: server.URL + "/api/n9e/callback?channel=waf",
+		Token:    "n9e-token",
+	}
+	alert := testAlert()
+	notifier, err := NewRegistry().New(cfg, server.Client())
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	if err := notifier.Notify(context.Background(), alert); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q", gotMethod)
+	}
+	if gotPath != "/api/n9e/callback" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotQuery != "channel=waf" {
+		t.Fatalf("query = %q", gotQuery)
+	}
+	if gotAuth != "Bearer n9e-token" {
+		t.Fatalf("authorization = %q", gotAuth)
+	}
+	if gotBody.Cate != "cheesewaf" || gotBody.RuleName != "PHP upload blocked" {
+		t.Fatalf("event = %#v", gotBody)
+	}
+	if gotBody.Severity != 1 {
+		t.Fatalf("severity = %d", gotBody.Severity)
+	}
+	if gotBody.TriggerTime != alert.StartsAt.UTC().Unix() {
+		t.Fatalf("trigger_time = %d", gotBody.TriggerTime)
+	}
+	if gotBody.TriggerValue != "12" {
+		t.Fatalf("trigger_value = %q", gotBody.TriggerValue)
+	}
+	if gotBody.IsRecovered {
+		t.Fatal("new alerts must not be marked recovered")
+	}
+	if gotBody.TagsMap["rule_id"] != "php2shell-upload" || gotBody.TagsMap["source"] != "cheesewaf" {
+		t.Fatalf("tags_map = %#v", gotBody.TagsMap)
+	}
+	foundRuleTag := false
+	for _, tag := range gotBody.Tags {
+		if tag == "rule_id=php2shell-upload" {
+			foundRuleTag = true
+		}
+	}
+	if !foundRuleTag {
+		t.Fatalf("tags = %#v", gotBody.Tags)
+	}
+	if gotBody.Annotations["message"] != "multipart upload blocked" || gotBody.Annotations["rule_id"] != "php2shell-upload" {
+		t.Fatalf("annotations = %#v", gotBody.Annotations)
+	}
+	body, _ := json.Marshal(gotBody)
+	if strings.Contains(string(body), "n9e-token") {
+		t.Fatal("token must not be part of the JSON body")
+	}
+}
+
+func TestNightingaleSeverityMapping(t *testing.T) {
+	cases := map[string]int{
+		"critical": 1,
+		"high":     1,
+		"warning":  2,
+		"medium":   2,
+		"info":     3,
+		"low":      3,
+		"":         2,
+	}
+	for severity, want := range cases {
+		if got := nightingaleSeverity(severity); got != want {
+			t.Fatalf("nightingaleSeverity(%q) = %d, want %d", severity, got, want)
+		}
+	}
+}
+
+func TestNightingaleRequiresHTTPSWithToken(t *testing.T) {
+	cfg := config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: "http://n9e.example.test/callback", Token: "secret"}
+	notifier, err := NewRegistry().New(cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	err = notifier.Notify(context.Background(), testAlert())
+	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("expected HTTPS rejection, got %v", err)
+	}
+}
+
+func TestNightingaleAllowsHTTPWithoutToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	notifier, err := NewRegistry().New(config.NotifierConfig{ID: "n9e", Type: "nightingale", Endpoint: server.URL + "/callback"}, server.Client())
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNightingaleHandlesEmptyConfig(t *testing.T) {
+	var notifier *nightingaleNotifier
+	if err := notifier.Notify(context.Background(), testAlert()); err != nil {
+		t.Fatalf("nil notifier: %v", err)
+	}
+	provider, err := NewRegistry().New(config.NotifierConfig{ID: "n9e", Type: "nightingale"}, nil)
+	if err != nil {
+		t.Fatalf("create nightingale provider: %v", err)
+	}
+	if err := provider.Notify(context.Background(), testAlert()); err != nil {
+		t.Fatalf("empty endpoint: %v", err)
+	}
+	if _, err := nightingaleCallbackEndpoint(config.NotifierConfig{Endpoint: "ftp://n9e.example.test"}); err == nil {
+		t.Fatal("expected invalid scheme rejection")
+	}
+}

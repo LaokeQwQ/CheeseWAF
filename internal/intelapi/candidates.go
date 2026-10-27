@@ -175,7 +175,10 @@ func (h *handler) handleApproveCandidate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	policy := impact.DefaultPolicy()
+	policy := h.policy
+	if policy.MinShadowDuration == 0 {
+		policy = impact.DefaultPolicy()
+	}
 	view, err := impactView(preview)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "invalid_candidate", "stored candidate rule is not valid")
@@ -267,6 +270,7 @@ func (h *handler) handleApproveCandidate(w http.ResponseWriter, r *http.Request)
 		ApprovedBy:    approver,
 		ExpiresAt:     request.ExpiresAt,
 		ExpectedState: &candidate.State,
+		Now:           now,
 	})
 	if err != nil {
 		if errors.Is(err, intelstore.ErrConflict) {
@@ -324,7 +328,7 @@ func (h *handler) handleRejectCandidate(w http.ResponseWriter, r *http.Request) 
 	}
 	state := intel.CandidateRejected
 	action := intel.ActionLog
-	updated, err := h.store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{State: &state, Action: &action, ApprovedBy: actor, ExpectedState: &candidate.State})
+	updated, err := h.store.UpdateCandidate(ctx, candidate.ID, intelstore.CandidateUpdate{State: &state, Action: &action, ApprovedBy: actor, ExpectedState: &candidate.State, Now: h.now().UTC()})
 	if err != nil {
 		if errors.Is(err, intelstore.ErrConflict) {
 			writeError(w, http.StatusConflict, "stale_candidate", "candidate changed while it was being rejected; reload and retry")
@@ -375,7 +379,10 @@ func (h *handler) handleImpact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", "could not list rule candidates")
 		return
 	}
-	policy := impact.DefaultPolicy()
+	policy := h.policy
+	if policy.MinShadowDuration == 0 {
+		policy = impact.DefaultPolicy()
+	}
 	assessments := make([]impact.Assessment, 0, len(candidates))
 	profileCount := 0
 	for _, candidate := range candidates {
