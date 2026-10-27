@@ -121,8 +121,7 @@ func (w *Watcher) watch(ctx context.Context, done chan struct{}) {
 	if ctx.Err() != nil {
 		return
 	}
-	current := fingerprintDir(w.dir)
-	w.reload()
+	current := w.reload()
 
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
@@ -135,18 +134,36 @@ func (w *Watcher) watch(ctx context.Context, done chan struct{}) {
 			if next.equal(current) {
 				continue
 			}
-			current = next
-			w.reload()
+			current = w.reload()
 		}
 	}
 }
 
 // reload publishes a fresh snapshot before notifying so a callback that reads
-// Snapshot sees the state it was told about.
-func (w *Watcher) reload() {
+// Snapshot sees the state it was told about. It returns the directory
+// fingerprint the snapshot corresponds to. If the directory changes while the
+// scan runs, the scan is repeated so the returned fingerprint never describes a
+// state newer than the published snapshot; otherwise a rename racing the scan
+// could leave the watcher permanently one change behind.
+func (w *Watcher) reload() dirFingerprint {
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		before := fingerprintDir(w.dir)
+		snapshot := Scan(w.dir, w.hostVersion)
+		after := fingerprintDir(w.dir)
+		if !before.equal(after) {
+			continue
+		}
+		w.latest.Store(snapshot)
+		w.enqueue(snapshot)
+		return after
+	}
+	// The directory kept changing; publish what we scanned and stay
+	// conservative by returning the older fingerprint so the next tick retries.
 	snapshot := Scan(w.dir, w.hostVersion)
 	w.latest.Store(snapshot)
 	w.enqueue(snapshot)
+	return fingerprintDir(w.dir)
 }
 
 // enqueue hands the snapshot to the callback goroutine without blocking the
