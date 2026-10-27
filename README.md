@@ -434,7 +434,7 @@ If your infrastructure already uses a reverse proxy or API gateway, you can inte
 
 ### Architecture
 
-`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries the versioned adapter contract endpoint at `/api/v1/adapter/inspect` (override with `CHEESEWAF_CORE_INSPECT_PATH`). The core serves that endpoint, `/api/v1/adapter/telemetry`, and `/healthz` on both the proxy and admin listeners. Set `server.adapter_token` to the same value as the adapter's `CHEESEWAF_CORE_TOKEN`; an empty token permits only loopback adapter clients.
+`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries the versioned adapter contract endpoint at `/api/v1/adapter/inspect` (override with `CHEESEWAF_CORE_INSPECT_PATH`). The core serves `/api/v1/adapter/inspect`, `/api/v1/adapter/telemetry`, and `/healthz` on the **proxy, TLS, and HTTP/3 listeners**, authenticated by `server.adapter_token` (or loopback when the token is empty). The **admin listener** is different: it exposes only `/healthz` from the adapter handler, while `/api/v1/adapter/inspect` stays behind the management JWT with the `write:protection` scope and `/api/v1/adapter/telemetry` is not mounted there. Point `adapterd` at the proxy listener with `CHEESEWAF_CORE_TOKEN`; use the admin port only for JWT-authenticated calls.
 
 ### NGINX Integration Example
 

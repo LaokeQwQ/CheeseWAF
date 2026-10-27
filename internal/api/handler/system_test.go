@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -1747,5 +1749,53 @@ func TestUpdateSystemRejectsUnresolvableNotifierType(t *testing.T) {
 	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("pack type status = %d body=%s, want 200", recorder.Code, recorder.Body.String())
+	}
+}
+
+// Passkey settings saved through the console must reach the running service:
+// before this, enabling passkeys after startup left login returning
+// PASSKEY_DISABLED until a restart.
+func TestUpdateSystemRebuildsPasskeyService(t *testing.T) {
+	cfg := config.Default()
+	cfg.Console.Login.Passkey.Enabled = false
+	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
+	if err := config.Save(configPath, &cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	var mu sync.Mutex
+	calls := 0
+	var applied config.PasskeyConfig
+	handler := New(Options{
+		Config: &cfg, ConfigPath: configPath,
+		PasskeyFactory: func(next config.PasskeyConfig) (*passkey.Service, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			applied = next
+			return nil, nil
+		},
+	})
+
+	console := cfg.Console
+	console.Login.Passkey.Enabled = true
+	console.Login.Passkey.RPID = "console.example.test"
+	console.Login.Passkey.RPDisplayName = "CheeseWAF"
+	console.Login.Passkey.RPOrigins = []string{"https://console.example.test"}
+	raw, _ := json.Marshal(map[string]any{"console": console})
+	recorder := httptest.NewRecorder()
+	handler.UpdateSystem(recorder, httptest.NewRequest(http.MethodPut, "/api/system", bytes.NewReader(raw)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("passkey factory calls = %d, want 1", calls)
+	}
+	if applied.RPID != "console.example.test" || !applied.Enabled {
+		t.Fatalf("factory received %+v", applied)
+	}
+	if handler.passkey() != nil {
+		t.Fatal("service was not swapped to the factory result")
 	}
 }

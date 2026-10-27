@@ -133,12 +133,12 @@ func Validate(cfg *Config) error {
 	if err := validatePlugins(cfg.Plugins); err != nil {
 		return err
 	}
-	if cfg.Server.ListenTLS != "" && !hasAnyTLSCertificate(cfg) {
-		return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when server.listen_tls is set")
+	if cfg.Server.ListenTLS != "" && !hasUsableTLSCertificate(cfg) {
+		return fmt.Errorf("tls.cert_file/key_file, a site certificate, or tls.auto_cert with an ACME site is required when server.listen_tls is set")
 	}
 	if cfg.Server.HTTP3.Enabled {
-		if !hasAnyTLSCertificate(cfg) {
-			return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when HTTP/3 is enabled")
+		if !hasUsableTLSCertificate(cfg) {
+			return fmt.Errorf("tls.cert_file/key_file, a site certificate, or tls.auto_cert with an ACME site is required when HTTP/3 is enabled")
 		}
 		if _, err := net.ResolveUDPAddr("udp", http3ListenAddr(cfg.Server)); err != nil {
 			return fmt.Errorf("server.listen_http3 is invalid: %w", err)
@@ -2785,6 +2785,30 @@ func validateSQLIdentifierPath(value string) error {
 		}
 	}
 	return nil
+}
+
+// hasUsableTLSCertificate also accepts the auto-cert mode: the listener starts
+// before ACME has issued anything and serves once the renewal worker fills the
+// certificate store. Without an ACME site nothing could ever fill it, so the
+// configuration is still rejected.
+func hasUsableTLSCertificate(cfg *Config) bool {
+	if hasAnyTLSCertificate(cfg) {
+		return true
+	}
+	if cfg == nil || !cfg.TLS.AutoCert || !cfg.ACME.Enabled {
+		return false
+	}
+	for _, site := range cfg.Sites {
+		if !site.Enabled || !site.EnableSSL || site.Certificate.Mode != "acme" || !site.Certificate.AutoRenew {
+			continue
+		}
+		// The renewal worker skips a site without domains, so an empty store
+		// could never be filled.
+		if len(site.Domains) > 0 || len(site.Certificate.ACME.Domains) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAnyTLSCertificate(cfg *Config) bool {
