@@ -52,7 +52,7 @@ type passkeyCredentialResponse struct {
 // the relying-party identity a browser needs before starting the ceremony.
 func (h *Handler) PasskeyOptions(w http.ResponseWriter, _ *http.Request) {
 	cfg := h.loginConfig().Passkey
-	if h == nil || h.Passkey == nil || !cfg.Enabled {
+	if h == nil || h.passkey() == nil || !cfg.Enabled {
 		writeData(w, map[string]any{"enabled": false})
 		return
 	}
@@ -60,16 +60,16 @@ func (h *Handler) PasskeyOptions(w http.ResponseWriter, _ *http.Request) {
 		"enabled":           true,
 		"rp_id":             cfg.RPID,
 		"rp_display_name":   cfg.RPDisplayName,
-		"user_verification": string(h.Passkey.Config().UserVerification),
+		"user_verification": string(h.passkey().Config().UserVerification),
 	})
 }
 
 func (h *Handler) passkeyService(w http.ResponseWriter) *passkey.Service {
-	if h == nil || h.Passkey == nil || !h.loginConfig().Passkey.Enabled {
+	if h == nil || h.passkey() == nil || !h.loginConfig().Passkey.Enabled {
 		writeError(w, http.StatusNotFound, "PASSKEY_DISABLED", "passkey authentication is not enabled")
 		return nil
 	}
-	return h.Passkey
+	return h.passkey()
 }
 
 func (h *Handler) passkeyCredentialStore(w http.ResponseWriter) passkey.Store {

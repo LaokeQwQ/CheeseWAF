@@ -13,6 +13,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
 )
 
+type fixedClock struct{ at *time.Time }
+
+func (c fixedClock) Now() time.Time { return *c.at }
+
 type otaCheckStub struct {
 	candidate ota.Candidate
 	err       error
@@ -52,6 +56,8 @@ func TestOTAStatusReturnsReadOnlyCandidateAndSequenceErrors(t *testing.T) {
 	cfg := config.Default()
 	cfg.Update.OTA.Enabled = true
 	cfg.Update.OTA.Channel = "canary"
+	// Error mapping is asserted per call; caching would serve the first result.
+	cfg.Update.OTA.CheckInterval = 0
 	candidate := ota.Candidate{
 		ReleaseID:       "official/demo@1.0.0#2",
 		Version:         "1.0.0",
@@ -104,4 +110,34 @@ func containsAll(value string, needles ...string) bool {
 		}
 	}
 	return true
+}
+
+// ota.check_interval bounds how often the console poll reaches the release
+// origin: the second request inside the window is served from the cache.
+func TestOTAStatusCachesWithinCheckInterval(t *testing.T) {
+	cfg := config.Default()
+	cfg.Update.OTA.Enabled = true
+	cfg.Update.OTA.Channel = "stable"
+	cfg.Update.OTA.CheckInterval = time.Hour
+	stub := &otaCheckStub{candidate: ota.Candidate{ReleaseID: "official/demo@1.0.0#2", Version: "1.0.0", ReleaseSequence: 2, IndexSequence: 3}}
+	now := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	h := New(Options{Config: &cfg, OTAClient: stub, Clock: fixedClock{at: &now}})
+
+	for i := 0; i < 3; i++ {
+		recorder := httptest.NewRecorder()
+		h.OTAStatus(recorder, httptest.NewRequest(http.MethodGet, "/api/system/ota", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if stub.calls != 1 {
+		t.Fatalf("origin called %d times inside the interval, want 1", stub.calls)
+	}
+
+	now = now.Add(2 * time.Hour)
+	recorder := httptest.NewRecorder()
+	h.OTAStatus(recorder, httptest.NewRequest(http.MethodGet, "/api/system/ota", nil))
+	if stub.calls != 2 {
+		t.Fatalf("origin called %d times after the interval, want 2", stub.calls)
+	}
 }

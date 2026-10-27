@@ -80,6 +80,25 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 		writeData(w, status)
 		return
 	}
+	// Serve a recent result instead of calling the release origin on every
+	// console poll; ota.check_interval is the freshness bound.
+	interval := cfg.Update.OTA.CheckInterval
+	now := h.nowUTC()
+	if interval > 0 {
+		h.otaCacheMu.Lock()
+		if h.otaCache != nil && h.otaCacheChannel == cfg.Update.OTA.Channel && now.Sub(h.otaCacheAt) < interval {
+			cached := make(map[string]any, len(h.otaCache)+1)
+			for key, value := range h.otaCache {
+				cached[key] = value
+			}
+			cached["checked_at"] = h.otaCacheAt
+			cached["cached"] = true
+			h.otaCacheMu.Unlock()
+			writeData(w, cached)
+			return
+		}
+		h.otaCacheMu.Unlock()
+	}
 	var currentIndex, currentRelease uint64
 	if h.OTAState != nil {
 		state, err := h.OTAState.Load(r.Context())
@@ -99,13 +118,35 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status["reason"] = otaStatusReason(err)
 		status["message"] = err.Error()
+		status["checked_at"] = now
+		h.cacheOTAStatus(status, now, interval)
 		writeData(w, status)
 		return
 	}
 	status["candidate_available"] = true
 	status["candidate"] = candidate
 	status["message"] = "candidate is read-only until CRP/CWEDP activation is wired"
+	status["checked_at"] = now
+	h.cacheOTAStatus(status, now, interval)
 	writeData(w, status)
+}
+
+// cacheOTAStatus records one check for ota.check_interval. Errors are cached
+// too: a broken origin should not turn every console refresh into a network
+// round trip.
+func (h *Handler) cacheOTAStatus(status map[string]any, at time.Time, interval time.Duration) {
+	if h == nil || interval <= 0 {
+		return
+	}
+	stored := make(map[string]any, len(status))
+	for key, value := range status {
+		stored[key] = value
+	}
+	h.otaCacheMu.Lock()
+	h.otaCache = stored
+	h.otaCacheChannel = status["channel"].(string)
+	h.otaCacheAt = at
+	h.otaCacheMu.Unlock()
 }
 
 func otaStatusReason(err error) string {
@@ -406,6 +447,11 @@ func applySystemPayload(next *config.Config, req systemPayload) error {
 }
 
 func (h *Handler) applySystemRuntime(req systemPayload, candidate *config.Config) error {
+	if req.Console != nil {
+		if err := h.applyPasskeyChange(candidate.Console.Login.Passkey); err != nil {
+			return err
+		}
+	}
 	if err := h.applyCAPTCHAProtectionRuntime(candidate, req.CAPTCHAProviders != nil, req.Protection != nil); err != nil {
 		return err
 	}

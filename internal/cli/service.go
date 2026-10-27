@@ -47,6 +47,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
 	webshellprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/webshell"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
@@ -402,6 +403,8 @@ func runServe(ctx context.Context) error {
 				Extractor:        intelExtractor,
 				MaxFetchBytes:    cfg.Intel.MaxFetchBytes,
 				DisableURLImport: !cfg.Intel.URLImport,
+				Policy:           intelRolloutPolicy(cfg.Intel),
+				TrustPolicy:      intelSourceTrustPolicy(cfg.Intel),
 			})
 		}
 	}
@@ -445,16 +448,21 @@ func runServe(ctx context.Context) error {
 	// a running process; the handler itself is built once the proxy exists.
 	var adapterHandler *adapterapi.Handler
 	adminRouter, apiHandler := api.NewRouterWithAPI(api.Options{
-		Config:                             cfg,
-		IsolateConfig:                      true,
-		ConfigPath:                         loadedConfigPath,
-		Store:                              store,
-		SessionValidator:                   productionWiring.SessionValidator,
-		Sink:                               sink,
-		Hub:                                hub,
-		Secret:                             authSecret,
-		Passkey:                            passkeyService,
-		PasskeyStore:                       passkeyStore,
+		Config:           cfg,
+		IsolateConfig:    true,
+		ConfigPath:       loadedConfigPath,
+		Store:            store,
+		SessionValidator: productionWiring.SessionValidator,
+		Sink:             sink,
+		Hub:              hub,
+		Secret:           authSecret,
+		Passkey:          passkeyService,
+		PasskeyStore:     passkeyStore,
+		PasskeyFactory: func(next config.PasskeyConfig) (*passkey.Service, error) {
+			// Rebuild against the same store and session key source; the
+			// console expects the new RPID/origins to apply without a restart.
+			return api.NewPasskeyService(next, passkeyStore, authSecret)
+		},
 		IntelHandler:                       intelHandler,
 		AdapterInspect:                     adapterInspectHandler,
 		NotifierRegistry:                   pluginIndex.Registry(),

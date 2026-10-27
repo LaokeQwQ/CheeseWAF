@@ -81,6 +81,9 @@ type HandlerOptions struct {
 	ImportSourceID string
 	// TrustPolicy defaults to intel.DefaultTrustPolicy.
 	TrustPolicy intel.TrustPolicy
+	// Policy overrides the rollout thresholds (shadow window, canary bounds).
+	// Zero uses impact.DefaultPolicy.
+	Policy impact.Policy
 }
 
 type handler struct {
@@ -95,6 +98,7 @@ type handler struct {
 	maxRequestBytes int64
 	importSourceID  string
 	trustPolicy     intel.TrustPolicy
+	policy          impact.Policy
 	promotePipeline *pipeline.Pipeline
 }
 
@@ -165,6 +169,7 @@ func NewHandler(opts HandlerOptions) http.Handler {
 		maxRequestBytes: maxRequest,
 		importSourceID:  strings.TrimSpace(opts.ImportSourceID),
 		trustPolicy:     trustPolicy,
+		policy:          opts.Policy,
 		promotePipeline: promotePipeline,
 	}
 	router := chi.NewRouter()

@@ -16,6 +16,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 const smtpTimeout = 10 * time.Second
@@ -52,7 +53,7 @@ func (e *EmailNotifier) Notify(ctx context.Context, alert monitor.Alert) error {
 	username := strings.TrimSpace(cfg.Headers["username"])
 	message := emailMessage(sender, recipient, alert)
 
-	conn, err := (&net.Dialer{Timeout: smtpTimeout}).DialContext(ctx, "tcp", address)
+	conn, err := e.dialSMTP(ctx, address)
 	if err != nil {
 		return fmt.Errorf("notifier %q SMTP dial %s failed: %w", cfg.ID, address, err)
 	}
@@ -109,6 +110,39 @@ func (e *EmailNotifier) Notify(ctx context.Context, alert monitor.Alert) error {
 		return fmt.Errorf("notifier %q SMTP quit failed: %w", cfg.ID, err)
 	}
 	return nil
+}
+
+// dialSMTP applies the notifier's private-endpoint policy to SMTP too. The
+// HTTP providers resolve and check every address before connecting; a raw TCP
+// dial here would let an allowed-looking hostname reach loopback services.
+func (e *EmailNotifier) dialSMTP(ctx context.Context, address string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: smtpTimeout}
+	if e.cfg.AllowPrivateEndpoint {
+		return dialer.DialContext(ctx, "tcp", address)
+	}
+	hostOnly, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", hostOnly)
+	if err != nil {
+		return nil, fmt.Errorf("resolve SMTP host %q: %w", hostOnly, err)
+	}
+	var lastErr error
+	for _, ip := range addresses {
+		if !netguard.IsPublicIP(ip) {
+			continue
+		}
+		conn, dialErr := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("SMTP host %q resolves only to private addresses and allow_private_endpoint is false", hostOnly)
 }
 
 func smtpEndpoint(raw string) (address, host string, err error) {
