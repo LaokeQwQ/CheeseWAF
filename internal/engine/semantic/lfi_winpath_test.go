@@ -107,7 +107,7 @@ func TestLFIUnicodeEscapedSeparator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	standalone, err := NewLFIDetector("block").Detect(context.Background(), reqCtx)
+	standalone, err := NewAnalyzer("block", 2, "lfi").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

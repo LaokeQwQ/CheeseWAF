@@ -4,25 +4,25 @@ package ai
 import "context"
 
 // ToolSensitivity represents the sensitivity level of an AI tool.
-// AI 工具的敏感度级别。
+// Sensitivity level of an AI tool.
 type ToolSensitivity int
 
 const (
 	// ReadOnly tools can be executed without user confirmation.
-	// 只读工具，无需用户确认即可执行。
+	// Read-only tool; runs without user confirmation.
 	ReadOnly ToolSensitivity = iota
 
 	// Modify tools require a diff preview and user confirmation before execution.
-	// 修改类工具，执行前需展示 diff 预览并获得用户确认。
+	// Mutating tool; requires a diff preview and user confirmation.
 	Modify
 
 	// Destructive tools require password re-verification + confirmation.
-	// 危险操作工具，需密码二次验证 + 确认。
+	// Dangerous tool; requires password re-verification plus confirmation.
 	Destructive
 )
 
 // ToolResult represents the result of a tool execution.
-// 工具执行结果。
+// Tool execution result.
 type ToolResult struct {
 	Success bool   `json:"success"`
 	Output  string `json:"output"`         // 输出内容
@@ -109,45 +109,45 @@ type ToolPermissioner interface {
 
 // Tool is the interface for AI assistant internal tools.
 // Each tool declares its sensitivity level for the approval flow.
-// AI 助手内部工具接口，每个工具声明自己的敏感度级别。
+// Internal AI assistant tool; each tool declares its own sensitivity level.
 type Tool interface {
 	// Name returns the tool name.
-	// 返回工具名称。
+	// Returns the tool name.
 	Name() string
 
 	// Description is shown to operators and sent to the model as the tool description.
-	// 给操作员看，同时作为模型侧的工具说明。
+	// Shown to the operator and used as the tool description for the model.
 	Description() string
 
 	// Sensitivity returns the tool's sensitivity level.
-	// 返回工具的敏感度级别。
+	// Returns the tool sensitivity level.
 	Sensitivity() ToolSensitivity
 
 	// Parameters returns the JSON Schema for the tool's parameters.
-	// 返回工具参数的 JSON Schema。
+	// Returns the JSON Schema for the tool arguments.
 	Parameters() map[string]any
 
 	// Execute runs the tool with the given arguments.
-	// 使用给定参数执行工具。
+	// Executes the tool with the given arguments.
 	Execute(ctx context.Context, args map[string]any) (*ToolResult, error)
 }
 
 // ToolRegistry manages registered AI tools.
-// AI 工具注册中心。
+// AI tool registry.
 type ToolRegistry interface {
 	// Register adds a tool to the registry.
-	// 注册工具。
+	// Register a tool.
 	Register(tool Tool)
 
 	// Get returns a tool by name.
-	// 按名称获取工具。
+	// Get a tool by name.
 	Get(name string) (Tool, bool)
 
 	// List returns all registered tools.
-	// 列出所有已注册工具。
+	// List all registered tools.
 	List() []Tool
 
 	// ListForLLM returns tool definitions in the model function-calling schema.
-	// 返回模型函数调用协议所用的工具定义。
+	// Returns the tool definitions used by the model function-calling protocol.
 	ListForLLM() []map[string]any
 }

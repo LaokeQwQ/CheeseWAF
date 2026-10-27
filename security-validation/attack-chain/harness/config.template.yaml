@@ -1,0 +1,90 @@
+deployment:
+  mode: standalone
+server:
+  listen: "127.0.0.1:__DATA_PORT__"
+  listen_tls: ""
+  listen_http3: "__HTTP3_LISTEN__"
+  admin_listen: "127.0.0.1:__ADMIN_PORT__"
+  admin_public: false
+  adapter_token: "__ADAPTER_TOKEN__"
+  admin_tls:
+    enabled: __ADMIN_TLS_ENABLED__
+    cert_file: "__DIR__/data/certs/admin.crt"
+    key_file: "__DIR__/data/certs/admin.key"
+    self_signed: true
+  read_timeout: 10s
+  write_timeout: 30s
+  idle_timeout: 1m0s
+  http3:
+    enabled: __HTTP3_ENABLED__
+    zero_rtt: false
+time_sync:
+  enabled: false
+setup:
+  data_dir: "__DIR__/data"
+  runtime_dir: "__DIR__/data/run"
+  three_end_unified: true
+cluster:
+  enabled: __CLUSTER_ENABLED__
+console:
+  login:
+    session_ttl: 24h0m0s
+    captcha:
+      enabled: __CAPTCHA_ENABLED__
+    security_entry:
+      enabled: __ENTRY_ENABLED__
+      path: "__ENTRY_PATH__"
+      cookie_name: "cheesewaf_admin_entry"
+storage:
+  profile: temporary
+  sqlite:
+    path: "__DIR__/data/cheesewaf.db"
+logging:
+  level: info
+  format: json
+  output:
+    type: file
+    file:
+      path: "__DIR__/logs/access.log"
+      max_size: 100MB
+      max_backups: 10
+apisec:
+  audit:
+    enabled: true
+    path: "__DIR__/logs/audit.log"
+  management_api:
+    enabled: true
+sites:
+  - id: default
+    name: audit
+    domains: ["app.test", "localhost", "127.0.0.1"]
+    upstreams:
+      - address: "http://127.0.0.1:__ORIGIN_PORT__"
+        weight: 1
+    listen_port: __DATA_PORT__
+    enabled: true
+    loadbalance: round_robin
+    enable_ssl: false
+    waf:
+      enabled: true
+      mode: block
+      paranoia_level: 3
+      websocket_enabled: __WS_ENABLED__
+      grpc_enabled: false
+      semantic_engines:
+        sql: true
+        xss: true
+        rce: true
+        lfi: true
+        xxe: true
+        ssrf: true
+        nosql: true
+        ssti: true
+update:
+  ota:
+    enabled: false
+ai:
+  enabled: false
+monitor:
+  prometheus:
+    enabled: false

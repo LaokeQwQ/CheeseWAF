@@ -329,6 +329,10 @@ func Default() Config {
 				File: FileLogConfig{Path: "./logs/access.log", MaxSize: "100MB", MaxBackups: 10},
 			},
 		},
+		AuditSigning: AuditSigningConfig{
+			StreamID:      "api",
+			QueueCapacity: 64,
+		},
 		AI: AIConfig{
 			Enabled:             false,
 			Provider:            "openai",

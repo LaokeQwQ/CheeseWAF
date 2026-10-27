@@ -20,7 +20,7 @@ func TestSQLDetectorBlocksClassicPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestSQLDetectorBlocksFunctionBasedPayloads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,7 +65,7 @@ func TestSQLDetectorKeepsBenignEncodedQueryClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestSQLDetectorScansBoundedLongParameterTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,13 +106,17 @@ func TestSQLCandidateTextsAreBounded(t *testing.T) {
 }
 
 func TestSQLDetectorChecksMiddleOfLargeBody(t *testing.T) {
-	body := strings.Repeat("a", maxSQLCandidateBytes*2) + "' OR '1'='1" + strings.Repeat("b", maxSQLCandidateBytes*2)
+	// A bare tautology buried in an opaque blob is deliberately not a hit: the
+	// analyzer requires SQL context outside documentation/telemetry shapes. Use
+	// an unambiguous statement so the assertion is about offset, not context.
+	body := strings.Repeat("a", maxSQLCandidateBytes/2) + "1 UNION SELECT username, password FROM users" + strings.Repeat("b", maxSQLCandidateBytes/2)
 	req := httptest.NewRequest(http.MethodPost, "http://example.test/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	reqCtx, err := engine.NewRequestContextWithLimits(req, "default", nil, int64(len(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +140,7 @@ func TestSQLDetectorKeepsBenignDocumentationClean(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -258,12 +262,12 @@ func TestNoSQLiDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewNoSQLiDetector("block").Detect(context.Background(), attackCtx)
+	result, err := NewAnalyzer("block", 2, "nosqli").Detect(context.Background(), attackCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result == nil || !result.Detected || result.Category != "nosqli" || result.DetectorID != "semantic.nosqli" {
-		t.Fatalf("expected direct NoSQLi detector to use semantic gate and keep detector ID, got %+v", result)
+	if result == nil || !result.Detected || result.Category != "nosqli" || !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
+		t.Fatalf("expected NoSQLi category to be detected through the semantic analyzer gate, got %+v", result)
 	}
 
 	benignReq, _ := http.NewRequest(http.MethodPost, "/docs", bytes.NewBufferString(`{"text":"MongoDB documentation can mention $ne, $regex, and $where operators without sending them as query structure."}`))
@@ -272,12 +276,12 @@ func TestNoSQLiDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = NewNoSQLiDetector("block").Detect(context.Background(), benignCtx)
+	result, err = NewAnalyzer("block", 2, "nosqli").Detect(context.Background(), benignCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result != nil {
-		t.Fatalf("expected direct NoSQLi detector to keep documentation clean, got %+v", result)
+		t.Fatalf("expected NoSQLi analyzer gate to keep documentation clean, got %+v", result)
 	}
 }
 
@@ -288,12 +292,12 @@ func TestSSTIDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewSSTIDetector("block").Detect(context.Background(), attackCtx)
+	result, err := NewAnalyzer("block", 2, "ssti").Detect(context.Background(), attackCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result == nil || !result.Detected || result.Category != "ssti" || result.DetectorID != "semantic.ssti" {
-		t.Fatalf("expected direct SSTI detector to use semantic gate and keep detector ID, got %+v", result)
+	if result == nil || !result.Detected || result.Category != "ssti" || !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
+		t.Fatalf("expected SSTI category to be detected through the semantic analyzer gate, got %+v", result)
 	}
 
 	benignReq, _ := http.NewRequest(http.MethodPost, "/cms", bytes.NewBufferString(`{"content":"Use {{ user.name }} in the email template body."}`))
@@ -302,12 +306,12 @@ func TestSSTIDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = NewSSTIDetector("block").Detect(context.Background(), benignCtx)
+	result, err = NewAnalyzer("block", 2, "ssti").Detect(context.Background(), benignCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result != nil {
-		t.Fatalf("expected direct SSTI detector to keep template content clean, got %+v", result)
+		t.Fatalf("expected SSTI analyzer gate to keep template content clean, got %+v", result)
 	}
 }
 
@@ -319,12 +323,12 @@ func TestXXEDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewXXEDetector("block").Detect(context.Background(), attackCtx)
+	result, err := NewAnalyzer("block", 2, "xxe").Detect(context.Background(), attackCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result == nil || !result.Detected || result.Category != "xxe" || result.DetectorID != "semantic.xxe" {
-		t.Fatalf("expected gated XXE detector to block raw XML payload, got %+v", result)
+	if result == nil || !result.Detected || result.Category != "xxe" || !strings.HasPrefix(result.DetectorID, "semantic.analyzer") {
+		t.Fatalf("expected XXE category to be detected through the semantic analyzer gate, got %+v", result)
 	}
 
 	formReq, _ := http.NewRequest(http.MethodPost, "/ingest", bytes.NewBufferString("payload="+url.QueryEscape(xmlPayload)))
@@ -333,7 +337,7 @@ func TestXXEDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = NewXXEDetector("block").Detect(context.Background(), formCtx)
+	result, err = NewAnalyzer("block", 2, "xxe").Detect(context.Background(), formCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +351,7 @@ func TestXXEDetectorUsesAnalyzerGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = NewXXEDetector("block").Detect(context.Background(), benignCtx)
+	result, err = NewAnalyzer("block", 2, "xxe").Detect(context.Background(), benignCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +532,7 @@ func TestXSSDetectorBlocksScriptPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "xss").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,10 +548,11 @@ func TestXSSDetectorStandaloneJavascriptURLContext(t *testing.T) {
 	}{
 		// A leading slash makes this an ordinary HTTP path, not a javascript:
 		// URL scheme. Keep it as a regression negative to avoid blocking routes
-		// such as /javascript:alert(1).
+		// such as /javascript:alert(1). A query value is an executable surface
+		// for the analyzer, so the same string in ?text= is blocked.
 		{name: "ordinary-http-path", target: "/javascript:alert(1)", want: false},
 		{name: "body", target: "/submit", body: "javascript:alert(1)", want: true},
-		{name: "ordinary-query", target: "/docs?text=javascript%3Aalert(1)", want: false},
+		{name: "ordinary-query", target: "/docs?text=javascript%3Aalert(1)", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -559,7 +564,7 @@ func TestXSSDetectorStandaloneJavascriptURLContext(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			got, err := NewAnalyzer("block", 2, "xss").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -586,7 +591,7 @@ func TestXSSDetectorBlocksObfuscatedBrowserContexts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "xss").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -644,7 +649,7 @@ func TestXSSDetectorKeepsBenignDocumentationClean(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "xss").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -662,11 +667,11 @@ func TestPhase2SemanticDetectors(t *testing.T) {
 		detector engine.Detector
 		category string
 	}{
-		{name: "rce", target: "/run?cmd=1%3Bcat%20/etc/passwd", detector: NewRCEDetector("block"), category: "rce"},
-		{name: "lfi", target: "/download?file=..%2F..%2F..%2Fetc%2Fpasswd", detector: NewLFIDetector("block"), category: "lfi"},
-		{name: "lfi-kubernetes-token", target: "/download?file=/var/run/secrets/kubernetes.io/serviceaccount/token", detector: NewLFIDetector("block"), category: "lfi"},
-		{name: "xxe", target: "/xml?body=%3C!DOCTYPE%20foo%20%5B%3C!ENTITY%20xxe%20SYSTEM%20%22file%3A///etc/passwd%22%3E%5D%3E", detector: NewXXEDetector("block"), category: "xxe"},
-		{name: "ssrf", target: "/fetch?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data", detector: NewSSRFDetector("block"), category: "ssrf"},
+		{name: "rce", target: "/run?cmd=1%3Bcat%20/etc/passwd", detector: NewAnalyzer("block", 2, "rce"), category: "rce"},
+		{name: "lfi", target: "/download?file=..%2F..%2F..%2Fetc%2Fpasswd", detector: NewAnalyzer("block", 2, "lfi"), category: "lfi"},
+		{name: "lfi-kubernetes-token", target: "/download?file=/var/run/secrets/kubernetes.io/serviceaccount/token", detector: NewAnalyzer("block", 2, "lfi"), category: "lfi"},
+		{name: "xxe", target: "/xml?body=%3C!DOCTYPE%20foo%20%5B%3C!ENTITY%20xxe%20SYSTEM%20%22file%3A///etc/passwd%22%3E%5D%3E", detector: NewAnalyzer("block", 2, "xxe"), category: "xxe"},
+		{name: "ssrf", target: "/fetch?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data", detector: NewAnalyzer("block", 2, "ssrf"), category: "ssrf"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -708,7 +713,7 @@ func TestSSRFDetectorBlocksNumericHostVariants(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewSSRFDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -730,7 +735,7 @@ func TestSSRFDetectorRequiresFetchSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewSSRFDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +759,7 @@ func TestRCEDetectorBlocksObfuscatedCommandPayloads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewRCEDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "rce").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -779,7 +784,7 @@ func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewRCEDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "rce").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -792,7 +797,7 @@ func TestRCEDetectorKeepsBenignCommandDocumentationClean(t *testing.T) {
 
 func TestRCEDetectorsKeepPureArithmeticExpansionClean(t *testing.T) {
 	for name, detector := range map[string]engine.Detector{
-		"standalone": NewRCEDetector("block"),
+		"standalone": NewAnalyzer("block", 2, "rce"),
 		"analyzer":   NewAnalyzer("block", 5, "rce"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -814,7 +819,7 @@ func TestRCEDetectorsKeepPureArithmeticExpansionClean(t *testing.T) {
 
 func TestRCEDetectorsStillBlockCommandSubstitution(t *testing.T) {
 	for name, detector := range map[string]engine.Detector{
-		"standalone": NewRCEDetector("block"),
+		"standalone": NewAnalyzer("block", 2, "rce"),
 		"analyzer":   NewAnalyzer("block", 5, "rce"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -837,7 +842,7 @@ func TestRCEDetectorsStillBlockCommandSubstitution(t *testing.T) {
 func TestSQLDetectorCapsDetectionPayload(t *testing.T) {
 	target := "/search?q=" + url.QueryEscape("1 UNION ALL SELECT password FROM users "+strings.Repeat("x", 2048))
 	for name, detector := range map[string]engine.Detector{
-		"standalone": NewSQLDetector("block"),
+		"standalone": NewAnalyzer("block", 2, "sqli"),
 		"analyzer":   NewAnalyzer("block", 5, "sqli"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -956,7 +961,7 @@ func TestSQLDetectorKeepsNumericURLSlugsClean(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+		result, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 		if err != nil {
 			t.Fatal(err)
 		}

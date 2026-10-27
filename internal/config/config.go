@@ -1,5 +1,5 @@
 // Package config handles YAML configuration loading, validation, and hot-reloading.
-// 负责 YAML 配置加载、校验和热重载。
+// Handles YAML configuration loading, validation, and hot reload.
 package config
 
 import (
@@ -24,6 +24,9 @@ type Config struct {
 	Protection       ProtectionConfig       `yaml:"protection" json:"protection"`
 	Storage          StorageConfig          `yaml:"storage" json:"storage"`
 	Logging          LoggingConfig          `yaml:"logging" json:"logging"`
+	AuditSigning     AuditSigningConfig     `yaml:"audit_signing" json:"audit_signing"`
+	KMS              KMSConfig              `yaml:"kms" json:"kms"`
+	Diagnostics      DiagnosticsConfig      `yaml:"diagnostics" json:"diagnostics"`
 	ACME             ACMEConfig             `yaml:"acme" json:"acme"`
 	AI               AIConfig               `yaml:"ai" json:"ai"`
 	Intel            IntelConfig            `yaml:"intel" json:"intel"`
@@ -36,6 +39,66 @@ type Config struct {
 	BlockPage        BlockPageConfig        `yaml:"block_page" json:"block_page"`
 	Performance      PerformanceConfig      `yaml:"performance" json:"performance"`
 	Plugins          PluginsConfig          `yaml:"plugins" json:"plugins"`
+}
+
+// AuditSigningConfig configures the tamper-evident audit stream. When Enabled
+// the serving composition requires a durable journal directory and an Ed25519
+// signing key; a missing signer is a startup error, never an unsigned fallback.
+type AuditSigningConfig struct {
+	Enabled         bool                  `yaml:"enabled" json:"enabled"`
+	StreamID        string                `yaml:"stream_id" json:"stream_id"`
+	JournalDir      string                `yaml:"journal_dir" json:"journal_dir"`
+	SignerKeyID     string                `yaml:"signer_key_id" json:"signer_key_id"`
+	SignerKeyFile   string                `yaml:"signer_key_file" json:"-"`
+	Verifiers       []AuditVerifierConfig `yaml:"verifiers" json:"verifiers"`
+	CheckpointEvery uint64                `yaml:"checkpoint_every" json:"checkpoint_every"`
+	QueueCapacity   int                   `yaml:"queue_capacity" json:"queue_capacity"`
+}
+
+// AuditVerifierConfig names a trusted public key used to verify historical
+// checkpoints signed by a rotated or retired signing key.
+type AuditVerifierConfig struct {
+	KeyID         string `yaml:"key_id" json:"key_id"`
+	PublicKeyFile string `yaml:"public_key_file" json:"public_key_file"`
+}
+
+// KMSConfig selects the key provider used for envelope encryption and recovery.
+// Exactly one of an external HTTPS KMS endpoint or an explicitly approved
+// single-node keyring must be configured when Enabled is true.
+type KMSConfig struct {
+	Enabled    bool              `yaml:"enabled" json:"enabled"`
+	Endpoint   string            `yaml:"endpoint" json:"endpoint"`
+	TokenFile  string            `yaml:"token_file" json:"token_file"`
+	CAFile     string            `yaml:"ca_file" json:"ca_file"`
+	ServerName string            `yaml:"server_name" json:"server_name"`
+	Timeout    time.Duration     `yaml:"timeout" json:"timeout"`
+	TenantID   string            `yaml:"tenant_id" json:"tenant_id"`
+	KeyID      string            `yaml:"key_id" json:"key_id"`
+	Scope      string            `yaml:"scope" json:"scope"`
+	Actor      string            `yaml:"actor" json:"actor"`
+	Embedded   EmbeddedKMSConfig `yaml:"embedded" json:"embedded"`
+}
+
+// EmbeddedKMSConfig is the explicit single-node fallback. It is never selected
+// unless Approved is true and Mode is single-node or offline.
+type EmbeddedKMSConfig struct {
+	Approved    bool   `yaml:"approved" json:"approved"`
+	Mode        string `yaml:"mode" json:"mode"`
+	RootKeyFile string `yaml:"root_key_file" json:"root_key_file"`
+	KeyringFile string `yaml:"keyring_file" json:"keyring_file"`
+}
+
+// DiagnosticsConfig controls the encrypted diagnostic upload queue.
+type DiagnosticsConfig struct {
+	Enabled      bool          `yaml:"enabled" json:"enabled"`
+	Endpoint     string        `yaml:"endpoint" json:"endpoint"`
+	TokenFile    string        `yaml:"token_file" json:"token_file"`
+	KeyVersion   string        `yaml:"key_version" json:"key_version"`
+	TenantID     string        `yaml:"tenant_id" json:"tenant_id"`
+	Actor        string        `yaml:"actor" json:"actor"`
+	QueueDir     string        `yaml:"queue_dir" json:"queue_dir"`
+	Timeout      time.Duration `yaml:"timeout" json:"timeout"`
+	PollInterval time.Duration `yaml:"poll_interval" json:"poll_interval"`
 }
 
 // PluginsConfig controls the local plugin index. IndexDir is scanned for
@@ -1504,8 +1567,21 @@ type APISecConfig struct {
 }
 
 type ManagementAPIConfig struct {
-	Enabled bool                       `yaml:"enabled" json:"enabled"`
-	Tokens  []ManagementAPITokenConfig `yaml:"tokens" json:"tokens"`
+	Enabled bool                             `yaml:"enabled" json:"enabled"`
+	Tokens  []ManagementAPITokenConfig       `yaml:"tokens" json:"tokens"`
+	Durable *ManagementAPITokenDurableConfig `yaml:"durable" json:"durable"`
+}
+
+// ManagementAPITokenDurableConfig moves management API tokens out of the YAML
+// config file and into the PostgreSQL token store. DSN and DSNEnv are mutually
+// exclusive; the environment variable is resolved at startup so the secret never
+// appears in the tracked configuration.
+type ManagementAPITokenDurableConfig struct {
+	DSN      string        `yaml:"dsn" json:"-"`
+	DSNEnv   string        `yaml:"dsn_env" json:"dsn_env"`
+	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
+	TenantID string        `yaml:"tenant_id" json:"tenant_id"`
+	LeaseID  string        `yaml:"lease_id" json:"lease_id"`
 }
 
 const (

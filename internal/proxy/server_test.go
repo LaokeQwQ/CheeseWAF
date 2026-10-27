@@ -481,7 +481,7 @@ func TestServerPassesAndBlocks(t *testing.T) {
 	cfg.Protection.IP.Whitelist = nil
 	cfg.Protection.IP.Blacklist = nil
 
-	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewSQLDetector("block"), semantic.NewXSSDetector("block")), noopSink{})
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewAnalyzer("block", 2, "sqli"), semantic.NewAnalyzer("block", 2, "xss")), noopSink{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestServerBlockPageUsesRequestLanguage(t *testing.T) {
 	cfg.Protection.IP.Whitelist = nil
 	cfg.Protection.IP.Blacklist = nil
 
-	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewSQLDetector("block")), noopSink{})
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewAnalyzer("block", 2, "sqli")), noopSink{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func TestServerHotReloadsBlockPageTemplate(t *testing.T) {
 	cfg.Protection.IP.Whitelist = nil
 	cfg.Protection.IP.Blacklist = nil
 
-	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewSQLDetector("block")), noopSink{})
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewAnalyzer("block", 2, "sqli")), noopSink{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2459,7 +2459,7 @@ func TestBotBehaviorVerifyEndpointBypassesWAFAndUpstream(t *testing.T) {
 	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
 	cfg.Protection.Bot.Secret = strings.Repeat("s", 48)
 	cfg.Protection.IP.Whitelist, cfg.Protection.IP.Blacklist = nil, nil
-	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewSQLDetector("block")), noopSink{})
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewAnalyzer("block", 2, "sqli")), noopSink{})
 	if err != nil {
 		t.Fatal(err)
 	}

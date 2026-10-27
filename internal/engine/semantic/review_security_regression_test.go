@@ -30,7 +30,7 @@ func TestReviewUnicodeEvidenceWindowUsesOriginalByteOffsets(t *testing.T) {
 func TestReviewStandaloneSSIWithExpandingUnicodePrefix(t *testing.T) {
 	body := strings.Repeat("Ⱥ", 500) + `<!--#EXEC cmd="id"-->`
 	req := httptest.NewRequest(http.MethodPost, "/render", strings.NewReader(body))
-	result, err := NewLFIDetector("block").Detect(context.Background(), &engine.RequestContext{Request: req, DecodedBody: []byte(body)})
+	result, err := NewAnalyzer("block", 2, "lfi").Detect(context.Background(), &engine.RequestContext{Request: req, DecodedBody: []byte(body)})
 	if err != nil || result == nil || !result.Detected {
 		t.Fatalf("Unicode-prefixed SSI was missed: result=%+v err=%v", result, err)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
@@ -21,6 +22,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	tokensservice "github.com/LaokeQwQ/CheeseWAF/internal/tokens/service"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -88,6 +90,15 @@ type Options struct {
 	// IsolateConfig makes the router own a deep-cloned configuration graph.
 	// The serve command enables it so background readers never alias API writes.
 	IsolateConfig bool
+	// AuditStream is the durable signed audit stream. Nil keeps the JSONL-only
+	// auditor used by embedded and temporary-profile deployments.
+	AuditStream *audit.Runtime
+	// PolicyEpoch is the control-plane fencing generation carried by signed
+	// audit events and durable API tokens.
+	PolicyEpoch uint64
+	// Tokens is the durable scoped-token service. Nil keeps management tokens in
+	// the config file, which is the temporary storage profile.
+	Tokens *tokensservice.Service
 }
 
 var newAuditor = middleware.NewAuditorWithClock
@@ -145,6 +156,9 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		Store:                               opts.Store,
 		Sink:                                opts.Sink,
 		Tokens:                              tokens,
+		AuditStream:                         opts.AuditStream,
+		PolicyEpoch:                         opts.PolicyEpoch,
+		TokenService:                        opts.Tokens,
 		Secret:                              opts.Secret,
 		SetupToken:                          opts.SetupToken,
 		SetupTokenSource:                    opts.SetupTokenSource,
@@ -237,7 +251,7 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		r.Group(func(r chi.Router) {
 			r.Use(managementAuth)
 			r.Use(middleware.NoStore)
-			if routerConfig.APISec.Audit.Enabled {
+			if routerConfig.APISec.Audit.Enabled || opts.AuditStream != nil {
 				r.Use(h.AuditMiddleware)
 			}
 			r.Use(middleware.CSRFMiddleware)

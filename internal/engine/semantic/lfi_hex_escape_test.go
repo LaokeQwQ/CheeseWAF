@@ -29,7 +29,7 @@ func TestLFITextualHexNullByteEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	standalone, err := NewLFIDetector("block").Detect(context.Background(), reqCtx)
+	standalone, err := NewAnalyzer("block", 2, "lfi").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestLFITextualHexDocumentationDoesNotTripStandalone(t *testing.T) {
 		t.Fatal(err)
 	}
 	reqCtx.DecodedBody = []byte(body)
-	result, err := NewLFIDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "lfi").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestLFITextualHexDocumentationPrefixDoesNotHideLaterAttack(t *testing.T) {
 	if !strings.Contains(string(reqCtx.DecodedBody), "Later request value") {
 		t.Fatalf("request body was not available to standalone detector: %q", string(reqCtx.DecodedBody))
 	}
-	result, err := NewLFIDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "lfi").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

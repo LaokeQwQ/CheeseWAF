@@ -59,7 +59,7 @@ func TestWebshellDetectsURLDecodedFormInCompressedBody(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := engine.NewPipeline(NewWebshellDetector("block")).Detect(context.Background(), reqCtx)
+			got, err := engine.NewPipeline(NewAnalyzer("block", 2, "webshell")).Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,10 +201,13 @@ func TestWebshellControlInterfaceIsSurfaceScoped(t *testing.T) {
 	})
 }
 
-// TestWebshellDetectCoversCrossSurfaceControlRequest pins the case the surface
+// TestAnalyzerDetectsCrossSurfaceControlRequest pins the case the surface
 // scoping must not cost: the shell path arrives in the request target while the
-// command parameter arrives in the body.
-func TestWebshellDetectCoversCrossSurfaceControlRequest(t *testing.T) {
+// command parameter arrives in the body. The production analyzer attributes
+// this request to command execution rather than the webshell category, so the
+// assertion is category-agnostic; the webshell-only gate is covered by the
+// negative case below.
+func TestAnalyzerDetectsCrossSurfaceControlRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://x/uploads/shell.php", nil)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	reqCtx := &engine.RequestContext{
@@ -213,12 +216,12 @@ func TestWebshellDetectCoversCrossSurfaceControlRequest(t *testing.T) {
 		Metadata:    map[string]any{},
 	}
 
-	got, err := NewWebshellDetector("block").Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 2).Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == nil || !got.Detected {
-		t.Fatal("WebshellDetector.Detect missed a control request whose path and parameter split across surfaces")
+		t.Fatal("analyzer missed a control request whose path and parameter split across surfaces")
 	}
 }
 
@@ -234,7 +237,7 @@ func TestWebshellDetectIgnoresShellPathQuotedInBody(t *testing.T) {
 		Metadata:    map[string]any{},
 	}
 
-	got, err := NewWebshellDetector("block").Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 2, "webshell").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

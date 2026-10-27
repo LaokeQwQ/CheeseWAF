@@ -16,7 +16,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	auditpkg "github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 const (
@@ -61,6 +64,28 @@ type Auditor struct {
 	maxFileBytes int64
 	maxBackups   int
 	quotaChecked bool
+
+	// Signed stream wiring. All three fields are empty for embedded routers that
+	// do not compose an audit.Runtime; the JSONL audit file keeps working alone.
+	eventSink   func(context.Context, auditpkg.Event) error
+	eventStream string
+	eventTenant string
+	eventEpoch  uint64
+}
+
+// AuditEventSink appends one event to the durable signed audit stream.
+type AuditEventSink func(context.Context, auditpkg.Event) error
+
+// SetEventSink enables signed event emission for every management request the
+// middleware records. Call it once during router construction.
+func (a *Auditor) SetEventSink(streamID, tenantID string, policyEpoch uint64, sink AuditEventSink) {
+	if a == nil {
+		return
+	}
+	a.eventSink = sink
+	a.eventStream = streamID
+	a.eventTenant = tenantID
+	a.eventEpoch = policyEpoch
 }
 
 func NewAuditor(path string) *Auditor {
@@ -115,7 +140,83 @@ func (a *Auditor) MiddlewareWithSource(next http.Handler, resolve func(*http.Req
 		if err := a.Write(context.WithoutCancel(r.Context()), entry); err != nil {
 			log.Printf("audit: write failed method=%q path=%q status=%d: %v", entry.Method, entry.Path, entry.Status, err)
 		}
+		a.appendSignedEvent(r, recorder.status, entry, claims)
 	})
+}
+
+// appendSignedEvent mirrors the JSONL record into the signed journal. Critical
+// events append synchronously; a failure is logged and never changes the
+// response the operator already received.
+func (a *Auditor) appendSignedEvent(r *http.Request, status int, entry AuditEntry, claims *Claims) {
+	if a == nil || a.eventSink == nil || r == nil {
+		return
+	}
+	actor := "anonymous"
+	if claims != nil {
+		if claims.Username != "" {
+			actor = claims.Username
+		} else if claims.Subject != "" {
+			actor = claims.Subject
+		}
+	}
+	mutating := r.Method != http.MethodGet && r.Method != http.MethodHead
+	eventType := auditpkg.EventTypeAudit
+	if mutating {
+		eventType = auditpkg.EventTypeConfigChanged
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/auth/") {
+		eventType = auditpkg.EventTypeAuthorization
+	}
+	class := auditpkg.EventClassNormal
+	if mutating && criticalAuditPath(r.URL.Path) {
+		class = auditpkg.EventClassCritical
+	}
+	resource := r.URL.Path
+	if routeCtx := chi.RouteContext(r.Context()); routeCtx != nil && routeCtx.RoutePattern() != "" {
+		resource = routeCtx.RoutePattern()
+	}
+	outcome := auditpkg.OutcomeSuccess
+	if status >= http.StatusBadRequest {
+		outcome = auditpkg.OutcomeFailure
+	}
+	epoch := a.eventEpoch
+	if epoch == 0 {
+		epoch = 1
+	}
+	stream := a.eventStream
+	if stream == "" {
+		stream = "api"
+	}
+	tenant := a.eventTenant
+	if tenant == "" {
+		tenant = "default"
+	}
+	event := auditpkg.Event{
+		EventID:       uuid.NewString(),
+		StreamID:      stream,
+		TenantID:      tenant,
+		Actor:         actor,
+		Type:          eventType,
+		Action:        r.Method,
+		Resource:      resource,
+		Outcome:       outcome,
+		Class:         class,
+		At:            entry.Timestamp,
+		PolicyEpoch:   epoch,
+		CorrelationID: entry.SessionID,
+	}
+	if err := a.eventSink(context.WithoutCancel(r.Context()), event); err != nil {
+		log.Printf("audit: signed append failed class=%s method=%q path=%q: %v", class, r.Method, r.URL.Path, err)
+	}
+}
+
+func criticalAuditPath(path string) bool {
+	for _, prefix := range []string{"/api/users", "/api/tokens", "/api/system", "/api/cluster", "/api/setup"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Auditor) nowUTC() time.Time {

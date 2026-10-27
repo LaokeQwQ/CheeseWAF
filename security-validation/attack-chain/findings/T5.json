@@ -1,0 +1,57 @@
+{
+  "track": "T5",
+  "commit": "3216e72d60af707b3498fbf028b8510532e45b54",
+  "instances": [
+    "T5a",
+    "T5b"
+  ],
+  "findings": [],
+  "coverage": [
+    {
+      "case": "T5-01",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-01.json"
+    },
+    {
+      "case": "T5-02",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-02.json"
+    },
+    {
+      "case": "T5-03",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-03.json"
+    },
+    {
+      "case": "T5-04",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-04.json"
+    },
+    {
+      "case": "T5-05",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-05.json"
+    },
+    {
+      "case": "T5-06",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-06.json"
+    },
+    {
+      "case": "T5-07",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-07.json"
+    },
+    {
+      "case": "T5-08",
+      "result": "blocked",
+      "artifact": "artifacts/T5/T5-08.json"
+    },
+    {
+      "case": "T5-09",
+      "result": "blocked-by-harness",
+      "artifact": "artifacts/T5/T5-09.json"
+    }
+  ],
+  "notes": "T5-01/04: additional node join rejected before enrollment because consensus.provider=builtin; no monitor certificate issued, so role escalation/heartbeat can_write_config could not be tested. T5-07 no-cert heartbeat 401 CLUSTER_NODE_CERT_INVALID (expected). T5-02 join-token list does not return token value (expected)."
+}

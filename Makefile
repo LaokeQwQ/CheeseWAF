@@ -208,9 +208,10 @@ security-gate:
 	@if [ -z "$(BASE_URL)" ]; then echo "BASE_URL is required"; exit 1; fi
 	$(GO) run ./cmd/cheesewaf-corpus --mode gate --base-url "$(BASE_URL)" $(if $(ADMIN_URL),--admin-url "$(ADMIN_URL)") $(GATE_FLAGS)
 
-## lint: Run golangci-lint
+## lint: Run golangci-lint and the wiring reachability gate
 lint:
 	golangci-lint run ./...
+	bash scripts/ci/verify-wiring.sh
 
 ## deps: Download and tidy dependencies
 deps:

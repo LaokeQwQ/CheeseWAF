@@ -162,7 +162,7 @@ func TestManagementAPIOrSessionMiddlewareWithClockSharesInjectedUTCClock(t *test
 	}
 	validator := &recordingSessionValidator{active: true}
 	var managementAt time.Time
-	authenticate := func(raw string, at time.Time) (*Claims, func(), bool) {
+	authenticate := func(_ *http.Request, raw string, at time.Time) (*Claims, func(), bool) {
 		managementAt = at
 		return &Claims{Subject: "api-token:fixture", ID: "fixture", Username: "fixture", Role: "api_token"}, nil, raw == ManagementAPITokenPrefix+"fixture"
 	}
@@ -197,7 +197,7 @@ func TestManagementAPIOrSessionMiddlewareWithClockSharesInjectedUTCClock(t *test
 func TestManagementAPIAuthCallbackRunsAfterBusinessHandler(t *testing.T) {
 	callbackRan := false
 	handlerRan := false
-	authenticate := func(string, time.Time) (*Claims, func(), bool) {
+	authenticate := func(*http.Request, string, time.Time) (*Claims, func(), bool) {
 		return &Claims{Subject: "api-token:fixture", ID: "fixture"}, func() {
 			if !handlerRan {
 				t.Fatal("authentication callback ran before business handler")

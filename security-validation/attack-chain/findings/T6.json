@@ -1,0 +1,61 @@
+{
+  "track": "T6",
+  "commit": "3216e72d60af707b3498fbf028b8510532e45b54",
+  "instances": [
+    "T6"
+  ],
+  "findings": [],
+  "coverage": [
+    {
+      "case": "T6-01",
+      "result": "allowed",
+      "artifact": "artifacts/T6/T6-01/"
+    },
+    {
+      "case": "T6-02",
+      "result": "blocked",
+      "artifact": "artifacts/T6/T6-02/"
+    },
+    {
+      "case": "T6-03",
+      "result": "blocked",
+      "artifact": "artifacts/T6/T6-03/"
+    },
+    {
+      "case": "T6-04",
+      "result": "blocked-by-harness",
+      "artifact": "artifacts/T6/T6-04/"
+    },
+    {
+      "case": "T6-05",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T6-06",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T6-07",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T6-08",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T6-09",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T6-10",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    }
+  ],
+  "notes": "Valid declarative notifier pack was accepted by the watched index; executable/script/command variants were rejected by config validation (400). T6-03/04 evidence is incomplete/invalid (notifier type not registered; artifacts show data-plane responses, not index scans). CRP and AI prompt-injection cases were not completed. Treat T6 as coverage-only, not a clean bill of health."
+}

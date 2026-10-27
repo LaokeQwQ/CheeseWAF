@@ -1,0 +1,11 @@
+# Internal packages allowed to stay unreachable from every binary.
+#
+# Each entry needs a reason. This list is for optional storage adapters that a
+# deployment composes outside the serving binary, not for feature modules: a
+# feature that no binary uses belongs in the tree only after it is wired.
+#
+# diagnostics/postgres is a metadata-only PostgreSQL adapter. The serving
+# composition persists diagnostic envelopes in the local durable queue
+# (diagnostics.queue_dir); remote metadata needs an integration.Runtime
+# persistence hook that does not exist yet.
+github.com/LaokeQwQ/CheeseWAF/internal/diagnostics/postgres

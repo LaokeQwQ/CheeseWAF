@@ -1,0 +1,129 @@
+{
+  "track": "T2",
+  "commit": "3216e72d60af707b3498fbf028b8510532e45b54",
+  "instances": [
+    "T2"
+  ],
+  "findings": [
+    {
+      "id": "T2-C1",
+      "title": "Candidate: double-leading-slash path is forwarded to origin unchanged (no malicious payload bypass confirmed)",
+      "severity": "info",
+      "cvss": "n/a",
+      "score": 0.0,
+      "asset": "A1",
+      "preconditions": "unauth",
+      "chain": [
+        "CH-2"
+      ],
+      "status": "candidate",
+      "evidence": {
+        "request": "artifacts/T2/T2-01/unc.request.txt",
+        "response": "artifacts/T2/T2-01/unc.response.txt",
+        "control": "artifacts/T2/T2-02/double-slash.request.txt"
+      },
+      "impact": "Path normalization differs between WAF and some origins (UNC/backslash semantics). No SQLi/XSS payload reached the origin in this audit; severity depends on origin server semantics.",
+      "repro": "findings/T2.md#T2-C1",
+      "fix_hint": ""
+    },
+    {
+      "id": "T2-C2",
+      "title": "Candidate: Content-Encoding gzip is decoded only one layer; gzip(gzip(SQLi)) is forwarded to the origin intact",
+      "severity": "medium",
+      "cvss": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N",
+      "score": 4.2,
+      "asset": "A1",
+      "preconditions": "unauth",
+      "chain": [
+        "CH-2"
+      ],
+      "status": "candidate",
+      "evidence": {
+        "request": "artifacts/T2/T2-C2/request.txt",
+        "response": "artifacts/T2/T2-C2/response.txt",
+        "control": "Single-layer gzip with the same payload is 403 (blocked); double layer is 200 and origin body is gzip(gzip(\"q=1 union select 1\"))."
+      },
+      "impact": "If the origin/app stack recursively decompresses (or forwards the body to an app that does), the SQLi payload is not inspected. Confirmation requires a recursive-decompression origin; current mock origin does not decode, so this stays candidate.",
+      "repro": "findings/T2.md#T2-C2",
+      "fix_hint": "Decompress to a bounded depth (reject remaining gzip magic after one decode) and reject multi-valued Content-Encoding."
+    }
+  ],
+  "coverage": [
+    {
+      "case": "T2-01",
+      "result": "blocked",
+      "artifact": "artifacts/T2/T2-01/"
+    },
+    {
+      "case": "T2-02",
+      "result": "blocked",
+      "artifact": "artifacts/T2/T2-02/"
+    },
+    {
+      "case": "T2-03",
+      "result": "blocked",
+      "artifact": "artifacts/T2/T2-03/"
+    },
+    {
+      "case": "T2-04",
+      "result": "blocked",
+      "artifact": "artifacts/T2/T2-04/"
+    },
+    {
+      "case": "T2-05",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-06",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-07",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-08",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-09",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-10",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-11",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-12",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-13",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-14",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    },
+    {
+      "case": "T2-15",
+      "result": "blocked-by-harness",
+      "artifact": ""
+    }
+  ],
+  "notes": "Manual re-test of 7 attack payloads (path traversal / XSS / SQLi) on path variants returned 403 and origin log empty. T2-05..T2-15 were not completed by the track worker (model transport failure); they remain untested. Manual T2-X tests: multipart SQLi 403, single gzip 403, double gzip 200 (candidate T2-C2), UTF-16 JSON 403, duplicate JSON key 403, raw chunked 400."
+}

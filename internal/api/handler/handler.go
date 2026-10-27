@@ -25,6 +25,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
@@ -48,6 +49,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	tokensservice "github.com/LaokeQwQ/CheeseWAF/internal/tokens/service"
 	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -59,6 +61,9 @@ type Handler struct {
 	Store                  storage.Store
 	Sink                   storage.LogSink
 	Tokens                 *middleware.TokenManager
+	AuditStream            *audit.Runtime
+	PolicyEpoch            uint64
+	TokenService           *tokensservice.Service
 	Secret                 string
 	Auditor                *middleware.Auditor
 	AssistantApprovals     *ai.ApprovalStore
@@ -377,6 +382,9 @@ type Options struct {
 	Store                       storage.Store
 	Sink                        storage.LogSink
 	Tokens                      *middleware.TokenManager
+	AuditStream                 *audit.Runtime
+	PolicyEpoch                 uint64
+	TokenService                *tokensservice.Service
 	Secret                      string
 	Auditor                     *middleware.Auditor
 	AssistantApprovals          *ai.ApprovalStore
@@ -488,6 +496,9 @@ func New(opts Options) *Handler {
 		Store:                               opts.Store,
 		Sink:                                opts.Sink,
 		Tokens:                              opts.Tokens,
+		AuditStream:                         opts.AuditStream,
+		PolicyEpoch:                         opts.PolicyEpoch,
+		TokenService:                        opts.TokenService,
 		Secret:                              opts.Secret,
 		Auditor:                             opts.Auditor,
 		AssistantApprovals:                  approvals,
@@ -539,6 +550,18 @@ func New(opts Options) *Handler {
 		OnServerChanged:                     opts.OnServerChanged,
 		NotifierRegistry:                    opts.NotifierRegistry,
 		OnConfigChanged:                     opts.OnConfigChanged,
+	}
+	if h.AuditStream != nil && h.Auditor != nil {
+		streamID, tenantID := "api", "default"
+		if opts.Config != nil {
+			if opts.Config.AuditSigning.StreamID != "" {
+				streamID = opts.Config.AuditSigning.StreamID
+			}
+		}
+		h.Auditor.SetEventSink(streamID, tenantID, h.PolicyEpoch, func(ctx context.Context, event audit.Event) error {
+			_, err := h.AuditStream.Append(ctx, event)
+			return err
+		})
 	}
 	if opts.ConfigSnapshot != nil {
 		h.configCurrent.Store(opts.ConfigSnapshot)

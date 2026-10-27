@@ -133,7 +133,7 @@ func TestJSONDuplicateScanBudgetCannotBecomeCompleteAfterMapCollapse(t *testing.
 						t.Error("duplicate scan budget did not preserve structured raw JSON coverage")
 					}
 					ctx := &engine.RequestContext{Request: req, DecodedBody: []byte(body)}
-					result, err := NewNoSQLiDetector("block").Detect(context.Background(), ctx)
+					result, err := NewAnalyzer("block", 2, "nosqli").Detect(context.Background(), ctx)
 					if malicious {
 						if err != nil || result == nil || !result.Detected {
 							t.Fatalf("raw JSON coverage lost overwritten attack: result=%+v err=%v metadata=%+v", result, err, ctx.Metadata)

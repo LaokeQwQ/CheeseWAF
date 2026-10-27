@@ -145,6 +145,9 @@ jobs:
       - name: Run go vet
         shell: bash
         run: bash scripts/ci/verify-go-quality.sh vet
+      - name: Verify every internal package is wired
+        shell: bash
+        run: bash scripts/ci/verify-wiring.sh
       - name: Capture semantic request-path performance baseline
         shell: bash
         env:

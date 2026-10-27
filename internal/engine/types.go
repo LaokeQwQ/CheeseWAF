@@ -10,22 +10,22 @@ import (
 )
 
 // Action represents the action to take when a detection matches.
-// 检测匹配后的动作。
+// Action taken after a detection match.
 type Action int
 
 const (
-	// ActionPass allows the request to continue. 放行请求。
+	// ActionPass allows the request to continue.
 	ActionPass Action = iota
-	// ActionBlock blocks the request. 拦截请求。
+	// ActionBlock blocks the request.
 	ActionBlock
-	// ActionChallenge presents a challenge (JS/CAPTCHA). 发起人机验证。
+	// ActionChallenge presents a challenge (JS/CAPTCHA).
 	ActionChallenge
-	// ActionLog logs the request but allows it. 仅记录，不拦截。
+	// ActionLog logs the request but allows it.
 	ActionLog
 )
 
 // Severity represents the severity level of a detection.
-// 检测的严重程度。
+// Detection severity.
 type Severity int
 
 const (
@@ -37,7 +37,7 @@ const (
 )
 
 // DetectionResult holds the result of a single detector's analysis.
-// 单个检测器的分析结果。
+// Analysis result from a single detector.
 type DetectionResult struct {
 	Detected   bool     `json:"detected"`    // 是否检测到威胁 / Whether a threat was detected
 	DetectorID string   `json:"detector_id"` // 检测器标识 / Detector identifier
@@ -51,7 +51,7 @@ type DetectionResult struct {
 
 // RequestContext carries all information about the current HTTP request
 // through the detection pipeline.
-// 承载当前 HTTP 请求在检测流水线中流转的所有信息。
+// Carries all state for the current HTTP request through the detection pipeline.
 type RequestContext struct {
 	Request  *http.Request // 原始 HTTP 请求 / Original HTTP request
 	ClientIP string        // 客户端真实 IP / Real client IP
@@ -91,21 +91,21 @@ type RequestContext struct {
 
 // Detector is the core interface for all WAF detection modules.
 // Each layer in the detection pipeline implements this interface.
-// 所有 WAF 检测模块的核心接口，检测流水线的每一层都实现此接口。
+// Core interface for every WAF detection module; each pipeline layer implements it.
 type Detector interface {
 	// ID returns the unique identifier for this detector.
-	// 返回检测器的唯一标识。
+	// Returns the unique detector identifier.
 	ID() string
 
 	// Name returns a human-readable name.
-	// 返回人类可读的名称。
+	// Returns a human-readable name.
 	Name() string
 
 	// Detect analyzes the request context and returns detection results.
-	// 分析请求上下文并返回检测结果。
+	// Analyzes the request context and returns a detection result.
 	Detect(ctx context.Context, reqCtx *RequestContext) (*DetectionResult, error)
 
 	// Priority returns the execution order (lower = earlier).
-	// 返回执行优先级（数值越小越先执行）。
+	// Returns the execution priority (lower runs earlier).
 	Priority() int
 }

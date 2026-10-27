@@ -1,0 +1,73 @@
+{
+  "track": "T3",
+  "commit": "3216e72d60af707b3498fbf028b8510532e45b54",
+  "instances": [
+    "T3"
+  ],
+  "findings": [
+    {
+      "id": "T3-F1",
+      "title": "Site upstream can target the loopback admin listener, exposing admin-plane unauthenticated endpoints through the public data plane",
+      "severity": "medium",
+      "cvss": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:L/I:N/A:N",
+      "score": 4.9,
+      "asset": "A1→A2",
+      "preconditions": "admin-session",
+      "chain": [
+        "CH-3"
+      ],
+      "status": "confirmed",
+      "evidence": {
+        "request": "artifacts/T3/T3-F1/request.txt",
+        "response": "artifacts/T3/T3-F1/response-round1.txt",
+        "control": "artifacts/T3/T3-F1/control.txt"
+      },
+      "impact": "A user with write:sites can point a site upstream at 127.0.0.1:<adminPort> and reach unauthenticated admin-plane endpoints (/api/setup/status, /api/auth/login-options, /health) from the internet-facing data plane, bypassing the loopback-only admin bind. When the admin listener is HTTP and co-located, this defeats the network isolation boundary; authenticated endpoints still require a session.",
+      "repro": "findings/T3.md#T3-F1",
+      "fix_hint": "Reject loopback/link-local/private upstream targets unless an explicit, audited operator flag is set; resolve and bind the admin listener to a separate network namespace or require mTLS on the admin plane."
+    }
+  ],
+  "coverage": [
+    {
+      "case": "T3-01",
+      "result": "blocked",
+      "artifact": "artifacts/T3/T3-01/"
+    },
+    {
+      "case": "T3-01b",
+      "result": "allowed",
+      "artifact": "artifacts/T3/T3-01b/"
+    },
+    {
+      "case": "T3-02",
+      "result": "blocked",
+      "artifact": "artifacts/T3/T3-02/"
+    },
+    {
+      "case": "T3-03",
+      "result": "blocked",
+      "artifact": "artifacts/T3/T3-03/"
+    },
+    {
+      "case": "T3-04",
+      "result": "allowed",
+      "artifact": "artifacts/T3/T3-04/"
+    },
+    {
+      "case": "T3-05",
+      "result": "allowed",
+      "artifact": "artifacts/T3/T3-05/"
+    },
+    {
+      "case": "T3-06",
+      "result": "blocked",
+      "artifact": "artifacts/T3/T3-06/"
+    },
+    {
+      "case": "T3-07",
+      "result": "blocked",
+      "artifact": "artifacts/T3/T3-07/"
+    }
+  ],
+  "notes": "T3-F1 replayed 2/2 on fresh instances: data-plane /api/setup/status=200 and /health=200 via pivot site; direct data-plane request without site=421; admin /api/system via pivot=401."
+}

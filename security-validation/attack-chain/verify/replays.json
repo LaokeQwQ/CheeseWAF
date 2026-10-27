@@ -1,0 +1,74 @@
+{
+  "T1-F2": {
+    "runs": [
+      {
+        "ok": true,
+        "note": "round1 /assets/../index.html=200 vs /index.html=418"
+      },
+      {
+        "ok": true,
+        "note": "round2 same"
+      }
+    ]
+  },
+  "T1-F3": {
+    "runs": [
+      {
+        "ok": true,
+        "note": "/abc -> 302 with 6-char path from YAML"
+      },
+      {
+        "ok": true,
+        "note": "/xyz -> 302 after re-render"
+      }
+    ]
+  },
+  "T1-F4": {
+    "runs": [
+      {
+        "ok": true,
+        "note": "round1 /healthz=200 /readyz=418"
+      },
+      {
+        "ok": true,
+        "note": "round2 same"
+      }
+    ]
+  },
+  "T1-F5": {
+    "runs": [
+      {
+        "ok": true,
+        "note": "round1 XFF .77 locked, .78 200"
+      },
+      {
+        "ok": true,
+        "note": "round2 XFF .88 locked, .89 200"
+      }
+    ]
+  },
+  "T1-F6": {
+    "runs": [
+      {
+        "ok": true,
+        "note": "round1 5x wrong -> 429 no Retry-After"
+      },
+      {
+        "ok": true,
+        "note": "round2 same"
+      }
+    ]
+  },
+  "T3-F1": {
+    "runs": [
+      {
+        "ok": true,
+        "note": "round1 pivot /api/setup/status=200 /health=200"
+      },
+      {
+        "ok": true,
+        "note": "round2 same"
+      }
+    ]
+  }
+}

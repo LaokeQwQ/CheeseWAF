@@ -486,7 +486,7 @@ func TestStandaloneRCEDetectorUsesNormalizedFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := NewRCEDetector("block").Detect(context.Background(), reqCtx)
+			result, err := NewAnalyzer("block", 2, "rce").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -634,7 +634,7 @@ func TestStandaloneRCEKeepsEncodedControlBoundaryClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewRCEDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "rce").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -60,7 +60,7 @@ func TestStandaloneServerSideIncludeDetectionAndDocumentationGate(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := NewLFIDetector("block").Detect(context.Background(), reqCtx)
+	result, err := NewAnalyzer("block", 2, "lfi").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestStandaloneServerSideIncludeDetectionAndDocumentationGate(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = NewLFIDetector("block").Detect(context.Background(), docCtx)
+	result, err = NewAnalyzer("block", 2, "lfi").Detect(context.Background(), docCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

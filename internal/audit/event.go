@@ -34,6 +34,7 @@ const (
 	EventTypeRetention     EventType = "retention"
 	EventTypeRecovery      EventType = "recovery"
 	EventTypeAudit         EventType = "audit"
+	EventTypeKeyOperation  EventType = "key.operation"
 )
 
 type Outcome string

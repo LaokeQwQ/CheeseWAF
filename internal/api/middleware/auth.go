@@ -185,7 +185,7 @@ func (m *TokenManager) Middleware(next http.Handler) http.Handler {
 // ManagementAPITokenAuthenticator may return an after-request callback for
 // throttled bookkeeping that must run outside authentication/configuration
 // locks. The middleware runs it even when the downstream handler panics.
-type ManagementAPITokenAuthenticator func(raw string, at time.Time) (*Claims, func(), bool)
+type ManagementAPITokenAuthenticator func(r *http.Request, raw string, at time.Time) (*Claims, func(), bool)
 
 func ManagementAPIOrSessionMiddleware(manager *TokenManager, validator SessionValidator, authenticate ManagementAPITokenAuthenticator) func(http.Handler) http.Handler {
 	return ManagementAPIOrSessionMiddlewareWithClock(manager, validator, authenticate, timekeeper.SystemClock{})
@@ -201,7 +201,7 @@ func ManagementAPIOrSessionMiddlewareWithClock(manager *TokenManager, validator 
 					writeUnauthorized(w)
 					return
 				}
-				claims, afterRequest, ok := authenticate(raw, now())
+				claims, afterRequest, ok := authenticate(r, raw, now())
 				if !ok {
 					writeUnauthorized(w)
 					return

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"io"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -52,6 +53,55 @@ func systemConfigView(cfg *config.Config) map[string]any {
 	}
 	update := effectiveUpdateConfigView(cfg.Update)
 	vulnerability := effectiveVulnerabilityConfigView(cfg.Vulnerability)
+	auditSigningCapability := map[string]any{
+		"available": false,
+		"reason":    "SIGNER_NOT_CONFIGURED",
+		"message":   "critical audit events are rejected when no signer is configured",
+	}
+	scopedTokenCapability := map[string]any{
+		"available": false,
+		"reason":    "TOKEN_SERVICE_NOT_COMPOSED",
+	}
+	if cfg.APISec.ManagementAPI.Enabled && cfg.APISec.ManagementAPI.Durable != nil {
+		scopedTokenCapability = map[string]any{
+			"available": true,
+			"reason":    "DURABLE_POSTGRES",
+			"tenant":    cfg.APISec.ManagementAPI.Durable.TenantID,
+		}
+	}
+	kmsCapability := map[string]any{"available": false, "reason": "KEY_PROVIDER_UNCONFIGURED"}
+	if cfg.KMS.Enabled {
+		provider := "external"
+		if cfg.KMS.Endpoint == "" {
+			provider = "embedded"
+		}
+		kmsCapability = map[string]any{
+			"available": true,
+			"reason":    "PROVIDER_CONFIGURED",
+			"provider":  provider,
+			"tenant_id": cfg.KMS.TenantID,
+			"key_id":    cfg.KMS.KeyID,
+		}
+	}
+	diagnosticsCapability := map[string]any{"available": false, "reason": "UPLOAD_ADAPTER_UNCONFIGURED"}
+	if cfg.Diagnostics.Enabled {
+		host := ""
+		if parsed, err := url.Parse(cfg.Diagnostics.Endpoint); err == nil {
+			host = parsed.Host
+		}
+		diagnosticsCapability = map[string]any{
+			"available":     true,
+			"reason":        "HTTP_UPLOAD_ADAPTER",
+			"endpoint_host": host,
+		}
+	}
+	if cfg.AuditSigning.Enabled {
+		auditSigningCapability = map[string]any{
+			"available": true,
+			"reason":    "SIGNED_CHECKPOINTS",
+			"stream":    cfg.AuditSigning.StreamID,
+		}
+	}
 	return map[string]any{
 		"server":            serverConfigView(cfg.Server),
 		"time_sync":         cfg.TimeSync,
@@ -74,10 +124,10 @@ func systemConfigView(cfg *config.Config) map[string]any {
 			"grpc_message_inspection": map[string]any{"available": false, "reason": "PROTOBUF_INSPECTOR_UNAVAILABLE", "message": "gRPC five-byte frames, protobuf fields, grpc-encoding compression, and streaming messages are not inspected"},
 			"backup":                  map[string]any{"available": false, "reason": "RESTORABLE_FORMAT_UNAVAILABLE"},
 			"storage_cleanup":         map[string]any{"available": true},
-			"diagnostic_upload":       map[string]any{"available": false, "reason": "UPLOAD_ADAPTER_UNCONFIGURED"},
-			"kms_recovery":            map[string]any{"available": false, "reason": "KEY_PROVIDER_UNCONFIGURED"},
-			"scoped_api_tokens":       map[string]any{"available": false, "reason": "TOKEN_SERVICE_NOT_COMPOSED"},
-			"audit_signing":           map[string]any{"available": false, "reason": "SIGNER_NOT_CONFIGURED", "message": "critical audit events are rejected when no signer is configured"},
+			"diagnostic_upload":       diagnosticsCapability,
+			"kms_recovery":            kmsCapability,
+			"scoped_api_tokens":       scopedTokenCapability,
+			"audit_signing":           auditSigningCapability,
 			"control_plane_redis":     map[string]any{"available": false, "reason": "CONTROL_PLANE_ONLY", "configured": cfg.Storage.Redis.Enabled, "scope": "control_plane"},
 			"request_shared_state":    map[string]any{"available": false, "reason": "NODE_LOCAL_ONLY", "message": "request rate limits and bot challenge state are local to each process; storage.redis does not share them"},
 			"ota_updates":             map[string]any{"available": false, "reason": "EXECUTOR_UNAVAILABLE", "message": "OTA remains read-only until CRP/CWEDP activation is wired"},

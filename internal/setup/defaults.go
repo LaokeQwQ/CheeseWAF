@@ -49,11 +49,11 @@ const (
 )
 
 // DefaultCertificateHosts are included in the admin certificate SAN.
-// 默认管理端证书 SAN。
+// Default SANs for the management certificate.
 var DefaultCertificateHosts = []string{"127.0.0.1", "::1", "localhost"}
 
 // DefaultOptions controls default file generation.
-// 默认文件生成参数。
+// Default file-generation parameters.
 type DefaultOptions struct {
 	DataDir    string
 	ConfigPath string
@@ -63,7 +63,7 @@ type DefaultOptions struct {
 }
 
 // DefaultPaths contains the resolved paths used by setup.
-// 初始化使用的解析后路径。
+// Resolved paths used during initialization.
 type DefaultPaths struct {
 	DataDir    string
 	ConfigFile string
@@ -78,14 +78,14 @@ type DefaultPaths struct {
 }
 
 // DefaultBundle reports files created or reused by EnsureDefaults.
-// EnsureDefaults 创建或复用的默认文件集合。
+// EnsureDefaults is the set of default files created or reused.
 type DefaultBundle struct {
 	Paths DefaultPaths
 }
 
 // EnsureDefaults creates the runtime layout, default config, and admin TLS pair.
 // It avoids overwriting existing files unless Overwrite is set.
-// 创建运行目录、默认配置和管理端 TLS 证书；默认不覆盖已有文件。
+// Creates the runtime directories, default configuration, and management TLS certificate; existing files are not overwritten.
 func EnsureDefaults(opts DefaultOptions) (*DefaultBundle, error) {
 	opts = normalizeDefaultOptions(opts)
 	paths := ResolveDefaultPaths(opts)
@@ -110,7 +110,7 @@ func EnsureDefaults(opts DefaultOptions) (*DefaultBundle, error) {
 }
 
 // ResolveDefaultPaths returns setup paths without touching the filesystem.
-// 仅解析默认路径，不写入文件。
+// Resolves default paths only; writes no files.
 func ResolveDefaultPaths(opts DefaultOptions) DefaultPaths {
 	opts = normalizeDefaultOptions(opts)
 	return DefaultPaths{
@@ -129,7 +129,7 @@ func ResolveDefaultPaths(opts DefaultOptions) DefaultPaths {
 
 // DefaultConfigYAML returns the bootstrap configuration used before the
 // database-backed configuration store is initialized.
-// 返回数据库配置存储初始化前使用的启动配置。
+// Returns the bootstrap configuration used before the database config store is initialized.
 func DefaultConfigYAML(paths DefaultPaths) []byte {
 	botSecret := bootstrapSecret()
 	return []byte(fmt.Sprintf(`# CheeseWAF bootstrap configuration.
@@ -434,7 +434,7 @@ apisec:
 
 // GenerateSelfSignedCertificate writes an ECDSA P-256 admin certificate chain
 // signed by a local self-signed CheeseWAF CA.
-// 为管理端生成由本地 CheeseWAF CA 签发的 ECDSA P-256 证书链。
+// Generates an ECDSA P-256 certificate chain for the management listener, signed by the local CheeseWAF CA.
 func GenerateSelfSignedCertificate(certFile, keyFile string, hosts []string, validFor time.Duration) error {
 	caFile := filepath.Join(filepath.Dir(certFile), DefaultAdminCAFile)
 	caKeyFile := filepath.Join(filepath.Dir(keyFile), DefaultAdminCAKeyFile)
@@ -444,7 +444,7 @@ func GenerateSelfSignedCertificate(certFile, keyFile string, hosts []string, val
 // GenerateAdminCertificateBundle writes a local CA certificate/key plus a
 // server-auth leaf certificate/key for the admin interface. The leaf cert file
 // contains the leaf first and CA second, matching common TLS chain layout.
-// 生成本地 CA 与管理端叶子证书；叶子证书文件按 leaf + CA 链顺序写入。
+// Generates the local CA and management leaf certificate; the leaf file is written as a leaf + CA chain.
 func GenerateAdminCertificateBundle(certFile, keyFile, caFile, caKeyFile string, hosts []string, validFor time.Duration) error {
 	if certFile == "" || keyFile == "" {
 		return errors.New("cert and key paths are required")

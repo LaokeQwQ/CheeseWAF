@@ -27,7 +27,7 @@ func TestXSSDataURLInURLField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	standalone, err := NewXSSDetector("block").Detect(context.Background(), reqCtx)
+	standalone, err := NewAnalyzer("block", 2, "xss").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

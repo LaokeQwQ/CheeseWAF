@@ -13,7 +13,6 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/approval"
 	setupmigration "github.com/LaokeQwQ/CheeseWAF/internal/setup/migration"
-	"github.com/spf13/cobra"
 )
 
 var (
@@ -144,31 +143,6 @@ func Execute(ctx context.Context, in io.Reader, out io.Writer, runner Runner, op
 		return setupmigration.Result{}, ErrPasswordConfirmation
 	}
 	return runner.Run(ctx, confirmation)
-}
-
-// NewCommand returns the injected contract command used by focused tests and
-// embedding callers. The root CLI registers NewRuntimeCommand instead.
-func NewCommand(runner Runner) *cobra.Command {
-	opts := PromptOptions{Local: true}
-	cmd := &cobra.Command{
-		Use:   "migration temporary-to-production",
-		Short: "Migrate temporary management state to production storage",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			result, err := Execute(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), runner, opts)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "production migration committed: snapshot=%s\n", result.SnapshotID)
-			return err
-		},
-	}
-	cmd.Flags().StringVar(&opts.Actor, "actor", "", "current administrator identity")
-	cmd.Flags().StringVar(&opts.SessionID, "session-id", "", "current local administrator session")
-	cmd.Flags().StringVar(&opts.Language, "language", approval.DefaultConfirmationLanguage, "confirmation language")
-	cmd.Flags().StringVar(&opts.ConfirmationID, "confirmation-id", "", "one-time confirmation ID")
-	cmd.Flags().StringSliceVar(&opts.Warnings, "warning", nil, "warning text to display (repeatable)")
-	return cmd
 }
 
 func readLine(reader *bufio.Reader) (string, error) {

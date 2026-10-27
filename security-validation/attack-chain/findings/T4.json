@@ -1,0 +1,56 @@
+{
+  "track": "T4",
+  "commit": "3216e72d60af707b3498fbf028b8510532e45b54",
+  "instances": [
+    "T4"
+  ],
+  "findings": [],
+  "coverage": [
+    {
+      "case": "T4-01",
+      "result": "allowed",
+      "artifact": "artifacts/T4/T4-01/"
+    },
+    {
+      "case": "T4-02",
+      "result": "blocked",
+      "artifact": "artifacts/T4/T4-02/"
+    },
+    {
+      "case": "T4-03",
+      "result": "blocked",
+      "artifact": "artifacts/T4/T4-03/"
+    },
+    {
+      "case": "T4-04",
+      "result": "blocked",
+      "artifact": "artifacts/T4/T4-04/"
+    },
+    {
+      "case": "T4-05",
+      "result": "blocked",
+      "artifact": "artifacts/T4/T4-05/"
+    },
+    {
+      "case": "T4-06",
+      "result": "allowed",
+      "artifact": "artifacts/T4/T4-06/"
+    },
+    {
+      "case": "T4-07",
+      "result": "blocked",
+      "artifact": "artifacts/T4/T4-07/"
+    },
+    {
+      "case": "T4-08",
+      "result": "blocked-by-harness",
+      "artifact": "artifacts/T4/T4-08/"
+    },
+    {
+      "case": "T4-09",
+      "result": "blocked",
+      "artifact": "artifacts/T4/T4-09/"
+    }
+  ],
+  "notes": "Readonly account 200 on read endpoints; all tested write/system endpoints 403 (sites, rules, api-tokens, system, reclaim, protection). /api/system and /api/ai/config expose only empty/redacted secret fields. Old session after role demotion 401. Concurrent refresh and token TTL cases were not completed (connection refused after instance restart); marked blocked."
+}

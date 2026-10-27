@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	approvalruntime "github.com/LaokeQwQ/CheeseWAF/internal/approval/runtime"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/redis"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
@@ -24,9 +26,12 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	cwedppostgres "github.com/LaokeQwQ/CheeseWAF/internal/cwedp/postgres"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/transport"
+	"github.com/LaokeQwQ/CheeseWAF/internal/diagnostics/integration"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
+	"github.com/LaokeQwQ/CheeseWAF/internal/recovery/kms"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	storagepostgres "github.com/LaokeQwQ/CheeseWAF/internal/storage/postgres"
+	tokensservice "github.com/LaokeQwQ/CheeseWAF/internal/tokens/service"
 )
 
 var (
@@ -76,6 +81,16 @@ type ProductionStartupOptions struct {
 	// composition root fills durable authority, the exact CWEDP runtime, live
 	// consensus fence and approval resolver after bootstrap.
 	CRP ProductionCRPOptions
+	// ManagementAPITokenDurable carries the durable token store settings. It is
+	// nil on the temporary storage profile, where tokens stay in the config file.
+	ManagementAPITokenDurable *config.ManagementAPITokenDurableConfig
+	// KMS and Diagnostics select the key provider and the encrypted upload
+	// queue. Both are inert until their Enabled flag is set.
+	KMS         config.KMSConfig
+	Diagnostics config.DiagnosticsConfig
+	// AuditSigning carries the serializable audit stream settings. It is not a
+	// secret: the key path is resolved and the key material is read at startup.
+	AuditSigning config.AuditSigningConfig
 }
 
 // ProductionControlDependency is the control-plane PostgreSQL adapter. It is
@@ -127,6 +142,8 @@ type ProductionServeWiring struct {
 	CWEDPDownload         consumer.Executor
 	CRPActivation         handler.CRPActivationExecutor
 	CWEDP                 ProductionCWEDPOptions
+	Audit                 *audit.Runtime
+	Tokens                *tokensservice.Service
 }
 
 // ProductionTemporaryNetworkOptions is the narrow input contract for the
@@ -270,6 +287,13 @@ type ProductionDependencies struct {
 	CRP              ProductionCRPDependency
 	Startup          controlplane.StartupResult
 	CWEDP            ProductionCWEDPOptions
+	Audit            *audit.Runtime
+	AuditJournal     *audit.FileJournal
+	Tokens           *tokensservice.Service
+	TokenStore       io.Closer
+	KMS              *kms.Runtime
+	KMSCloser        io.Closer
+	Diagnostics      *integration.Runtime
 	Serve            ProductionServeWiring
 	Ready            bool
 
@@ -365,6 +389,36 @@ func (d *ProductionDependencies) Close() error {
 			return d.Control.Close()
 		})
 		close(func() error {
+			if d.Diagnostics == nil {
+				return nil
+			}
+			return d.Diagnostics.Close()
+		})
+		close(func() error {
+			if d.KMSCloser == nil {
+				return nil
+			}
+			return d.KMSCloser.Close()
+		})
+		close(func() error {
+			if d.TokenStore == nil {
+				return nil
+			}
+			return d.TokenStore.Close()
+		})
+		close(func() error {
+			if d.Audit == nil {
+				return nil
+			}
+			return d.Audit.Close()
+		})
+		close(func() error {
+			if d.AuditJournal == nil {
+				return nil
+			}
+			return d.AuditJournal.Close()
+		})
+		close(func() error {
 			if d.Management == nil {
 				return nil
 			}
@@ -425,6 +479,8 @@ func (d *ProductionDependencies) ServeWiring() (ProductionServeWiring, error) {
 		CWEDPDownload:         d.CWEDPDownload,
 		CRPActivation:         crpActivation,
 		CWEDP:                 d.CWEDP,
+		Audit:                 d.Audit,
+		Tokens:                d.Tokens,
 	}, nil
 }
 
@@ -504,6 +560,13 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	if err := ctx.Err(); err != nil {
 		return fail("production startup context canceled after management PostgreSQL", err)
 	}
+
+	auditRuntime, auditJournal, err := openAuditRuntime(opts.AuditSigning)
+	if err != nil {
+		return fail("audit signing runtime could not be opened", err)
+	}
+	deps.Audit = auditRuntime
+	deps.AuditJournal = auditJournal
 	if err := ctx.Err(); err != nil {
 		return fail("production startup context canceled before control PostgreSQL", err)
 	}
@@ -554,6 +617,41 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	}
 	deps.Startup = startup
 	deps.CWEDP = productionCWEDPOptions(opts)
+
+	kmsRuntime, kmsCloser, kmsErr := openKMSRuntime(opts.KMS, uint64(deps.Startup.State.Epoch), opts.Diagnostics.KeyVersion, deps.Audit)
+	if kmsErr != nil {
+		return fail("KMS provider could not be opened", kmsErr)
+	}
+	deps.KMS = kmsRuntime
+	deps.KMSCloser = kmsCloser
+	if opts.Diagnostics.Enabled {
+		diagnosticsRuntime, diagErr := integration.NewRuntime(integration.Config{
+			QueueRoot:    opts.Diagnostics.QueueDir,
+			Provider:     kmsEnvelopeProvider{runtime: kmsRuntime},
+			KeyVersion:   opts.Diagnostics.KeyVersion,
+			TenantID:     opts.Diagnostics.TenantID,
+			Actor:        opts.Diagnostics.Actor,
+			Uploader:     newHTTPUploadAdapter(opts.Diagnostics.Endpoint, opts.Diagnostics.TokenFile, opts.Diagnostics.Timeout),
+			PollInterval: opts.Diagnostics.PollInterval,
+			Audit:        deps.Audit,
+			AutoStart:    true,
+		})
+		if diagErr != nil {
+			return fail("diagnostics upload runtime could not be opened", diagErr)
+		}
+		deps.Diagnostics = diagnosticsRuntime
+	}
+
+	if opts.ManagementAPITokenDurable != nil {
+		tokenService, tokenStore, tokenErr := openDurableTokenService(ctx, *opts.ManagementAPITokenDurable, func() uint64 {
+			return uint64(deps.Startup.State.Epoch)
+		})
+		if tokenErr != nil {
+			return fail("durable management API tokens could not be opened", tokenErr)
+		}
+		deps.Tokens = tokenService
+		deps.TokenStore = tokenStore
+	}
 
 	if !opts.RedisEnabled {
 		return fail("Redis is not enabled for production", ErrProductionRedisUnavailable)
@@ -953,10 +1051,14 @@ func productionStartupOptionsFromConfig(cfg *config.Config) (ProductionStartupOp
 				KeyFile: cfg.Cluster.Interconnect.KeyFile,
 			},
 		},
-		Redis:        redis.Config{Addr: cfg.Storage.Redis.Address, InstanceID: instanceID, DialTimeout: cfg.Storage.ManagementPostgreSQL.Timeout},
-		RedisEnabled: cfg.Storage.Redis.Enabled,
-		DataDir:      cfg.Setup.DataDir,
-		CRP:          ProductionCRPOptions{ClusterID: clusterID, NodeID: nodeID},
+		Redis:                     redis.Config{Addr: cfg.Storage.Redis.Address, InstanceID: instanceID, DialTimeout: cfg.Storage.ManagementPostgreSQL.Timeout},
+		RedisEnabled:              cfg.Storage.Redis.Enabled,
+		DataDir:                   cfg.Setup.DataDir,
+		CRP:                       ProductionCRPOptions{ClusterID: clusterID, NodeID: nodeID},
+		AuditSigning:              cfg.AuditSigning,
+		ManagementAPITokenDurable: cfg.APISec.ManagementAPI.Durable,
+		KMS:                       cfg.KMS,
+		Diagnostics:               cfg.Diagnostics,
 	}, nil
 }
 

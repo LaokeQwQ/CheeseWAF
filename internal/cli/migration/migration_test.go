@@ -72,17 +72,6 @@ func TestExecutePassesConfirmationToRunner(t *testing.T) {
 	}
 }
 
-func TestNewCommandExposesProtectedMigrationWorkflow(t *testing.T) {
-	runner := &fakeRunner{result: setupmigration.Result{Committed: true}}
-	cmd := NewCommand(runner)
-	if cmd == nil || cmd.Use != "migration temporary-to-production" {
-		t.Fatalf("command=%v", cmd)
-	}
-	if cmd.RunE == nil {
-		t.Fatal("command has no execution handler")
-	}
-}
-
 func TestNewRuntimeCommandExposesExplicitRecoveryWithoutSessionBypass(t *testing.T) {
 	root := NewRuntimeCommand(RuntimeOptions{})
 	recover, _, err := root.Find([]string{"recover"})

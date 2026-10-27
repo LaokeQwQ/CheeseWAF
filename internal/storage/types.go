@@ -8,7 +8,7 @@ import (
 )
 
 // LogEntry represents a single WAF log entry (attack or access).
-// WAF 日志条目（攻击日志或访问日志）。
+// WAF log entry (attack log or access log).
 type LogEntry struct {
 	ID         string         `json:"id"`
 	Timestamp  time.Time      `json:"timestamp"`
@@ -33,27 +33,27 @@ type LogEntry struct {
 
 // LogSink is the interface for log output backends.
 // Implementations include: local file, ClickHouse, VictoriaLogs, Loki, Elasticsearch, PostgreSQL.
-// 日志输出后端接口。实现包括：本地文件、ClickHouse、VictoriaLogs、Loki、Elasticsearch、PostgreSQL。
+// Log output backend. Implementations: local file, ClickHouse, VictoriaLogs, Loki, Elasticsearch, PostgreSQL.
 type LogSink interface {
 	// Write writes a log entry to the sink.
-	// 写入一条日志。
+	// Write one log entry.
 	Write(ctx context.Context, entry *LogEntry) error
 
 	// Query queries log entries with filters.
-	// 按条件查询日志。
+	// Query logs by filter.
 	Query(ctx context.Context, filter LogFilter) ([]LogEntry, int64, error)
 
 	// Flush forces pending writes to be committed.
-	// 强制提交挂起的写入。
+	// Force-flush pending writes.
 	Flush(ctx context.Context) error
 
 	// Close gracefully shuts down the sink.
-	// 优雅关闭。
+	// Graceful shutdown.
 	Close() error
 }
 
 // LogFilter defines query filters for log entries.
-// 日志查询过滤条件。
+// Log query filter.
 type LogFilter struct {
 	ID            string    `json:"id,omitempty"`
 	SiteID        string    `json:"site_id,omitempty"`
@@ -78,14 +78,14 @@ type LogFilter struct {
 }
 
 // Store is the interface for configuration data persistence (SQLite).
-// 配置数据持久化接口（SQLite）。
+// Configuration persistence interface (SQLite).
 type Store interface {
 	// Migrate runs database migrations.
-	// 执行数据库迁移。
+	// Run database migrations.
 	Migrate(ctx context.Context) error
 
 	// Close gracefully shuts down the store.
-	// 优雅关闭。
+	// Graceful shutdown.
 	Close() error
 
 	// Sites
@@ -264,7 +264,7 @@ type NotificationPatch struct {
 }
 
 // SiteStore manages site configurations.
-// 站点配置管理。
+// Site configuration management.
 type SiteStore interface {
 	ListSites(ctx context.Context) ([]Site, error)
 	GetSite(ctx context.Context, id string) (*Site, error)
@@ -274,7 +274,7 @@ type SiteStore interface {
 }
 
 // RuleStore manages WAF rules.
-// WAF 规则管理。
+// WAF rule management.
 type RuleStore interface {
 	ListRules(ctx context.Context, siteID string) ([]Rule, error)
 	GetRule(ctx context.Context, id string) (*Rule, error)
@@ -284,7 +284,7 @@ type RuleStore interface {
 }
 
 // UserStore manages admin users.
-// 管理员用户管理。
+// Administrator user management.
 type UserStore interface {
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	CreateUser(ctx context.Context, user *User) error
@@ -305,7 +305,7 @@ var (
 )
 
 // SessionStore manages admin bearer-token sessions.
-// 管理端 Bearer token 会话管理。
+// Management bearer-token session management.
 type SessionStore interface {
 	CreateSession(ctx context.Context, session *Session) error
 	RotateSession(ctx context.Context, oldID, userID string, next *Session) error
@@ -323,7 +323,7 @@ type SessionLookupStore interface {
 }
 
 // Site represents a protected site configuration.
-// 受保护站点配置。
+// Protected site configuration.
 type Site struct {
 	ID            string       `json:"id"`
 	Name          string       `json:"name"`
@@ -534,7 +534,7 @@ type SiteAccessControl struct {
 }
 
 // Rule represents a custom WAF rule.
-// 自定义 WAF 规则。
+// Custom WAF rule.
 type Rule struct {
 	ID          string `json:"id"`
 	SiteID      string `json:"site_id"`
@@ -549,7 +549,7 @@ type Rule struct {
 }
 
 // User represents an admin user.
-// 管理员用户。
+// Administrator user.
 type User struct {
 	ID              string    `json:"id"`
 	Username        string    `json:"username"`
@@ -576,7 +576,7 @@ type UserUsernameRepair struct {
 }
 
 // Session represents a revocable admin API session.
-// 可撤销的管理端 API 会话。
+// Revocable management API session.
 type Session struct {
 	ID              string    `json:"id"`
 	UserID          string    `json:"user_id"`

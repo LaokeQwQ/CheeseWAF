@@ -138,6 +138,17 @@ type ValidateRequest struct {
 	IdempotencyKey string
 }
 
+// AuthenticateRequest proves token identity, status, expiry and epoch without
+// evaluating scope. Route-level RBAC owns scope enforcement because the
+// authentication middleware runs before the router knows the required scope.
+type AuthenticateRequest struct {
+	TenantID       string
+	TokenID        string
+	Secret         string
+	PolicyEpoch    uint64
+	IdempotencyKey string
+}
+
 type RevokeRequest struct {
 	TenantID       string
 	TokenID        string
@@ -304,7 +315,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (tokens.Issued, e
 		s.releaseIssueReservation(issueKeyValue, confirmationKeyValue)
 		return tokens.Issued{}, err
 	}
-	meta := tokens.Metadata{ID: id, Owner: req.Request.Owner, Permissions: permissions, Resources: resources, Scopes: append([]string(nil), resources...), Note: strings.TrimSpace(req.Request.Note), PolicyEpoch: req.Request.PolicyEpoch, CreatedAt: now, LastActivityAt: now, ExpiresAt: lifetime.ExpiresAt, NeverExpire: lifetime.NeverExpire}
+	meta := tokens.Metadata{ID: id, Owner: req.Request.Owner, Name: strings.TrimSpace(req.Request.Name), Permissions: permissions, Resources: resources, Scopes: append([]string(nil), resources...), Note: strings.TrimSpace(req.Request.Note), PolicyEpoch: req.Request.PolicyEpoch, CreatedAt: now, LastActivityAt: now, ExpiresAt: lifetime.ExpiresAt, NeverExpire: lifetime.NeverExpire}
 	persisted := toPersisted(meta, digest, s.leaseID, 1)
 	mutation := tokens.Mutation{TenantID: req.TenantID, Token: persisted, ExpectedVersion: 0, LeaseID: s.leaseID, IdempotencyKey: req.IdempotencyKey, Event: tokens.Event{Sequence: 1, Type: tokens.EventCreated, At: now, TokenID: id, Actor: req.Request.Owner}}
 	// Re-read the policy epoch immediately before the durable write.  The
@@ -354,7 +365,26 @@ func (s *Service) releaseIssueReservation(issueKeyValue, confirmationKeyValue st
 	s.mu.Unlock()
 }
 
+// Validate proves identity and enforces the token's permission and resource
+// scope. It is the contract for callers that already know the required scope.
 func (s *Service) Validate(ctx context.Context, req ValidateRequest) (tokens.Metadata, error) {
+	return s.verify(ctx, req, req.Permission, req.Resource, true)
+}
+
+// Authenticate proves identity without scope checks. The management API
+// middleware uses it to turn a cwapi_ bearer token into Claims; the RBAC layer
+// then enforces the route's declared scope from those claims.
+func (s *Service) Authenticate(ctx context.Context, req AuthenticateRequest) (tokens.Metadata, error) {
+	return s.verify(ctx, ValidateRequest{
+		TenantID:       req.TenantID,
+		TokenID:        req.TokenID,
+		Secret:         req.Secret,
+		PolicyEpoch:    req.PolicyEpoch,
+		IdempotencyKey: req.IdempotencyKey,
+	}, "", "", false)
+}
+
+func (s *Service) verify(ctx context.Context, req ValidateRequest, permission, resource string, enforceScope bool) (tokens.Metadata, error) {
 	if s == nil || ctx == nil || ctx.Err() != nil {
 		if ctx != nil && ctx.Err() != nil {
 			return tokens.Metadata{}, ctx.Err()
@@ -364,10 +394,9 @@ func (s *Service) Validate(ctx context.Context, req ValidateRequest) (tokens.Met
 	if !strictOpaque(req.TenantID) || !strictOpaque(req.TokenID) || req.Secret == "" || !strictOpaque(req.IdempotencyKey) || req.PolicyEpoch == 0 {
 		return tokens.Metadata{}, ErrInvalidRequest
 	}
-	if !strictSelector(req.Permission) || !strictSelector(req.Resource) {
+	if enforceScope && (!strictSelector(permission) || !strictSelector(resource)) {
 		return tokens.Metadata{}, ErrInvalidRequest
 	}
-	permission, resource := req.Permission, req.Resource
 	now := s.now()
 	if now.IsZero() {
 		return tokens.Metadata{}, ErrInvalidRequest
@@ -419,11 +448,13 @@ func (s *Service) Validate(ctx context.Context, req ValidateRequest) (tokens.Met
 	if now.Sub(persisted.LastActivityAt) >= tokens.InactivityTTL {
 		return tokens.Metadata{}, tokens.ErrInactive
 	}
-	if !matches(persisted.Permissions, permission) {
-		return tokens.Metadata{}, tokens.ErrPermissionDenied
-	}
-	if !matches(persisted.Resources, resource) {
-		return tokens.Metadata{}, tokens.ErrResourceDenied
+	if enforceScope {
+		if !matches(persisted.Permissions, permission) {
+			return tokens.Metadata{}, tokens.ErrPermissionDenied
+		}
+		if !matches(persisted.Resources, resource) {
+			return tokens.Metadata{}, tokens.ErrResourceDenied
+		}
 	}
 
 	persisted.LastActivityAt = now
@@ -768,7 +799,7 @@ func constantTimeDigestMatches(secret, digest string) bool {
 }
 
 func toPersisted(meta tokens.Metadata, digest, lease string, version uint64) tokens.PersistedToken {
-	return tokens.PersistedToken{ID: meta.ID, Owner: meta.Owner, Permissions: append([]string(nil), meta.Permissions...), Resources: append([]string(nil), meta.Resources...), Scopes: append([]string(nil), meta.Scopes...), Note: meta.Note, PolicyEpoch: meta.PolicyEpoch, CreatedAt: meta.CreatedAt, ExpiresAt: meta.ExpiresAt, NeverExpire: meta.NeverExpire, Disabled: meta.Disabled, Revoked: meta.Revoked, LastActivityAt: meta.LastActivityAt, SecretDigest: digest, LeaseID: lease, Version: version}
+	return tokens.PersistedToken{ID: meta.ID, Owner: meta.Owner, Name: meta.Name, Permissions: append([]string(nil), meta.Permissions...), Resources: append([]string(nil), meta.Resources...), Scopes: append([]string(nil), meta.Scopes...), Note: meta.Note, PolicyEpoch: meta.PolicyEpoch, CreatedAt: meta.CreatedAt, ExpiresAt: meta.ExpiresAt, NeverExpire: meta.NeverExpire, Disabled: meta.Disabled, Revoked: meta.Revoked, LastActivityAt: meta.LastActivityAt, SecretDigest: digest, LeaseID: lease, Version: version}
 }
 
 func fromPersisted(item tokens.PersistedToken) tokens.Metadata {
@@ -777,7 +808,7 @@ func fromPersisted(item tokens.PersistedToken) tokens.Metadata {
 	if len(scopes) == 0 {
 		scopes = append([]string(nil), resources...)
 	}
-	return tokens.Metadata{ID: item.ID, Owner: item.Owner, Permissions: append([]string(nil), item.Permissions...), Resources: resources, Scopes: scopes, Note: item.Note, PolicyEpoch: item.PolicyEpoch, CreatedAt: item.CreatedAt, ExpiresAt: item.ExpiresAt, NeverExpire: item.NeverExpire, Disabled: item.Disabled, Revoked: item.Revoked, LastActivityAt: item.LastActivityAt}
+	return tokens.Metadata{ID: item.ID, Owner: item.Owner, Name: item.Name, Permissions: append([]string(nil), item.Permissions...), Resources: resources, Scopes: scopes, Note: item.Note, PolicyEpoch: item.PolicyEpoch, CreatedAt: item.CreatedAt, ExpiresAt: item.ExpiresAt, NeverExpire: item.NeverExpire, Disabled: item.Disabled, Revoked: item.Revoked, LastActivityAt: item.LastActivityAt}
 }
 
 func cloneMetadata(in tokens.Metadata) tokens.Metadata {

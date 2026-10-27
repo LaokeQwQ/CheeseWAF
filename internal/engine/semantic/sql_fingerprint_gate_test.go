@@ -246,7 +246,7 @@ func TestSQLQuotedAndSelectSubqueryGate(t *testing.T) {
 
 func TestSQLDetectorQuotedAndSelectSubquery(t *testing.T) {
 	reqCtx := sqlTestRequestContext("/login", []byte("password=letmein%27+AnD+%28SeLeCt+UsEr%28%29%29%3D%27admin%27"))
-	got, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestSQLDetectorAdditionalSubqueryAndSideEffectShapes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reqCtx := sqlTestRequestContext(tc.target, nil)
-			got, err := NewSQLDetector("block").Detect(context.Background(), reqCtx)
+			got, err := NewAnalyzer("block", 2, "sqli").Detect(context.Background(), reqCtx)
 			if err != nil {
 				t.Fatal(err)
 			}

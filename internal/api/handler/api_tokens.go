@@ -159,6 +159,14 @@ func (h *Handler) StartManagementAPITokenCleanup(ctx context.Context) {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		cleanup := func() {
+			if h.TokenService != nil {
+				if removed, err := h.TokenService.Cleanup(ctx, h.managementTokenTenant()); err != nil {
+					log.Printf("management api token cleanup failed: %v", err)
+				} else if removed > 0 {
+					log.Printf("management api token cleanup removed %d inactive or expired token(s)", removed)
+				}
+				return
+			}
 			if removed, err := h.CleanupManagementAPITokens(h.nowUTC()); err != nil {
 				log.Printf("management api token cleanup failed: %v", err)
 			} else if removed > 0 {
@@ -312,18 +320,33 @@ type managementAPITokenView struct {
 	NeverExpire bool      `json:"never_expire"`
 }
 
-func (h *Handler) ListManagementAPITokens(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) ListManagementAPITokens(w http.ResponseWriter, r *http.Request) {
+	if h.TokenService != nil {
+		enabled := h.currentConfig() != nil && h.currentConfig().APISec.ManagementAPI.Enabled
+		items, err := h.listDurableManagementTokens(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "API_TOKEN_STORE_ERROR", err.Error())
+			return
+		}
+		writeData(w, map[string]any{"enabled": enabled, "items": items, "total": len(items)})
+		return
+	}
 	h.configMutationMu.RLock()
 	defer h.configMutationMu.RUnlock()
 	items := managementAPITokenViews(h.currentConfig().APISec.ManagementAPI.Tokens)
 	writeData(w, map[string]any{"enabled": h.currentConfig().APISec.ManagementAPI.Enabled, "items": items, "total": len(items)})
 }
 
-func (h *Handler) AuthenticateManagementAPIToken(raw string, at time.Time) (*middleware.Claims, func(), bool) {
+func (h *Handler) AuthenticateManagementAPIToken(r *http.Request, raw string, at time.Time) (*middleware.Claims, func(), bool) {
 	if h == nil || h.currentConfig() == nil {
 		return nil, nil, false
 	}
 	at = at.UTC()
+	if h.TokenService != nil {
+		if claims, ok := h.authenticateDurableManagementToken(r, raw); ok {
+			return claims, nil, true
+		}
+	}
 	// Copy the small authentication snapshot while locked, then perform digest or
 	// legacy bcrypt verification without holding configuration locks.
 	h.configMutationMu.RLock()
@@ -470,6 +493,10 @@ func (h *Handler) CreateManagementAPIToken(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	if h.TokenService != nil {
+		h.createDurableManagementAPIToken(w, r, name, req.Notes, scopes, lifetime, now)
+		return
+	}
 	var releaseConfirmation func(bool)
 	if req.NeverExpire {
 		confirmationID := req.ConfirmationID
@@ -581,6 +608,10 @@ func (h *Handler) RevokeManagementAPIToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	now := h.nowUTC()
+	if h.TokenService != nil {
+		h.revokeDurableManagementAPIToken(w, r, id)
+		return
+	}
 	committed, err := h.commitConfigMutation(func(candidate *config.Config) error {
 		for idx := range candidate.APISec.ManagementAPI.Tokens {
 			if candidate.APISec.ManagementAPI.Tokens[idx].ID != id {

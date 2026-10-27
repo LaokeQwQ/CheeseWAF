@@ -35,7 +35,7 @@ func sameOriginTelemetryRequest(t *testing.T, path string) *engine.RequestContex
 func TestSSRFDetectorSuppressesSameOriginTelemetryReference(t *testing.T) {
 	self := url.QueryEscape("http://192.168.171.131/dashboard/")
 	reqCtx := sameOriginTelemetryRequest(t, "/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url="+self)
-	got, err := NewSSRFDetector("block").Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestSSRFTelemetryGateRequiresValidatedHost(t *testing.T) {
 	self := url.QueryEscape("http://192.168.171.131/dashboard/")
 	reqCtx := sameOriginTelemetryRequest(t, "/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url="+self)
 	reqCtx.HostValidated = false
-	got, err := NewSSRFDetector("block").Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestSSRFDetectorKeepsExplicitFetchAndCrossOriginTargetsBlockable(t *testing
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := NewSSRFDetector("block").Detect(context.Background(), sameOriginTelemetryRequest(t, tc.path))
+			got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), sameOriginTelemetryRequest(t, tc.path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +99,7 @@ func TestSSRFDetectorKeepsExplicitFetchAndCrossOriginTargetsBlockable(t *testing
 func TestSSRFDetectorSuppressesValidatedSameOriginLoginRedirect(t *testing.T) {
 	self := url.QueryEscape("http://192.168.171.131/wp-admin/")
 	queryCtx := sameOriginTelemetryRequest(t, "/wp-login.php?redirect_to="+self+"&reauth=1")
-	if got, err := NewSSRFDetector("block").Detect(context.Background(), queryCtx); err != nil || got != nil {
+	if got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), queryCtx); err != nil || got != nil {
 		t.Fatalf("same-origin login redirect was treated as SSRF: %+v err=%v", got, err)
 	}
 
@@ -107,14 +107,14 @@ func TestSSRFDetectorSuppressesValidatedSameOriginLoginRedirect(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Host = "192.168.171.131"
 	formCtx := &engine.RequestContext{Request: req, HostValidated: true, Metadata: map[string]any{}}
-	if got, err := NewSSRFDetector("block").Detect(context.Background(), formCtx); err != nil || got != nil {
+	if got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), formCtx); err != nil || got != nil {
 		t.Fatalf("same-origin form redirect was treated as SSRF: %+v err=%v", got, err)
 	}
 
 	rawReq := httptest.NewRequest(http.MethodPost, "http://192.168.171.131/wp-login.php", strings.NewReader("log=subscriber&redirect_to="+self+"&testcookie=1"))
 	rawReq.Host = "192.168.171.131"
 	rawCtx := &engine.RequestContext{Request: rawReq, HostValidated: true, Metadata: map[string]any{}}
-	if got, err := NewSSRFDetector("block").Detect(context.Background(), rawCtx); err != nil || got != nil {
+	if got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), rawCtx); err != nil || got != nil {
 		t.Fatalf("same-origin raw-form redirect was treated as SSRF: %+v err=%v", got, err)
 	}
 }
@@ -126,7 +126,7 @@ func TestSSRFDetectorKeepsCrossOriginRedirectAndFetchRouteBlockable(t *testing.T
 		"/fetch?redirect_to=" + private,
 	} {
 		t.Run(path, func(t *testing.T) {
-			got, err := NewSSRFDetector("block").Detect(context.Background(), sameOriginTelemetryRequest(t, path))
+			got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), sameOriginTelemetryRequest(t, path))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -142,7 +142,7 @@ func TestSSRFSameOriginRequiresMatchingPortAndScheme(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://192.168.171.131:8080/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url="+selfPort, nil)
 	request.Host = "192.168.171.131:8080"
 	ctx := &engine.RequestContext{Request: request, HostValidated: true, Metadata: map[string]any{}}
-	if got, err := NewSSRFDetector("block").Detect(context.Background(), ctx); err != nil || got != nil {
+	if got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), ctx); err != nil || got != nil {
 		t.Fatalf("same host and port should be suppressed: %+v err=%v", got, err)
 	}
 
@@ -150,7 +150,7 @@ func TestSSRFSameOriginRequiresMatchingPortAndScheme(t *testing.T) {
 	request = httptest.NewRequest(http.MethodGet, "http://192.168.171.131:8080/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url="+otherPort, nil)
 	request.Host = "192.168.171.131:8080"
 	ctx.Request = request
-	got, err := NewSSRFDetector("block").Detect(context.Background(), ctx)
+	got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), ctx)
 	if err != nil || got == nil || got.Category != "ssrf" {
 		t.Fatalf("cross-port private target must remain blockable: %+v err=%v", got, err)
 	}
@@ -159,7 +159,7 @@ func TestSSRFSameOriginRequiresMatchingPortAndScheme(t *testing.T) {
 	request = httptest.NewRequest(http.MethodGet, "https://192.168.171.131/?wmcAction=wmcTrack&siteId=1&visitorId=v1&url="+secure, nil)
 	request.Host = "192.168.171.131"
 	ctx.Request = request
-	got, err = NewSSRFDetector("block").Detect(context.Background(), ctx)
+	got, err = NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), ctx)
 	if err != nil || got == nil || got.Category != "ssrf" {
 		t.Fatalf("cross-scheme private target must remain blockable: %+v err=%v", got, err)
 	}
@@ -170,7 +170,7 @@ func TestSSRFRedirectRouteUsesPathTokens(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/author?redirect_to="+self, nil)
 	request.Host = "192.168.171.131"
 	ctx := &engine.RequestContext{Request: request, HostValidated: true, Metadata: map[string]any{}}
-	got, err := NewSSRFDetector("block").Detect(context.Background(), ctx)
+	got, err := NewAnalyzer("block", 2, "ssrf").Detect(context.Background(), ctx)
 	if err != nil || got == nil || got.Category != "ssrf" {
 		t.Fatalf("non-auth path must not enable redirect suppression: %+v err=%v", got, err)
 	}

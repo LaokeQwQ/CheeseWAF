@@ -25,7 +25,7 @@ func TestReviewDuplicateJSONRawRunsStructuredNoSQLAnalysis(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
 			req.Header.Set("Content-Type", contentType)
 			ctx := &engine.RequestContext{Request: req, DecodedBody: []byte(body)}
-			result, err := NewNoSQLiDetector("block").Detect(context.Background(), ctx)
+			result, err := NewAnalyzer("block", 2, "nosqli").Detect(context.Background(), ctx)
 			if err != nil || result == nil || !result.Detected {
 				t.Errorf("duplicate operator under %s lost explicit detection: result=%+v err=%v", contentType, result, err)
 			}

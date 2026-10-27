@@ -99,6 +99,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			PRIMARY KEY (tenant_id, idempotency_key)
 		)`,
 		`ALTER TABLE cheesewaf_token_state ADD COLUMN IF NOT EXISTS never_expire BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE cheesewaf_token_state ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS cheesewaf_token_events_order_idx ON cheesewaf_token_events (tenant_id, token_id, sequence)`,
 	}
 	for _, statement := range statements {
@@ -192,7 +193,7 @@ func (s *Store) Load(ctx context.Context, tenantID, tokenID string) (tokens.Pers
 		return tokens.PersistedToken{}, tokens.ErrInvalidPersistence
 	}
 	var out tokens.PersistedToken
-	err := loadRow(s.db.QueryRowContext(ctx, `SELECT owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version FROM cheesewaf_token_state WHERE tenant_id=$1 AND token_id=$2`, tenantID, tokenID), &out)
+	err := loadRow(s.db.QueryRowContext(ctx, `SELECT owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version,display_name FROM cheesewaf_token_state WHERE tenant_id=$1 AND token_id=$2`, tenantID, tokenID), &out)
 	if err != nil {
 		return tokens.PersistedToken{}, err
 	}
@@ -207,7 +208,7 @@ func (s *Store) List(ctx context.Context, tenantID string) ([]tokens.PersistedTo
 	if !strictIdentity(tenantID) {
 		return nil, tokens.ErrInvalidPersistence
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT token_id,owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version FROM cheesewaf_token_state WHERE tenant_id=$1 ORDER BY token_id`, tenantID)
+	rows, err := s.db.QueryContext(ctx, `SELECT token_id,owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version,display_name FROM cheesewaf_token_state WHERE tenant_id=$1 ORDER BY token_id`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: list: %w", ErrInvalidStore, err)
 	}
@@ -313,7 +314,7 @@ func loadRow(row rowScanner, out *tokens.PersistedToken) error {
 	var perms, res, scopes []byte
 	var expires sql.NullTime
 	var epoch, version int64
-	if err := row.Scan(&out.Owner, &perms, &res, &scopes, &out.Note, &epoch, &out.CreatedAt, &expires, &out.NeverExpire, &out.Disabled, &out.Revoked, &out.LastActivityAt, &out.SecretDigest, &out.LeaseID, &version); err != nil {
+	if err := row.Scan(&out.Owner, &perms, &res, &scopes, &out.Note, &epoch, &out.CreatedAt, &expires, &out.NeverExpire, &out.Disabled, &out.Revoked, &out.LastActivityAt, &out.SecretDigest, &out.LeaseID, &version, &out.Name); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrTokenNotFound
 		}
@@ -367,7 +368,7 @@ func scanToken(rows rowScanner, id *string, out *tokens.PersistedToken) error {
 	var perms, res, scopes []byte
 	var expires sql.NullTime
 	var epoch, version int64
-	if err := rows.Scan(id, &out.Owner, &perms, &res, &scopes, &out.Note, &epoch, &out.CreatedAt, &expires, &out.NeverExpire, &out.Disabled, &out.Revoked, &out.LastActivityAt, &out.SecretDigest, &out.LeaseID, &version); err != nil {
+	if err := rows.Scan(id, &out.Owner, &perms, &res, &scopes, &out.Note, &epoch, &out.CreatedAt, &expires, &out.NeverExpire, &out.Disabled, &out.Revoked, &out.LastActivityAt, &out.SecretDigest, &out.LeaseID, &version, &out.Name); err != nil {
 		return fmt.Errorf("%w: scan token: %w", ErrInvalidStore, err)
 	}
 	if err := validateLoaded(epoch, version, out.SecretDigest); err != nil {
@@ -385,7 +386,7 @@ func scanToken(rows rowScanner, id *string, out *tokens.PersistedToken) error {
 }
 func loadTx(ctx context.Context, tx *sql.Tx, tenantID, tokenID string, out *tokens.PersistedToken) error {
 	out.ID = tokenID
-	return loadRow(tx.QueryRowContext(ctx, `SELECT owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version FROM cheesewaf_token_state WHERE tenant_id=$1 AND token_id=$2 FOR UPDATE`, tenantID, tokenID), out)
+	return loadRow(tx.QueryRowContext(ctx, `SELECT owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version,display_name FROM cheesewaf_token_state WHERE tenant_id=$1 AND token_id=$2 FOR UPDATE`, tenantID, tokenID), out)
 }
 func upsertTx(ctx context.Context, tx *sql.Tx, tenantID string, t tokens.PersistedToken) error {
 	perms, _ := json.Marshal(t.Permissions)
@@ -395,7 +396,7 @@ func upsertTx(ctx context.Context, tx *sql.Tx, tenantID string, t tokens.Persist
 	if !t.ExpiresAt.IsZero() {
 		expires = t.ExpiresAt
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO cheesewaf_token_state (tenant_id,token_id,owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (tenant_id,token_id) DO UPDATE SET owner=EXCLUDED.owner,permissions=EXCLUDED.permissions,resources=EXCLUDED.resources,scopes=EXCLUDED.scopes,note=EXCLUDED.note,policy_epoch=EXCLUDED.policy_epoch,created_at=EXCLUDED.created_at,expires_at=EXCLUDED.expires_at,never_expire=EXCLUDED.never_expire,disabled=EXCLUDED.disabled,revoked=EXCLUDED.revoked,last_activity_at=EXCLUDED.last_activity_at,secret_digest=EXCLUDED.secret_digest,lease_id=EXCLUDED.lease_id,version=EXCLUDED.version`, tenantID, t.ID, t.Owner, perms, res, scopes, t.Note, int64(t.PolicyEpoch), t.CreatedAt, expires, t.NeverExpire, t.Disabled, t.Revoked, t.LastActivityAt, t.SecretDigest, t.LeaseID, int64(t.Version))
+	_, err := tx.ExecContext(ctx, `INSERT INTO cheesewaf_token_state (tenant_id,token_id,owner,permissions,resources,scopes,note,policy_epoch,created_at,expires_at,never_expire,disabled,revoked,last_activity_at,secret_digest,lease_id,version,display_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (tenant_id,token_id) DO UPDATE SET owner=EXCLUDED.owner,permissions=EXCLUDED.permissions,resources=EXCLUDED.resources,scopes=EXCLUDED.scopes,note=EXCLUDED.note,policy_epoch=EXCLUDED.policy_epoch,created_at=EXCLUDED.created_at,expires_at=EXCLUDED.expires_at,never_expire=EXCLUDED.never_expire,disabled=EXCLUDED.disabled,revoked=EXCLUDED.revoked,last_activity_at=EXCLUDED.last_activity_at,secret_digest=EXCLUDED.secret_digest,lease_id=EXCLUDED.lease_id,version=EXCLUDED.version,display_name=EXCLUDED.display_name`, tenantID, t.ID, t.Owner, perms, res, scopes, t.Note, int64(t.PolicyEpoch), t.CreatedAt, expires, t.NeverExpire, t.Disabled, t.Revoked, t.LastActivityAt, t.SecretDigest, t.LeaseID, int64(t.Version), t.Name)
 	if err != nil {
 		return fmt.Errorf("%w: upsert state: %w", ErrInvalidStore, err)
 	}

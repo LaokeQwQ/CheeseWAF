@@ -1,6 +1,6 @@
 // Package setup handles first-launch initialization: setup wizard, default config,
 // and local CA-signed admin certificate generation.
-// 首次启动初始化：安装向导、默认配置、本地 CA 签发管理端证书生成。
+// First-start initialization: setup wizard, default configuration, and local-CA management certificates.
 package setup
 
 import (
@@ -21,18 +21,18 @@ import (
 
 const (
 	// DefaultDataDir is the default data directory for CheeseWAF.
-	// 默认数据目录。
+	// Default data directory.
 	DefaultDataDir = "/var/lib/cheesewaf"
 
 	// SetupLockFile indicates that initial setup has been completed.
-	// 标识初始化已完成的锁文件。
+	// Lock file marking initialization as complete.
 	SetupLockFile = ".setup_complete"
 )
 
 // Wizard handles the first-launch setup process.
 // If a Web UI is available, it serves a browser-based wizard.
 // Otherwise, it falls back to a TUI-based setup.
-// 首次启动安装向导。优先使用 Web UI 向导，否则回退到 TUI 向导。
+// First-start setup wizard. Prefers the web UI wizard and falls back to the TUI.
 type Wizard struct {
 	DataDir      string        // 数据目录 / Data directory
 	ConfigPath   string        // 配置文件路径 / Config file path
@@ -42,26 +42,26 @@ type Wizard struct {
 }
 
 // NewWizard creates a first-launch wizard with safe defaults.
-// 创建带安全默认值的首次启动向导。
+// Creates the first-start wizard with secure defaults.
 func NewWizard(dataDir string) *Wizard {
 	return &Wizard{DataDir: dataDir}
 }
 
 // NeedsSetup checks if the initial setup has been completed.
-// 检查是否需要初始化。
+// Reports whether initialization is required.
 func (w *Wizard) NeedsSetup() bool {
 	return NeedsSetup(w.dataDir())
 }
 
 // MarkComplete marks the setup as complete by creating the lock file.
-// 标记初始化完成。
+// Marks initialization as complete.
 func (w *Wizard) MarkComplete() error {
 	return MarkComplete(w.dataDir())
 }
 
 // PrepareDefaults creates the default directory layout, config file, and
 // local CA-signed admin certificate bundle. It is safe to call repeatedly.
-// 准备默认目录、配置文件和本地 CA 签发管理端证书包，可重复调用。
+// Prepares the default directories, config file, and local-CA management certificate bundle; idempotent.
 func (w *Wizard) PrepareDefaults() (*DefaultBundle, error) {
 	return EnsureDefaults(DefaultOptions{
 		DataDir:    w.dataDir(),
@@ -73,7 +73,7 @@ func (w *Wizard) PrepareDefaults() (*DefaultBundle, error) {
 
 // RunWebWizard starts the web-based setup wizard on the admin port.
 // The wizard collects: admin username, password, optional 2FA, and basic site config.
-// 启动 Web 安装向导（管理端口），收集管理员账号、密码、可选 2FA 和基础站点配置。
+// Runs the web setup wizard on the admin listener and collects the administrator account, password, optional 2FA, and basic site configuration.
 func (w *Wizard) RunWebWizard(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

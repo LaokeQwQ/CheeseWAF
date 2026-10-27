@@ -871,6 +871,15 @@ func Validate(cfg *Config) error {
 	if err := validateManagementAPI(cfg.APISec.ManagementAPI); err != nil {
 		return err
 	}
+	if err := validateAuditSigning(cfg.AuditSigning); err != nil {
+		return err
+	}
+	if err := validateKMS(cfg.KMS); err != nil {
+		return err
+	}
+	if err := validateDiagnostics(cfg.Diagnostics, cfg.KMS); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1485,6 +1494,127 @@ func validateDedicatedManagedPath(target, root string) error {
 	return nil
 }
 
+var auditIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func validAuditIdentity(value string, maxLen int) bool {
+	return len(value) <= maxLen && auditIdentityPattern.MatchString(value)
+}
+
+func validateAuditSigning(cfg AuditSigningConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if !filepath.IsAbs(strings.TrimSpace(cfg.JournalDir)) {
+		return fmt.Errorf("audit_signing.journal_dir must be an absolute path")
+	}
+	if !validAuditIdentity(cfg.StreamID, 128) {
+		return fmt.Errorf("audit_signing.stream_id must match [A-Za-z0-9._-]{1,128}")
+	}
+	if !validAuditIdentity(cfg.SignerKeyID, 64) {
+		return fmt.Errorf("audit_signing.signer_key_id must match [A-Za-z0-9_-]{1,64}")
+	}
+	if !filepath.IsAbs(strings.TrimSpace(cfg.SignerKeyFile)) {
+		return fmt.Errorf("audit_signing.signer_key_file must be an absolute path")
+	}
+	if cfg.QueueCapacity < 1 || cfg.QueueCapacity > 65536 {
+		return fmt.Errorf("audit_signing.queue_capacity must be within 1..65536")
+	}
+	seen := make(map[string]bool, len(cfg.Verifiers))
+	for _, verifier := range cfg.Verifiers {
+		if !validAuditIdentity(verifier.KeyID, 64) || !filepath.IsAbs(strings.TrimSpace(verifier.PublicKeyFile)) {
+			return fmt.Errorf("audit_signing.verifiers entries require a valid key_id and an absolute public_key_file")
+		}
+		if seen[verifier.KeyID] {
+			return fmt.Errorf("audit_signing.verifiers contains duplicate key_id %q", verifier.KeyID)
+		}
+		seen[verifier.KeyID] = true
+	}
+	return nil
+}
+
+var (
+	managementTokenTenantPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	managementTokenEnvPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+)
+
+var kmsIdentityPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+func validateKMS(cfg KMSConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	for label, value := range map[string]string{
+		"tenant_id": cfg.TenantID, "key_id": cfg.KeyID, "scope": cfg.Scope, "actor": cfg.Actor,
+	} {
+		if !kmsIdentityPattern.MatchString(value) {
+			return fmt.Errorf("kms.%s must match [a-z0-9][a-z0-9_-]{0,63}", label)
+		}
+	}
+	if cfg.Timeout != 0 && (cfg.Timeout < time.Second || cfg.Timeout > time.Minute) {
+		return fmt.Errorf("kms.timeout must be within 1s..60s")
+	}
+	if cfg.CAFile != "" && !filepath.IsAbs(cfg.CAFile) {
+		return fmt.Errorf("kms.ca_file must be an absolute path")
+	}
+	hasEndpoint := strings.TrimSpace(cfg.Endpoint) != ""
+	if hasEndpoint {
+		parsed, err := url.Parse(cfg.Endpoint)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("kms.endpoint must be an https URL without user info, query or fragment")
+		}
+		if !filepath.IsAbs(strings.TrimSpace(cfg.TokenFile)) {
+			return fmt.Errorf("kms.token_file must be an absolute path when an external KMS endpoint is configured")
+		}
+		return nil
+	}
+	if !cfg.Embedded.Approved {
+		return fmt.Errorf("kms requires an external endpoint or embedded.approved=true for single-node fallback")
+	}
+	switch cfg.Embedded.Mode {
+	case "single-node", "offline":
+	default:
+		return fmt.Errorf("kms.embedded.mode must be single-node or offline")
+	}
+	if !filepath.IsAbs(strings.TrimSpace(cfg.Embedded.RootKeyFile)) || !filepath.IsAbs(strings.TrimSpace(cfg.Embedded.KeyringFile)) {
+		return fmt.Errorf("kms.embedded.root_key_file and keyring_file must be absolute paths")
+	}
+	return nil
+}
+
+func validateDiagnostics(cfg DiagnosticsConfig, kms KMSConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if !kms.Enabled {
+		return fmt.Errorf("diagnostics requires kms.enabled")
+	}
+	parsed, err := url.Parse(cfg.Endpoint)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return fmt.Errorf("diagnostics.endpoint must be an absolute http(s) URL")
+	}
+	for label, value := range map[string]string{
+		"token_file": cfg.TokenFile, "queue_dir": cfg.QueueDir,
+	} {
+		if !filepath.IsAbs(strings.TrimSpace(value)) {
+			return fmt.Errorf("diagnostics.%s must be an absolute path", label)
+		}
+	}
+	for label, value := range map[string]string{
+		"key_version": cfg.KeyVersion, "tenant_id": cfg.TenantID, "actor": cfg.Actor,
+	} {
+		if !kmsIdentityPattern.MatchString(value) {
+			return fmt.Errorf("diagnostics.%s must match [a-z0-9][a-z0-9_-]{0,63}", label)
+		}
+	}
+	if cfg.Timeout != 0 && (cfg.Timeout < time.Second || cfg.Timeout > time.Minute) {
+		return fmt.Errorf("diagnostics.timeout must be within 1s..60s")
+	}
+	if cfg.PollInterval != 0 && (cfg.PollInterval < 10*time.Millisecond || cfg.PollInterval > time.Minute) {
+		return fmt.Errorf("diagnostics.poll_interval must be within 10ms..60s")
+	}
+	return nil
+}
+
 func validateManagementAPI(api ManagementAPIConfig) error {
 	if len(api.Tokens) > MaxManagementAPITokens {
 		return fmt.Errorf("management api tokens exceed maximum of %d", MaxManagementAPITokens)
@@ -1546,6 +1676,25 @@ func validateManagementAPI(api ManagementAPIConfig) error {
 		}
 		if !token.CreatedAt.IsZero() && !token.LastUsedAt.IsZero() && token.LastUsedAt.Before(token.CreatedAt) {
 			return fmt.Errorf("management api token %q last_used_at must not precede created_at", id)
+		}
+	}
+	if api.Durable != nil {
+		if !api.Enabled {
+			return fmt.Errorf("management api durable storage requires management api enabled")
+		}
+		hasDSN := strings.TrimSpace(api.Durable.DSN) != ""
+		hasEnv := strings.TrimSpace(api.Durable.DSNEnv) != ""
+		if hasDSN == hasEnv {
+			return fmt.Errorf("management api durable storage requires exactly one of dsn or dsn_env")
+		}
+		if hasEnv && !managementTokenEnvPattern.MatchString(api.Durable.DSNEnv) {
+			return fmt.Errorf("management api durable dsn_env must be an uppercase environment variable name")
+		}
+		if !managementTokenTenantPattern.MatchString(api.Durable.TenantID) {
+			return fmt.Errorf("management api durable tenant_id must match [a-z0-9][a-z0-9_-]{0,63}")
+		}
+		if api.Durable.Timeout != 0 && (api.Durable.Timeout < time.Second || api.Durable.Timeout > time.Minute) {
+			return fmt.Errorf("management api durable timeout must be within 1s..60s")
 		}
 	}
 	return nil

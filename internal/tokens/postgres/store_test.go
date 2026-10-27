@@ -23,7 +23,7 @@ func (r tokenRowFixture) Scan(dest ...any) error {
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	values := []any{
 		"alice", []byte(`["rules.read"]`), []byte(`["site:alpha"]`), []byte(`["site:alpha"]`), "",
-		r.epoch, now, sql.NullTime{}, false, false, false, now, r.digest, "lease-1", r.version,
+		r.epoch, now, sql.NullTime{}, false, false, false, now, r.digest, "lease-1", r.version, "token-name",
 	}
 	if r.includeID {
 		values = append([]any{"tok_1"}, values...)

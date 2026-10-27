@@ -70,7 +70,7 @@ func TestWebshellDetectRequestSurfaceIsNotAnEvasionOracle(t *testing.T) {
 		Metadata:    map[string]any{},
 	}
 
-	got, err := NewWebshellDetector("block").Detect(context.Background(), reqCtx)
+	got, err := NewAnalyzer("block", 2, "webshell").Detect(context.Background(), reqCtx)
 	if err != nil {
 		t.Fatal(err)
 	}

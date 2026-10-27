@@ -15,6 +15,7 @@ import (
 type PersistedToken struct {
 	ID             string
 	Owner          string
+	Name           string
 	Permissions    []string
 	Resources      []string
 	Scopes         []string

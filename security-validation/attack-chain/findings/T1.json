@@ -1,0 +1,244 @@
+{
+  "track": "T1",
+  "title": "Management-plane entry: unauthenticated -> admin plane takeover",
+  "commit": "3216e72d60af707b3498fbf028b8510532e45b54",
+  "binary": "/tmp/cw-audit/bin/cheesewaf — CheeseWAF 0.4.5-beta (dev-local, unknown), built from the clean worktree /tmp/cw-audit/src at 3216e72d",
+  "instances": [
+    {
+      "id": "T1",
+      "ports": {
+        "data": 28081,
+        "admin": 29441,
+        "origin": 29091
+      },
+      "entry": {
+        "enabled": true,
+        "path": "/g7k2m9",
+        "cookie": "cheesewaf_admin_entry"
+      },
+      "variants": [
+        "default (setup pending)",
+        "setup complete + security_entry enabled",
+        "captcha enabled",
+        "admin TLS enabled"
+      ],
+      "harness_note": "harness/env.sh port map for T1 changed during the run (18081/19441/19091 -> 28081/29441/29091); the instance was rebuilt and every captured request in this report uses admin=29441. Config and instance.env snapshots are in artifacts/T1/_instance/.",
+      "artifacts": "security-validation/attack-chain/artifacts/T1 (per case: cmd.txt, trace.txt with raw wire bytes, headers.txt, body.txt, meta.txt)"
+    }
+  ],
+  "findings": [
+    {
+      "id": "T1-F1",
+      "title": "[REFUTED] CSRF double-submit skip via bogus Authorization header was a harness artifact (secret placeholder resolved to a valid token)",
+      "severity": "medium",
+      "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N",
+      "score": 4.3,
+      "asset": "cheesewaf admin API (127.0.0.1:29441) — internal/api/middleware/csrf.go + session-authenticated route group /api/auth/* (internal/api/router.go:240-249)",
+      "preconditions": "Attacker can make a request to the admin listener that carries both (a) the victim's cookie session and (b) an attacker-chosen Authorization header. Browsers block custom headers on cross-origin no-cors requests, so this needs a header-injection position (malicious extension, local process driving the browser, header-rewriting proxy) or any same-origin script foothold. Entry cookie + valid admin credentials are required for the victim session.",
+      "chain": [
+        "T1-14: unauthenticated client mints the entry cookie at /g7k2m9 (302 + cheesewaf_admin_entry).",
+        "T1-15/01: POST /api/auth/login issues cheesewaf_session (HttpOnly) + cheesewaf_csrf.",
+        "T1-15/04: POST /api/auth/logout with the cookie session and no X-CSRF-Token is correctly rejected (403 CSRF_INVALID) — the intended control.",
+        "T1-15/18: the same call with the extra header `Authorization: Bearer cwapi_<anything>` is accepted (200) and executed: /api/auth/refresh returns a fresh csrf token and user object.",
+        "T1-15/21: same trick on /api/auth/logout returns {\"revoked\":true} and the session is dead (T1-15/22 -> 401).",
+        "Root cause: CSRFMiddleware decides the exemption from the raw Authorization header (`strings.HasPrefix(bearerToken(r), \"cwapi_\")`) but the request was in fact authenticated by the cookie — tokens.Middleware/SessionMiddleware use SessionToken(r), which prefers the cookie, so the bogus bearer is never validated."
+      ],
+      "status": "refuted",
+      "evidence": {
+        "request": "POST /api/auth/refresh with Cookie session and no X-CSRF-Token -> 403; with literal \"Authorization: Bearer cwapi_forged\" -> 401 (reproduced manually).",
+        "response": "Control reproduced: 403 without header, 401 with a literal forged cwapi_ value.",
+        "control": "Original 200 trace used the secret placeholder $$...$$, not a literal token."
+      },
+      "impact": "Not exploitable: managementAuth rejects any invalid cwapi_ bearer with 401 before CSRF runs; the 200 observed in the original run came from a harness secret placeholder that resolved to a real token. Literal cwapi_ attacks return 401.",
+      "repro": "1) mint entry cookie: curl --noproxy '*' -A 'audit-ua' -c jar -b jar http://127.0.0.1:29441/g7k2m9\n2) login: curl ... -b jar -c jar -X POST .../api/auth/login -d '{\"username\":\"admin\",\"password\":\"<pw>\"}'\n3) control: curl -b jar -c jar -X POST .../api/auth/logout  -> 403 CSRF_INVALID\n4) bypass: same call + -H 'Authorization: Bearer cwapi_anything' -> 200 {\"data\":{\"revoked\":true}}; a follow-up GET /api/system returns 401."
+    },
+    {
+      "id": "T1-F2",
+      "title": "First-install static-asset allowlist trusts the raw request path while the file resolver normalizes it — console SPA is served without the entry cookie (`/assets/../index.html` -> 200 vs `/index.html` -> 418)",
+      "severity": "low",
+      "cvss": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "score": 3.7,
+      "asset": "console.login.security_entry gate during first install — internal/cli/service.go allowAdminEntranceAt (isAdminStaticAssetPath on r.URL.Path) vs serveAdminStaticFile (path.Clean)",
+      "preconditions": "security_entry.enabled=true and first install still pending (setup.NeedsSetup == true). Reachability of the admin listener.",
+      "chain": [
+        "The gate short-circuits for `setup.NeedsSetup(cfg.Setup.DataDir) && (GET|HEAD) && isAdminStaticAssetPath(r.URL.Path)`.",
+        "isAdminStaticAssetPath only checks a raw string prefix (`/assets/`), while the static resolver uses `path.Clean` on the same path.",
+        "GET /assets/../index.html (sent literally over a raw socket, no client normalisation) is therefore allowed by the gate and then resolves to `index.html` inside the web root.",
+        "Direct /index.html and / are still 418."
+      ],
+      "status": "confirmed",
+      "evidence": {
+        "request": "GET /assets/../index.html HTTP/1.1\nHost: 127.0.0.1:29441\nUser-Agent: audit-ua\n(no cookie; sent over a raw socket so the path is not normalised by the client)\n\nvariants: /assets/./../index.html, /assets//../index.html, /assets/%2e%2e/index.html",
+        "response": "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\n(false)\n<!doctype html><html lang=\"zh-CN\">…<div id=\"root\"></div>…</html>  (1507 bytes, the console SPA shell)",
+        "control": "GET /index.html without cookie -> 418 teapot (T1-12/09); GET / without cookie -> 418 (T1-12/07).\nEscapes out of the web root are refused: /assets/..%2f..%2fdata%2fsetup.token -> 404 and /assets/..%2f..%2f..%2f..%2fetc%2fpasswd -> 404 (T1-12/raw/15,16), i.e. no arbitrary file read.\nAfter setup completes the allowlist is gone: /assets/%2e%2e/index.html -> 418 (T1-13/09).",
+        "artifacts": [
+          "artifacts/T1/T1-12/raw/13*",
+          "artifacts/T1/T1-12/raw/14*",
+          "artifacts/T1/T1-12/10-assets-traversal-encoded*",
+          "artifacts/T1/T1-12/09-index-direct-no-cookie*",
+          "artifacts/T1/T1-12/07-root-no-cookie-presetup*",
+          "artifacts/T1/T1-12/raw/15*",
+          "artifacts/T1/T1-12/raw/16*",
+          "artifacts/T1/T1-13/09-assets-traversal-after-complete*"
+        ]
+      },
+      "impact": "Before the console is configured, an unauthenticated client can retrieve the console static shell (and any other file under web/dist reachable that way) without the entry cookie, defeating the intended 418 camouflage for that class of paths. Nothing outside the web root is readable and /api/* stays closed, so the practical loss is the entry-gate concealment itself.",
+      "repro": "printf 'GET /assets/../index.html HTTP/1.1\\r\\nHost: 127.0.0.1:29441\\r\\nConnection: close\\r\\n\\r\\n' | nc 127.0.0.1 29441  -> 200 + SPA shell, while GET /index.html -> 418."
+    },
+    {
+      "id": "T1-F3",
+      "title": "Entry-path strength (8-64 alphanumeric) is enforced only by the setup API; config validation accepts arbitrary short/guessable segments that the 418 gate then honours",
+      "severity": "low",
+      "cvss": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "score": 3.7,
+      "asset": "internal/setup/security_entry.go ValidateSecurityEntrySegment (8-64, [A-Za-z0-9]) vs internal/config/validator.go validateSecurityEntry (absolute clean path only)",
+      "preconditions": "Operator configures console.login.security_entry.path by editing YAML/API config instead of finishing the wizard (the harness does exactly this).",
+      "chain": [
+        "POST /api/setup with security_entry_path=g7k2m9 is rejected: 400 SETUP_VALIDATION 'admin security entry must contain 8-64 ASCII letters or digits'.",
+        "The identical segment is accepted from config, and instance.sh set T1 ENTRY_ENABLED=true starts the gate on /g7k2m9.",
+        "The gate happily mints the entry cookie for that 6-character path (302 + Set-Cookie)."
+      ],
+      "status": "confirmed",
+      "evidence": {
+        "request": "POST /api/setup HTTP/1.1\nX-CheeseWAF-Setup-Token: <valid>\n{\"username\":\"admin\",…,\"security_entry_path\":\"g7k2m9\"}",
+        "response": "HTTP/1.1 400 Bad Request\n{\"error\":{\"code\":\"SETUP_VALIDATION\",\"message\":\"setup validation failed: admin security entry must contain 8-64 ASCII letters or digits\"…}}",
+        "control": "Control A — same request with security_entry_path=g7k2m9audit: HTTP/1.1 200 {\"data\":{\"security_entry_path\":\"/g7k2m9audit\",\"setup_complete\":true…}} (T1-13/04).\nControl B — the 6-char path taken from YAML is live: GET /g7k2m9 -> 302 + Set-Cookie cheesewaf_admin_entry (T1-14/04).\nControl C — structural checks still apply from YAML: paths containing '..' are rejected by config validation (validator.go:2536).",
+        "artifacts": [
+          "artifacts/T1/T1-13/01-entry-path-too-short*",
+          "artifacts/T1/T1-13/04-complete-setup-valid*",
+          "artifacts/T1/T1-14/04-entry-path-mint-cookie*",
+          "artifacts/T1/_instance/cheesewaf.yaml.final"
+        ]
+      },
+      "impact": "The entry path is the only thing hiding the console from a scanner; a short/low-entropy segment (e.g. /g7k2m9, /admin1) is brute-forceable, after which the login endpoint becomes reachable unauthenticated (subject to rate limiting). Also makes the harness default (and any wizard-less deployment) weaker than the wizard's own policy.",
+      "repro": "Set console.login.security_entry.path: \"/a\" in YAML, start serve with entry enabled, GET /a -> 302 + entry cookie; POST /api/setup with the same value -> 400."
+    },
+    {
+      "id": "T1-F4",
+      "title": "`/healthz` on the admin listener is served outside the security-entry gate (unauthenticated), while /health is allowlisted and /readyz is 418",
+      "severity": "info",
+      "cvss": "n/a",
+      "score": 0.0,
+      "asset": "internal/cli/service.go withAdapterHealth (mounted before adminHandler) + internal/adapterapi/handler.go health (no authorization)",
+      "preconditions": "security_entry.enabled=true (any post-setup state). Reachability of the admin listener.",
+      "chain": [
+        "withAdapterHealth routes r.URL.Path == \"/healthz\" straight to the adapter API handler, before the admin entrance gate runs.",
+        "adapterapi health() performs no token/loopback check and returns {\"status\":\"ok\"}.",
+        "The gate's own allowlist does not mention /healthz (only /health, /health/*, public metrics), so the two paths behave inconsistently."
+      ],
+      "status": "confirmed",
+      "evidence": {
+        "request": "GET /healthz HTTP/1.1\nHost: 127.0.0.1:29441\nUser-Agent: audit-ua\nAccept: application/json\n(no cookies)",
+        "response": "HTTP/1.1 200 OK\nContent-Type: application/json\n{\"status\":\"ok\"}",
+        "control": "GET /readyz (unknown path, same client) -> 418 teapot (T1-17/13) and GET /healthz equivalent on an unknown /healthz subpath is gated.\nGET / without cookie -> 418 (T1-14/01); GET /api/v1/adapter/inspect without cookie -> 403 admin entry required (T1-17/11) — so only /healthz escapes the gate.",
+        "artifacts": [
+          "artifacts/T1/T1-17/12-healthz-raw-no-cookie*",
+          "artifacts/T1/T1-17/10-healthz-unknown*",
+          "artifacts/T1/T1-17/13-readyz-unknown*",
+          "artifacts/T1/T1-17/11-adapter-inspect-no-cookie*"
+        ]
+      },
+      "impact": "Confirms the admin listener is alive to any scanner regardless of the entry gate; combined with the version banner in /api/auth/login-options it supports fingerprinting. No administrative data is returned.",
+      "repro": "curl --noproxy '*' http://127.0.0.1:29441/healthz -> 200 {\"status\":\"ok\"} with no cookie; curl .../readyz -> 418."
+    },
+    {
+      "id": "T1-F5",
+      "title": "Login lockout and captcha enforcement are keyed on the client-supplied X-Forwarded-For when the peer is loopback, so header rotation defeats the 5-failure lockout",
+      "severity": "medium",
+      "cvss": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N",
+      "score": 4.3,
+      "asset": "internal/api/handler/handler.go trustedLoginClientIP + loginRateLimitKeys + loginCAPTCHASkippedForPeer",
+      "preconditions": "Admin console not public (server.admin_public=false) and the socket peer is loopback (documented single-host reverse-proxy deployment). The proxy must forward client-supplied XFF unfiltered.",
+      "chain": [
+        "trustedLoginClientIP() accepts the right-most X-Forwarded-For entry from a loopback peer, and loginRateLimitKeys() builds 'client:<ip>' from it.",
+        "Five wrong passwords from 203.0.113.9 lock that key: 6th attempt and even the CORRECT password return 429 LOGIN_RATE_LIMITED for 5 minutes.",
+        "The same correct password from 203.0.113.10 (one header value change) returns 200, so the lockout is per header value, not per real client.",
+        "The same header also disables the loopback captcha skip: without XFF the login succeeds with captcha enabled, with XFF the identical request is rejected 401 INVALID_CAPTCHA."
+      ],
+      "status": "confirmed",
+      "evidence": {
+        "request": "POST /api/auth/login HTTP/1.1\nContent-Type: application/json\nX-Forwarded-For: 203.0.113.9\n{\"username\":\"admin\",\"password\":\"wrong-password\"}   (x5, then the correct password)",
+        "response": "Attempts 1-5: HTTP/1.1 401 {\"error\":{\"code\":\"INVALID_CREDENTIALS\"…}}\nAttempt 6:  HTTP/1.1 429 {\"error\":{\"code\":\"LOGIN_RATE_LIMITED\",\"message\":\"too many failed login attempts\"…}} (no Retry-After)\nCorrect password from the same source: 429 LOGIN_RATE_LIMITED",
+        "control": "Correct password from X-Forwarded-For: 203.0.113.10 -> 200 (lock is per source key) [T1-16/03]; from 203.0.113.14 after locking .9 -> 200 [T1-16/06].\nCaptcha control: with CAPTCHA_ENABLED=true, loopback login without XFF -> 200 [T1-18/04]; identical request with X-Forwarded-For -> 401 INVALID_CAPTCHA [T1-18/05].",
+        "artifacts": [
+          "artifacts/T1/T1-16/01-lockout-attempt-1..6*",
+          "artifacts/T1/T1-16/02-locked-source-correct-password*",
+          "artifacts/T1/T1-16/03-fresh-source-correct-password*",
+          "artifacts/T1/T1-16/06-xff-rotation-after-lockout*",
+          "artifacts/T1/T1-18/04-login-loopback-captcha-skipped*",
+          "artifacts/T1/T1-18/05-login-xff-captcha-required*"
+        ]
+      },
+      "impact": "In the common 'nginx/traefik on the same host' deployment the password-spray ceiling (5 tries / 5 min / client) can be reset at will by rotating the X-Forwarded-For value, and the per-source captcha challenge can be avoided the same way. Conversely an attacker can pin a victim IP (or omit XFF inside the console) to force 5-minute lockouts — a trivial login DoS for one source.",
+      "repro": "for i in 1..5: curl -X POST .../api/auth/login -H 'X-Forwarded-For: 203.0.113.9' -d '{bad}'; then the same with the correct password -> 429; repeat with -H 'X-Forwarded-For: 203.0.113.10' -> 200."
+    },
+    {
+      "id": "T1-F6",
+      "title": "Login lockout gives 5 attempts per source with no Retry-After and no challenge fallback — cheap account/source denial of service",
+      "severity": "info",
+      "cvss": "n/a",
+      "score": 0.0,
+      "asset": "internal/api/handler/login_captcha_state.go (loginRateLimitMaxFailures=5, window/lock 5m) + Login handler 429 path",
+      "preconditions": "Any client able to reach the login endpoint through the entry gate.",
+      "chain": [
+        "5 failed password attempts (or even 5 attempts with a syntactically valid but non-existent account) lock the source and the account-source key for 5 minutes.",
+        "The 429 response carries no Retry-After and the correct password is refused for the whole lock window."
+      ],
+      "status": "confirmed",
+      "evidence": {
+        "request": "POST /api/auth/login with wrong password x5 from X-Forwarded-For: 203.0.113.9",
+        "response": "HTTP/1.1 429 Too Many Requests\nContent-Type: application/json\n{\"error\":{\"code\":\"LOGIN_RATE_LIMITED\",\"message\":\"too many failed login attempts\"…}}\n(headers: no Retry-After)",
+        "control": "Same 5 failures for a non-existent account return the uniform 401 INVALID_CREDENTIALS in ~66 ms, identical to the existing-account timing (T1-16/04), so enumeration is not possible but locking does not require a real account.\nLogin endpoint is unreachable without the entry cookie (T1-15/12 -> 403 admin entry required), which limits the attacker pool to someone who already found the entry path.",
+        "artifacts": [
+          "artifacts/T1/T1-16/01-lockout-attempt-6*",
+          "artifacts/T1/T1-16/04-nonexistent-account*",
+          "artifacts/T1/T1-15/12-login-without-entry-cookie*"
+        ]
+      },
+      "impact": "A single source can be locked out of the console for 5 minutes with 5 requests; without Retry-After, clients cannot back off gracefully. Low severity because the lock is time-bounded and the endpoint sits behind the entry gate.",
+      "repro": "5x wrong password then the correct one -> 429 for 5 minutes; headers contain no Retry-After."
+    }
+  ],
+  "coverage": {
+    "scope": "T1 management-plane entry track: setup-token gate, first-install surface, setup completion, 418 security entry gate (path normalisation, static assets, cookie minting/binding), session + CSRF, login throttling/enumeration, health surface, captcha and admin-TLS variants.",
+    "cases": {
+      "T1-10": "setup token gate — /api/setup, /api/setup/probe, /api/setup/integrations/postgres/test, /api/setup/draft all 401 SETUP_TOKEN_REQUIRED without the header; /api/setup/status stays public (needs_setup=true); control: valid token -> 200 with setup session cookie.",
+      "T1-11": "token shape/oracle matrix — wrong token (401 'invalid'), 40-char prefix (401), uppercase (401), token in query (401 'required'), token in Authorization (401), empty header (401), duplicated header (401, first value wins); HTTP header trailing whitespace is stripped by net/http so 'token + space' is accepted (200) — transport behaviour, not a bypass; valid token without setup session -> 401 SETUP_SESSION_REQUIRED.",
+      "T1-12": "first-install surface — probe issues cheesewaf_setup_session (HttpOnly, SameSite=Strict, 30 min); draft get/patch require that session; Origin: https://evil.example -> 403 SETUP_ORIGIN_DENIED while Origin http://localhost:9999 and no-Origin -> 200 (isLocalOrSameOrigin treats any localhost origin as local); postgres test is token-gated and returns 502 SETUP_POSTGRES_UNREACHABLE without echoing the password; static-asset allowlist path-normalisation (see T1-F2) with 404s for web-root escapes.",
+      "T1-13": "setup completion — security_entry_path validation (too short 400, traversal 400), weak password 400, correct token -> 200 + admin user + entry path persisted, immediate replay -> 409 SETUP_ALREADY_COMPLETE, wrong token after completion -> 409 (state is checked before the token, so no post-setup token oracle), setup.token/setup.url deleted, /setup SPA still served.",
+      "T1-14": "418 entry gate — / and /api/* without the entry cookie (418 HTML vs 403 JSON), entry mint 302 + HttpOnly/SameSite=Lax cookie, console 200 with cookie, API 401 (auth) with entry cookie only, POST/PUT/OPTIONS on the entry path 418 (only GET/HEAD mint), HEAD mints, trailing slash / double slash / dot-segment / percent-encoded entry path all mint (filepath.Clean + URL decoding), uppercase does not, returnTo passthrough, cookie tampering (wrong UA, expiry edit, truncated MAC, malformed) all 418, GET /api%2fsystem -> 403 JSON while //api/system -> 418 (triage quirk, no bypass), raw traversal past the entry path to /api/system -> 418 and no cookie.",
+      "T1-15": "session + CSRF — login issues HttpOnly session + readable CSRF (SameSite=Strict), authenticated reads work, logout/refresh rejected 403 CSRF_INVALID without the header, accepted with the matching header or the urlencoded csrf_token form field, forged/empty/duplicate CSRF rejected, fixed session value not adopted (no fixation), login impossible without the entry cookie (403), wrong password 401 uniform, entry cookie is UA-bound even with a valid session (403). See T1-F1 for the cwapi_ bearer CSRF skip.",
+      "T1-16": "login throttling/enumeration — 5 failures then 429 LOGIN_RATE_LIMITED (also for the correct password), lock scoped to the XFF-derived source key (fresh source -> 200), non-existent account returns the same 401/timing as a wrong password (~66 ms), syntactically invalid username returns 400 USERNAME_INVALID in ~1 ms (format only), 429 has no Retry-After.",
+      "T1-17": "health/metrics — /health, /health/live, /health/ready, /health/cluster reachable without the entry cookie (documented allowlist), /metrics and /api/metrics 403 without it, /metrics 404 when Prometheus is disabled, /api/metrics 200 with session, /healthz 200 outside the gate (T1-F4), /readyz 418.",
+      "T1-18": "captcha variant (CAPTCHA_ENABLED=true) — login-options advertises captcha mode=slider and the product version, challenge issuance returns a 320x150 slider PNG, loopback login skips captcha (200), any X-Forwarded-For disables that skip (401 INVALID_CAPTCHA even with the right password), forged receipt/proof rejected 401, issuance throttled per client (15x200 then 503 CAPTCHA_CAPACITY_REACHED).",
+      "T1-19": "admin TLS variant (ADMIN_TLS_ENABLED=true) — HTTP/2 over TLS1.3 with a self-signed CheeseWAF Admin leaf (C=…, SAN 127.0.0.1/localhost), plain HTTP to the TLS port -> 400 'Client sent an HTTP request to an HTTPS server.', HSTS present on gate responses, entry cookie gains Secure, session cookies switch to the __Host- prefix, login + API work over TLS, an entry cookie minted over plain HTTP is still accepted over HTTPS (no scheme binding) while the UA binding holds (418)."
+    },
+    "controls": [
+      "no set-up token vs valid set-up token (T1-10/01..05 vs 06)",
+      "wrong token vs correct token for probe/draft (T1-11/01 vs 06/08)",
+      "entry cookie absent vs present (T1-14/01,02 vs 04,05)",
+      "entry cookie only vs cookie + session (T1-14/06 vs T1-15/02)",
+      "CSRF header absent vs present, and cwapi_-prefixed vs arbitrary bearer (T1-15/04,06,07,17,18,19)",
+      "locked source vs fresh source (T1-16/02 vs 03/06)",
+      "loopback login with and without X-Forwarded-For under captcha (T1-18/04 vs 05)",
+      "plain HTTP vs TLS on the same admin port (T1-19/01 vs 02)",
+      "first-install static allowlist before vs after setup completion (T1-12/10 vs T1-13/09)"
+    ],
+    "refuted": [
+      "Setup-token bypass through query parameter, Authorization header, uppercase, prefix, empty value or duplicated header — all 401 (T1-11).",
+      "Setup-token replay after completion (expecting a token oracle) — 409 SETUP_ALREADY_COMPLETE, token file deleted (T1-13/05,06).",
+      "Entry-cookie forgery / replay with another User-Agent, edited expiry, truncated MAC or malformed value — all 418 (T1-14/12..16).",
+      "Reaching /api/* by traversal or encoding through the entry gate — 418 HTML or 403 JSON, never a minted cookie plus API body (T1-14/raw/20..23).",
+      "Arbitrary file read through the static allowlist — traversal beyond web/dist returns 404 (T1-12/raw/15,16).",
+      "Privilege escalation by pairing a bogus cwapi_ bearer with a cookie session — management-auth routes answer 401 (T1-15/20); only CSRF is skipped.",
+      "Session fixation via a pre-set session cookie — login issues a fresh session and the planted value never authenticates (T1-15/23,24).",
+      "CSRF bypass with a duplicate/mismatched-length token or the urlencoded form field without the cookie value — 403 (T1-15/25)."
+    ],
+    "gaps": [
+      "Setup-token file permission/TTL handling and the setup.url receipt were observed (0600, token deleted on completion) but not attacked beyond the gate ordering.",
+      "Passkey/TOTP login paths, /api/auth/session/bootstrap semantics and the entry gate's behaviour under admin_public=true (XFF ignored) were out of scope for T1.",
+      "Concurrent-login caps (32) and the full audit-log correlation were not exercised."
+    ]
+  },
+  "notes": " T1-F1 refuted after manual replay: the harness secret placeholder resolved to a valid management token; literal forged cwapi_ values return 401 before CSRF."
+}
