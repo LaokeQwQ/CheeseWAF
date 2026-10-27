@@ -13,11 +13,32 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/intel"
 	"github.com/LaokeQwQ/CheeseWAF/internal/intel/feed"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intel/impact"
 	"github.com/LaokeQwQ/CheeseWAF/internal/intel/scheduler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/intelstore"
 )
 
 const defaultIntelPollInterval = 15 * time.Minute
+
+// intelRolloutPolicy applies the configured shadow window; the impact package
+// otherwise falls back to its one-hour default.
+func intelRolloutPolicy(cfg config.IntelConfig) impact.Policy {
+	policy := impact.DefaultPolicy()
+	if cfg.ShadowWindow > 0 {
+		policy.MinShadowDuration = cfg.ShadowWindow
+	}
+	return policy
+}
+
+// intelSourceTrustPolicy lets an operator accept a single community source.
+// Vendor and official sources still need no corroboration.
+func intelSourceTrustPolicy(cfg config.IntelConfig) intel.TrustPolicy {
+	policy := intel.DefaultTrustPolicy()
+	if cfg.AllowCommunitySingleSource {
+		policy.RequiredCorroboration = 1
+	}
+	return policy
+}
 
 // startIntelScheduler starts the background feed poller. It stores normalized
 // feed items only; candidate generation stays review-first and requires an

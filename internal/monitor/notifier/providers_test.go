@@ -437,6 +437,9 @@ func TestEmailDeliversOverSMTP(t *testing.T) {
 		Token:    "unused-password",
 		Headers:  map[string]string{"from": "CheeseWAF <waf@example.test>"},
 		Enabled:  true,
+		// The fake SMTP server is bound to loopback, which the notifier
+		// rejects unless the operator opted in.
+		AllowPrivateEndpoint: true,
 	}, nil)
 	if err != nil {
 		t.Fatalf("create email provider: %v", err)

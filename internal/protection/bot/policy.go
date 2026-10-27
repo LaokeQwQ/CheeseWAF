@@ -323,8 +323,9 @@ func newPolicyWithRuntimeCAPTCHA(cfg config.BotProtectionConfig, clock timekeepe
 		sliderCAPTCHATolerance: cfg.SliderCAPTCHATolerance,
 		sliderCAPTCHAMinDrag:   cfg.SliderCAPTCHAMinDrag,
 		captchaMobileType:      cfg.CAPTCHAMobileType,
-		// WAF slider challenges always require a movement track (anti-solver). Config flag is ignored.
-		sliderTrackRequired:    true,
+		// The loader defaults this to true. Operators can turn it off for native
+		// sliders that cannot report a pointer track.
+		sliderTrackRequired:    cfg.SliderCAPTCHATrackRequired,
 		challengeDifficulty:    cfg.ChallengeDifficulty,
 		altchaMaxNumber:        cfg.AltchaMaxNumber,
 		altchaHeaderName:       cfg.AltchaHeaderName,
