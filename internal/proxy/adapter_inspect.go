@@ -19,6 +19,13 @@ import (
 // same site-scoped pipeline and protection policy used by the inline proxy.
 // It is intentionally metadata/body-only: no upstream request is made and no
 // gateway response is rendered here.
+// adapterBodyTruncated reports a partial body. The validator accepts
+// body_truncated with an omitted body_state, so checking only the state would
+// let that combination skip the incomplete-input decision.
+func adapterBodyTruncated(request adapterapi.Request) bool {
+	return request.BodyTruncated || request.BodyState == adapterapi.BodyStateTruncated
+}
+
 func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request) (adapterapi.Decision, error) {
 	if s == nil {
 		return adapterapi.Decision{}, errors.New("proxy server is required")
@@ -109,7 +116,7 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 	reqCtx.Metadata["adapter_body_state"] = string(request.BodyState)
 	reqCtx.Metadata["adapter_body_encoding"] = request.BodyEncoding
 	reqCtx.Metadata["adapter_source"] = string(request.Source)
-	if request.BodyState == adapterapi.BodyStateTruncated {
+	if adapterBodyTruncated(request) {
 		// The gateway forwarded only a prefix. Detecting on that prefix and
 		// returning allow would report a clean verdict for a body the WAF never
 		// saw, so route the request through the incomplete-input decision path:
@@ -134,7 +141,7 @@ func (s *Server) InspectAdapter(ctx context.Context, request adapterapi.Request)
 	if err != nil {
 		return adapterapi.Decision{}, err
 	}
-	if request.BodyState == adapterapi.BodyStateTruncated {
+	if adapterBodyTruncated(request) {
 		// Applied after detection so a real block still wins: the incomplete
 		// path keeps an existing block/challenge and only fills the gap.
 		if marker, ok := pipeline.(incompleteInputMarker); ok {

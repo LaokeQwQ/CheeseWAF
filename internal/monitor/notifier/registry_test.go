@@ -111,3 +111,41 @@ func TestRegistryNormalizesTypeNames(t *testing.T) {
 		t.Fatal("type lookup must ignore case and surrounding space")
 	}
 }
+
+type countingNotifier struct{ calls int }
+
+func (n *countingNotifier) Notify(context.Context, monitor.Alert) error { n.calls++; return nil }
+
+// A pack reload replaces the registry factories while the alert loop keeps
+// running, so the manager must resolve providers per send instead of holding
+// the instances built at startup.
+func TestManagerUsesCurrentRegistryForEachSend(t *testing.T) {
+	cfg := config.NotifierConfig{ID: "pack", Type: "pack_type", Endpoint: "https://example.test/hook", Enabled: true}
+	registry := NewRegistry()
+	first := &countingNotifier{}
+	if err := registry.RegisterPack("pack_type", func(config.NotifierConfig) (Notifier, error) { return first, nil }); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	manager := NewManagerWithRegistry([]config.NotifierConfig{cfg}, registry)
+	alert := monitor.Alert{RuleID: "r", Name: "n"}
+
+	if err := manager.Notify(context.Background(), []monitor.Alert{alert}); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if first.calls != 1 {
+		t.Fatalf("first provider calls = %d", first.calls)
+	}
+
+	second := &countingNotifier{}
+	if err := registry.ReplacePacks(map[string]PackFactory{
+		"pack_type": func(config.NotifierConfig) (Notifier, error) { return second, nil },
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if err := manager.Notify(context.Background(), []monitor.Alert{alert}); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if second.calls != 1 || first.calls != 1 {
+		t.Fatalf("after reload: first=%d second=%d, want 1/1", first.calls, second.calls)
+	}
+}
