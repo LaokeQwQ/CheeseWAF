@@ -171,8 +171,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeDecision(w http.ResponseWriter, decision Decision) {
+	// 204 forbids a response body, and the admin caller needs the decision.
+	// The gateway status stays in decision.status_code.
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-CheeseWAF-Decision", decision.Action)
-	w.WriteHeader(decision.StatusCode)
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(decision)
 }

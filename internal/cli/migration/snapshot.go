@@ -436,6 +436,22 @@ func expectedProductionValues(table snapshotTable, row []snapshotCell) ([]any, e
 	return values, nil
 }
 
+// isStrictJSONColumn reports columns whose JSON syntax was already enforced by
+// the old normalizer; those still reject malformed payloads.
+func isStrictJSONColumn(column string) bool {
+	return column == "domains" || column == "upstreams" || column == "advanced"
+}
+
+func jsonBytes(value any) ([]byte, bool) {
+	switch typed := value.(type) {
+	case string:
+		return []byte(typed), true
+	case []byte:
+		return typed, true
+	}
+	return nil, false
+}
+
 func canonicalProductionValue(column string, value any) (snapshotCell, error) {
 	if value == nil {
 		return snapshotCell{Kind: "null"}, nil
@@ -469,27 +485,26 @@ func canonicalProductionValue(column string, value any) (snapshotCell, error) {
 			return snapshotCell{}, errors.New("invalid production timestamp")
 		}
 	}
-	if column == "domains" || column == "upstreams" || column == "advanced" {
-		var raw []byte
-		switch typed := value.(type) {
-		case string:
-			raw = []byte(typed)
-		case []byte:
-			raw = typed
-		default:
-			return snapshotCell{}, errors.New("invalid production JSON value")
-		}
+	// PostgreSQL stores JSON/JSONB columns with a different textual shape than
+	// SQLite. Canonicalize every JSON object or array so a migrated passkey,
+	// intel, or candidate row compares equal instead of looking ambiguous.
+	if raw, ok := jsonBytes(value); ok {
 		var decoded any
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
-		if err := decoder.Decode(&decoded); err != nil {
+		if err := decoder.Decode(&decoded); err == nil {
+			switch decoded.(type) {
+			case map[string]any, []any:
+				canonical, err := json.Marshal(decoded)
+				if err != nil {
+					return snapshotCell{}, err
+				}
+				return snapshotCell{Kind: "text", Text: string(canonical)}, nil
+			}
+		}
+		if isStrictJSONColumn(column) {
 			return snapshotCell{}, errors.New("invalid production JSON value")
 		}
-		canonical, err := json.Marshal(decoded)
-		if err != nil {
-			return snapshotCell{}, err
-		}
-		return snapshotCell{Kind: "text", Text: string(canonical)}, nil
 	}
 	switch typed := value.(type) {
 	case int:

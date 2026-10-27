@@ -277,7 +277,7 @@ func TestLokiQueryDecodesSortsAndPagesRows(t *testing.T) {
 	if got := rangeRequest.query.Get("query"); !strings.Contains(got, `{job="cheesewaf"}`) {
 		t.Fatalf("unexpected logql selector %q", got)
 	}
-	if got := countRequest.query.Get("query"); !strings.HasPrefix(got, "sum(count_over_time({job=\"cheesewaf\"}") || !strings.Contains(got, "[86400s]") {
+	if got := countRequest.query.Get("query"); !strings.HasPrefix(got, "sum(count_over_time({job=\"cheesewaf\"}") || !strings.Contains(got, "[86400000ms]") {
 		t.Fatalf("unexpected count query %q", got)
 	}
 }
