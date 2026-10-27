@@ -706,3 +706,34 @@ func TestApproveBlockHonorsConfiguredShadowWindow(t *testing.T) {
 		t.Fatalf("status=%d body=%s after the window", recorder.Code, recorder.Body.String())
 	}
 }
+
+// The promotion pipeline must use the same shadow window as the handler check:
+// a 30-minute setting has to work without waiting the one-hour default.
+func TestApproveBlockHonorsSubHourShadowWindowInPipeline(t *testing.T) {
+	env := setupEnv(t, func(options *intelapi.HandlerOptions) {
+		options.Profiles = func(_ context.Context, candidate impact.Candidate) ([]impact.Profile, error) {
+			return []impact.Profile{{
+				SiteID: candidate.SiteID, Path: "/uploads/index.php", Method: "POST",
+				Requests: 1000, Statuses: impact.StatusCounts{200: 1000},
+				Matches: impact.MatchCounts{candidate.ID: impact.MatchObservation{Count: 5}},
+			}}, nil
+		}
+		policy := impact.DefaultPolicy()
+		policy.MinShadowDuration = 30 * time.Minute
+		options.Policy = policy
+	})
+	result := env.importAdvisory(t, "https://advisory.example.test/advisory/1")
+	candidateID := result.Candidate.ID
+	if recorder := env.doJSON(t, http.MethodPost, "/candidates/"+candidateID+"/approve", map[string]any{
+		"approved_by": "alice", "confirm": true,
+	}); recorder.Code != http.StatusOK {
+		t.Fatalf("shadow status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	env.clock.Advance(45 * time.Minute)
+	recorder := env.doJSON(t, http.MethodPost, "/candidates/"+candidateID+"/approve", map[string]any{
+		"approved_by": "alice", "action": "block", "confirm": true,
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want success after 45m with a 30m window", recorder.Code, recorder.Body.String())
+	}
+}

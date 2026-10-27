@@ -83,21 +83,48 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 	// Serve a recent result instead of calling the release origin on every
 	// console poll; ota.check_interval is the freshness bound.
 	interval := cfg.Update.OTA.CheckInterval
+	channel := cfg.Update.OTA.Channel
 	now := h.nowUTC()
 	if interval > 0 {
-		h.otaCacheMu.Lock()
-		if h.otaCache != nil && h.otaCacheChannel == cfg.Update.OTA.Channel && now.Sub(h.otaCacheAt) < interval {
-			cached := make(map[string]any, len(h.otaCache)+1)
-			for key, value := range h.otaCache {
-				cached[key] = value
+		for {
+			h.otaCacheMu.Lock()
+			if h.otaCache != nil && h.otaCacheChannel == channel && now.Sub(h.otaCacheAt) < interval {
+				cached := make(map[string]any, len(h.otaCache)+1)
+				for key, value := range h.otaCache {
+					cached[key] = value
+				}
+				cached["checked_at"] = h.otaCacheAt
+				cached["cached"] = true
+				h.otaCacheMu.Unlock()
+				writeData(w, cached)
+				return
 			}
-			cached["checked_at"] = h.otaCacheAt
-			cached["cached"] = true
+			if wait, running := h.otaInFlight[channel]; running {
+				h.otaCacheMu.Unlock()
+				select {
+				case <-wait:
+					now = h.nowUTC()
+					continue
+				case <-r.Context().Done():
+					// The caller left; another request owns the check and will
+					// publish its result.
+					return
+				}
+			}
+			if h.otaInFlight == nil {
+				h.otaInFlight = make(map[string]chan struct{})
+			}
+			done := make(chan struct{})
+			h.otaInFlight[channel] = done
 			h.otaCacheMu.Unlock()
-			writeData(w, cached)
-			return
+			defer func() {
+				h.otaCacheMu.Lock()
+				delete(h.otaInFlight, channel)
+				close(done)
+				h.otaCacheMu.Unlock()
+			}()
+			break
 		}
-		h.otaCacheMu.Unlock()
 	}
 	var currentIndex, currentRelease uint64
 	if h.OTAState != nil {
@@ -119,7 +146,11 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 		status["reason"] = otaStatusReason(err)
 		status["message"] = err.Error()
 		status["checked_at"] = now
-		h.cacheOTAStatus(status, now, interval)
+		// A canceled request says nothing about the origin; caching it would
+		// hide a healthy next poll for the whole interval.
+		if r.Context().Err() == nil {
+			h.cacheOTAStatus(status, now, interval)
+		}
 		writeData(w, status)
 		return
 	}
@@ -127,7 +158,9 @@ func (h *Handler) OTAStatus(w http.ResponseWriter, r *http.Request) {
 	status["candidate"] = candidate
 	status["message"] = "candidate is read-only until CRP/CWEDP activation is wired"
 	status["checked_at"] = now
-	h.cacheOTAStatus(status, now, interval)
+	if r.Context().Err() == nil {
+		h.cacheOTAStatus(status, now, interval)
+	}
 	writeData(w, status)
 }
 

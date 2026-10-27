@@ -132,10 +132,13 @@ type Handler struct {
 	acmeRenewCancel                     context.CancelFunc
 	// otaCache keeps the last read-only OTA check for ota.check_interval so a
 	// console poll cannot hammer the release origin.
-	otaCacheMu                sync.Mutex
-	otaCache                  map[string]any
-	otaCacheChannel           string
-	otaCacheAt                time.Time
+	otaCacheMu      sync.Mutex
+	otaCache        map[string]any
+	otaCacheChannel string
+	otaCacheAt      time.Time
+	// otaInFlight shares one origin check per channel: console tabs that open
+	// together must not each hit the release server.
+	otaInFlight               map[string]chan struct{}
 	configWriteFrozen         bool
 	configFreezeReason        string
 	userMutationMu            sync.Mutex

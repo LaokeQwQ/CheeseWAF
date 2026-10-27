@@ -10,10 +10,11 @@ func autoCertTestConfig() Config {
 	cfg.Server.ListenTLS = "127.0.0.1:8443"
 	cfg.TLS.CertFile = ""
 	cfg.TLS.KeyFile = ""
+	cfg.ACME.Enabled = true
 	cfg.Sites = []SiteConfig{{
 		ID: "site-1", Name: "site", Domains: []string{"site.example"}, Enabled: true, EnableSSL: true,
 		Upstreams:   []UpstreamConfig{{Address: "http://127.0.0.1:9000"}},
-		Certificate: SiteCertificateConfig{Mode: "acme"},
+		Certificate: SiteCertificateConfig{Mode: "acme", AutoRenew: true},
 	}}
 	return cfg
 }
@@ -36,5 +37,23 @@ func TestListenTLSRequiresCertificateUnlessAutoCertHasAnACMESite(t *testing.T) {
 	cfg.Sites[0].Certificate.Mode = "file"
 	if err := Validate(&cfg); err == nil {
 		t.Fatal("auto_cert without an ACME site must be rejected")
+	}
+}
+
+func TestAutoCertRequiresAnEligibleIssuer(t *testing.T) {
+	cfg := autoCertTestConfig()
+	cfg.TLS.AutoCert = true
+	cfg.ACME.Enabled = false
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("auto_cert without an enabled ACME issuer must be rejected")
+	}
+	cfg.ACME.Enabled = true
+	cfg.Sites[0].Certificate.AutoRenew = false
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("auto_cert without auto_renew must be rejected")
+	}
+	cfg.Sites[0].Certificate.AutoRenew = true
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("eligible issuer rejected: %v", err)
 	}
 }

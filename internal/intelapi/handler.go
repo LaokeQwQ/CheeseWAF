@@ -148,11 +148,12 @@ func NewHandler(opts HandlerOptions) http.Handler {
 		panic(fmt.Sprintf("intelapi: build pipeline registry: %v", err))
 	}
 	promotePipeline, err := pipeline.New(pipeline.Config{
-		Registry:    registry,
-		Extractor:   pipeline.ExtractorFunc(func(context.Context, intel.Item) ([]intel.Extraction, error) { return nil, nil }),
-		TrustPolicy: trustPolicy,
-		TTL:         ttl,
-		Now:         now,
+		Registry:     registry,
+		ImpactPolicy: opts.Policy,
+		Extractor:    pipeline.ExtractorFunc(func(context.Context, intel.Item) ([]intel.Extraction, error) { return nil, nil }),
+		TrustPolicy:  trustPolicy,
+		TTL:          ttl,
+		Now:          now,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("intelapi: build promotion pipeline: %v", err))

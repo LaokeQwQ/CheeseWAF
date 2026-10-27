@@ -2795,11 +2795,16 @@ func hasUsableTLSCertificate(cfg *Config) bool {
 	if hasAnyTLSCertificate(cfg) {
 		return true
 	}
-	if cfg == nil || !cfg.TLS.AutoCert {
+	if cfg == nil || !cfg.TLS.AutoCert || !cfg.ACME.Enabled {
 		return false
 	}
 	for _, site := range cfg.Sites {
-		if site.Enabled && site.EnableSSL && site.Certificate.Mode == "acme" {
+		if !site.Enabled || !site.EnableSSL || site.Certificate.Mode != "acme" || !site.Certificate.AutoRenew {
+			continue
+		}
+		// The renewal worker skips a site without domains, so an empty store
+		// could never be filled.
+		if len(site.Domains) > 0 || len(site.Certificate.ACME.Domains) > 0 {
 			return true
 		}
 	}
