@@ -1038,10 +1038,18 @@ func TestWatchAppliesValidChangeAndIgnoresInvalidLoad(t *testing.T) {
 		})
 	}()
 	time.Sleep(50 * time.Millisecond)
+	// Watch re-reads the file on its own tick. Discard anything applied while
+	// it established its baseline: the assertion below is about the invalid
+	// write, not about an initial apply of the unchanged file.
+	mu.Lock()
+	applied = nil
+	mu.Unlock()
 	if err := os.WriteFile(path, []byte("sites: ["), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(80 * time.Millisecond)
+	// A failed load can never reach onChange, so a bounded observation window
+	// is enough; a fixed 80ms window raced the watcher tick under CI load.
+	time.Sleep(500 * time.Millisecond)
 	mu.Lock()
 	if len(applied) != 0 {
 		mu.Unlock()
@@ -1054,7 +1062,7 @@ func TestWatchAppliesValidChangeAndIgnoresInvalidLoad(t *testing.T) {
 	if err := Save(path, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		ok := len(applied) > 0 && applied[len(applied)-1] == "watch-rule"

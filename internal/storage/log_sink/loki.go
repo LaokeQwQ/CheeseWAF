@@ -625,11 +625,14 @@ func lokiDecodeRow(row lokiValueRow) (storage.LogEntry, error) {
 // count runs the LogQL equivalent of COUNT(*) for the same selector, keeping
 // totals exact for filters the local matcher and LogQL express identically.
 func (s *LokiSink) count(ctx context.Context, window lokiQueryWindow) (int64, error) {
+	// Preserve the requested range. Falling back to the default window made a
+	// sub-second selection report a whole day of logs while query_range still
+	// fetched only the narrow range. Milliseconds keep fractional spans exact.
 	span := window.end.Sub(window.start)
-	if span < time.Second {
-		span = lokiDefaultQueryWindow
+	if span < time.Millisecond {
+		span = time.Millisecond
 	}
-	query := fmt.Sprintf("sum(count_over_time(%s[%ds]))", window.selector, int64(span/time.Second))
+	query := fmt.Sprintf("sum(count_over_time(%s[%dms]))", window.selector, span.Milliseconds())
 	form := url.Values{}
 	form.Set("query", query)
 	form.Set("time", strconv.FormatInt(window.end.UnixNano(), 10))
