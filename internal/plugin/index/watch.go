@@ -158,12 +158,14 @@ func (w *Watcher) reload() dirFingerprint {
 		w.enqueue(snapshot)
 		return after
 	}
-	// The directory kept changing; publish what we scanned and stay
-	// conservative by returning the older fingerprint so the next tick retries.
+	// The directory kept changing. Publish what we scanned but return a
+	// fingerprint that cannot match a real one: adopting an unchecked baseline
+	// here would let the watcher skip the reload that finally settles the
+	// directory, leaving an added pack missing until the next unrelated change.
 	snapshot := Scan(w.dir, w.hostVersion)
 	w.latest.Store(snapshot)
 	w.enqueue(snapshot)
-	return fingerprintDir(w.dir)
+	return dirFingerprint{err: "directory kept changing during scan"}
 }
 
 // enqueue hands the snapshot to the callback goroutine without blocking the
