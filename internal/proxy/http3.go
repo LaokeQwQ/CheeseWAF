@@ -17,7 +17,11 @@ func (s *Server) TLSServer(altSvc string) (*http.Server, error) {
 		return nil, nil
 	}
 	if s.certs == nil || !s.certs.HasCertificate() {
-		return nil, fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
+		// Auto-cert mode starts before ACME has issued anything; the store is
+		// filled by the renewal worker, so only the opt-in flag may skip this.
+		if !s.config.TLS.AutoCert {
+			return nil, fmt.Errorf("tls.cert_file and tls.key_file are required when server.listen_tls is set")
+		}
 	}
 	tlsConfig := s.certs.TLSConfig(s.config.TLS)
 	handler := s.Handler()
@@ -41,7 +45,9 @@ func (s *Server) HTTP3Server() (*http3.Server, string, error) {
 		return nil, "", nil
 	}
 	if s.certs == nil || !s.certs.HasCertificate() {
-		return nil, "", fmt.Errorf("tls.cert_file and tls.key_file are required when HTTP/3 is enabled")
+		if !s.config.TLS.AutoCert {
+			return nil, "", fmt.Errorf("tls.cert_file and tls.key_file are required when HTTP/3 is enabled")
+		}
 	}
 	tlsConfig := s.certs.TLSConfig(s.config.TLS)
 	addr := HTTP3ListenAddr(s.config.Server)

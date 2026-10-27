@@ -60,6 +60,9 @@ type Registry struct {
 	builtins map[string]Provider
 	packs    map[string]PackFactory
 	mu       sync.RWMutex
+	// generation changes whenever the pack table changes, so consumers can
+	// cache what they built without rebuilding on every send.
+	generation uint64
 }
 
 func NewRegistry() *Registry {
@@ -97,8 +100,20 @@ func (r *Registry) ReplacePacks(factories map[string]PackFactory) error {
 	}
 	r.mu.Lock()
 	r.packs = next
+	r.generation++
 	r.mu.Unlock()
 	return nil
+}
+
+// Generation reports the current pack table version. It only increases, so a
+// cached build can be reused until it changes.
+func (r *Registry) Generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.generation
 }
 
 // RegisterPack adds a factory for a type that is not compiled in. A pack may
@@ -121,6 +136,7 @@ func (r *Registry) RegisterPack(typeName string, factory PackFactory) error {
 		return fmt.Errorf("notifier pack type %q is already registered", normalized)
 	}
 	r.packs[normalized] = factory
+	r.generation++
 	return nil
 }
 

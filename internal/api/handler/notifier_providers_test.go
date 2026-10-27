@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 )
 
 func notifierTestHandler(t *testing.T) *Handler {
@@ -62,5 +65,39 @@ func TestTestNotifierRejectsUnknownProvider(t *testing.T) {
 	h.TestNotifierProvider(recorder, httptest.NewRequest(http.MethodPost, "/monitor/notifiers/test", strings.NewReader(`{"id":"missing"}`)))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type okNotifier struct{ called bool }
+
+func (n *okNotifier) Notify(context.Context, monitor.Alert) error {
+	n.called = true
+	return nil
+}
+
+// A pack-provided provider must be testable from the console: a fresh registry
+// would reject the type with 422 even though delivery works in production.
+func TestTestNotifierProviderResolvesPackType(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Monitor.Notifiers = []config.NotifierConfig{{
+		ID: "teams", Name: "Teams", Type: "teams_webhook",
+		Endpoint: "https://teams.example.test/hook", Enabled: true,
+	}}
+	registry := monitornotify.NewRegistry()
+	delivered := &okNotifier{}
+	if err := registry.RegisterPack("teams_webhook", func(config.NotifierConfig) (monitornotify.Notifier, error) {
+		return delivered, nil
+	}); err != nil {
+		t.Fatalf("register pack: %v", err)
+	}
+	h := &Handler{Config: cfg, NotifierRegistry: registry}
+
+	recorder := httptest.NewRecorder()
+	h.TestNotifierProvider(recorder, httptest.NewRequest(http.MethodPost, "/monitor/notifiers/test", strings.NewReader(`{"id":"teams"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !delivered.called {
+		t.Fatal("pack provider was not asked to deliver the test alert")
 	}
 }

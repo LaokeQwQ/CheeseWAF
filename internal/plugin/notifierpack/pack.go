@@ -94,7 +94,6 @@ const (
 
 var (
 	providerIDPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
-	typePattern         = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`)
 	versionPattern      = regexp.MustCompile(`^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`)
 	boundPattern        = regexp.MustCompile(`^[vV]?[0-9]+(?:\.[0-9]+){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 	fieldNamePattern    = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
@@ -209,15 +208,16 @@ func validateType(value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: type is required", ErrInvalidPack)
 	}
-	if len(value) > maxTypeLength || !typePattern.MatchString(value) {
-		return fmt.Errorf("%w: type %q must be 1..64 lowercase letters, digits or '.', '_', '-' separators", ErrInvalidPack, value)
+	// The configuration layer applies the same rule, so a pack that loads can
+	// always be referenced from a notifier entry.
+	if len(value) > maxTypeLength || !config.ValidNotifierTypeName(value) {
+		return fmt.Errorf("%w: type %q must be 2..64 characters starting with a letter, using lowercase letters, digits or '_'", ErrInvalidPack, value)
 	}
 	if isCoreProviderType(value) {
 		return fmt.Errorf("%w: type %q is delivered by the core notifier; a pack may only add provider types the core does not own", ErrUnsupported, value)
 	}
 	return nil
 }
-
 func validatePathText(label, value string) error {
 	if value == "" {
 		return fmt.Errorf("%w: %s is required", ErrInvalidPack, label)

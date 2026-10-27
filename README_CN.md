@@ -432,7 +432,7 @@ docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url
 
 ### 接入原理
 
-`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用版本化适配器契约接口 `/api/v1/adapter/inspect`（可用 `CHEESEWAF_CORE_INSPECT_PATH` 覆盖）完成判定。核心在代理与 admin 监听器上同时提供 `/api/v1/adapter/inspect`、`/api/v1/adapter/telemetry` 和 `/healthz`。`server.adapter_token` 必须与 adapter 的 `CHEESEWAF_CORE_TOKEN` 一致；留空时仅允许 loopback adapter 客户端。
+`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用版本化适配器契约接口 `/api/v1/adapter/inspect`（可用 `CHEESEWAF_CORE_INSPECT_PATH` 覆盖）完成判定。核心在**代理、TLS 和 HTTP/3 监听器**上提供 `/api/v1/adapter/inspect`、`/api/v1/adapter/telemetry` 和 `/healthz`，使用 `server.adapter_token` 鉴权（留空时仅允许 loopback）。**admin 监听器不同**：它只由适配器处理器提供 `/healthz`，`/api/v1/adapter/inspect` 仍需管理面 JWT 的 `write:protection` 权限，且不挂载 `/api/v1/adapter/telemetry`。`adapterd` 应指向代理监听器并配置 `CHEESEWAF_CORE_TOKEN`；admin 端口只用于带 JWT 的调用。
 
 ### NGINX 集成示例
 

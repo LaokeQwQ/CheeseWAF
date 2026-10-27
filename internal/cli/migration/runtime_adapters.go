@@ -523,6 +523,14 @@ func pgSnapshotValues(table snapshotTable, row []snapshotCell) ([]any, error) {
 		if strings.HasSuffix(column, "_at") || column == "created_at" || column == "updated_at" {
 			if text, ok := value.(string); ok {
 				if text == "" {
+					// A never-used passkey is stored with an empty string by the
+					// SQLite writer. PostgreSQL declares the column NOT NULL, so
+					// one such row would abort the whole migration unless it maps
+					// to the same epoch value the NULL branch uses.
+					if table.Name == "passkey_credentials" && column == "last_used_at" {
+						values[i] = time.Unix(0, 0).UTC()
+						continue
+					}
 					values[i] = nil
 					continue
 				}

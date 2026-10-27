@@ -78,8 +78,8 @@ console:
     passkey:
       enabled: true
       rp_id: console.example.com
-      rp_name: CheeseWAF
-      origins:
+      rp_display_name: CheeseWAF
+      rp_origins:
         - https://console.example.com
 ```
 
