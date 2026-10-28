@@ -2695,6 +2695,11 @@ func ValidateLokiLabels(labels map[string]string) error {
 		if strings.HasPrefix(name, "__") {
 			return fmt.Errorf("label %q uses a reserved Loki prefix", name)
 		}
+		// The sink derives site_id from the entry and the query filter; a
+		// static value would label writes and queries with different sites.
+		if name == "site_id" {
+			return fmt.Errorf("label %q is managed by the sink and cannot be set statically", name)
+		}
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("label %q must have a non-empty value", name)
 		}

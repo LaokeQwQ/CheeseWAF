@@ -40,6 +40,7 @@ func TestValidateLokiRejectsInvalidLabels(t *testing.T) {
 		{name: "reserved prefix", labels: map[string]string{"__name__": "x"}},
 		{name: "empty value", labels: map[string]string{"env": "  "}},
 		{name: "leading digit", labels: map[string]string{"1env": "x"}},
+		{name: "static site_id", labels: map[string]string{"site_id": "edge"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
