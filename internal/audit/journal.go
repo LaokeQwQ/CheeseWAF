@@ -15,6 +15,18 @@ type EventLookup interface {
 	RecordByEventID(context.Context, string, string) (Record, bool, error)
 }
 
+// CheckpointRecord pairs a record with its stored checkpoint.
+type CheckpointRecord struct {
+	Record     Record
+	Checkpoint *Checkpoint
+}
+
+// CheckpointReader pages records with their checkpoints in one call, so a
+// startup verification does not issue one query per record.
+type CheckpointReader interface {
+	CheckpointPage(context.Context, string, uint64, int) ([]CheckpointRecord, error)
+}
+
 type Journal interface {
 	Append(context.Context, Commit) error
 	Records(context.Context, string, uint64, int) ([]Record, error)
@@ -116,6 +128,41 @@ func (j *MemoryJournal) RecordByEventID(ctx context.Context, stream, eventID str
 		}
 	}
 	return Record{}, false, nil
+}
+
+func (j *MemoryJournal) CheckpointPage(ctx context.Context, stream string, after uint64, limit int) ([]CheckpointRecord, error) {
+	if j == nil {
+		return nil, ErrInvalidRecord
+	}
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = checkpointPageSize
+	}
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	state := j.streams[stream]
+	if state == nil {
+		return nil, nil
+	}
+	out := make([]CheckpointRecord, 0, limit)
+	for _, commit := range state.commits {
+		if commit.Record.Sequence <= after {
+			continue
+		}
+		entry := CheckpointRecord{Record: cloneRecord(commit.Record)}
+		if commit.Checkpoint != nil {
+			cp := *commit.Checkpoint
+			cp.Signature = append([]byte(nil), commit.Checkpoint.Signature...)
+			entry.Checkpoint = &cp
+		}
+		out = append(out, entry)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (j *MemoryJournal) Records(ctx context.Context, stream string, after uint64, limit int) ([]Record, error) {

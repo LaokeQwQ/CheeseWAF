@@ -107,34 +107,33 @@ func NewRuntime(o RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 	// Verify every checkpoint in pages; only the recent rows stay resident.
-	for cursor := uint64(0); ; {
-		batch, err := o.Journal.Records(context.Background(), o.StreamID, cursor, checkpointPageSize)
-		if err != nil {
-			return nil, err
-		}
-		if len(batch) == 0 {
-			break
-		}
-		for _, row := range batch {
-			if row.Sequence > cursor {
-				cursor = row.Sequence
-			}
-			cp, err := o.Journal.Checkpoint(context.Background(), o.StreamID, row.Sequence)
+	// The head is pinned first so a writer on another node cannot keep the
+	// loop chasing new events forever.
+	target := last.Sequence
+	if reader, ok := o.Journal.(CheckpointReader); ok {
+		for cursor := uint64(0); cursor < target; {
+			batch, err := reader.CheckpointPage(context.Background(), o.StreamID, cursor, checkpointPageSize)
 			if err != nil {
 				return nil, err
 			}
-			if cp == nil {
-				continue
+			if len(batch) == 0 {
+				break
 			}
-			// A shared journal can carry checkpoints signed by another node's
-			// key. Their hashes are still covered by Verify; only keys this
-			// process knows are cryptographically checked, otherwise every peer
-			// append would make the next restart fail closed.
-			if _, known := r.verifiers[cp.KeyID]; !known {
-				continue
-			}
-			if VerifyCheckpoint(o.StreamID, row, *cp, r.verifiers) != nil {
-				return nil, ErrCheckpointInvalid
+			for _, entry := range batch {
+				if entry.Record.Sequence > target {
+					break
+				}
+				cursor = entry.Record.Sequence
+				cp := entry.Checkpoint
+				if cp == nil {
+					continue
+				}
+				if _, known := r.verifiers[cp.KeyID]; !known {
+					continue
+				}
+				if VerifyCheckpoint(o.StreamID, entry.Record, *cp, r.verifiers) != nil {
+					return nil, ErrCheckpointInvalid
+				}
 			}
 		}
 	}

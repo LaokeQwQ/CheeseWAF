@@ -296,6 +296,48 @@ func (j *PostgresJournal) RecordByEventID(ctx context.Context, stream, eventID s
 	return cloneRecord(commit.Record), true, nil
 }
 
+// CheckpointPage reads records and their checkpoints in one query.
+func (j *PostgresJournal) CheckpointPage(ctx context.Context, stream string, after uint64, limit int) ([]CheckpointRecord, error) {
+	if !j.Durable() {
+		return nil, ErrUnavailable
+	}
+	if err := contextErr(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = verifyPageSize
+	}
+	rows, err := j.db.QueryContext(ctx, `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 AND sequence>$2 ORDER BY sequence ASC LIMIT $3`, stream, int64(after), limit)
+	if err != nil {
+		return nil, journalDBError(ctx, "page checkpoints")
+	}
+	defer rows.Close()
+	out := make([]CheckpointRecord, 0, limit)
+	for rows.Next() {
+		var sequence int64
+		var raw []byte
+		if err := rows.Scan(&sequence, &raw); err != nil {
+			return nil, journalDBError(ctx, "scan checkpoint")
+		}
+		var commit Commit
+		if decodeStrict(raw, &commit) != nil || uint64(sequence) != commit.Record.Sequence ||
+			commit.Record.Event.StreamID != stream || validateCommit(commit) != nil {
+			return nil, ErrCorruptChain
+		}
+		entry := CheckpointRecord{Record: cloneRecord(commit.Record)}
+		if commit.Checkpoint != nil {
+			cp := *commit.Checkpoint
+			cp.Signature = append([]byte(nil), commit.Checkpoint.Signature...)
+			entry.Checkpoint = &cp
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, journalDBError(ctx, "iterate checkpoints")
+	}
+	return out, nil
+}
+
 func (j *PostgresJournal) Last(ctx context.Context, stream string) (Record, error) {
 	if !j.Durable() {
 		return Record{}, ErrUnavailable

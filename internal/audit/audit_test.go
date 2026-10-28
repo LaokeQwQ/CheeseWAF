@@ -541,3 +541,26 @@ func TestRuntimeRetriesPrunedEvent(t *testing.T) {
 		t.Fatalf("retry returned %+v, want %+v", again, first)
 	}
 }
+
+// Historic checkpoints must be verified at startup, not only recent ones.
+func TestRuntimeRejectsTamperedHistoricCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Append(ctx, testEvent("historic", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	journal.mu.Lock()
+	commit := &journal.streams["control"].commits[0]
+	commit.Checkpoint.Signature[0] ^= 0xff
+	journal.mu.Unlock()
+	if _, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()}); !errors.Is(err, ErrCheckpointInvalid) {
+		t.Fatalf("restart error = %v, want ErrCheckpointInvalid", err)
+	}
+}
