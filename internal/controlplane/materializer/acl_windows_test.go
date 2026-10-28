@@ -26,16 +26,31 @@ func TestEnsurePrivateWindowsACLGrantsRunningAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertDACLGrant(t, dir, sd)
+	// Receipts created under the directory must inherit the restricted DACL.
+	receipt := filepath.Join(dir, JournalPrimaryName)
+	if err := os.WriteFile(receipt, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receiptSD, err := windows.GetNamedSecurityInfo(receipt, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDACLGrant(t, receipt, receiptSD)
+}
+
+func assertDACLGrant(t *testing.T, path string, sd *windows.SECURITY_DESCRIPTOR) {
+	t.Helper()
 	control, _, err := sd.Control()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if control&windows.SE_DACL_PROTECTED == 0 {
-		t.Fatal("DACL is not protected")
+		t.Fatalf("%s: DACL is not protected", path)
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
-		t.Fatalf("read DACL: %v", err)
+		t.Fatalf("%s: read DACL: %v", path, err)
 	}
 	token, err := windows.OpenCurrentProcessToken()
 	if err != nil {
@@ -62,5 +77,5 @@ func TestEnsurePrivateWindowsACLGrantsRunningAccount(t *testing.T) {
 			return
 		}
 	}
-	t.Fatalf("DACL does not grant the running account %s", want)
+	t.Fatalf("%s: DACL does not grant the running account %s", path, want)
 }

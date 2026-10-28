@@ -90,7 +90,13 @@ func NewRuntime(o RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 	r.head = last
-	rows, err := o.Journal.Records(context.Background(), o.StreamID, 0, 0)
+	// Only recent events are needed for idempotent append detection; retaining
+	// the whole journal would grow memory with the audit history.
+	after := uint64(0)
+	if last.Sequence > runtimeEventCache {
+		after = last.Sequence - runtimeEventCache
+	}
+	rows, err := o.Journal.Records(context.Background(), o.StreamID, after, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +114,14 @@ func NewRuntime(o RuntimeOptions) (*Runtime, error) {
 		if cp == nil {
 			continue
 		}
-		if len(r.verifiers) == 0 || VerifyCheckpoint(o.StreamID, row, *cp, r.verifiers) != nil {
+		// A shared journal can carry checkpoints signed by another node's key.
+		// Their hashes are still covered by Verify; only keys this process
+		// knows are cryptographically checked, otherwise every peer append
+		// would make the next restart fail closed.
+		if _, known := r.verifiers[cp.KeyID]; !known {
+			continue
+		}
+		if VerifyCheckpoint(o.StreamID, row, *cp, r.verifiers) != nil {
 			return nil, ErrCheckpointInvalid
 		}
 	}
@@ -253,6 +266,7 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 		if err == nil {
 			r.head = rec
 			r.events[event.EventID] = rec
+			r.pruneEventCacheLocked()
 			return rec, nil
 		}
 		if errors.Is(err, ErrSequenceConflict) || errors.Is(err, ErrReplayConflict) {
@@ -278,6 +292,29 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 	}
 	return Record{}, ErrSequenceConflict
 }
+
+// runtimeEventCache is how many recent events stay resident for idempotent
+// append detection.
+const runtimeEventCache = 4096
+
+// pruneEventCacheLocked drops events that fell out of the recent window.
+func (r *Runtime) pruneEventCacheLocked() {
+	if len(r.events) <= runtimeEventCache*2 {
+		return
+	}
+	cutoff := r.head.Sequence
+	if cutoff > runtimeEventCache {
+		cutoff -= runtimeEventCache
+	} else {
+		cutoff = 0
+	}
+	for id, record := range r.events {
+		if record.Sequence <= cutoff {
+			delete(r.events, id)
+		}
+	}
+}
+
 func (r *Runtime) makeCheckpoint(event Event, rec Record) (*Checkpoint, error) {
 	if r.signer == nil || !(event.Class == EventClassCritical || r.checkpointEvery > 0 && rec.Sequence%r.checkpointEvery == 0) {
 		return nil, nil

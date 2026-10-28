@@ -424,9 +424,52 @@ func (j *PostgresJournal) AckOutbox(ctx context.Context, delivery Delivery) erro
 	return nil
 }
 
+// verifyPageSize bounds how many commits are verified at once. Verification
+// pages the chain instead of loading the whole journal, so memory stays flat
+// as the audit grows.
+const verifyPageSize = 2000
+
 func (j *PostgresJournal) Verify(ctx context.Context, stream string) error {
-	_, err := j.readCommits(ctx, stream)
-	return err
+	if !j.Durable() {
+		return ErrUnavailable
+	}
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
+	after := uint64(0)
+	previousHash := ""
+	for {
+		rows, err := j.db.QueryContext(ctx, `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 AND sequence>$2 ORDER BY sequence ASC LIMIT $3`, stream, int64(after), verifyPageSize)
+		if err != nil {
+			return journalDBError(ctx, "verify records")
+		}
+		count := 0
+		for rows.Next() {
+			var sequence int64
+			var raw []byte
+			if err := rows.Scan(&sequence, &raw); err != nil {
+				rows.Close()
+				return journalDBError(ctx, "verify scan")
+			}
+			var commit Commit
+			if decodeStrict(raw, &commit) != nil || uint64(sequence) != after+1 || uint64(sequence) != commit.Record.Sequence ||
+				commit.Record.Event.StreamID != stream || commit.Record.PreviousHash != previousHash || validateCommit(commit) != nil {
+				rows.Close()
+				return ErrCorruptChain
+			}
+			previousHash = commit.Record.Hash
+			after = uint64(sequence)
+			count++
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return journalDBError(ctx, "verify iterate")
+		}
+		rows.Close()
+		if count < verifyPageSize {
+			return nil
+		}
+	}
 }
 
 func (j *PostgresJournal) Flush(ctx context.Context) error {
