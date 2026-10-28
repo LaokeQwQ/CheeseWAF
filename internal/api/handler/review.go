@@ -350,7 +350,7 @@ func (h *Handler) rollbackIPRule(r *http.Request, ruleID string) error {
 		candidate.Protection.IP.AccessRules = filtered
 		return nil
 	}, func(candidate *config.Config) error {
-		return h.notifyProtectionConfigChanged(candidate.Protection)
+		return h.ApplyProtectionRuntime(candidate)
 	})
 	return err
 }
@@ -369,7 +369,7 @@ func (h *Handler) rollbackAppliedReviewChange(r *http.Request, item *storage.Rev
 			}
 			candidate.Protection.IP.AccessRules = filtered
 			return nil
-		}, func(candidate *config.Config) error { return h.notifyProtectionConfigChanged(candidate.Protection) })
+		}, h.ApplyProtectionRuntime)
 		return err
 	}
 	if strings.TrimSpace(item.SiteID) == "" {
@@ -582,7 +582,7 @@ func (h *Handler) addIPBlockRule(r *http.Request, item *storage.ReviewItem) (str
 		candidate.Protection.IP.AccessRules = append(append([]config.IPAccessRuleConfig(nil), candidate.Protection.IP.AccessRules...), rule)
 		return nil
 	}, func(candidate *config.Config) error {
-		return h.notifyProtectionConfigChanged(candidate.Protection)
+		return h.ApplyProtectionRuntime(candidate)
 	})
 	if err != nil {
 		return "", err

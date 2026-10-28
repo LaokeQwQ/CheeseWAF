@@ -173,6 +173,25 @@ func (h *ApprovalHTTPHandler) PolicyEpoch() uint64 {
 	return h.gate.PolicyEpoch()
 }
 
+// SessionValidator returns the validator bound to this approval transport.
+// The production composition root uses this to prove that the interactive
+// approval endpoints and the management API share the same session lifetime.
+func (h *ApprovalHTTPHandler) SessionValidator() middleware.SessionValidator {
+	if h == nil {
+		return nil
+	}
+	return h.sessionValidator
+}
+
+// PolicyEpoch returns the epoch enforced by the underlying approval Gate.
+// It deliberately reads the Gate rather than a duplicated provider field.
+func (h *ApprovalHTTPHandler) PolicyEpoch() uint64 {
+	if h == nil || h.gate == nil {
+		return 0
+	}
+	return h.gate.PolicyEpoch()
+}
+
 type approvalChallengeState struct {
 	challenge      ApprovalChallenge
 	session        ApprovalSession

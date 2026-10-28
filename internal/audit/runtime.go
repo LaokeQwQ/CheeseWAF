@@ -359,7 +359,7 @@ func (r *Runtime) Replay(ctx context.Context) error {
 		if err := validateCommit(commit); err != nil {
 			return ErrSpoolCorrupt
 		}
-		if err := r.journal.Append(ctx, commit); err != nil && !errors.Is(err, ErrReplayConflict) {
+		if err := r.journal.Append(ctx, commit); err != nil {
 			return err
 		}
 		if commit.Record.Sequence > r.head.Sequence {
