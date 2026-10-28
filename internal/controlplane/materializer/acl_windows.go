@@ -2,18 +2,34 @@
 
 package materializer
 
-import "golang.org/x/sys/windows"
+import (
+	"fmt"
 
-// privateDirectorySDDL grants full control to SYSTEM, Builtin Administrators,
-// and the owning user only, and marks the DACL protected so children inherit
-// exactly this set. It replaces the POSIX 0700 guarantee on Windows.
-const privateDirectorySDDL = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"
+	"golang.org/x/sys/windows"
+)
+
+// privateDirectorySDDLPattern grants full control to SYSTEM, Builtin
+// Administrators, the stored owner, and the account actually running the
+// process. The running account must be explicit: when an administrator owns an
+// existing directory, OW refers to that owner and would drop the service
+// account's access.
+const privateDirectorySDDLPattern = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)(A;OICI;FA;;;%s)"
 
 // ensurePrivateWindowsACL applies and verifies the private DACL for a journal
 // directory. Without it, another local user could write receipts even though
 // the requested mode says 0700.
 func ensurePrivateWindowsACL(path string) error {
-	descriptor, err := windows.SecurityDescriptorFromString(privateDirectorySDDL)
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return err
+	}
+	defer token.Close()
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	sid := user.User.Sid.String()
+	descriptor, err := windows.SecurityDescriptorFromString(fmt.Sprintf(privateDirectorySDDLPattern, sid))
 	if err != nil {
 		return err
 	}
