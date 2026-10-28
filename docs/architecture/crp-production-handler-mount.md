@@ -93,12 +93,9 @@ promotion/rollback 不变量。
 
 以下证据仍缺失，不能由本 contract 推断：
 
-- 真实 PostgreSQL-backed authorization state/provider 的重启恢复和跨进程 replay guard；
-- 生产 approval/permission/fence/audit provider 的部署回执；
-- `cheesewaf-control` 与主 `cheesewaf serve` 的完整 launcher、sidecar 生命周期和
-  stop/cleanup 证据；
-- CRP activation/rollback 在真实部署环境中的 end-to-end 验收、HA、证书轮换和故障恢复。
+- 多节点部署下的 HA 演练、证书轮换和故障恢复；
+- 真实部署环境的容量与长稳数据。
 
-production handler 挂载、durable authorization 与 sidecar 生命周期接线已经落地，
-acceptance matrix 中 `crp_activation` 与 `crp_rollback` 记录为 passed。仍未覆盖的是
-真实部署环境下的 HA、证书轮换和故障恢复演练；这些证据不能由本地或单节点测试替代。
+production handler 挂载、durable authorization、audit、sidecar 生命周期和部署交接
+已经落地，acceptance matrix 中 `crp_activation` 与 `crp_rollback` 记录为 passed。
+本地和单节点测试不能替代上述部署演练。
