@@ -514,3 +514,30 @@ func TestRuntimeEventCacheStaysBounded(t *testing.T) {
 		t.Fatalf("event cache grew to %d", size)
 	}
 }
+
+// A successful event whose cached copy was pruned must still be recognized as
+// an idempotent retry instead of failing as a sequence conflict.
+func TestRuntimeRetriesPrunedEvent(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	event := testEvent("pruned", EventClassCritical)
+	first, err := rt.Append(ctx, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	delete(rt.events, event.EventID)
+	rt.mu.Unlock()
+	again, err := rt.Append(ctx, event)
+	if err != nil {
+		t.Fatalf("retry after prune: %v", err)
+	}
+	if again.Sequence != first.Sequence || again.Hash != first.Hash {
+		t.Fatalf("retry returned %+v, want %+v", again, first)
+	}
+}

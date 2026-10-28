@@ -127,7 +127,13 @@ checksum_lines="$(cd "$tmp_dir" && awk -v name="$asset" '$2 == name || $2 == "*"
 # pinned cosign package separately and opt into verification of the keyless
 # GitHub Actions bundle. The identity is fixed to this repository's release
 # workflow and a version tag; an unsigned or unrelated release is rejected.
-if [[ "${CHEESEWAF_VERIFY_SIGNATURE:-0}" == "1" ]]; then
+# The official release channel is verified by default; an explicit 0 remains
+# an opt-out for air-gapped installs without cosign.
+verify_signature="${CHEESEWAF_VERIFY_SIGNATURE:-auto}"
+if [[ "$verify_signature" == "auto" ]]; then
+  if [[ "$repo" == "$official_repo" ]]; then verify_signature=1; else verify_signature=0; fi
+fi
+if [[ "$verify_signature" == "1" ]]; then
   command -v cosign >/dev/null 2>&1 || die "cosign is required when CHEESEWAF_VERIFY_SIGNATURE=1"
   download_release_file SHA256SUMS.bundle "${tmp_dir}/SHA256SUMS.bundle" || die "unable to download SHA256SUMS signature bundle"
   cosign verify-blob \

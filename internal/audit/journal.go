@@ -9,6 +9,12 @@ import (
 
 // Journal is the narrow persistence contract for an append-only stream. Append
 // must atomically make the record, checkpoint, and outbox metadata visible.
+// EventLookup is implemented by journals that can find an event directly,
+// so an idempotent retry of a pruned event does not need a full scan.
+type EventLookup interface {
+	RecordByEventID(context.Context, string, string) (Record, bool, error)
+}
+
 type Journal interface {
 	Append(context.Context, Commit) error
 	Records(context.Context, string, uint64, int) ([]Record, error)
@@ -87,6 +93,29 @@ func (j *MemoryJournal) Append(ctx context.Context, commit Commit) error {
 		j.outbox[d.DeliveryID] = d
 	}
 	return nil
+}
+
+// RecordByEventID scans the in-memory stream; its size is bounded by the
+// process lifetime, so a linear lookup is acceptable here.
+func (j *MemoryJournal) RecordByEventID(ctx context.Context, stream, eventID string) (Record, bool, error) {
+	if j == nil {
+		return Record{}, false, ErrInvalidRecord
+	}
+	if err := contextErr(ctx); err != nil {
+		return Record{}, false, err
+	}
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	state := j.streams[stream]
+	if state == nil {
+		return Record{}, false, nil
+	}
+	for _, commit := range state.commits {
+		if commit.Record.Event.EventID == eventID {
+			return cloneRecord(commit.Record), true, nil
+		}
+	}
+	return Record{}, false, nil
 }
 
 func (j *MemoryJournal) Records(ctx context.Context, stream string, after uint64, limit int) ([]Record, error) {

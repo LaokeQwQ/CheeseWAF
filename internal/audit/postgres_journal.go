@@ -270,6 +270,32 @@ func (j *PostgresJournal) Records(ctx context.Context, stream string, after uint
 	return result, nil
 }
 
+// RecordByEventID reads one record by its event id, avoiding a stream scan for
+// idempotent retries.
+func (j *PostgresJournal) RecordByEventID(ctx context.Context, stream, eventID string) (Record, bool, error) {
+	if !j.Durable() {
+		return Record{}, false, ErrUnavailable
+	}
+	if err := contextErr(ctx); err != nil {
+		return Record{}, false, err
+	}
+	var sequence int64
+	var raw []byte
+	err := j.db.QueryRowContext(ctx, `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 AND event_id=$2`, stream, eventID).Scan(&sequence, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, false, nil
+	}
+	if err != nil {
+		return Record{}, false, journalDBError(ctx, "read record by event id")
+	}
+	var commit Commit
+	if decodeStrict(raw, &commit) != nil || uint64(sequence) != commit.Record.Sequence ||
+		commit.Record.Event.StreamID != stream || validateCommit(commit) != nil {
+		return Record{}, false, ErrCorruptChain
+	}
+	return cloneRecord(commit.Record), true, nil
+}
+
 func (j *PostgresJournal) Last(ctx context.Context, stream string) (Record, error) {
 	if !j.Durable() {
 		return Record{}, ErrUnavailable

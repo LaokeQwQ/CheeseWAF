@@ -106,23 +106,36 @@ func NewRuntime(o RuntimeOptions) (*Runtime, error) {
 	if err := o.Journal.Verify(context.Background(), o.StreamID); err != nil {
 		return nil, err
 	}
-	for _, row := range rows {
-		cp, err := o.Journal.Checkpoint(context.Background(), o.StreamID, row.Sequence)
+	// Verify every checkpoint in pages; only the recent rows stay resident.
+	for cursor := uint64(0); ; {
+		batch, err := o.Journal.Records(context.Background(), o.StreamID, cursor, checkpointPageSize)
 		if err != nil {
 			return nil, err
 		}
-		if cp == nil {
-			continue
+		if len(batch) == 0 {
+			break
 		}
-		// A shared journal can carry checkpoints signed by another node's key.
-		// Their hashes are still covered by Verify; only keys this process
-		// knows are cryptographically checked, otherwise every peer append
-		// would make the next restart fail closed.
-		if _, known := r.verifiers[cp.KeyID]; !known {
-			continue
-		}
-		if VerifyCheckpoint(o.StreamID, row, *cp, r.verifiers) != nil {
-			return nil, ErrCheckpointInvalid
+		for _, row := range batch {
+			if row.Sequence > cursor {
+				cursor = row.Sequence
+			}
+			cp, err := o.Journal.Checkpoint(context.Background(), o.StreamID, row.Sequence)
+			if err != nil {
+				return nil, err
+			}
+			if cp == nil {
+				continue
+			}
+			// A shared journal can carry checkpoints signed by another node's
+			// key. Their hashes are still covered by Verify; only keys this
+			// process knows are cryptographically checked, otherwise every peer
+			// append would make the next restart fail closed.
+			if _, known := r.verifiers[cp.KeyID]; !known {
+				continue
+			}
+			if VerifyCheckpoint(o.StreamID, row, *cp, r.verifiers) != nil {
+				return nil, ErrCheckpointInvalid
+			}
 		}
 	}
 	r.worker.Add(1)
@@ -269,6 +282,17 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 			r.pruneEventCacheLocked()
 			return rec, nil
 		}
+		if errors.Is(err, ErrReplayConflict) {
+			// A pruned event can still be a successful retry: the journal
+			// already holds this event id.
+			if lookup, ok := r.journal.(EventLookup); ok {
+				if prior, found, lookupErr := lookup.RecordByEventID(ctx, r.stream, event.EventID); lookupErr != nil {
+					return Record{}, lookupErr
+				} else if found && eventEqual(prior.Event, event) {
+					return prior, nil
+				}
+			}
+		}
 		if errors.Is(err, ErrSequenceConflict) || errors.Is(err, ErrReplayConflict) {
 			// Another runtime may have advanced the stream (or recorded this
 			// sequence) since the cached head; refresh before retrying instead
@@ -296,6 +320,10 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 // runtimeEventCache is how many recent events stay resident for idempotent
 // append detection.
 const runtimeEventCache = 4096
+
+// checkpointPageSize bounds how many records are read per page while verifying
+// historic checkpoints.
+const checkpointPageSize = 2000
 
 // pruneEventCacheLocked drops events that fell out of the recent window.
 func (r *Runtime) pruneEventCacheLocked() {
