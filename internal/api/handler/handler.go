@@ -25,6 +25,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/dto"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/captcha"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
@@ -91,8 +92,15 @@ type Handler struct {
 	PasskeyStore          passkey.Store
 	// passkeyMu guards Passkey: the system API can rebuild it after the console
 	// changes RPID or origins, so readers must not race the swap.
-	passkeyMu              sync.RWMutex
-	passkeyFactory         func(config.PasskeyConfig) (*passkey.Service, error)
+	passkeyMu      sync.RWMutex
+	passkeyFactory func(config.PasskeyConfig) (*passkey.Service, error)
+
+	// Durable audit wiring: the appender is the canonical metadata-only
+	// journal, and RequireAuditRuntime makes production refuse to start
+	// without it.
+	AuditRuntime           audit.EventAppender
+	AuditPolicyEpoch       uint64
+	RequireAuditRuntime    bool
 	CAPTCHAAssets          captchaassets.Store
 	CAPTCHAAssetReferences *captchaassets.ReferenceManager
 	CAPTCHAAssetInitError  error
@@ -443,6 +451,9 @@ type Options struct {
 	Tokens                      *middleware.TokenManager
 	Secret                      string
 	Auditor                     *middleware.Auditor
+	AuditRuntime                audit.EventAppender
+	AuditPolicyEpoch            uint64
+	RequireAuditRuntime         bool
 	AssistantApprovals          *ai.ApprovalStore
 	AssistantGateApproval       *ai.GateApprovalAdapter
 	Realtime                    *realtime.Hub
@@ -557,6 +568,9 @@ func New(opts Options) *Handler {
 		Tokens:                              opts.Tokens,
 		Secret:                              opts.Secret,
 		Auditor:                             opts.Auditor,
+		AuditRuntime:                        opts.AuditRuntime,
+		AuditPolicyEpoch:                    opts.AuditPolicyEpoch,
+		RequireAuditRuntime:                 opts.RequireAuditRuntime,
 		AssistantApprovals:                  approvals,
 		AssistantGateApproval:               opts.AssistantGateApproval,
 		clusterApproval:                     opts.ApprovalHTTP,

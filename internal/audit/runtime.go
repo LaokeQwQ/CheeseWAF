@@ -21,6 +21,14 @@ type RuntimeOptions struct {
 	Now             func() time.Time
 }
 
+// EventAppender is the narrow metadata-only boundary exposed to callers that
+// need to record a durable event without depending on the Runtime lifecycle.
+// Production composition should retain the concrete Runtime behind this
+// interface so callers cannot reach the journal or spool directly.
+type EventAppender interface {
+	Append(context.Context, Event) (Record, error)
+}
+
 type queuedEvent struct {
 	event  Event
 	result chan appendResult

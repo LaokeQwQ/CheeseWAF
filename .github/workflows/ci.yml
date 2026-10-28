@@ -196,7 +196,7 @@ jobs:
       - name: Run PostgreSQL control-plane integration tests
         env:
           CHEESEWAF_POSTGRES_TEST_DSN: postgres://postgres:cheesewaf-ci-only@127.0.0.1:5432/cheesewaf_test?sslmode=disable
-        run: bash scripts/ci/go-env.sh go test -race -count=1 ./internal/controlplane/postgres ./internal/cwedp/postgres ./internal/tokens/postgres
+        run: bash scripts/ci/go-env.sh go test -race -count=1 ./internal/audit ./internal/controlplane/postgres ./internal/cwedp/postgres ./internal/tokens/postgres
 
   production-acceptance-integration:
     name: production-acceptance-integration

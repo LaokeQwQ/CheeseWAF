@@ -156,21 +156,31 @@ func runServe(ctx context.Context) error {
 		}
 		productionWiring, err = productionDeps.ServeWiring()
 		if err != nil {
-			_ = productionDeps.Close()
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close after wiring failure: %v", closeErr)
+			}
 			return err
 		}
-		defer productionDeps.Close()
+		defer func() {
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close: %v", closeErr)
+			}
+		}()
 		store = productionWiring.ManagementStore
 		if roles, ok := store.(interface{ ConfigureRoles(map[string][]string) }); ok {
 			roles.ConfigureRoles(cfg.APISec.Permissions)
 		}
 		verifier, ok := store.(storage.MigrationHandoffVerifier)
 		if !ok {
-			_ = productionDeps.Close()
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close after migration verifier failure: %v", closeErr)
+			}
 			return fmt.Errorf("production migration handoff verifier is unavailable")
 		}
 		if err := verifier.VerifyMigrationHandoff(ctx, handoff.Evidence()); err != nil {
-			_ = productionDeps.Close()
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close after migration verification failure: %v", closeErr)
+			}
 			return fmt.Errorf("production migration handoff ledger verification failed: %w", err)
 		}
 		materializeProductionPolicy, err = productionStartupPolicyMaterialization(productionWiring.Startup.State, handoff)
@@ -463,6 +473,9 @@ func runServe(ctx context.Context) error {
 			// console expects the new RPID/origins to apply without a restart.
 			return api.NewPasskeyService(next, passkeyStore, authSecret)
 		},
+		AuditRuntime:                       productionWiring.AuditRuntime,
+		AuditPolicyEpoch:                   productionWiring.PolicyEpoch,
+		RequireAuditRuntime:                productionDeps != nil && productionDeps.auditRequired,
 		IntelHandler:                       intelHandler,
 		AdapterInspect:                     adapterInspectHandler,
 		NotifierRegistry:                   pluginIndex.Registry(),
