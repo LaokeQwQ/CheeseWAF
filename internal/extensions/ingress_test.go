@@ -361,3 +361,45 @@ func TestIngressQueueFullAdmissionIsRetriable(t *testing.T) {
 		t.Fatalf("sequence gap after retry: %v", err)
 	}
 }
+
+// Close must drain the queue before cancelling; a cancellation-aware sink would
+// otherwise reject outputs the caller already handed over.
+func TestIngressCloseDrainsQueuedOutputs(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var saved int
+	sink := OutputSinkFunc(func(ctx context.Context, event audit.Event) (audit.Record, error) {
+		if err := ctx.Err(); err != nil {
+			return audit.Record{}, err
+		}
+		mu.Lock()
+		saved++
+		mu.Unlock()
+		return audit.Record{Event: event}, nil
+	})
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now }, QueueCapacity: 8, Sink: sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for seq := uint64(1); seq <= 4; seq++ {
+		if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-"+strconv.FormatUint(seq, 10), seq, `{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ingress.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if saved != 4 {
+		t.Fatalf("saved %d outputs, want 4", saved)
+	}
+}

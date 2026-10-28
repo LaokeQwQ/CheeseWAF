@@ -404,7 +404,9 @@ func (i *Ingress) Close() error {
 	}
 	i.mu.Unlock()
 	i.sendMu.Unlock()
-	i.workerCancel()
+	// Let the worker drain queued outputs first; cancelling before the drain
+	// would make a cancellation-aware sink reject them even though the caller
+	// asked for an orderly shutdown.
 	waited := make(chan struct{})
 	go func() {
 		i.worker.Wait()
@@ -412,8 +414,10 @@ func (i *Ingress) Close() error {
 	}()
 	select {
 	case <-waited:
+		i.workerCancel()
 		return nil
 	case <-time.After(ingressCloseTimeout):
+		i.workerCancel()
 		return ErrIngressCloseTimeout
 	}
 }
