@@ -249,7 +249,7 @@ The installer uses curl or GNU wget. For official releases, it prefers the softw
 
 Set `CHEESEWAF_RELEASE` on the command after `sudo` to pin a release tag, for example `sudo env CHEESEWAF_RELEASE=vX.Y.Z bash ./install-linux.sh`. Setting `CHEESEWAF_REPO` to a non-official repository downloads from that GitHub fork instead of the official servers.
 
-Official installs verify the release signature with `cosign` and stop if it is missing. Install a pinned `cosign` first, or rerun with `CHEESEWAF_VERIFY_SIGNATURE=0` on a host where that is not possible; GitHub/other repositories keep checksum verification only unless the variable is set to `1`.
+Official installs verify the release signature with `cosign` and stop if it is missing, including when the official index falls back to GitHub for the same tag. Install a pinned `cosign` first, or rerun with `CHEESEWAF_VERIFY_SIGNATURE=0` on a host where that is not possible. Only an explicit non-official `CHEESEWAF_REPO` (a fork) skips signature verification by default.
 
 The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The admin surface uses HTTPS and a one-time setup token; it binds to loopback unless public access is explicitly enabled. Browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall when public access is enabled. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
 
