@@ -304,7 +304,11 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 		return Receipt{EventID: claims.EventID, Sequence: claims.Sequence, PluginID: claims.PluginID, PluginVersion: claims.PluginVersion, PayloadDigest: digest}, nil
 	default:
 		i.mu.Lock()
-		if prior, ok := i.seen[key]; ok {
+		if isNew {
+			// A rejected first admission must not leave a phantom receipt;
+			// otherwise the retry would be answered as a duplicate.
+			delete(i.seen, key)
+		} else if prior, ok := i.seen[key]; ok {
 			prior.pending = false
 			i.seen[key] = prior
 		}

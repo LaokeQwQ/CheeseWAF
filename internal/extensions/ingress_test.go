@@ -305,3 +305,54 @@ func TestIngressSeenMapStaysBounded(t *testing.T) {
 		t.Fatalf("seen map grew to %d (cap %d)", seen, ingress.seenCap)
 	}
 }
+
+// A first admission rejected by a full queue must be retriable as new work; a
+// phantom entry would answer the retry as a duplicate and never advance the
+// sequence, so the next submission fails with a gap.
+func TestIngressQueueFullAdmissionIsRetriable(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	sink := OutputSinkFunc(func(ctx context.Context, event audit.Event) (audit.Record, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return audit.Record{Event: event}, nil
+	})
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now }, QueueCapacity: 1, Sink: sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingress.Close()
+	for seq := uint64(1); seq <= 2; seq++ {
+		if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-"+strconv.FormatUint(seq, 10), seq, `{}`)); err != nil {
+			t.Fatalf("submit %d: %v", seq, err)
+		}
+	}
+	third := signedIngressOutput(t, private, now, "evt-3", 3, `{}`)
+	if _, err := ingress.Submit(context.Background(), third); !errors.Is(err, ErrIngressQueueFull) {
+		t.Fatalf("third submit error = %v, want queue full", err)
+	}
+	close(release)
+	if err := ingress.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := ingress.Submit(context.Background(), third)
+	if err != nil {
+		t.Fatalf("retry after queue full: %v", err)
+	}
+	if receipt.Duplicate {
+		t.Fatal("rejected admission was treated as an accepted duplicate")
+	}
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-4", 4, `{}`)); err != nil {
+		t.Fatalf("sequence gap after retry: %v", err)
+	}
+}
