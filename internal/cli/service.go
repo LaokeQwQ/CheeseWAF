@@ -385,7 +385,14 @@ func runServe(ctx context.Context) error {
 		if intelErr != nil {
 			log.Printf("intel: persistence unavailable: %v", intelErr)
 		} else {
-			syncIntelSources(runtimeCtx, cfg.Intel.Sources, intelStore)
+			// Import permission is decided from the stored source rows, so a
+			// failed reconciliation must keep the import route off: a removed
+			// source would otherwise stay authorized.
+			disableURLImport := !cfg.Intel.URLImport
+			if err := syncIntelSources(runtimeCtx, cfg.Intel.Sources, intelStore); err != nil {
+				log.Printf("intel: source reconciliation failed, URL import disabled: %v", err)
+				disableURLImport = true
+			}
 			var intelExtractor intel.Extractor
 			if schedulerAIClient != nil {
 				intelExtractor = ai.NewIntelExtractor(schedulerAIClient)
@@ -395,7 +402,7 @@ func runServe(ctx context.Context) error {
 				Store:            intelStore,
 				Extractor:        intelExtractor,
 				MaxFetchBytes:    cfg.Intel.MaxFetchBytes,
-				DisableURLImport: !cfg.Intel.URLImport,
+				DisableURLImport: disableURLImport,
 				Policy:           intelRolloutPolicy(cfg.Intel),
 				TrustPolicy:      intelSourceTrustPolicy(cfg.Intel),
 			})

@@ -31,7 +31,9 @@ func TestSyncIntelSourcesRevokesRemovedSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := config.IntelSourceConfig{ID: "new-feed", Type: "url", URL: "https://new.example.test/feed.xml", Trust: "community", Enabled: true}
-	syncIntelSources(ctx, []config.IntelSourceConfig{kept}, store)
+	if err := syncIntelSources(ctx, []config.IntelSourceConfig{kept}, store); err != nil {
+		t.Fatalf("sync sources: %v", err)
+	}
 
 	sources, err := store.ListSources(ctx)
 	if err != nil {
@@ -46,5 +48,28 @@ func TestSyncIntelSourcesRevokesRemovedSources(t *testing.T) {
 	}
 	if got := byID["new-feed"]; !got.Enabled {
 		t.Fatalf("configured source was not registered: %+v", got)
+	}
+}
+
+// A failed reconciliation must surface so startup can keep URL imports off;
+// silently logging would leave a removed source authorized.
+func TestSyncIntelSourcesReportsFailure(t *testing.T) {
+	ctx := context.Background()
+	raw, err := storage.OpenSQLite(filepath.Join(t.TempDir(), "intel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.AsIntelStore(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncIntelSources(ctx, nil, store); err == nil {
+		t.Fatal("closed store must report a reconciliation failure")
 	}
 }

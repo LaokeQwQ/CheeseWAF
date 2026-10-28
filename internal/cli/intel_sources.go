@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
@@ -13,8 +14,9 @@ import (
 // source that is no longer configured. Import permission is decided from the
 // stored enabled rows, so leaving removed rows untouched would let a source
 // deleted from intel.sources keep importing after a restart.
-func syncIntelSources(ctx context.Context, sources []config.IntelSourceConfig, store intelstore.Store) {
+func syncIntelSources(ctx context.Context, sources []config.IntelSourceConfig, store intelstore.Store) error {
 	configured := make(map[string]struct{}, len(sources))
+	var failures int
 	for _, source := range sources {
 		configured[source.ID] = struct{}{}
 		if err := store.UpsertSource(ctx, intel.Source{
@@ -22,12 +24,13 @@ func syncIntelSources(ctx context.Context, sources []config.IntelSourceConfig, s
 			Trust: intel.ParseTrustLevel(source.Trust), Enabled: source.Enabled,
 		}); err != nil {
 			log.Printf("intel: register source %q: %v", source.ID, err)
+			failures++
 		}
 	}
 	stored, err := store.ListSources(ctx)
 	if err != nil {
 		log.Printf("intel: reconcile sources: %v", err)
-		return
+		return err
 	}
 	for _, source := range stored {
 		if !source.Enabled {
@@ -39,6 +42,11 @@ func syncIntelSources(ctx context.Context, sources []config.IntelSourceConfig, s
 		source.Enabled = false
 		if err := store.UpsertSource(ctx, source); err != nil {
 			log.Printf("intel: revoke source %q: %v", source.ID, err)
+			failures++
 		}
 	}
+	if failures > 0 {
+		return fmt.Errorf("reconcile %d intel source(s)", failures)
+	}
+	return nil
 }
