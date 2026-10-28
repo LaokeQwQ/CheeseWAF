@@ -316,7 +316,10 @@ func TestIngressQueueFullAdmissionIsRetriable(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
 	sink := OutputSinkFunc(func(ctx context.Context, event audit.Event) (audit.Record, error) {
+		once.Do(func() { close(started) })
 		select {
 		case <-release:
 		case <-ctx.Done():
@@ -332,10 +335,12 @@ func TestIngressQueueFullAdmissionIsRetriable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ingress.Close()
-	for seq := uint64(1); seq <= 2; seq++ {
-		if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-"+strconv.FormatUint(seq, 10), seq, `{}`)); err != nil {
-			t.Fatalf("submit %d: %v", seq, err)
-		}
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-1", 1, `{}`)); err != nil {
+		t.Fatalf("submit 1: %v", err)
+	}
+	<-started // the worker holds the first append; the queue is now empty
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-2", 2, `{}`)); err != nil {
+		t.Fatalf("submit 2: %v", err)
 	}
 	third := signedIngressOutput(t, private, now, "evt-3", 3, `{}`)
 	if _, err := ingress.Submit(context.Background(), third); !errors.Is(err, ErrIngressQueueFull) {
