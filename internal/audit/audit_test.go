@@ -397,10 +397,10 @@ func TestRuntimeRefreshesHeadAfterReplayConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close()
-	if _, err := other.Append(ctx, testEvent("event-2", EventClassNormal)); err != nil {
+	if _, err := other.Append(ctx, testEvent("event-2", EventClassCritical)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.Append(ctx, testEvent("event-3", EventClassNormal)); err != nil {
+	if _, err := other.Append(ctx, testEvent("event-3", EventClassCritical)); err != nil {
 		t.Fatal(err)
 	}
 	record, err := first.Append(ctx, testEvent("event-4", EventClassCritical))
