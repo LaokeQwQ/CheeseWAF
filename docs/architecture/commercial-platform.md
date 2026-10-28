@@ -51,7 +51,7 @@ Coordinator 与 native-raft 的 cluster/epoch backend 全部就绪前 fail-close
 - PG：用户、Session、Token 元数据、审批、审计、队列元数据、CRP 状态和恢复索引。
 - Redis：短期锁、租约、缓存、黑名单加速和通知；故障按操作定义有限回退，不承载唯一持久真相。
 - SQLite：临时模式和兼容路径；生产模式不得静默回退 SQLite。
-- DuckDB：可选 sidecar/CLI，仅读取 Parquet 做跨集群分析和审计，不进入热路径。
+- DuckDB：规划为宿主提供的异步 one-shot Plugin，只读取已验证的脱敏 Parquet 快照并输出 `analysis-record/v1`；不提供 sidecar/CLI 运行模式，不进入请求热路径，也不能产生策略候选或直接改变 WAF 策略。CheeseWAF 当前未接入 DuckDB 作业运行时和 Parquet 审计导出器。
 
 ## 插件和 CRP 信任链
 

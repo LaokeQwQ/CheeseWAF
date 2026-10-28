@@ -140,6 +140,7 @@ func (e *Engine) Observe(event Event, policyEpoch uint64) []Hint {
 	if len(state.events) > e.maxPerKey {
 		state.events = state.events[len(state.events)-e.maxPerKey:]
 	}
+
 	if !state.lastHintAt.IsZero() && now.Sub(state.lastHintAt) < suppressionTTL {
 		return nil
 	}

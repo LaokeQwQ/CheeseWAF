@@ -444,7 +444,7 @@ func (t *runtimeProductionTransaction) Commit(ctx context.Context) error {
 	// after the management transaction is durable. If this step fails the
 	// pending fence remains, and serve stays frozen for operator recovery.
 	if t.target.control != nil && t.target.raft != nil {
-		_, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: controlplane.StorageProfileProduction, ClusterID: t.target.candidate.Cluster.ClusterID, Machine: t.target.raft.Machine(), Durable: t.target.control, Consensus: t.target.raft, Fencer: t.target.raft, InitialState: t.target.initialState, InitialAuthorizer: t.target.authorizer})
+		_, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: controlplane.StorageProfileProduction, ClusterID: t.target.candidate.Cluster.ClusterID, Machine: t.target.raft.Machine(), Durable: t.target.control, Consensus: t.target.raft, Fencer: t.target.raft, InitialState: t.target.initialState, InitialAuthorizer: t.target.authorizer, LeadershipCheckpoint: t.target.raft})
 		if err != nil {
 			return errors.Join(setupmigration.ErrCommitOutcomeUnknown, err)
 		}

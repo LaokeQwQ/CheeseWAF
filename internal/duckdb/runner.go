@@ -1,13 +1,13 @@
 package duckdb
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,6 +18,10 @@ import (
 // failing DuckDB process that loops on a bad file must not grow the parent
 // heap while it fails.
 const maxStderrBytes = 8 << 10
+
+// errCLIOutputTooLarge marks a child that produced more than the job limit.
+// Callers distinguish it from execution failures to report the bound.
+var errCLIOutputTooLarge = errors.New("duckdb output exceeds")
 
 // Executor runs one already-validated SQL statement and returns JSON rows.
 //
@@ -64,67 +68,58 @@ func (e *CLIExecutor) Query(ctx context.Context, sql string, maxBytes int) ([]by
 		return nil, err
 	}
 	command := exec.CommandContext(runContext, binary, "--readonly", "-json", "-f", name)
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
 	stderr := &cappedBuffer{max: maxStderrBytes}
 	command.Stderr = stderr
-	// Wait must not block forever on a child that keeps an inherited pipe open
-	// after cancellation (a shell wrapper, a forked helper). WaitDelay bounds
-	// the leftover I/O wait so a timeout or an oversized read still returns
-	// promptly; a plain DuckDB exit closes its pipes and never hits this.
+	// Bound stdout while the child runs and let WaitDelay bound the leftover
+	// pipe wait: a descendant that keeps an inherited stdout open must not
+	// delay completion past the delay.
+	output := &boundedCLIOutput{max: maxBytes, cancel: cancel}
+	command.Stdout = output
 	command.WaitDelay = 2 * time.Second
-	if err := command.Start(); err != nil {
-		return nil, err
+	runErr := command.Run()
+	if output.excess {
+		return nil, fmt.Errorf("%w %d bytes", errCLIOutputTooLarge, maxBytes)
 	}
-	// Read at most one byte past the limit: enough to detect an oversized
-	// result, never enough to buffer the oversized result itself. The read runs
-	// in its own goroutine so the deadline still holds when a child leaves a
-	// forked helper holding the pipe open: closing stdout unblocks the reader.
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	readDone := make(chan readResult, 1)
-	go func() {
-		data, err := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
-		readDone <- readResult{data: data, err: err}
-	}()
-	var result readResult
-	select {
-	case result = <-readDone:
-	case <-runContext.Done():
-		_ = stdout.Close()
-		_ = command.Wait()
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+	if runErr != nil {
+		// A killed or timed-out child reports the signal, not the deadline.
+		if runContext.Err() != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, fmt.Errorf("duckdb query timed out after %s", timeout)
 		}
-		return nil, fmt.Errorf("duckdb query timed out after %s", timeout)
-	}
-	if int64(len(result.data)) > int64(maxBytes) {
-		// Closing the read side gives the child SIGPIPE, and cancel() kills it
-		// through exec.CommandContext. Wait still reaps the process, so neither
-		// the child nor its pipe-copy goroutines leak.
-		_ = stdout.Close()
-		cancel()
-		_ = command.Wait()
-		return nil, fmt.Errorf("duckdb output exceeds %d bytes", maxBytes)
-	}
-	waitErr := command.Wait()
-	if waitErr != nil {
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			return nil, fmt.Errorf("duckdb output pipe did not close: %w", runErr)
+		}
 		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			if message := strings.TrimSpace(stderr.String()); message != "" {
 				return nil, fmt.Errorf("duckdb failed: %s", message)
 			}
 		}
-		return nil, fmt.Errorf("duckdb failed: %w", waitErr)
+		return nil, fmt.Errorf("duckdb failed: %w", runErr)
 	}
-	if result.err != nil {
-		return nil, result.err
+	return output.buffer.Bytes(), nil
+}
+
+// boundedCLIOutput caps child output while it is produced and cancels the run
+// once the limit is crossed, so an unbounded stream never reaches memory.
+type boundedCLIOutput struct {
+	buffer bytes.Buffer
+	max    int
+	cancel context.CancelFunc
+	excess bool
+}
+
+func (w *boundedCLIOutput) Write(p []byte) (int, error) {
+	remaining := w.max - w.buffer.Len()
+	if len(p) > remaining {
+		_, _ = w.buffer.Write(p[:remaining])
+		w.excess = true
+		w.cancel()
+		return remaining, errCLIOutputTooLarge
 	}
-	return result.data, nil
+	return w.buffer.Write(p)
 }
 
 // cappedBuffer is an io.Writer that keeps at most max bytes and silently drops
@@ -259,7 +254,7 @@ func (r *Runner) Run(ctx context.Context, job Job) (AnalysisRecord, error) {
 	// Defensive re-check for executors that do not honour the streaming cap;
 	// CLIExecutor already fails while reading rather than returning the excess.
 	if len(raw) > maxBytes {
-		return AnalysisRecord{}, fmt.Errorf("duckdb output exceeds %d bytes", maxBytes)
+		return AnalysisRecord{}, fmt.Errorf("%w %d bytes", errCLIOutputTooLarge, maxBytes)
 	}
 	var rows []map[string]any
 	if err := json.Unmarshal(raw, &rows); err != nil {

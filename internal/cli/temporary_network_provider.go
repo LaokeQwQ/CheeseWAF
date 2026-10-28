@@ -53,9 +53,16 @@ func newProductionTemporaryNetworkProvider(ctx context.Context, opts ProductionT
 	if isNilProductionDependency(opts.ManagementStore) || opts.PolicyEpoch == 0 || opts.DataDir == "" || !filepath.IsAbs(opts.DataDir) {
 		return nil, ErrProductionTemporaryNetworkUnavailable
 	}
-	audit, err := netlease.NewFileAuditSink(filepath.Join(opts.DataDir, "audit", temporaryOnlineAuditFile))
+	compatibilityAudit, err := netlease.NewFileAuditSink(filepath.Join(opts.DataDir, "audit", temporaryOnlineAuditFile))
 	if err != nil {
 		return nil, fmt.Errorf("production temporary network audit: %w", err)
+	}
+	var auditSink netlease.AuditSink = compatibilityAudit
+	if opts.AuditRuntime != nil {
+		auditSink, err = netlease.NewCanonicalAuditSink(opts.AuditRuntime, compatibilityAudit)
+		if err != nil {
+			return nil, fmt.Errorf("production canonical temporary network audit: %w", err)
+		}
 	}
 	sessionStore, ok := opts.ManagementStore.(storage.SessionLookupStore)
 	if !ok || sessionStore == nil {
@@ -83,7 +90,7 @@ func newProductionTemporaryNetworkProvider(ctx context.Context, opts ProductionT
 		Sessions:    sessions,
 		Transport:   netlease.NewStandardTransport(),
 		Addresses:   netlease.PublicAddressPolicy{},
-		Audit:       audit,
+		Audit:       auditSink,
 		PreDialGate: provider.preDialGate,
 	})
 	if err != nil {

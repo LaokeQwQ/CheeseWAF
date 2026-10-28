@@ -21,6 +21,14 @@ type RuntimeOptions struct {
 	Now             func() time.Time
 }
 
+// EventAppender is the narrow metadata-only boundary exposed to callers that
+// need to record a durable event without depending on the Runtime lifecycle.
+// Production composition should retain the concrete Runtime behind this
+// interface so callers cannot reach the journal or spool directly.
+type EventAppender interface {
+	Append(context.Context, Event) (Record, error)
+}
+
 type queuedEvent struct {
 	event  Event
 	result chan appendResult
@@ -205,6 +213,7 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 		}
 		return Record{}, ErrReplayConflict
 	}
+	var lastErr error
 	for attempt := 0; attempt < 8; attempt++ {
 		sequence := r.head.Sequence + 1
 		if sequence == 0 {
@@ -246,12 +255,16 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 			r.events[event.EventID] = rec
 			return rec, nil
 		}
-		if errors.Is(err, ErrSequenceConflict) {
+		if errors.Is(err, ErrSequenceConflict) || errors.Is(err, ErrReplayConflict) {
+			// Another runtime may have advanced the stream (or recorded this
+			// sequence) since the cached head; refresh before retrying instead
+			// of reusing an occupied sequence forever.
 			last, e := r.journal.Last(ctx, r.stream)
 			if e != nil {
 				return Record{}, e
 			}
 			r.head = last
+			lastErr = err
 			continue
 		}
 		if errors.Is(err, ErrUnavailable) && r.spool != nil && r.spool.Durable() {
@@ -259,6 +272,9 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 			continue
 		}
 		return Record{}, err
+	}
+	if lastErr != nil {
+		return Record{}, lastErr
 	}
 	return Record{}, ErrSequenceConflict
 }
@@ -351,7 +367,7 @@ func (r *Runtime) Replay(ctx context.Context) error {
 		if err := validateCommit(commit); err != nil {
 			return ErrSpoolCorrupt
 		}
-		if err := r.journal.Append(ctx, commit); err != nil && !errors.Is(err, ErrReplayConflict) {
+		if err := r.journal.Append(ctx, commit); err != nil {
 			return err
 		}
 		if commit.Record.Sequence > r.head.Sequence {
@@ -366,6 +382,11 @@ func (r *Runtime) Replay(ctx context.Context) error {
 	}
 	r.spooling = !r.journal.Durable()
 	return nil
+}
+
+// Durable reports whether the journal backing this runtime is durable.
+func (r *Runtime) Durable() bool {
+	return r != nil && r.journal != nil && r.journal.Durable()
 }
 
 // Dispatch drains metadata-only outbox rows. A delivery failure leaves the

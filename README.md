@@ -227,11 +227,27 @@ Recommended for Linux physical servers and virtual machines requiring minimal re
 
 #### Recommended: One-command installation
 
-Run this command as root on the target Linux host. It prompts for a language, detects the CPU architecture, downloads the latest stable release, verifies SHA256, installs and starts the systemd service, then prints public/private addresses, the one-time setup URL, paths, and service status:
+Use the official website entry point on the target Linux host. The installer prompts for a language, detects the CPU architecture, downloads the latest stable release, verifies SHA256, installs and starts the systemd service, then prints public/private addresses, the one-time setup URL, paths, and service status:
 
 ```bash
-curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo bash ./install-linux.sh
 ```
+
+Or use GNU wget:
+
+```bash
+wget --max-redirect=0 -O install-linux.sh https://cheesesec.com/install.sh && sudo bash ./install-linux.sh
+```
+
+If the website entry point is unavailable, download the installer from [GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) instead:
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh -o install-linux.sh && sudo bash ./install-linux.sh
+```
+
+The installer uses curl or GNU wget. For official releases, it prefers the software metadata at `https://ota.cheesesec.com/v1/software/channels/stable/index.json` and assets at `https://res.cheesesec.com/releases/{tag}/{asset}`. If an official download is unavailable, it falls back to GitHub; after a release tag is selected, asset fallback keeps that same tag. A checksum or signature verification failure stops installation rather than retrying another source to bypass the failure.
+
+Set `CHEESEWAF_RELEASE` on the command after `sudo` to pin a release tag, for example `sudo env CHEESEWAF_RELEASE=vX.Y.Z bash ./install-linux.sh`. Setting `CHEESEWAF_REPO` to a non-official repository downloads from that GitHub fork instead of the official servers.
 
 The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The admin surface uses HTTPS and a one-time setup token; it binds to loopback unless public access is explicitly enabled. Browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall when public access is enabled. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
 
@@ -239,7 +255,7 @@ The interactive installer also accepts an application root directory. For exampl
 
 #### Offline/manual installation
 
-Download the official release archive matching your server architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
+Choose a release tag and the archive matching your server architecture. Prefer the official asset URL `https://res.cheesesec.com/releases/{tag}/{asset}`; if unavailable, use `https://github.com/LaokeQwQ/CheeseWAF/releases/download/{tag}/{asset}` for the same tag and filename. The [GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page lists tags and filenames. Download `SHA256SUMS` from the same release and verify the archive before extracting it:
 
 | Archive Name | Architecture |
 | :--- | :--- |
@@ -267,7 +283,13 @@ Upgrades preserve existing configuration. An existing public management listener
 sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
 ```
 
-For a one-command upgrade, pass the variable after `sudo`: `curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`. Without confirmation, the installer exits before stopping the service.
+To upgrade through the website entry point, pass the variable after `sudo`:
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash ./install-linux.sh
+```
+
+You can use GNU wget or the GitHub installer URL as shown above. Without confirmation, the installer exits before stopping the service.
 
 For manual installation, copy both the binary executable and the Web administration assets:
 
