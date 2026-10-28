@@ -263,7 +263,7 @@ func sanitizeUntrustedForwardingHeaders(r *http.Request, accessConfigured bool) 
 	}
 	for name := range r.Header {
 		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, "x-forwarded-") || lower == "x-real-ip" || lower == "x-client-ip" {
+		if lower == "forwarded" || strings.HasPrefix(lower, "x-forwarded-") || lower == "x-real-ip" || lower == "x-client-ip" {
 			r.Header.Del(name)
 			continue
 		}

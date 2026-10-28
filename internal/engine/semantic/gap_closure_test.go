@@ -447,10 +447,11 @@ func TestXSSStandaloneJavascriptURLRequiresExecutionContext(t *testing.T) {
 	if got := detectOnTarget(t, a, "GET", "/javascript:%0dalert(1)", "", ""); got != nil && got.Detected && got.Category == "xss" {
 		t.Fatalf("ordinary HTTP path was treated as a javascript URL: %+v", got)
 	}
-	// An exact script-looking value in an ordinary text field is still data;
-	// only a URL-valued field gets the request-level execution interpretation.
-	if got := detectOnTarget(t, a, "GET", "/docs?text="+url.QueryEscape("javascript:alert(1)"), "", ""); got != nil && got.Detected && got.Category == "xss" {
-		t.Fatalf("ordinary text query field triggered XSS: %+v", got)
+	// A javascript: URL embedded in prose is still data in an ordinary text
+	// field; only a value that *is* the URL gets the request-level execution
+	// interpretation now that the scheme check no longer depends on the name.
+	if got := detectOnTarget(t, a, "GET", "/docs?text="+url.QueryEscape("see javascript:alert(1) for details"), "", ""); got != nil && got.Detected && got.Category == "xss" {
+		t.Fatalf("javascript mention inside prose triggered XSS: %+v", got)
 	}
 }
 

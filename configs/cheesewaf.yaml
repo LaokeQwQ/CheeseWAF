@@ -9,6 +9,9 @@ server:
     # starting the service; setup remains token-gated until the wizard finishes.
     admin_listen: "127.0.0.1:9443"
     admin_public: false
+    # Shared secret used by CheeseWAF-Adapters as Authorization: Bearer.
+    # Empty permits only loopback adapter clients.
+    adapter_token: ""
     admin_tls:
         enabled: true
         cert_file: "./data/certs/admin.crt"
@@ -204,6 +207,39 @@ sites:
             promote_seconds: 0
             auto_agree: false
             fingerprint_deny: []
+            # Confidence ladder for semantic hits. A hit at or above `block`
+            # is blocked, at or above `challenge` (which must sit below
+            # `block`) is challenged, and anything else is logged. `block` also
+            # keeps the web_attack severity floor; `challenge` is confidence
+            # only. All-zero keeps the protection_policy.web_attack preset
+            # (smart = high severity / 0.85) and adds no extra tier, so an
+            # existing config behaves exactly as before.
+            # Values must satisfy 0 <= log <= challenge <= block <= 1.
+            action_thresholds:
+                block: 0
+                challenge: 0
+                log: 0
+            # Narrow the ladder for one route. The first match wins; `params`
+            # empty means the whole path, otherwise the analyzer must have
+            # flagged one of the listed parameters. Unset rungs inherit from
+            # action_thresholds / web_attack. `action` pins the outcome: ""
+            # follows the ladder, observe only logs, challenge always answers
+            # with a challenge page (never a block). Only the action a hit maps
+            # to changes — detection is never affected.
+            route_overrides: []
+            # route_overrides:
+            #     # Search pages are more conservative: a documentation-style
+            #     # "UNION SELECT" mention is challenged, not blocked.
+            #     - path: ^/search$
+            #       params: [q]
+            #       block: 0.97
+            #       challenge: 0.90
+            #     # Admin endpoints block earlier than the 0.85 smart base.
+            #     - path: ^/admin
+            #       block: 0.80
+            #     # Opt-in observe: record hits on this route without acting.
+            #     - path: ^/legacy/report$
+            #       action: observe
         protection_policy:
             web_attack: ""
             api_security: ""
@@ -225,6 +261,10 @@ sites:
         response:
             enabled: true
             max_body_bytes: 1048576
+            inspection:
+                # observe keeps existing deployments working; use closed for
+                # sensitive APIs that must not deliver uninspected bodies.
+                fail_mode: observe
             sensitive_patterns:
                 - AKIA[0-9A-Z]{16}
                 - (?i)password\s*[=:]\s*['\"]?[^'\"\s]+
@@ -389,6 +429,19 @@ storage:
         enabled: false
         endpoint: ""
         allow_private_endpoint: false
+        timeout: 10s
+    loki:
+        enabled: false
+        # Loki root URL or the full push URL (/loki/api/v1/push).
+        endpoint: ""
+        allow_private_endpoint: false
+        # Multi-tenant Loki only; sent as X-Scope-OrgID.
+        tenant_id: ""
+        username: ""
+        password: ""
+        # Indexed stream labels. `job` defaults to "cheesewaf" and site_id is
+        # attached per entry when the entry carries a site.
+        labels: {}
         timeout: 10s
     postgresql:
         enabled: false
@@ -688,3 +741,10 @@ performance:
         base_gogc: 0
         target_gc_cpu_fraction: 0
         interval: 0s
+
+# Local plugin index. The directory is scanned for CRP manifests and notifier
+# provider packs; a change is picked up within watch_interval without a restart.
+# A relative index_dir resolves against the data directory.
+# plugins:
+#     index_dir: plugins
+#     watch_interval: 2s

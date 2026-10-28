@@ -112,6 +112,9 @@ func NewRendererFromConfig(cfg config.BlockPageConfig) (*Renderer, error) {
 }
 
 func (r *Renderer) Render(w http.ResponseWriter, status int, data Data) {
+	if status < 100 || status > 599 {
+		status = http.StatusInternalServerError
+	}
 	body, data := r.RenderHTML(status, data)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Language", data.Locale)
@@ -587,8 +590,7 @@ func ensureVisibleEventID(buf *bytes.Buffer, data Data) {
 	}
 	badge := `<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:min(420px,calc(100vw - 32px));padding:10px 12px;border:1px solid rgba(148,163,184,.45);border-radius:10px;background:rgba(15,23,42,.92);color:#f8fafc;box-shadow:0 16px 40px rgba(15,23,42,.24);font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace;overflow-wrap:anywhere">` + template.HTMLEscapeString(label) + `: <strong style="color:#93c5fd">` + template.HTMLEscapeString(eventID) + `</strong></div>`
 	body := buf.String()
-	lower := strings.ToLower(body)
-	if idx := strings.LastIndex(lower, "</body>"); idx >= 0 {
+	if idx := lastIndexFold(body, "</body>"); idx >= 0 {
 		buf.Reset()
 		buf.WriteString(body[:idx])
 		buf.WriteString(badge)
@@ -596,6 +598,20 @@ func ensureVisibleEventID(buf *bytes.Buffer, data Data) {
 		return
 	}
 	buf.WriteString(badge)
+}
+
+// lastIndexFold finds needle in text without changing byte offsets. Unlike a
+// lowercase copy, this keeps the returned index valid for slicing text.
+func lastIndexFold(text, needle string) int {
+	if needle == "" || len(text) < len(needle) {
+		return -1
+	}
+	for i := len(text) - len(needle); i >= 0; i-- {
+		if strings.EqualFold(text[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 func ensureLanguageRuntime(buf *bytes.Buffer, data Data) {
@@ -683,8 +699,7 @@ func ensureLanguageRuntime(buf *bytes.Buffer, data Data) {
 })();
 </script>`
 	body := buf.String()
-	lower := strings.ToLower(body)
-	if idx := strings.LastIndex(lower, "</body>"); idx >= 0 {
+	if idx := lastIndexFold(body, "</body>"); idx >= 0 {
 		buf.Reset()
 		buf.WriteString(body[:idx])
 		buf.WriteString(script)

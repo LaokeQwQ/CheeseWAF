@@ -53,7 +53,7 @@ func systemConfigView(cfg *config.Config) map[string]any {
 	update := effectiveUpdateConfigView(cfg.Update)
 	vulnerability := effectiveVulnerabilityConfigView(cfg.Vulnerability)
 	return map[string]any{
-		"server":            cfg.Server,
+		"server":            serverConfigView(cfg.Server),
 		"time_sync":         cfg.TimeSync,
 		"tls":               cfg.TLS,
 		"storage":           storageConfigView(cfg.Storage),
@@ -83,11 +83,18 @@ func systemConfigView(cfg *config.Config) map[string]any {
 			"ota_updates":             map[string]any{"available": false, "reason": "EXECUTOR_UNAVAILABLE", "message": "OTA remains read-only until CRP/CWEDP activation is wired"},
 			"vulnerability_feeds":     map[string]any{"available": false, "reason": "NOT_IMPLEMENTED"},
 			"bot_challenge_redis":     map[string]any{"available": false, "reason": "NOT_IMPLEMENTED", "message": "bot challenge state uses the in-process memory backend; storage.redis does not change it"},
+			"adapter_api":             map[string]any{"available": true, "configured": cfg.Server.AdapterToken != "", "loopback_only": cfg.Server.AdapterToken == ""},
 		},
 		"monitor":    monitorConfigView(cfg.Monitor),
 		"apisec":     apiSecConfigView(cfg.APISec),
 		"block_page": cfg.BlockPage,
 	}
+}
+
+func serverConfigView(in config.ServerConfig) config.ServerConfig {
+	out := in
+	out.AdapterToken = ""
+	return out
 }
 
 func captchaProvidersConfigView(in config.CAPTCHAProvidersConfig) map[string]any {
@@ -148,6 +155,7 @@ func effectiveVulnerabilityConfigView(in config.VulnerabilityConfig) config.Vuln
 func storageConfigView(in config.StorageConfig) config.StorageConfig {
 	out := in
 	out.ClickHouse.Password = ""
+	out.Loki.Password = ""
 	out.PostgreSQL.DSN = ""
 	out.Elasticsearch.Password = ""
 	out.Elasticsearch.APIKey = ""
@@ -290,6 +298,11 @@ func preserveSystemSecrets(current config.Config, next *config.Config) {
 	if next.Storage.ClickHouse.Password == "" {
 		next.Storage.ClickHouse.Password = current.Storage.ClickHouse.Password
 	}
+	if next.Storage.Loki.Password == "" {
+		// storageConfigView clears the Loki password too; without this the next
+		// console save persists an empty password and Loki authentication fails.
+		next.Storage.Loki.Password = current.Storage.Loki.Password
+	}
 	if next.Storage.PostgreSQL.DSN == "" {
 		next.Storage.PostgreSQL.DSN = current.Storage.PostgreSQL.DSN
 	}
@@ -301,6 +314,11 @@ func preserveSystemSecrets(current config.Config, next *config.Config) {
 	}
 	next.Storage.Elasticsearch.Headers = preserveStringMapSecrets(current.Storage.Elasticsearch.Headers, next.Storage.Elasticsearch.Headers)
 	next.ACME.DNSProviders = preserveACMEDNSProviderSecrets(current.ACME.DNSProviders, next.ACME.DNSProviders)
+	if next.Server.AdapterToken == "" {
+		// The system view redacts the credential, so a console save that echoes
+		// the redacted document must not clear it. Rotation sends a new value.
+		next.Server.AdapterToken = current.Server.AdapterToken
+	}
 	if next.Protection.Bot.Secret == "" {
 		next.Protection.Bot.Secret = current.Protection.Bot.Secret
 	}

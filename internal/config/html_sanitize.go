@@ -64,6 +64,11 @@ func sanitizeBlockPageNode(node *html.Node) bool {
 			if tag == "style" && sanitizeBlockPageStyleText(child) {
 				changed = true
 			}
+		} else if child.Type == html.TextNode {
+			if clean, textChanged := sanitizeBlockPageText(child.Data); textChanged {
+				child.Data = clean
+				changed = true
+			}
 		} else if child.Type == html.CommentNode {
 			node.RemoveChild(child)
 			changed = true
@@ -76,6 +81,21 @@ func sanitizeBlockPageNode(node *html.Node) bool {
 		child = next
 	}
 	return changed
+}
+
+func sanitizeBlockPageText(value string) (string, bool) {
+	changed := false
+	for _, scheme := range []string{"javascript:", "vbscript:", "data:text/html"} {
+		for {
+			index := asciiFoldIndex(value, scheme)
+			if index < 0 {
+				break
+			}
+			value = value[:index] + "blocked:" + value[index+len(scheme):]
+			changed = true
+		}
+	}
+	return value, changed
 }
 
 func sanitizeBlockPageStyleText(node *html.Node) bool {

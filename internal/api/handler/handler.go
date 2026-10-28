@@ -39,8 +39,10 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/cwedp/consumer"
 	"github.com/LaokeQwQ/CheeseWAF/internal/fsguard"
 	accountidentity "github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/netlease"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	protectionip "github.com/LaokeQwQ/CheeseWAF/internal/protection/ip"
 	"github.com/LaokeQwQ/CheeseWAF/internal/realtime"
 	"github.com/LaokeQwQ/CheeseWAF/internal/setup"
@@ -51,40 +53,46 @@ import (
 )
 
 type Handler struct {
-	Config                 *config.Config
-	configCurrent          atomic.Pointer[config.Config]
-	ConfigPath             string
-	Store                  storage.Store
-	Sink                   storage.LogSink
-	Tokens                 *middleware.TokenManager
-	Secret                 string
-	Auditor                *middleware.Auditor
-	AssistantApprovals     *ai.ApprovalStore
-	AssistantGateApproval  *ai.GateApprovalAdapter
-	clusterApproval        *ApprovalHTTPHandler
-	Realtime               *realtime.Hub
-	approvalStoreError     error
-	TwoFAState             *twoFAState
-	ClusterIdentity        *identity.MemoryIdentityService
-	ClusterDeployTasks     *deploy.TaskManager
-	ClusterDeployAuth      *deploy.AuthorizationStore
-	ClusterDeployRunner    deploy.TaskRunner
-	ClusterHeartbeats      *cluster.HeartbeatRegistry
-	clusterRolling         *orchestrate.RollingManager
-	clusterTraffic         *traffic.Scheduler
-	clusterTrafficMu       sync.Mutex
-	clusterJoinLimiter     *simpleRateLimiter
-	clusterJoinLimiterMu   sync.Mutex
-	clusterConsensus       *consensus.Coordinator
-	clusterConsensusMu     sync.Mutex
-	ACMEIssuer             acme.Issuer
-	TimeSync               TimeSyncService
-	OTAClient              OTAClient
-	OTAState               OTAStateReader
-	TemporaryHTTPExecutor  netlease.TemporaryHTTPExecutor
-	CWEDPDownload          consumer.Executor
-	CRPActivation          CRPActivationExecutor
-	LoginCAPTCHAState      *loginCAPTCHAState
+	Config                *config.Config
+	configCurrent         atomic.Pointer[config.Config]
+	ConfigPath            string
+	Store                 storage.Store
+	Sink                  storage.LogSink
+	Tokens                *middleware.TokenManager
+	Secret                string
+	Auditor               *middleware.Auditor
+	AssistantApprovals    *ai.ApprovalStore
+	AssistantGateApproval *ai.GateApprovalAdapter
+	clusterApproval       *ApprovalHTTPHandler
+	Realtime              *realtime.Hub
+	approvalStoreError    error
+	TwoFAState            *twoFAState
+	ClusterIdentity       *identity.MemoryIdentityService
+	ClusterDeployTasks    *deploy.TaskManager
+	ClusterDeployAuth     *deploy.AuthorizationStore
+	ClusterDeployRunner   deploy.TaskRunner
+	ClusterHeartbeats     *cluster.HeartbeatRegistry
+	clusterRolling        *orchestrate.RollingManager
+	clusterTraffic        *traffic.Scheduler
+	clusterTrafficMu      sync.Mutex
+	clusterJoinLimiter    *simpleRateLimiter
+	clusterJoinLimiterMu  sync.Mutex
+	clusterConsensus      *consensus.Coordinator
+	clusterConsensusMu    sync.Mutex
+	ACMEIssuer            acme.Issuer
+	TimeSync              TimeSyncService
+	OTAClient             OTAClient
+	OTAState              OTAStateReader
+	TemporaryHTTPExecutor netlease.TemporaryHTTPExecutor
+	CWEDPDownload         consumer.Executor
+	CRPActivation         CRPActivationExecutor
+	LoginCAPTCHAState     *loginCAPTCHAState
+	Passkey               *passkey.Service
+	PasskeyStore          passkey.Store
+	// passkeyMu guards Passkey: the system API can rebuild it after the console
+	// changes RPID or origins, so readers must not race the swap.
+	passkeyMu              sync.RWMutex
+	passkeyFactory         func(config.PasskeyConfig) (*passkey.Service, error)
 	CAPTCHAAssets          captchaassets.Store
 	CAPTCHAAssetReferences *captchaassets.ReferenceManager
 	CAPTCHAAssetInitError  error
@@ -122,31 +130,40 @@ type Handler struct {
 	managementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
 	acmeRenewMu                         sync.Mutex
 	acmeRenewCancel                     context.CancelFunc
-	configWriteFrozen                   bool
-	configFreezeReason                  string
-	userMutationMu                      sync.Mutex
-	now                                 func() time.Time
-	StartedAt                           time.Time
-	SetupToken                          string
-	SetupTokenSource                    setup.TokenSource
-	SetupDrafts                         *setup.DraftStore
-	runSetupProbe                       func(context.Context, string) setup.ProbeResult
-	geoipMu                             sync.Mutex
-	geoipCacheKey                       string
-	geoipPolicy                         *protectionip.GeoIPPolicy
-	geoipErrorKey                       string
-	geoipRetryAfter                     time.Time
-	diskUsageMu                         sync.Mutex
-	diskUsageCache                      map[string]cachedDirSize
-	memoryStatsMu                       sync.Mutex
-	memoryAlloc                         uint64
-	memoryStatsAt                       time.Time
-	sessionPruneMu                      sync.Mutex
-	nextSessionPrune                    time.Time
-	OnSitesChanged                      func([]config.SiteConfig) error
-	OnEdgeChanged                       func(config.EdgeConfig) error
-	OnProtectionChanged                 func(config.ProtectionConfig) error
-	OnCAPTCHAProvidersChanged           func(config.CAPTCHAProvidersConfig) error
+	// otaCache keeps the last read-only OTA check for ota.check_interval so a
+	// console poll cannot hammer the release origin.
+	otaCacheMu      sync.Mutex
+	otaCache        map[string]any
+	otaCacheChannel string
+	otaCacheAt      time.Time
+	// otaInFlight shares one origin check per channel: console tabs that open
+	// together must not each hit the release server.
+	otaInFlight               map[string]chan struct{}
+	configWriteFrozen         bool
+	configFreezeReason        string
+	userMutationMu            sync.Mutex
+	now                       func() time.Time
+	StartedAt                 time.Time
+	SetupToken                string
+	SetupTokenSource          setup.TokenSource
+	SetupDrafts               *setup.DraftStore
+	runSetupProbe             func(context.Context, string) setup.ProbeResult
+	geoipMu                   sync.Mutex
+	geoipCacheKey             string
+	geoipPolicy               *protectionip.GeoIPPolicy
+	geoipErrorKey             string
+	geoipRetryAfter           time.Time
+	diskUsageMu               sync.Mutex
+	diskUsageCache            map[string]cachedDirSize
+	memoryStatsMu             sync.Mutex
+	memoryAlloc               uint64
+	memoryStatsAt             time.Time
+	sessionPruneMu            sync.Mutex
+	nextSessionPrune          time.Time
+	OnSitesChanged            func([]config.SiteConfig) error
+	OnEdgeChanged             func(config.EdgeConfig) error
+	OnProtectionChanged       func(config.ProtectionConfig) error
+	OnCAPTCHAProvidersChanged func(config.CAPTCHAProvidersConfig) error
 	// Both policy seams are intentionally supplied only by the process that
 	// owns control-plane coordination and node-local materialization. A nil
 	// consumer is fail-closed; HTTP and AI policy writes never fall back to a
@@ -157,6 +174,13 @@ type Handler struct {
 	OnAPISecChanged                    func(config.APISecConfig) error
 	OnBlockPageChanged                 func(config.BlockPageConfig) error
 	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	// OnServerChanged applies server-scoped settings that can take effect
+	// without rebinding listeners. The adapter credential is the current case:
+	// rotating server.adapter_token must reach the running handler.
+	OnServerChanged func(config.ServerConfig) error
+	// NotifierRegistry carries the plugin-index pack table into notification
+	// paths that are not built from the monitoring manager (ACME alerts).
+	NotifierRegistry *monitornotify.Registry
 	// OnConfigChanged publishes a completed setup/config snapshot to the
 	// serving composition root. Setup changes the entrance gate itself.
 	OnConfigChanged func(*config.Config) error
@@ -226,6 +250,57 @@ func closeCAPTCHAAssetStore(store captchaassets.Store) {
 	if closer, ok := store.(io.Closer); ok {
 		_ = closer.Close()
 	}
+}
+
+// passkey returns the current WebAuthn service. Callers must not hold the
+// pointer across a settings save.
+func (h *Handler) passkey() *passkey.Service {
+	if h == nil {
+		return nil
+	}
+	h.passkeyMu.RLock()
+	defer h.passkeyMu.RUnlock()
+	return h.Passkey
+}
+
+// applyPasskeyChange rebuilds the WebAuthn service after the console updates
+// RPID, origins, or the enabled flag; a restart-only deployment is rejected
+// instead of advertising settings the running service does not use.
+func (h *Handler) applyPasskeyChange(next config.PasskeyConfig) error {
+	if h == nil {
+		return nil
+	}
+	h.passkeyMu.RLock()
+	current := h.Passkey
+	factory := h.passkeyFactory
+	h.passkeyMu.RUnlock()
+	if !next.Enabled {
+		if current == nil {
+			return nil
+		}
+	} else if current != nil && passkeySettingsMatch(current.Config(), next) {
+		return nil
+	}
+	if factory == nil {
+		return fmt.Errorf("console.login.passkey changes require a restart")
+	}
+	service, err := factory(next)
+	if err != nil {
+		return fmt.Errorf("rebuild passkey service: %w", err)
+	}
+	h.passkeyMu.Lock()
+	h.Passkey = service
+	h.passkeyMu.Unlock()
+	return nil
+}
+
+// passkeySettingsMatch reports whether a running service already uses the
+// configured relying-party settings, so an unrelated console save is a no-op.
+func passkeySettingsMatch(running passkey.Config, next config.PasskeyConfig) bool {
+	return running.RPDisplayName == next.RPDisplayName &&
+		running.RPID == next.RPID &&
+		strings.Join(running.RPOrigins, "\x00") == strings.Join(next.RPOrigins, "\x00") &&
+		running.AllowInsecureLocalhost == next.AllowInsecureLocalhost
 }
 
 func (h *Handler) nowUTC() time.Time {
@@ -396,12 +471,23 @@ type Options struct {
 	// RequireProtectionPolicyCoordinator is set only by the production
 	// composition root. It makes an omitted consumer fail closed; embedded and
 	// unit-test routers retain the historical local-only behavior explicitly.
-	RequireProtectionPolicyCoordinator  bool
-	OnAPISecChanged                     func(config.APISecConfig) error
-	OnBlockPageChanged                  func(config.BlockPageConfig) error
-	OnTimeSyncChanged                   func(config.TimeSyncConfig) error
-	OnConfigChanged                     func(*config.Config) error
-	CAPTCHAAssets                       captchaassets.Store
+	RequireProtectionPolicyCoordinator bool
+	OnAPISecChanged                    func(config.APISecConfig) error
+	OnBlockPageChanged                 func(config.BlockPageConfig) error
+	OnTimeSyncChanged                  func(config.TimeSyncConfig) error
+	OnServerChanged                    func(config.ServerConfig) error
+	NotifierRegistry                   *monitornotify.Registry
+	OnConfigChanged                    func(*config.Config) error
+	CAPTCHAAssets                      captchaassets.Store
+	// Passkey is nil when WebAuthn login is not configured. Public routes then
+	// fail closed and the console does not advertise passkey sign-in.
+	Passkey *passkey.Service
+	// PasskeyStore backs authenticated credential listing and deletion. It is
+	// separate from Passkey because the service does not expose its store.
+	PasskeyStore passkey.Store
+	// PasskeyFactory rebuilds the service when the console changes passkey
+	// settings; nil means such a change requires a restart.
+	PasskeyFactory                      func(config.PasskeyConfig) (*passkey.Service, error)
 	Clock                               timekeeper.Clock
 	ManagementTokenConfirmationVerifier ManagementTokenConfirmationVerifier
 	// ApprovalHTTP is the durable approval boundary shared by cluster operations.
@@ -491,6 +577,9 @@ func New(opts Options) *Handler {
 		CWEDPDownload:                       opts.CWEDPDownload,
 		CRPActivation:                       opts.CRPActivation,
 		LoginCAPTCHAState:                   newLoginCAPTCHAState(),
+		Passkey:                             opts.Passkey,
+		PasskeyStore:                        opts.PasskeyStore,
+		passkeyFactory:                      opts.PasskeyFactory,
 		CAPTCHAAssets:                       assetStore,
 		CAPTCHAAssetReferences:              assetRefs,
 		CAPTCHAAssetInitError:               assetErr,
@@ -515,6 +604,8 @@ func New(opts Options) *Handler {
 		OnAPISecChanged:                     opts.OnAPISecChanged,
 		OnBlockPageChanged:                  opts.OnBlockPageChanged,
 		OnTimeSyncChanged:                   opts.OnTimeSyncChanged,
+		OnServerChanged:                     opts.OnServerChanged,
+		NotifierRegistry:                    opts.NotifierRegistry,
 		OnConfigChanged:                     opts.OnConfigChanged,
 	}
 	if opts.ConfigSnapshot != nil {
@@ -944,13 +1035,59 @@ var loginDummyHash = func() []byte {
 	return h
 }()
 
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+// loginOriginAllowed rejects a browser login from a foreign origin. It is
+// shared by password and passkey login so both ceremonies enforce the same
+// same-origin policy.
+func (h *Handler) loginOriginAllowed(w http.ResponseWriter, r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
 			writeError(w, http.StatusForbidden, "LOGIN_ORIGIN_INVALID", "login origin must match the management console")
-			return
+			return false
 		}
+	}
+	return true
+}
+
+// issueLoginSession persists the management session, writes the session
+// cookies, records the successful authentication audit, and writes the login
+// response. It preserves the password-login error contract: TOKEN_ERROR for a
+// signing fault, INVALID_CREDENTIALS when the account was invalidated between
+// verification and session creation, and SESSION_ERROR otherwise.
+func (h *Handler) issueLoginSession(w http.ResponseWriter, r *http.Request, user *storage.User, method string) (committed bool, invalidated bool) {
+	if h == nil || h.Tokens == nil || h.Store == nil || user == nil {
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+		return false, false
+	}
+	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
+		return false, false
+	}
+	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
+		if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
+			return false, true
+		}
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+		return false, false
+	}
+	csrf, err := middleware.NewCSRFToken()
+	if err != nil {
+		// The durable session already exists, so callers must not release a
+		// consumed TOTP counter even though the browser received an error.
+		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
+		return true, false
+	}
+	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
+	h.auditAuthentication(r, user, "auth.login", method, claims.ID)
+	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
+	return true, false
+}
+
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	if !h.loginOriginAllowed(w, r) {
+		return
 	}
 	tracker := h.loginCAPTCHATracker()
 	source := h.loginAuditIP(r)
@@ -1021,55 +1158,25 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 				h.twoFATracker().releaseConsumedTOTP(user.ID, counter)
 			}
 		}()
-		token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
-			return
-		}
-		if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
-			if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+		committed, invalidated := h.issueLoginSession(w, r, user, "totp")
+		if !committed {
+			if invalidated {
 				tracker.recordLoginFailure(rateLimitKeys, now)
-				writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
-				return
 			}
-			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 			return
 		}
 		sessionCommitted = true
-		csrf, err := middleware.NewCSRFToken()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
-			return
-		}
-		middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 		tracker.clearLoginFailures(rateLimitKeys, now)
-		h.auditAuthentication(r, user, "auth.login", "totp", claims.ID)
-		writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 		return
 	}
-	token, claims, err := h.Tokens.SignWithClaims(user.ID, user.Username, user.Role)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "TOKEN_ERROR", "failed to issue session token")
-		return
-	}
-	if err := h.Store.CreateSession(r.Context(), sessionFromClaims(claims, user.CredentialEpoch)); err != nil {
-		if errors.Is(err, storage.ErrCredentialEpochChanged) || errors.Is(err, storage.ErrUserNotFound) {
+	committed, invalidated := h.issueLoginSession(w, r, user, "password")
+	if !committed {
+		if invalidated {
 			tracker.recordLoginFailure(rateLimitKeys, now)
-			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
-			return
 		}
-		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
 		return
 	}
-	csrf, err := middleware.NewCSRFToken()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "SESSION_ERROR", "failed to create session")
-		return
-	}
-	middleware.WriteSessionCookies(w, r, token, csrf, config.AdminSessionTTLFor(h.currentConfig()))
 	tracker.clearLoginFailures(rateLimitKeys, now)
-	h.auditAuthentication(r, user, "auth.login", "password", claims.ID)
-	writeData(w, map[string]any{"csrf": csrf, "user": user, "session_cookie": true})
 }
 
 func (h *Handler) verifyLoginCAPTCHA(r *http.Request, payload *dto.CAPTCHAPayload) bool {

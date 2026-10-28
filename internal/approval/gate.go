@@ -318,10 +318,39 @@ func (g *Gate) RestoreRecord(ctx context.Context, now time.Time, requestID strin
 			return ErrBindingConflict
 		}
 	}
+	// Persisted audit chains carry hashes; verify them before accepting the
+	// record. A hash-less legacy ledger falls back to the old behavior.
+	validateAuditChain := false
+	for _, e := range events {
+		if e.Hash != "" {
+			validateAuditChain = true
+			break
+		}
+	}
+	if validateAuditChain {
+		var previousHash string
+		var previousSequence uint64
+		for index, e := range events {
+			if e.Hash == "" || hashEvent(e) != e.Hash || e.PreviousHash != previousHash {
+				return ErrBindingConflict
+			}
+			if e.Sequence == 0 || (index > 0 && e.Sequence != previousSequence+1) {
+				return ErrBindingConflict
+			}
+			previousHash = e.Hash
+			previousSequence = e.Sequence
+		}
+	}
 	g.requests[record.ID] = cloneRecord(record)
 	for _, e := range events {
-		g.sequence++
-		e.Sequence = g.sequence
+		if validateAuditChain {
+			if e.Sequence > g.sequence {
+				g.sequence = e.Sequence
+			}
+		} else {
+			g.sequence++
+			e.Sequence = g.sequence
+		}
 		g.audit = append(g.audit, e)
 		if e.ConfirmationID != "" {
 			if e.Type == AuditAuthorized {

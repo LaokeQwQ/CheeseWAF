@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -52,6 +53,11 @@ const (
 	maxRewriteProgramInsts    = 4096
 	maxCustomRulesPerSite     = 256
 	maxCustomRuleProgramInsts = 4096
+	// Semantic action policy bounds: the route override list is evaluated per
+	// detected request, so it must stay small and each pattern must stay cheap.
+	maxSemanticRouteOverrides = 64
+	maxSemanticRoutePathBytes = 512
+	maxSemanticRouteParams    = 32
 	maxAIContextWindow        = 2_000_000
 	maxAIModelNameBytes       = 512
 	maxAIProviderPathBytes    = 2048
@@ -59,6 +65,47 @@ const (
 	maxAIMaxInFlight          = 256
 	maxAIMaxSubjects          = 1_000_000
 )
+
+// validatePlugins bounds the index watcher. A zero interval keeps the default;
+// anything below the floor or above the ceiling is an operator mistake that
+// would either spin the filesystem or hide a change for an hour.
+// validNotifierTypeName accepts the shape a built-in or pack type must have.
+// Whether the type exists is decided by the notifier registry at startup.
+// ValidNotifierTypeName is the single rule for notifier type names. Provider
+// packs use it too, so a name the configuration rejects can never be loaded
+// from the index and vice versa.
+func ValidNotifierTypeName(value string) bool {
+	if len(value) < 2 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= '0' && char <= '9' && index > 0:
+		case char == '_' && index > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validatePlugins(cfg PluginsConfig) error {
+	dir := strings.TrimSpace(cfg.IndexDir)
+	if strings.ContainsRune(dir, 0) {
+		return fmt.Errorf("plugins.index_dir contains a NUL byte")
+	}
+	if cfg.WatchInterval < 0 {
+		return fmt.Errorf("plugins.watch_interval must not be negative")
+	}
+	if cfg.WatchInterval > 0 && cfg.WatchInterval < 100*time.Millisecond {
+		return fmt.Errorf("plugins.watch_interval must be at least 100ms")
+	}
+	if cfg.WatchInterval > time.Hour {
+		return fmt.Errorf("plugins.watch_interval must not exceed 1h")
+	}
+	return nil
+}
 
 func Validate(cfg *Config) error {
 	if cfg == nil {
@@ -83,12 +130,15 @@ func Validate(cfg *Config) error {
 	if cfg.Server.AdminTLS.Enabled && (strings.TrimSpace(cfg.Server.AdminTLS.CertFile) == "" || strings.TrimSpace(cfg.Server.AdminTLS.KeyFile) == "") {
 		return fmt.Errorf("server.admin_tls.cert_file and server.admin_tls.key_file are required when admin TLS is enabled")
 	}
-	if cfg.Server.ListenTLS != "" && !hasAnyTLSCertificate(cfg) {
-		return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when server.listen_tls is set")
+	if err := validatePlugins(cfg.Plugins); err != nil {
+		return err
+	}
+	if cfg.Server.ListenTLS != "" && !hasUsableTLSCertificate(cfg) {
+		return fmt.Errorf("tls.cert_file/key_file, a site certificate, or tls.auto_cert with an ACME site is required when server.listen_tls is set")
 	}
 	if cfg.Server.HTTP3.Enabled {
-		if !hasAnyTLSCertificate(cfg) {
-			return fmt.Errorf("tls.cert_file/key_file or at least one site certificate is required when HTTP/3 is enabled")
+		if !hasUsableTLSCertificate(cfg) {
+			return fmt.Errorf("tls.cert_file/key_file, a site certificate, or tls.auto_cert with an ACME site is required when HTTP/3 is enabled")
 		}
 		if _, err := net.ResolveUDPAddr("udp", http3ListenAddr(cfg.Server)); err != nil {
 			return fmt.Errorf("server.listen_http3 is invalid: %w", err)
@@ -139,6 +189,27 @@ func Validate(cfg *Config) error {
 	if cfg.Console.Login.SessionTTL != 0 && (cfg.Console.Login.SessionTTL < 15*time.Minute || cfg.Console.Login.SessionTTL > 30*24*time.Hour) {
 		return fmt.Errorf("console.login.session_ttl must be between 15m and 720h")
 	}
+	if cfg.Console.Login.Passkey.Enabled {
+		pk := cfg.Console.Login.Passkey
+		if strings.TrimSpace(pk.RPDisplayName) == "" {
+			return fmt.Errorf("console.login.passkey.rp_display_name is required when passkey is enabled")
+		}
+		if strings.TrimSpace(pk.RPID) == "" || strings.ContainsAny(pk.RPID, " /:") {
+			return fmt.Errorf("console.login.passkey.rp_id must be a domain without scheme, path, or spaces")
+		}
+		if len(pk.RPOrigins) == 0 {
+			return fmt.Errorf("console.login.passkey.rp_origins is required when passkey is enabled")
+		}
+		for _, origin := range pk.RPOrigins {
+			parsed, err := url.Parse(strings.TrimSpace(origin))
+			if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+				return fmt.Errorf("console.login.passkey.rp_origins entry %q is invalid", origin)
+			}
+			if !strings.EqualFold(parsed.Scheme, "https") && !(pk.AllowInsecureLocalhost && strings.EqualFold(parsed.Scheme, "http") && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1")) {
+				return fmt.Errorf("console.login.passkey.rp_origins entry %q must be HTTPS", origin)
+			}
+		}
+	}
 	if err := validateSecurityEntry(cfg.Console.Login.SecurityEntry); err != nil {
 		return err
 	}
@@ -183,6 +254,17 @@ func Validate(cfg *Config) error {
 		}
 		if err := validateLogSinkEndpoint(cfg.Storage.VictoriaLogs.Endpoint, cfg.Storage.VictoriaLogs.AllowPrivateEndpoint, "victorialogs endpoint"); err != nil {
 			return fmt.Errorf("storage.victorialogs.endpoint is invalid: %w", err)
+		}
+	}
+	if cfg.Storage.Loki.Enabled {
+		if strings.TrimSpace(cfg.Storage.Loki.Endpoint) == "" {
+			return fmt.Errorf("storage.loki.endpoint is required when Loki log sink is enabled")
+		}
+		if err := validateLogSinkEndpoint(cfg.Storage.Loki.Endpoint, cfg.Storage.Loki.AllowPrivateEndpoint, "loki endpoint"); err != nil {
+			return fmt.Errorf("storage.loki.endpoint is invalid: %w", err)
+		}
+		if err := ValidateLokiLabels(cfg.Storage.Loki.Labels); err != nil {
+			return fmt.Errorf("storage.loki.labels is invalid: %w", err)
 		}
 	}
 	if cfg.Storage.PostgreSQL.Enabled {
@@ -231,6 +313,41 @@ func Validate(cfg *Config) error {
 	}
 	if err := validateAISelfLearning(cfg.AI.SelfLearning); err != nil {
 		return err
+	}
+	if cfg.Intel.ShadowWindow < 0 || cfg.Intel.ShadowWindow > 30*24*time.Hour {
+		return fmt.Errorf("intel.shadow_window must be between 0 and 720h")
+	}
+	if cfg.Intel.PollInterval < 10*time.Second || cfg.Intel.PollInterval > 24*time.Hour {
+		return fmt.Errorf("intel.poll_interval must be between 10s and 24h")
+	}
+	if cfg.Intel.MaxFetchBytes < 1 || cfg.Intel.MaxFetchBytes > 256<<10 {
+		return fmt.Errorf("intel.max_fetch_bytes must be between 1 and %d", 256<<10)
+	}
+	if cfg.Intel.MaxCandidatesPerItem < 1 || cfg.Intel.MaxCandidatesPerItem > 32 {
+		return fmt.Errorf("intel.max_candidates_per_item must be between 1 and 32")
+	}
+	if cfg.Intel.AutoApply && !cfg.Intel.RequireHumanApproval {
+		return fmt.Errorf("intel.auto_apply requires intel.require_human_approval for block actions")
+	}
+	seenIntelSources := make(map[string]struct{}, len(cfg.Intel.Sources))
+	for _, source := range cfg.Intel.Sources {
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			return fmt.Errorf("intel.sources entries require an id")
+		}
+		if _, exists := seenIntelSources[id]; exists {
+			return fmt.Errorf("intel.sources id %q is duplicated", id)
+		}
+		seenIntelSources[id] = struct{}{}
+		switch strings.ToLower(strings.TrimSpace(source.Trust)) {
+		case "official", "vendor", "community", "unknown":
+		default:
+			return fmt.Errorf("intel.sources %q has invalid trust %q", id, source.Trust)
+		}
+		parsed, err := url.Parse(strings.TrimSpace(source.URL))
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+			return fmt.Errorf("intel.sources %q has an invalid URL", id)
+		}
 	}
 	if err := validateUpdateConfig(cfg.Update); err != nil {
 		return err
@@ -309,6 +426,20 @@ func Validate(cfg *Config) error {
 		if site.WAF.ParanoiaLevel < 0 || site.WAF.ParanoiaLevel > 5 {
 			return fmt.Errorf("site %q waf.paranoia_level must be between 0 and 5", site.Name)
 		}
+		if site.WAF.PHP2Shell.MaxParts < 0 || site.WAF.PHP2Shell.MaxParts > 1024 {
+			return fmt.Errorf("site %q waf.php2shell.max_parts must be between 0 and 1024", site.Name)
+		}
+		if site.WAF.PHP2Shell.MaxArrayDepth < 0 || site.WAF.PHP2Shell.MaxArrayDepth > 32 {
+			return fmt.Errorf("site %q waf.php2shell.max_array_depth must be between 0 and 32", site.Name)
+		}
+		if site.WAF.PHP2Shell.MaxEmptyFilenameParts < 0 || site.WAF.PHP2Shell.MaxEmptyFilenameParts > 512 {
+			return fmt.Errorf("site %q waf.php2shell.max_empty_filename_parts must be between 0 and 512", site.Name)
+		}
+		for _, allowed := range site.WAF.PHP2Shell.AllowPaths {
+			if !strings.HasPrefix(strings.TrimSpace(allowed), "/") {
+				return fmt.Errorf("site %q waf.php2shell.allow_paths entry %q must start with /", site.Name, allowed)
+			}
+		}
 		if site.WAF.Performance.MaxBodyBytes < 0 {
 			return fmt.Errorf("site %q waf.performance.max_body_bytes must be non-negative", site.Name)
 		}
@@ -339,6 +470,9 @@ func Validate(cfg *Config) error {
 		}
 		if site.WAF.SemanticPolicy.PromoteSeconds < 0 {
 			return fmt.Errorf("site %q waf.semantic_policy.promote_seconds must be >= 0", site.Name)
+		}
+		if err := validateSemanticActionPolicy(site.Name, site.WAF.SemanticPolicy); err != nil {
+			return err
 		}
 		for _, rule := range site.WAF.SemanticPolicy.PathAllowlist {
 			rule = strings.TrimSpace(rule)
@@ -609,15 +743,34 @@ func Validate(cfg *Config) error {
 		if !notifier.Enabled {
 			continue
 		}
-		switch notifier.Type {
-		case "webhook", "email", "telegram", "dingtalk", "wecom":
-		default:
+		// The type is resolved against the live registry at startup, because a
+		// plugin provider pack can add one after the configuration is parsed.
+		// This layer only rejects a name no provider could ever declare.
+		if !ValidNotifierTypeName(notifier.Type) {
 			return fmt.Errorf("notifier %q has invalid type %q", notifier.ID, notifier.Type)
 		}
-		if strings.TrimSpace(notifier.Endpoint) != "" {
-			if err := validateNotifierEndpoint(notifier.Endpoint, notifier.AllowPrivateEndpoint); err != nil {
+		if strings.TrimSpace(notifier.Endpoint) == "" {
+			return fmt.Errorf("notifier %q endpoint is required when enabled", notifier.ID)
+		}
+		if strings.EqualFold(notifier.Type, "email") {
+			if err := validateSMTPNotifierEndpoint(notifier.Endpoint); err != nil {
 				return fmt.Errorf("notifier %q endpoint is invalid: %w", notifier.ID, err)
 			}
+			if _, err := mail.ParseAddress(strings.TrimSpace(notifier.To)); err != nil || strings.TrimSpace(notifier.To) == "" {
+				return fmt.Errorf("notifier %q requires a valid email recipient in to", notifier.ID)
+			}
+			from := strings.TrimSpace(notifier.Headers["from"])
+			username := strings.TrimSpace(notifier.Headers["username"])
+			if from == "" && username == "" {
+				return fmt.Errorf("notifier %q requires headers.from or headers.username", notifier.ID)
+			}
+			if from != "" {
+				if _, err := mail.ParseAddress(from); err != nil {
+					return fmt.Errorf("notifier %q headers.from is invalid: %w", notifier.ID, err)
+				}
+			}
+		} else if err := validateNotifierEndpoint(notifier.Endpoint, notifier.AllowPrivateEndpoint); err != nil {
+			return fmt.Errorf("notifier %q endpoint is invalid: %w", notifier.ID, err)
 		}
 	}
 	seenTaskIDs := make(map[string]struct{}, len(cfg.Scheduler.Tasks))
@@ -720,6 +873,88 @@ func Validate(cfg *Config) error {
 	}
 	if err := validateManagementAPI(cfg.APISec.ManagementAPI); err != nil {
 		return err
+	}
+	return nil
+}
+
+// NormalizeSemanticAction canonicalises a waf.semantic_policy route action.
+func NormalizeSemanticAction(action string) string {
+	return strings.ToLower(strings.TrimSpace(action))
+}
+
+// validateSemanticThresholdLadder enforces 0 <= log <= challenge <= block <= 1.
+// Zero means "inherit", so only the configured rungs are ordered against each
+// other; the proxy reconciles the resolved ladder with the web_attack preset.
+func validateSemanticThresholdLadder(scope string, thresholds SemanticActionThresholds) error {
+	for _, rung := range []struct {
+		name  string
+		value float64
+	}{
+		{"block", thresholds.Block},
+		{"challenge", thresholds.Challenge},
+		{"log", thresholds.Log},
+	} {
+		if rung.value < 0 || rung.value > 1 {
+			return fmt.Errorf("%s.%s must be between 0 and 1", scope, rung.name)
+		}
+	}
+	if thresholds.Challenge > 0 && thresholds.Block > 0 && thresholds.Challenge > thresholds.Block {
+		return fmt.Errorf("%s.challenge (%g) must not exceed block (%g)", scope, thresholds.Challenge, thresholds.Block)
+	}
+	if thresholds.Log > 0 && thresholds.Block > 0 && thresholds.Log > thresholds.Block {
+		return fmt.Errorf("%s.log (%g) must not exceed block (%g)", scope, thresholds.Log, thresholds.Block)
+	}
+	if thresholds.Log > 0 && thresholds.Challenge > 0 && thresholds.Log > thresholds.Challenge {
+		return fmt.Errorf("%s.log (%g) must not exceed challenge (%g)", scope, thresholds.Log, thresholds.Challenge)
+	}
+	return nil
+}
+
+// validateSemanticActionPolicy checks the confidence ladder and the per-route
+// overrides under waf.semantic_policy. An empty ladder keeps the web_attack
+// preset untouched.
+func validateSemanticActionPolicy(site string, policy SemanticPolicyConfig) error {
+	scope := fmt.Sprintf("site %q waf.semantic_policy.action_thresholds", site)
+	if err := validateSemanticThresholdLadder(scope, policy.ActionThresholds); err != nil {
+		return err
+	}
+	if len(policy.RouteOverrides) > maxSemanticRouteOverrides {
+		return fmt.Errorf("site %q has %d waf.semantic_policy.route_overrides entries; maximum is %d", site, len(policy.RouteOverrides), maxSemanticRouteOverrides)
+	}
+	for i, override := range policy.RouteOverrides {
+		scope := fmt.Sprintf("site %q waf.semantic_policy.route_overrides[%d]", site, i)
+		pattern := strings.TrimSpace(override.Path)
+		if pattern == "" {
+			return fmt.Errorf("%s.path is required", scope)
+		}
+		if len(pattern) > maxSemanticRoutePathBytes {
+			return fmt.Errorf("%s.path exceeds %d bytes", scope, maxSemanticRoutePathBytes)
+		}
+		// A bad pattern must fail the load/save, not silently disable the
+		// override at request time.
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("%s.path is not a valid regular expression: %w", scope, err)
+		}
+		switch NormalizeSemanticAction(override.Action) {
+		case SemanticActionInherit, SemanticActionObserve, SemanticActionChallenge:
+		default:
+			return fmt.Errorf("%s.action must be %q, %q or %q", scope, SemanticActionInherit, SemanticActionObserve, SemanticActionChallenge)
+		}
+		if err := validateSemanticThresholdLadder(scope, SemanticActionThresholds{
+			Block:     override.Block,
+			Challenge: override.Challenge,
+			Log:       override.Log,
+		}); err != nil {
+			return err
+		}
+		if len(override.Params) > maxSemanticRouteParams {
+			return fmt.Errorf("%s.params has %d entries; maximum is %d", scope, len(override.Params), maxSemanticRouteParams)
+		}
+		for j, param := range override.Params {
+			if strings.TrimSpace(param) == "" {
+				return fmt.Errorf("%s.params[%d] is empty (omit params to match the whole path)", scope, j)
+			}
+		}
 	}
 	return nil
 }
@@ -2328,6 +2563,9 @@ func validateThreatIntelIndicator(indicator ThreatIntelConfig) error {
 }
 
 func validateResponseInspection(siteName string, cfg ResponseInspectionConfig) error {
+	if _, err := NormalizeResponseFailMode(cfg.Inspection.FailMode); err != nil {
+		return fmt.Errorf("site %q waf.response.inspection.fail_mode: %w", siteName, err)
+	}
 	if cfg.MaxBodyBytes < 0 || cfg.MaxBodyBytes > 1<<30 {
 		return fmt.Errorf("site %q waf.response.max_body_bytes must be between 0 and 1 GiB", siteName)
 	}
@@ -2444,6 +2682,34 @@ func validateLogSinkEndpoint(raw string, allowPrivate bool, purpose string) erro
 	return err
 }
 
+var lokiLabelNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// ValidateLokiLabels enforces Loki's stream label grammar. Label names become
+// part of the index, so reserved names and empty values are rejected instead of
+// silently collapsing streams at write time.
+func ValidateLokiLabels(labels map[string]string) error {
+	for name, value := range labels {
+		if !lokiLabelNamePattern.MatchString(name) {
+			return fmt.Errorf("label %q must match %s", name, lokiLabelNamePattern.String())
+		}
+		if strings.HasPrefix(name, "__") {
+			return fmt.Errorf("label %q uses a reserved Loki prefix", name)
+		}
+		// The sink derives site_id from the entry and the query filter; a
+		// static value would label writes and queries with different sites.
+		if name == "site_id" {
+			return fmt.Errorf("label %q is managed by the sink and cannot be set statically", name)
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("label %q must have a non-empty value", name)
+		}
+		if !utf8.ValidString(name) || !utf8.ValidString(value) {
+			return fmt.Errorf("label %q must be valid UTF-8", name)
+		}
+	}
+	return nil
+}
+
 func validateMapBoundaryURL(raw string, boundary MapBoundaryConfig) error {
 	schemes := []string{"https"}
 	if boundary.AllowInsecure {
@@ -2524,6 +2790,30 @@ func validateSQLIdentifierPath(value string) error {
 		}
 	}
 	return nil
+}
+
+// hasUsableTLSCertificate also accepts the auto-cert mode: the listener starts
+// before ACME has issued anything and serves once the renewal worker fills the
+// certificate store. Without an ACME site nothing could ever fill it, so the
+// configuration is still rejected.
+func hasUsableTLSCertificate(cfg *Config) bool {
+	if hasAnyTLSCertificate(cfg) {
+		return true
+	}
+	if cfg == nil || !cfg.TLS.AutoCert || !cfg.ACME.Enabled {
+		return false
+	}
+	for _, site := range cfg.Sites {
+		if !site.Enabled || !site.EnableSSL || site.Certificate.Mode != "acme" || !site.Certificate.AutoRenew {
+			continue
+		}
+		// The renewal worker skips a site without domains, so an empty store
+		// could never be filled.
+		if len(site.Domains) > 0 || len(site.Certificate.ACME.Domains) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAnyTLSCertificate(cfg *Config) bool {
@@ -2626,6 +2916,38 @@ func validateSiteCertificate(site SiteConfig) error {
 		}
 	default:
 		return fmt.Errorf("site %q has unsupported certificate mode %q", site.Name, site.Certificate.Mode)
+	}
+	return nil
+}
+
+func validateSMTPNotifierEndpoint(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return errors.New("SMTP endpoint is required")
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(parsed.Scheme, "smtp") {
+			return errors.New("SMTP endpoint must use the smtp scheme")
+		}
+		if parsed.User != nil {
+			return errors.New("SMTP endpoint must not contain credentials")
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return errors.New("SMTP endpoint must contain only host and port")
+		}
+		value = parsed.Host
+	}
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return errors.New("SMTP endpoint must be smtp://host:port or host:port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("SMTP endpoint port is invalid")
 	}
 	return nil
 }

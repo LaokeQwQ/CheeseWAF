@@ -497,7 +497,8 @@ func completePaths(opts CompleteOptions) DefaultPaths {
 }
 
 func normalizeDataDir(dataDir string) string {
-	if dataDir == "" {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" || strings.ContainsAny(dataDir, "\x00\r\n") {
 		return DefaultDataDir
 	}
 	return dataDir

@@ -163,6 +163,58 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* The page-header title layout must not turn the status badge into a grid. */
+.dashboard-page .page-header > .dashboard-monitor-status {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+  flex: 0 0 auto;
+  gap: 6px;
+  width: max-content;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.dashboard-monitor-status > svg {
+  flex: 0 0 auto;
+}
+
+.dashboard-page .resource-row.resource-row-runtime-start {
+  margin-top: 8px;
+  padding-top: 16px !important;
+  border-top: 1px solid var(--border);
+}
+
+.dashboard-monitor-status[data-state="offline"],
+.sidebar-status-offline {
+  --console-offline-color: var(--accent-danger);
+  animation: console-offline-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes console-offline-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--console-offline-color) 18%, transparent),
+      0 0 8px color-mix(in srgb, var(--console-offline-color) 10%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--console-offline-color) 8%, transparent),
+      0 0 18px color-mix(in srgb, var(--console-offline-color) 28%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-monitor-status[data-state="offline"],
+  .sidebar-status-offline {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--console-offline-color) 22%, transparent);
+  }
+}
+
 /* When TLS card is very narrow, stack switches + paths single column */
 @media (max-width: 1280px) {
   .page-surface .system-settings-panel .system-tls-grid {

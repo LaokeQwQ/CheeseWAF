@@ -58,6 +58,9 @@ func (s *Scanner) ScanContext(ctx context.Context, name string, content []byte) 
 	if s == nil {
 		s = NewScanner()
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

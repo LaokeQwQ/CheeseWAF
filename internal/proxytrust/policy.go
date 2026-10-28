@@ -251,8 +251,11 @@ func parseRemoteAddr(raw string) (netip.Addr, bool) {
 	}
 	if host, _, err := net.SplitHostPort(raw); err == nil {
 		raw = host
-	} else {
-		raw = strings.Trim(raw, "[]")
+	} else if strings.HasPrefix(raw, "[") || strings.HasSuffix(raw, "]") {
+		if !strings.HasPrefix(raw, "[") || !strings.HasSuffix(raw, "]") || len(raw) < 2 {
+			return netip.Addr{}, false
+		}
+		raw = raw[1 : len(raw)-1]
 	}
 	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
 	if err != nil {
@@ -294,14 +297,21 @@ func parseHeaderIP(raw string) string {
 	}
 	if host, _, err := net.SplitHostPort(raw); err == nil {
 		raw = host
-	} else {
-		raw = strings.Trim(raw, "[]")
+	} else if strings.HasPrefix(raw, "[") || strings.HasSuffix(raw, "]") {
+		if !strings.HasPrefix(raw, "[") || !strings.HasSuffix(raw, "]") || len(raw) < 2 {
+			return ""
+		}
+		raw = raw[1 : len(raw)-1]
 	}
 	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
 	if err != nil {
 		return ""
 	}
-	return addr.Unmap().String()
+	addr = addr.Unmap()
+	if addr.IsUnspecified() || addr.IsMulticast() {
+		return ""
+	}
+	return addr.String()
 }
 
 func forwardedHeaderValues(raw string) []string {

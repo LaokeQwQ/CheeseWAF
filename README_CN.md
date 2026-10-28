@@ -212,6 +212,7 @@ flowchart TB
 除内置能力外，系统也支持对接外部监控与存储组件（可在安装向导中测试连通性，也可后续在控制台配置）：
 - **PostgreSQL**：集中存储审计日志。
 - **VictoriaLogs**：存储并检索访问日志。
+- **Grafana Loki**：按标签索引推送日志，并通过 LogQL 检索。
 - **Prometheus**：采集运行指标。
 
 ---
@@ -431,7 +432,7 @@ docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url
 
 ### 接入原理
 
-`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用 CheeseWAF 核心的 `/api/v1/check` 接口完成判定。
+`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用版本化适配器契约接口 `/api/v1/adapter/inspect`（可用 `CHEESEWAF_CORE_INSPECT_PATH` 覆盖）完成判定。核心在**代理、TLS 和 HTTP/3 监听器**上提供 `/api/v1/adapter/inspect`、`/api/v1/adapter/telemetry` 和 `/healthz`，使用 `server.adapter_token` 鉴权（留空时仅允许 loopback）。**admin 监听器不同**：它只由适配器处理器提供 `/healthz`，`/api/v1/adapter/inspect` 仍需管理面 JWT 的 `write:protection` 权限，且不挂载 `/api/v1/adapter/telemetry`。`adapterd` 应指向代理监听器并配置 `CHEESEWAF_CORE_TOKEN`；admin 端口只用于带 JWT 的调用。
 
 ### NGINX 集成示例
 
@@ -451,12 +452,19 @@ location / {
 
 location = /cheesewaf-check {
     internal;
-    proxy_pass http://127.0.0.1:9080/check;
+    proxy_pass http://127.0.0.1:9080/nginx/auth;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $request_method;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_connect_timeout 100ms;
+    proxy_read_timeout 1s;
+    # 配置 CHEESEWAF_ADAPTER_TOKEN 时，在此注入
+    # X-CheeseWAF-Adapter-Token（来自 secret-backed 变量）。
 }
 ```
 

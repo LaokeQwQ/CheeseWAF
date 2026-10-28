@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/blockpage"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxytrust"
+	"github.com/andybalholm/brotli"
 )
 
 const defaultRequestBodyLimit = 8 << 20
@@ -70,6 +72,12 @@ var ErrRequestBodyReadOverload = errors.New("request body inspection overloaded"
 // ErrRequestBodyReadTimeout means an upload stopped making progress. Upload
 // time is bounded separately from the detector CPU budget.
 var ErrRequestBodyReadTimeout = errors.New("request body read idle timeout")
+
+// ErrUnsupportedContentEncoding means the request body carries a
+// Content-Encoding the WAF cannot decode, so its content could not be
+// inspected. It is a client-visible media/encoding condition, not malformed
+// request syntax: HTTP-facing callers must answer 415, never 400.
+var ErrUnsupportedContentEncoding = errors.New("unsupported content-encoding for inspection")
 
 func NewRequestContext(r *http.Request, siteID string) (*RequestContext, error) {
 	return newRequestContext(r, siteID, ClientIP(r), defaultRequestBodyLimit, true, nil)
@@ -693,7 +701,7 @@ func (c *RequestContext) bodyState() (loaded bool, err error, body io.ReadCloser
 
 func (c *RequestContext) decodeHTTPContentEncoding(raw []byte, encoding string, maxPlain int64) ([]byte, error) {
 	if strings.Contains(encoding, ",") {
-		return nil, errors.New("unsupported multi-layer content-encoding")
+		return nil, fmt.Errorf("%w: multi-layer %q", ErrUnsupportedContentEncoding, encoding)
 	}
 	var reader io.Reader
 	switch encoding {
@@ -705,19 +713,48 @@ func (c *RequestContext) decodeHTTPContentEncoding(raw []byte, encoding string, 
 		defer gr.Close()
 		reader = gr
 	case "deflate":
-		fr := flate.NewReader(bytes.NewReader(raw))
-		defer fr.Close()
-		reader = fr
-	case "br", "zstd":
-		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
+		// RFC 1950 says zlib-wrapped, but clients and CDNs also send raw
+		// DEFLATE. Both spellings must be inspected, not rejected.
+		dr := newDeflateReader(raw)
+		defer dr.Close()
+		reader = dr
+	case "br":
+		// Brotli is a mainstream browser encoding; rejecting it made the WAF
+		// answer 400 to ordinary traffic. The decoder is already a dependency.
+		reader = brotli.NewReader(bytes.NewReader(raw))
 	default:
-		return nil, errors.New("unsupported content-encoding for inspection: " + encoding)
+		// zstd (and anything unknown) has no decoder here. Reporting it as a
+		// generic read failure made HTTP callers answer 400; return a typed
+		// error so they can answer 415 instead.
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedContentEncoding, encoding)
 	}
 	limit := maxPlain
 	if ratioCap := int64(len(raw)) * maxDecompressionRatio; ratioCap > 0 && ratioCap < limit {
 		limit = ratioCap
 	}
 	return c.readBodyWithBudget(reader, limit)
+}
+
+// newDeflateReader accepts both "deflate" dialects: RFC 1950 zlib-wrapped
+// streams and the raw DEFLATE streams many clients still send.
+func newDeflateReader(raw []byte) io.ReadCloser {
+	if looksLikeZlibStream(raw) {
+		if zr, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
+			return zr
+		}
+	}
+	return flate.NewReader(bytes.NewReader(raw))
+}
+
+// looksLikeZlibStream validates the RFC 1950 header before committing to zlib:
+// the compression method must be 8 (deflate) and the header checksum must be a
+// multiple of 31. Raw DEFLATE cannot carry such a header, so the check keeps the
+// two dialects apart without decoding twice.
+func looksLikeZlibStream(raw []byte) bool {
+	if len(raw) < 2 {
+		return false
+	}
+	return raw[0]&0x0f == 8 && (uint16(raw[0])<<8|uint16(raw[1]))%31 == 0
 }
 
 type replayBody struct {

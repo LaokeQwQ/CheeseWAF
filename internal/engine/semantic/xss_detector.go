@@ -59,6 +59,11 @@ var (
 	// or punctuation: the field-name gate below is what gives this signal its
 	// execution context.
 	xssJavascriptURLField = regexp.MustCompile(`(?is)^\s*(?:<>\s*)?javascript\s*:\s*(?:(?:/{2}|/\*.*?\*/\s*)?)(?:\s|%[0-9a-f]{2})*(?:[a-z_][a-z0-9_]*\s*\(|void\s*\()`)
+	// xssWholeValueScriptURL is the name-independent form of the same evidence:
+	// a value that starts with a script scheme and calls a function, without any
+	// surrounding text. Field names only matter because free-text fields may
+	// mention a scheme; a value that *is* the URL has nothing else to explain.
+	xssWholeValueScriptURL = regexp.MustCompile(`(?is)^\s*(?:javascript|vbscript)\s*:\s*(?:(?:/{2}|/\*.*?\*/\s*)?)(?:\s|%[0-9a-f]{2})*(?:[a-z_][a-z0-9_]*\s*\(|void\s*\()`)
 )
 
 // xssExecutableURLSchemeTarget validates a complete URL scheme before it is
@@ -140,6 +145,25 @@ func xssJavascriptURLFieldContext(candidate semanticCandidate) bool {
 	return xssURLSinkFieldName(candidate.input.Name)
 }
 
+// xssWholeValueScriptURLContext reports a value that is nothing but a
+// javascript: or vbscript: URL calling a function.
+//
+// The whitespace requirement is what separates the payload from the sentence:
+// "javascript:alert(1)" is a URL, while "the javascript: scheme runs alert(1)"
+// keeps its words and stays behind the URL-field gate. data: URIs are excluded
+// on purpose — they appear in ordinary content fields, so they still need a
+// URL-shaped field name to count as a sink.
+func xssWholeValueScriptURLContext(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || len(trimmed) > maxInputRawBytes {
+		return false
+	}
+	if strings.ContainsAny(trimmed, " \t\n\r") {
+		return false
+	}
+	return xssWholeValueScriptURL.MatchString(trimmed)
+}
+
 // xssStandaloneExecutableURLContext ties a complete dangerous URL scheme to a
 // request surface that can execute it. Free-text fields may mention these
 // schemes without navigation or script execution, so they remain data unless
@@ -147,6 +171,12 @@ func xssJavascriptURLFieldContext(candidate semanticCandidate) bool {
 func xssStandaloneExecutableURLContext(candidate semanticCandidate) bool {
 	if !xssExecutableURLSchemeTarget(candidate.text) {
 		return false
+	}
+	// Structural evidence comes first: a value that is nothing but a script URL
+	// is executable wherever it is stored. The field-name gate below exists to
+	// keep prose out, and prose has whitespace around the scheme.
+	if xssWholeValueScriptURLContext(candidate.text) {
+		return true
 	}
 	switch strings.ToLower(candidate.input.Source) {
 	case "body.raw":

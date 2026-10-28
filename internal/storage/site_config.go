@@ -93,6 +93,8 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				PromoteSeconds:        site.WAF.SemanticPolicy.PromoteSeconds,
 				AutoAgree:             site.WAF.SemanticPolicy.AutoAgree,
 				FingerprintDeny:       cloneStrings(site.WAF.SemanticPolicy.FingerprintDeny),
+				ActionThresholds:      siteSemanticActionThresholdsFromConfig(site.WAF.SemanticPolicy.ActionThresholds),
+				RouteOverrides:        siteSemanticRouteOverridesFromConfig(site.WAF.SemanticPolicy.RouteOverrides),
 			},
 			Policy: SiteProtectionPolicy{
 				WebAttack:   site.WAF.ProtectionPolicy.WebAttack,
@@ -105,6 +107,7 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				Enabled:           site.WAF.Response.Enabled,
 				MaxBodyBytes:      site.WAF.Response.MaxBodyBytes,
 				SensitivePatterns: cloneStrings(site.WAF.Response.SensitivePatterns),
+				Inspection:        SiteResponseInspectionPolicy{FailMode: site.WAF.Response.Inspection.FailMode},
 				TamperKey:         site.WAF.Response.TamperKey,
 				TamperSnapshots:   siteTamperSnapshotsFromConfig(site.WAF.Response.TamperSnapshots),
 			},
@@ -115,6 +118,15 @@ func SiteFromConfig(site config.SiteConfig) Site {
 				Timeout:            site.WAF.HealthCheck.Timeout.String(),
 				HealthyThreshold:   site.WAF.HealthCheck.HealthyThreshold,
 				UnhealthyThreshold: site.WAF.HealthCheck.UnhealthyThreshold,
+			},
+			PHP2Shell: SitePHP2ShellConfig{
+				Enabled:               cloneBoolPtr(site.WAF.PHP2Shell.Enabled),
+				BlockUploadProgress:   site.WAF.PHP2Shell.BlockUploadProgress,
+				BlockAllMultipart:     site.WAF.PHP2Shell.BlockAllMultipart,
+				MaxParts:              site.WAF.PHP2Shell.MaxParts,
+				MaxArrayDepth:         site.WAF.PHP2Shell.MaxArrayDepth,
+				MaxEmptyFilenameParts: site.WAF.PHP2Shell.MaxEmptyFilenameParts,
+				AllowPaths:            cloneStrings(site.WAF.PHP2Shell.AllowPaths),
 			},
 			AccessControl: SiteAccessControl{
 				AuthEnabled:           site.WAF.AccessControl.AuthEnabled,
@@ -212,6 +224,15 @@ func SiteToConfig(site Site) config.SiteConfig {
 			},
 		},
 		WAF: config.WAFConfig{
+			PHP2Shell: config.PHP2ShellConfig{
+				Enabled:               cloneBoolPtr(site.Advanced.PHP2Shell.Enabled),
+				BlockUploadProgress:   site.Advanced.PHP2Shell.BlockUploadProgress,
+				BlockAllMultipart:     site.Advanced.PHP2Shell.BlockAllMultipart,
+				MaxParts:              site.Advanced.PHP2Shell.MaxParts,
+				MaxArrayDepth:         site.Advanced.PHP2Shell.MaxArrayDepth,
+				MaxEmptyFilenameParts: site.Advanced.PHP2Shell.MaxEmptyFilenameParts,
+				AllowPaths:            cloneStrings(site.Advanced.PHP2Shell.AllowPaths),
+			},
 			WebSocketEnabled:   site.Advanced.WebSocketEnabled,
 			GRPCEnabled:        site.Advanced.GRPCEnabled,
 			BotEnabled:         cloneBoolPtr(site.Advanced.Protection.Bot),
@@ -241,6 +262,8 @@ func SiteToConfig(site Site) config.SiteConfig {
 				PromoteSeconds:        site.Advanced.SemanticPolicy.PromoteSeconds,
 				AutoAgree:             site.Advanced.SemanticPolicy.AutoAgree,
 				FingerprintDeny:       cloneStrings(site.Advanced.SemanticPolicy.FingerprintDeny),
+				ActionThresholds:      siteSemanticActionThresholdsToConfig(site.Advanced.SemanticPolicy.ActionThresholds),
+				RouteOverrides:        siteSemanticRouteOverridesToConfig(site.Advanced.SemanticPolicy.RouteOverrides),
 			},
 			ProtectionPolicy: config.ProtectionPolicyConfig{
 				WebAttack:   site.Advanced.Policy.WebAttack,
@@ -257,6 +280,7 @@ func SiteToConfig(site Site) config.SiteConfig {
 				Enabled:           site.Advanced.Response.Enabled,
 				MaxBodyBytes:      site.Advanced.Response.MaxBodyBytes,
 				SensitivePatterns: cloneStrings(site.Advanced.Response.SensitivePatterns),
+				Inspection:        config.ResponseInspectionPolicy{FailMode: site.Advanced.Response.Inspection.FailMode},
 				TamperKey:         site.Advanced.Response.TamperKey,
 				TamperSnapshots:   siteTamperSnapshotsToConfig(site.Advanced.Response.TamperSnapshots),
 			},
@@ -304,6 +328,66 @@ func siteTamperSnapshotsToConfig(snapshots []SiteTamperSnapshot) []config.Tamper
 	for _, snapshot := range snapshots {
 		out = append(out, config.TamperSnapshotConfig{
 			URL: snapshot.URL, MAC: snapshot.MAC, Size: snapshot.Size, CapturedAt: snapshot.CapturedAt,
+		})
+	}
+	return out
+}
+
+func siteSemanticActionThresholdsFromConfig(thresholds config.SemanticActionThresholds) *SiteSemanticActionThresholds {
+	if thresholds.IsZero() {
+		// Keep the preset untouched: an unset ladder must stay unset in storage
+		// so a round trip cannot turn "inherit web_attack" into "explicit 0".
+		return nil
+	}
+	return &SiteSemanticActionThresholds{
+		Block:     thresholds.Block,
+		Challenge: thresholds.Challenge,
+		Log:       thresholds.Log,
+	}
+}
+
+func siteSemanticActionThresholdsToConfig(thresholds *SiteSemanticActionThresholds) config.SemanticActionThresholds {
+	if thresholds == nil {
+		return config.SemanticActionThresholds{}
+	}
+	return config.SemanticActionThresholds{
+		Block:     thresholds.Block,
+		Challenge: thresholds.Challenge,
+		Log:       thresholds.Log,
+	}
+}
+
+func siteSemanticRouteOverridesFromConfig(overrides []config.SemanticRouteOverride) []SiteSemanticRouteOverride {
+	if len(overrides) == 0 {
+		return nil
+	}
+	out := make([]SiteSemanticRouteOverride, 0, len(overrides))
+	for _, override := range overrides {
+		out = append(out, SiteSemanticRouteOverride{
+			Path:      override.Path,
+			Params:    cloneStrings(override.Params),
+			Block:     override.Block,
+			Challenge: override.Challenge,
+			Log:       override.Log,
+			Action:    override.Action,
+		})
+	}
+	return out
+}
+
+func siteSemanticRouteOverridesToConfig(overrides []SiteSemanticRouteOverride) []config.SemanticRouteOverride {
+	if len(overrides) == 0 {
+		return nil
+	}
+	out := make([]config.SemanticRouteOverride, 0, len(overrides))
+	for _, override := range overrides {
+		out = append(out, config.SemanticRouteOverride{
+			Path:      override.Path,
+			Params:    cloneStrings(override.Params),
+			Block:     override.Block,
+			Challenge: override.Challenge,
+			Log:       override.Log,
+			Action:    override.Action,
 		})
 	}
 	return out

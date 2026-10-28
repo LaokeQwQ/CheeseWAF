@@ -2,6 +2,7 @@ package security
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +20,7 @@ const CategoryGeneric = "generic"
 // DetectionCategories is the exact category set the semantic engine can emit.
 // analyzer.go iterates this same list; keep the two in sync.
 var DetectionCategories = []string{
-	"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti", "webshell", "log4shell",
+	"sqli", "xss", "rce", "lfi", "xxe", "ssrf", "nosqli", "ssti", "webshell", "log4shell", "shellshock",
 }
 
 // rawCategoryAliases maps the attack-class spellings found in bulk-imported
@@ -281,7 +282,10 @@ func AdaptRawHTTPCase(raw RawHTTPCase, name string, defaultTruth string) (Case, 
 	case !IsHTTPMethod(method):
 		// Corrupt row: `data` holds the whole payload, `method`/`url` are the
 		// fragments left over from splitting it on whitespace.
-		body = firstNonEmpty(raw.Data, strings.TrimSpace(raw.Method)+" "+strings.TrimSpace(raw.URL))
+		body = raw.Data
+		if body == "" {
+			body = strings.TrimSpace(raw.Method) + " " + strings.TrimSpace(raw.URL)
+		}
 		method, target, rationale = http.MethodPost, "/", RationaleRepairedSplitPayload
 
 	case !parsesAsURL(target):
@@ -352,6 +356,11 @@ func ForEachRawHTTPJSONLPair(r io.Reader, shards, shard int, defaultTruth string
 	stats, err := ForEachJSONLRaw(r, shards, shard, func(line []byte, lineNo int, selected bool) error {
 		var raw RawHTTPCase
 		if err := json.Unmarshal(line, &raw); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				out.SkippedUnadaptable++
+				return nil
+			}
 			return fmt.Errorf("line %d: %w", lineNo, err)
 		}
 		name := raw.CaseName(lineNo)
