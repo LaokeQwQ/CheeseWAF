@@ -230,7 +230,7 @@ type ProductionDependencyFactory struct {
 	OpenConsensus  func(context.Context, nativeraft.Options) (ProductionConsensusDependency, error)
 	OpenRedis      func(context.Context, redis.Config) (ProductionHealthDependency, error)
 	OpenApproval   func(context.Context, ProductionStartupOptions) (ProductionApprovalDependency, error)
-	OpenAudit      func(context.Context, config.ManagementPostgreSQLConfig) (ProductionAuditDependency, error)
+	OpenAudit      func(context.Context, config.ManagementPostgreSQLConfig, string) (ProductionAuditDependency, error)
 	// OpenTemporaryNetwork creates the session-bound provider used by the main
 	// serve composition root. Callers embedding this factory may replace it,
 	// but must preserve the same management-store and policy-epoch binding.
@@ -533,7 +533,7 @@ func OpenProductionDependencies(ctx context.Context, opts ProductionStartupOptio
 	deps.auditRequired = factory.OpenAudit != nil
 	if factory.OpenAudit != nil {
 		auditCtx, cancelAudit := dependencyContext(ctx, opts.ManagementPostgreSQL.Timeout)
-		auditDep, auditErr := factory.OpenAudit(auditCtx, opts.ManagementPostgreSQL)
+		auditDep, auditErr := factory.OpenAudit(auditCtx, opts.ManagementPostgreSQL, opts.DataDir)
 		if !isNilProductionDependency(auditDep) {
 			deps.Audit = auditDep
 		}

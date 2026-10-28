@@ -402,7 +402,7 @@ func readPrivateFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() || !secureMode(info.Mode(), 0o600) {
 		return nil, fmt.Errorf("%w: durable state file is not a regular 0600 file", ErrReceiptUnsafe)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))

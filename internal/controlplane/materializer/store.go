@@ -516,7 +516,7 @@ func readReceipt(path string) (Receipt, error) {
 	if err != nil {
 		return Receipt{}, fmt.Errorf("stat receipt: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+	if !info.Mode().IsRegular() || !secureMode(info.Mode(), 0600) {
 		return Receipt{}, fmt.Errorf("%w: receipt is not a regular 0600 file", ErrReceiptCorrupt)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxReceiptBytes+1))
@@ -558,12 +558,12 @@ func ensurePrivateDir(path string) error {
 	}
 	// Windows reports synthetic permission bits; the directory is secured by
 	// its ACL, which os.Chmod cannot express, so only POSIX modes are checked.
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0700 {
+	if !secureMode(info.Mode(), 0700) {
 		if err := os.Chmod(abs, 0700); err != nil {
 			return fmt.Errorf("materializer journal directory must be 0700: %w", err)
 		}
 		info, err = os.Lstat(abs)
-		if err != nil || info.Mode().Perm() != 0700 {
+		if err != nil || !secureMode(info.Mode(), 0700) {
 			return fmt.Errorf("materializer journal directory must be 0700")
 		}
 	}
@@ -628,6 +628,13 @@ func isKnownSystemAlias(path string) bool {
 	return false
 }
 
+// secureMode reports whether a stored permission matches the required one.
+// Windows derives permission bits from ACLs, so exact POSIX modes are not
+// meaningful there; the directory is still created with the requested mode.
+func secureMode(got os.FileMode, want os.FileMode) bool {
+	return runtime.GOOS == "windows" || got.Perm() == want
+}
+
 func validateTargetPath(path string, allowMissing bool) error {
 	if err := ensureNoSymlinkComponents(filepath.Dir(path)); err != nil {
 		return err
@@ -648,7 +655,7 @@ func validateTargetPath(path string, allowMissing bool) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%w: receipt path is not regular: %s", ErrReceiptUnsafe, path)
 	}
-	if info.Mode().Perm() != 0600 {
+	if !secureMode(info.Mode(), 0600) {
 		return fmt.Errorf("%w: receipt path must be 0600: %s", ErrReceiptUnsafe, path)
 	}
 	return nil
