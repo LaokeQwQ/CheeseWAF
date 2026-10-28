@@ -496,6 +496,12 @@ func (p *processSidecarProcess) Stop(ctx context.Context) error {
 	}
 
 	stopErr := p.roundTripLocked(ctx, "stop", p.mode, p.backend.stopTimeout)
+	// The child may exit immediately after writing its acknowledgement, and
+	// cmd.Wait closes the pipe as soon as it reaps the process. A closed pipe
+	// with a clean exit means the stop was acknowledged, not that it failed.
+	if stopErr != nil && errors.Is(stopErr, os.ErrClosed) && p.exitedErrorLocked() == nil {
+		stopErr = nil
+	}
 	_ = p.stdin.Close()
 	if stopErr == nil {
 		stopErr = p.waitForExitLocked(ctx, p.backend.stopTimeout)

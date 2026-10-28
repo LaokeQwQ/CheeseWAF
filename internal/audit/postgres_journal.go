@@ -467,6 +467,21 @@ func (j *PostgresJournal) Verify(ctx context.Context, stream string) error {
 		}
 		rows.Close()
 		if count < verifyPageSize {
+			var headSequence int64
+			var headHash string
+			err := j.db.QueryRowContext(ctx, `SELECT head_sequence, head_hash FROM cheesewaf_audit_streams WHERE stream_id=$1`, stream).Scan(&headSequence, &headHash)
+			if errors.Is(err, sql.ErrNoRows) {
+				if after == 0 {
+					return nil
+				}
+				return ErrCorruptChain
+			}
+			if err != nil {
+				return journalDBError(ctx, "read verified head")
+			}
+			if uint64(headSequence) != after || headHash != previousHash {
+				return ErrCorruptChain
+			}
 			return nil
 		}
 	}
