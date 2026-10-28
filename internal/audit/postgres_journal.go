@@ -436,10 +436,23 @@ func (j *PostgresJournal) Verify(ctx context.Context, stream string) error {
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
+	// Pin the head up front: a concurrent writer may advance it while paging,
+	// and verifying the prefix that existed at the start is still a valid
+	// chain check.
+	var headSequence int64
+	var headHash string
+	err := j.db.QueryRowContext(ctx, `SELECT head_sequence, head_hash FROM cheesewaf_audit_streams WHERE stream_id=$1`, stream).Scan(&headSequence, &headHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return journalDBError(ctx, "read head")
+	}
+	target := uint64(headSequence)
 	after := uint64(0)
 	previousHash := ""
-	for {
-		rows, err := j.db.QueryContext(ctx, `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 AND sequence>$2 ORDER BY sequence ASC LIMIT $3`, stream, int64(after), verifyPageSize)
+	for after < target {
+		rows, err := j.db.QueryContext(ctx, `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 AND sequence>$2 AND sequence<=$3 ORDER BY sequence ASC LIMIT $4`, stream, int64(after), int64(target), verifyPageSize)
 		if err != nil {
 			return journalDBError(ctx, "verify records")
 		}
@@ -466,25 +479,14 @@ func (j *PostgresJournal) Verify(ctx context.Context, stream string) error {
 			return journalDBError(ctx, "verify iterate")
 		}
 		rows.Close()
-		if count < verifyPageSize {
-			var headSequence int64
-			var headHash string
-			err := j.db.QueryRowContext(ctx, `SELECT head_sequence, head_hash FROM cheesewaf_audit_streams WHERE stream_id=$1`, stream).Scan(&headSequence, &headHash)
-			if errors.Is(err, sql.ErrNoRows) {
-				if after == 0 {
-					return nil
-				}
-				return ErrCorruptChain
-			}
-			if err != nil {
-				return journalDBError(ctx, "read verified head")
-			}
-			if uint64(headSequence) != after || headHash != previousHash {
-				return ErrCorruptChain
-			}
-			return nil
+		if count == 0 {
+			return ErrCorruptChain
 		}
 	}
+	if after != 0 && previousHash != headHash {
+		return ErrCorruptChain
+	}
+	return nil
 }
 
 func (j *PostgresJournal) Flush(ctx context.Context) error {
