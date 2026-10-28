@@ -55,6 +55,11 @@ func NewJournalStore(dir string, hooks Hooks) (*JournalStore, error) {
 	}
 	if hooks.SyncDir == nil {
 		hooks.SyncDir = func(path string) error {
+			// Windows rejects fsync on a directory handle; renames are still
+			// durable through the file's own sync and NTFS ordering.
+			if runtime.GOOS == "windows" {
+				return nil
+			}
 			f, err := os.Open(path)
 			if err != nil {
 				return err
