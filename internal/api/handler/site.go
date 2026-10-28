@@ -321,6 +321,8 @@ func (h *Handler) preservePersistedRestartOnlyConfig(candidate *config.Config) e
 	candidate.Scheduler = disk.Scheduler
 	candidate.Monitor = disk.Monitor
 	candidate.Performance = disk.Performance
+	candidate.Intel = disk.Intel
+	candidate.Plugins = disk.Plugins
 	return nil
 }
 

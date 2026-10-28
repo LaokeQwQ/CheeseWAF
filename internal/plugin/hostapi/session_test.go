@@ -226,3 +226,70 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 	}
 	return raw
 }
+
+// The accepted subset is the negotiated grant. A plugin that accepted only
+// health.report must not be able to publish hints or analysis results.
+func TestSessionRejectsHintOutsideAcceptedCapabilities(t *testing.T) {
+	hostInR, hostInW := io.Pipe()
+	hostOutR, hostOutW := io.Pipe()
+	t.Cleanup(func() {
+		_ = hostInR.Close()
+		_ = hostInW.Close()
+		_ = hostOutR.Close()
+		_ = hostOutW.Close()
+	})
+	session, err := NewSession(hostInR, hostOutW, SessionOptions{
+		Identity:     testIdentity(),
+		Capabilities: []Capability{CapabilityHintsSubmit, CapabilityHealth},
+		Challenge:    []byte("challenge"),
+		AckTimeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pluginDone := make(chan struct{})
+	go func() {
+		defer close(pluginDone)
+		reader := bufio.NewReader(hostOutR)
+		hello := readTestFrame(t, reader)
+		var helloPayload HelloPayload
+		if err := json.Unmarshal(hello.Payload, &helloPayload); err != nil {
+			t.Errorf("hello payload: %v", err)
+			return
+		}
+		writeTestFrame(t, hostInW, Frame{
+			Type: FrameReady, SchemaVersion: ProtocolVersion,
+			Payload: mustJSON(t, ReadyPayload{
+				Challenge: helloPayload.Challenge, PluginID: "demo", Version: "1.0.0",
+				AcceptedCapabilities: []Capability{CapabilityHealth},
+			}),
+		})
+		writeTestFrame(t, hostInW, Frame{
+			Type: FrameHint, SchemaVersion: ProtocolVersion, Sequence: 1,
+			Payload: json.RawMessage(`{"hint_id":"hint-1"}`),
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	select {
+	case result, ok := <-session.Results():
+		if ok {
+			t.Fatalf("result %#v, want rejection", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not reject the frame")
+	}
+	if err := session.Err(); !errors.Is(err, ErrCapability) {
+		t.Fatalf("err = %v, want ErrCapability", err)
+	}
+	_ = session.Close()
+	select {
+	case <-pluginDone:
+	case <-time.After(time.Second):
+		t.Fatal("plugin goroutine did not exit")
+	}
+}

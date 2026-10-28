@@ -19,6 +19,9 @@ var (
 	ErrHandshake     = errors.New("plugin host handshake failed")
 	ErrSessionClosed = errors.New("plugin host session is closed")
 	ErrProtocol      = errors.New("plugin host protocol violation")
+	// ErrCapability reports a frame outside the capability subset the plugin
+	// accepted during the handshake.
+	ErrCapability    = errors.New("plugin host capability denied")
 	ErrAckTimeout    = errors.New("plugin host acknowledgement timed out")
 	ErrAckRejected   = errors.New("plugin host request was rejected")
 	ErrResultBacklog = errors.New("plugin host result backlog is full")
@@ -103,16 +106,17 @@ type Session struct {
 	reader *bufio.Reader
 	opts   SessionOptions
 
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	state   State
-	nextSeq uint64
-	pending map[uint64]chan Frame
-	drainCh chan struct{}
-	results chan Result
-	done    chan struct{}
-	close   sync.Once
-	err     error
+	writeMu  sync.Mutex
+	mu       sync.Mutex
+	state    State
+	nextSeq  uint64
+	pending  map[uint64]chan Frame
+	drainCh  chan struct{}
+	accepted map[Capability]struct{}
+	results  chan Result
+	done     chan struct{}
+	close    sync.Once
+	err      error
 }
 
 func helloFrame(payload HelloPayload) Frame {
@@ -243,6 +247,10 @@ func (s *Session) Start(ctx context.Context) error {
 		s.fail(err)
 		return err
 	}
+	accepted := make(map[Capability]struct{}, len(ready.AcceptedCapabilities))
+	for _, capability := range ready.AcceptedCapabilities {
+		accepted[capability] = struct{}{}
+	}
 
 	s.mu.Lock()
 	if s.state != StateHandshaking {
@@ -250,6 +258,7 @@ func (s *Session) Start(ctx context.Context) error {
 		return fmt.Errorf("%w: state changed during handshake", ErrSessionState)
 	}
 	s.state = StateReady
+	s.accepted = accepted
 	s.mu.Unlock()
 	go s.readLoop()
 	return nil
@@ -514,10 +523,19 @@ func (s *Session) dispatch(frame Frame) error {
 		ackCh <- frame
 		return nil
 	case FrameHint:
+		if err := s.requireCapability(CapabilityHintsSubmit); err != nil {
+			return err
+		}
 		return s.publish(Result{Kind: ResultHint, Sequence: frame.Sequence, Payload: frame.Payload})
 	case FrameAnalysis:
+		if err := s.requireCapability(CapabilityAnalysisSubmit); err != nil {
+			return err
+		}
 		return s.publish(Result{Kind: ResultAnalysis, Sequence: frame.Sequence, Payload: frame.Payload})
 	case FrameHealth:
+		if err := s.requireCapability(CapabilityHealth); err != nil {
+			return err
+		}
 		return s.publish(Result{Kind: ResultHealth, Sequence: frame.Sequence, Payload: frame.Payload})
 	case FrameError:
 		return s.publish(Result{Kind: ResultError, Sequence: frame.Sequence, Payload: frame.Payload})
@@ -531,6 +549,20 @@ func (s *Session) dispatch(frame Frame) error {
 	default:
 		return fmt.Errorf("%w: unexpected frame %s", ErrProtocol, frame.Type)
 	}
+}
+
+// requireCapability rejects frames the plugin did not accept during the
+// handshake. Accepted capabilities are the negotiated subset of what the host
+// granted, so checking them keeps an under-scoped plugin from publishing
+// results outside its grant.
+func (s *Session) requireCapability(capability Capability) error {
+	s.mu.Lock()
+	accepted := s.accepted
+	s.mu.Unlock()
+	if _, ok := accepted[capability]; !ok {
+		return fmt.Errorf("%w: %s", ErrCapability, capability)
+	}
+	return nil
 }
 
 func (s *Session) publish(result Result) error {

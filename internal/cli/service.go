@@ -385,14 +385,7 @@ func runServe(ctx context.Context) error {
 		if intelErr != nil {
 			log.Printf("intel: persistence unavailable: %v", intelErr)
 		} else {
-			for _, source := range cfg.Intel.Sources {
-				if err := intelStore.UpsertSource(runtimeCtx, intel.Source{
-					ID: source.ID, Type: source.Type, URL: source.URL,
-					Trust: intel.ParseTrustLevel(source.Trust), Enabled: source.Enabled,
-				}); err != nil {
-					log.Printf("intel: register source %q: %v", source.ID, err)
-				}
-			}
+			syncIntelSources(runtimeCtx, cfg.Intel.Sources, intelStore)
 			var intelExtractor intel.Extractor
 			if schedulerAIClient != nil {
 				intelExtractor = ai.NewIntelExtractor(schedulerAIClient)
