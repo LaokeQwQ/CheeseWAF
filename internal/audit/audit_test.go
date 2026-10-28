@@ -514,3 +514,53 @@ func TestRuntimeEventCacheStaysBounded(t *testing.T) {
 		t.Fatalf("event cache grew to %d", size)
 	}
 }
+
+// A successful event whose cached copy was pruned must still be recognized as
+// an idempotent retry instead of failing as a sequence conflict.
+func TestRuntimeRetriesPrunedEvent(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	event := testEvent("pruned", EventClassCritical)
+	first, err := rt.Append(ctx, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	delete(rt.events, event.EventID)
+	rt.mu.Unlock()
+	again, err := rt.Append(ctx, event)
+	if err != nil {
+		t.Fatalf("retry after prune: %v", err)
+	}
+	if again.Sequence != first.Sequence || again.Hash != first.Hash {
+		t.Fatalf("retry returned %+v, want %+v", again, first)
+	}
+}
+
+// Historic checkpoints must be verified at startup, not only recent ones.
+func TestRuntimeRejectsTamperedHistoricCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Append(ctx, testEvent("historic", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	journal.mu.Lock()
+	commit := &journal.streams["control"].commits[0]
+	commit.Checkpoint.Signature[0] ^= 0xff
+	journal.mu.Unlock()
+	if _, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()}); !errors.Is(err, ErrCheckpointInvalid) {
+		t.Fatalf("restart error = %v, want ErrCheckpointInvalid", err)
+	}
+}
