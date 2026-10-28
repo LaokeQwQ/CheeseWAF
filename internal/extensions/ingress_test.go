@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -469,4 +471,98 @@ func TestIngressCloseReportsFailedAppends(t *testing.T) {
 	if err := ingress.Close(); err == nil {
 		t.Fatal("close hid a failed queued output")
 	}
+}
+
+func TestIngressBacklogFullMapsToTooManyRequests(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeOutputTransportSubmitError(recorder, ErrIngressBacklogFull)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", recorder.Code)
+	}
+}
+
+// Sequence validation happens before eviction, so a rejected submission must
+// not remove a saved receipt.
+func TestIngressRejectsGapWithoutEvictingSavedReceipt(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now },
+		Sink: OutputSinkFunc(func(_ context.Context, e audit.Event) (audit.Record, error) { return audit.Record{Event: e}, nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingress.Close()
+	ingress.mu.Lock()
+	ingress.seenCap = 1
+	ingress.seen["saved"] = ingressEntry{digest: "d", at: now}
+	ingress.hasSeq, ingress.lastSeq = true, 5
+	ingress.mu.Unlock()
+	wire := signedIngressOutput(t, private, now, "evt-gap", 7, `{}`)
+	if _, err := ingress.Submit(context.Background(), wire); !errors.Is(err, ErrIngressSequenceGap) {
+		t.Fatalf("gap error = %v", err)
+	}
+	ingress.mu.Lock()
+	defer ingress.mu.Unlock()
+	if _, ok := ingress.seen["saved"]; !ok {
+		t.Fatal("rejected submission evicted a saved receipt")
+	}
+}
+
+// An evicted success must come back when the queue refuses the new entry.
+func TestIngressRestoresEvictedReceiptWhenQueueRejects(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now }, QueueCapacity: 1,
+		Sink: OutputSinkFunc(func(ctx context.Context, e audit.Event) (audit.Record, error) {
+			once.Do(func() { close(started) })
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return audit.Record{Event: e}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-1", 1, `{}`)); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	ingress.mu.Lock()
+	ingress.seenCap = 2
+	ingress.seen["saved"] = ingressEntry{digest: "d", at: now}
+	ingress.mu.Unlock()
+	ingress.queue <- queuedOutput{key: "dummy"}
+	wire := signedIngressOutput(t, private, now, "evt-2", 2, `{}`)
+	if _, err := ingress.Submit(context.Background(), wire); !errors.Is(err, ErrIngressQueueFull) {
+		t.Fatalf("submit error = %v, want queue full", err)
+	}
+	ingress.mu.Lock()
+	_, saved := ingress.seen["saved"]
+	ingress.mu.Unlock()
+	if !saved {
+		t.Fatal("queue rejection did not restore the evicted receipt")
+	}
+	close(release)
+	if err := ingress.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = ingress.Close()
 }

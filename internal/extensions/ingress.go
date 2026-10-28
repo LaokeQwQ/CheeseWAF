@@ -264,6 +264,9 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 	}
 	i.pruneLocked(now)
 	isNew := false
+	var restoreKey string
+	var restoreEntry ingressEntry
+	hasRestore := false
 	if prior, ok := i.seen[key]; ok {
 		if prior.digest != digest {
 			i.mu.Unlock()
@@ -280,13 +283,6 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 		i.beginPendingLocked()
 		i.mu.Unlock()
 	} else {
-		// Failed entries are retained for retry, so the queue alone does not
-		// bound memory. Make room by dropping the oldest successful receipt;
-		// refuse only when every retained entry is pending or failed.
-		if len(i.seen) >= i.seenCap && !i.evictOldestSuccessLocked() {
-			i.mu.Unlock()
-			return Receipt{}, ErrIngressBacklogFull
-		}
 		if i.hasSeq {
 			switch {
 			case claims.Sequence <= i.lastSeq:
@@ -296,6 +292,18 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 				i.mu.Unlock()
 				return Receipt{}, ErrIngressSequenceGap
 			}
+		}
+		// Failed entries are retained for retry, so the queue alone does not
+		// bound memory. Make room by dropping the oldest successful receipt;
+		// refuse only when every retained entry is pending or failed. The
+		// evicted receipt is restored if queue admission then fails.
+		if len(i.seen) >= i.seenCap {
+			evictedKey, evictedEntry, ok := i.evictOldestSuccessLocked()
+			if !ok {
+				i.mu.Unlock()
+				return Receipt{}, ErrIngressBacklogFull
+			}
+			restoreKey, restoreEntry, hasRestore = evictedKey, evictedEntry, true
 		}
 		isNew = true
 		i.seen[key] = ingressEntry{digest: digest, event: auditEvent, at: now, pending: true}
@@ -314,8 +322,12 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 		i.mu.Lock()
 		if isNew {
 			// A rejected first admission must not leave a phantom receipt;
-			// otherwise the retry would be answered as a duplicate.
+			// otherwise the retry would be answered as a duplicate. Restore
+			// the successful receipt evicted to make room.
 			delete(i.seen, key)
+			if hasRestore {
+				i.seen[restoreKey] = restoreEntry
+			}
 		} else if prior, ok := i.seen[key]; ok {
 			prior.pending = false
 			i.seen[key] = prior
@@ -440,7 +452,7 @@ func (i *Ingress) Close() error {
 
 // evictOldestSuccessLocked drops the oldest successful receipt to make room
 // for new work. Pending and failed entries are never evicted.
-func (i *Ingress) evictOldestSuccessLocked() bool {
+func (i *Ingress) evictOldestSuccessLocked() (string, ingressEntry, bool) {
 	oldestKey := ""
 	var oldestAt time.Time
 	for key, entry := range i.seen {
@@ -452,10 +464,11 @@ func (i *Ingress) evictOldestSuccessLocked() bool {
 		}
 	}
 	if oldestKey == "" {
-		return false
+		return "", ingressEntry{}, false
 	}
+	entry := i.seen[oldestKey]
 	delete(i.seen, oldestKey)
-	return true
+	return oldestKey, entry, true
 }
 
 // pruneLocked keeps the replay map bounded: successes expire after seenTTL and

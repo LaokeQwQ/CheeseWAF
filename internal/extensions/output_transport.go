@@ -247,7 +247,7 @@ func writeOutputTransportPeerError(w http.ResponseWriter, err error) {
 
 func writeOutputTransportSubmitError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrIngressQueueFull):
+	case errors.Is(err, ErrIngressQueueFull), errors.Is(err, ErrIngressBacklogFull):
 		writeOutputTransportStatus(w, http.StatusTooManyRequests)
 	case errors.Is(err, ErrIngressClosed), errors.Is(err, ErrIngressAuditFailed):
 		writeOutputTransportStatus(w, http.StatusServiceUnavailable)
