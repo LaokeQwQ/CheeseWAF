@@ -289,7 +289,7 @@ func TestIngressSeenMapStaysBounded(t *testing.T) {
 			if err == nil {
 				break
 			}
-			if !errors.Is(err, ErrIngressQueueFull) || attempt >= 200 {
+			if (!errors.Is(err, ErrIngressQueueFull) && !errors.Is(err, ErrIngressBacklogFull)) || attempt >= 5000 {
 				t.Fatalf("submit %d: %v", seq, err)
 			}
 			time.Sleep(time.Millisecond)
@@ -401,5 +401,72 @@ func TestIngressCloseDrainsQueuedOutputs(t *testing.T) {
 	defer mu.Unlock()
 	if saved != 4 {
 		t.Fatalf("saved %d outputs, want 4", saved)
+	}
+}
+
+// Failed entries are retained for retry; new sequences must stop at the cap so
+// retained state cannot grow without bound.
+func TestIngressRejectsNewWorkWhenRetainedStateIsFull(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := OutputSinkFunc(func(context.Context, audit.Event) (audit.Record, error) {
+		return audit.Record{}, errors.New("audit down")
+	})
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now }, QueueCapacity: 8, Sink: sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingress.Close()
+	var seq uint64 = 1
+	for ; seq <= uint64(ingress.seenCap); seq++ {
+		wire := signedIngressOutput(t, private, now, "evt-"+strconv.FormatUint(seq, 10), seq, `{}`)
+		for attempt := 0; ; attempt++ {
+			if _, err := ingress.Submit(context.Background(), wire); err == nil {
+				break
+			} else if !errors.Is(err, ErrIngressQueueFull) || attempt >= 200 {
+				t.Fatalf("submit %d: %v", seq, err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if err := ingress.Flush(context.Background()); err == nil {
+		t.Fatal("flush hid the failing appends")
+	}
+	fresh := signedIngressOutput(t, private, now, "evt-new", seq, `{}`)
+	if _, err := ingress.Submit(context.Background(), fresh); !errors.Is(err, ErrIngressBacklogFull) {
+		t.Fatalf("new entry at cap error = %v, want backlog full", err)
+	}
+}
+
+// Close must report queued outputs that could not be saved.
+func TestIngressCloseReportsFailedAppends(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now },
+		Sink: OutputSinkFunc(func(context.Context, audit.Event) (audit.Record, error) {
+			return audit.Record{}, errors.New("audit down")
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-1", 1, `{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingress.Close(); err == nil {
+		t.Fatal("close hid a failed queued output")
 	}
 }
