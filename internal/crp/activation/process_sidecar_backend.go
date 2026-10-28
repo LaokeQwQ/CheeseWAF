@@ -496,6 +496,12 @@ func (p *processSidecarProcess) Stop(ctx context.Context) error {
 	}
 
 	stopErr := p.roundTripLocked(ctx, "stop", p.mode, p.backend.stopTimeout)
+	// The child may exit immediately after writing its acknowledgement, and
+	// cmd.Wait closes the pipe as soon as it reaps the process. A closed pipe
+	// with a clean exit means the stop was acknowledged, not that it failed.
+	if stopErr != nil && errors.Is(stopErr, os.ErrClosed) && p.exitedCleanly() {
+		stopErr = nil
+	}
 	_ = p.stdin.Close()
 	if stopErr == nil {
 		stopErr = p.waitForExitLocked(ctx, p.backend.stopTimeout)
@@ -603,7 +609,7 @@ func (p *processSidecarProcess) roundTripLocked(ctx context.Context, operation s
 	}
 	if response.err != nil {
 		killErr := p.killAndWaitLocked()
-		return errors.Join(fmt.Errorf("%w: %s acknowledgement: %v", ErrProcessSidecarProtocol, operation, response.err), killErr)
+		return errors.Join(fmt.Errorf("%w: %s acknowledgement: %w", ErrProcessSidecarProtocol, operation, response.err), killErr)
 	}
 	ack := response.ack
 	if ack.SchemaVersion != ProcessSidecarProtocolVersion || ack.Sequence != p.sequence || ack.Operation != operation || ack.Mode != mode {
@@ -721,6 +727,19 @@ func (p *processSidecarProcess) exitedErrorLocked() error {
 	default:
 		return nil
 	}
+}
+
+// exitedCleanly reports that the child has exited with status 0.
+func (p *processSidecarProcess) exitedCleanly() bool {
+	select {
+	case <-p.done:
+	default:
+		return false
+	}
+	p.waitMu.Lock()
+	err := p.waitErr
+	p.waitMu.Unlock()
+	return err == nil
 }
 
 func (p *processSidecarProcess) exitedError() error {

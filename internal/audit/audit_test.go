@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -439,5 +440,77 @@ func TestRuntimeWithSignerValueVerifiesCheckpointsAfterRestart(t *testing.T) {
 	defer restarted.Close()
 	if _, err := restarted.Append(ctx, testEvent("restart-2", EventClassCritical)); err != nil {
 		t.Fatalf("restart append: %v", err)
+	}
+}
+
+// A shared journal can hold checkpoints from another node's key. Restarting
+// with this node's key must accept the foreign checkpoint (its hash is covered
+// by Verify) and keep appending.
+func TestRuntimeRestoresWithForeignCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	signerA := testSigner()
+	seedB := make([]byte, ed25519.SeedSize)
+	for i := range seedB {
+		seedB[i] = byte(i + 101)
+	}
+	signerB := Ed25519Signer{ID: "peer-key", PrivateKey: ed25519.NewKeyFromSeed(seedB)}
+	nodeA, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signerA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeA.Append(ctx, testEvent("a-1", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeA.Close(); err != nil {
+		t.Fatal(err)
+	}
+	nodeB, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signerB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeB.Append(ctx, testEvent("b-1", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signerA})
+	if err != nil {
+		t.Fatalf("restart with a peer checkpoint: %v", err)
+	}
+	defer restarted.Close()
+	if _, err := restarted.Append(ctx, testEvent("a-2", EventClassCritical)); err != nil {
+		t.Fatalf("append after peer checkpoint: %v", err)
+	}
+}
+
+// The in-memory event cache must stay bounded on a long-lived runtime.
+func TestRuntimeEventCacheStaysBounded(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner(), QueueCapacity: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	for i := 0; i < runtimeEventCache*3; i++ {
+		if _, err := rt.Append(ctx, testEvent("cache-"+strconv.Itoa(i), EventClassNormal)); err != nil {
+			t.Fatal(err)
+		}
+		if i%1000 == 999 {
+			if err := rt.Flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := rt.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	size := len(rt.events)
+	rt.mu.Unlock()
+	if size > runtimeEventCache*2 {
+		t.Fatalf("event cache grew to %d", size)
 	}
 }
