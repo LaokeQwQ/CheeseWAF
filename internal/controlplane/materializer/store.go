@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -555,7 +556,9 @@ func ensurePrivateDir(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("materializer journal directory is not a regular directory")
 	}
-	if info.Mode().Perm() != 0700 {
+	// Windows reports synthetic permission bits; the directory is secured by
+	// its ACL, which os.Chmod cannot express, so only POSIX modes are checked.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0700 {
 		if err := os.Chmod(abs, 0700); err != nil {
 			return fmt.Errorf("materializer journal directory must be 0700: %w", err)
 		}

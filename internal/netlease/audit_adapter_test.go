@@ -118,3 +118,30 @@ func TestCanonicalAuditSinkPropagatesCanonicalAndCompatibilityErrors(t *testing.
 		t.Fatalf("compatibility err=%v", err)
 	}
 }
+
+type durableAppender struct{ durable bool }
+
+func (d durableAppender) Append(context.Context, audit.Event) (audit.Record, error) {
+	return audit.Record{}, nil
+}
+func (d durableAppender) Durable() bool { return d.durable }
+
+// Production brokers require a durable audit sink. The canonical adapter must
+// forward the underlying journal's durability instead of hiding it, otherwise
+// every production startup fails with ErrAuditUnavailable.
+func TestCanonicalAuditSinkDurabilityFollowsAppender(t *testing.T) {
+	durable, err := NewCanonicalAuditSink(durableAppender{durable: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !durable.Durable() {
+		t.Fatal("canonical sink hid a durable appender")
+	}
+	memory, err := NewCanonicalAuditSink(&auditAppenderFunc{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if memory.Durable() {
+		t.Fatal("canonical sink claimed durability without a guarantee")
+	}
+}

@@ -29,6 +29,16 @@ func NewCanonicalAuditSink(appender audit.EventAppender, legacy AuditSink) (*Can
 	return &CanonicalAuditSink{appender: appender, legacy: legacy}, nil
 }
 
+// Durable reports whether the underlying appender promises durable storage.
+// Production wiring refuses a broker whose audit sink is not durable.
+func (s *CanonicalAuditSink) Durable() bool {
+	if s == nil || s.appender == nil {
+		return false
+	}
+	durable, ok := s.appender.(interface{ Durable() bool })
+	return ok && durable.Durable()
+}
+
 func (s *CanonicalAuditSink) Append(ctx context.Context, event AuditEvent) error {
 	if s == nil || s.appender == nil || !validAuditEvent(event) {
 		return ErrAuditUnavailable

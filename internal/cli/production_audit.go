@@ -30,6 +30,12 @@ func (d *productionAuditRuntime) Append(ctx context.Context, event audit.Event) 
 	return d.runtime.Append(ctx, event)
 }
 
+// Durable reports whether the canonical journal is durable. The temporary
+// network broker refuses a non-durable audit sink in production.
+func (d *productionAuditRuntime) Durable() bool {
+	return d != nil && d.runtime != nil && d.runtime.Durable()
+}
+
 func (d *productionAuditRuntime) Close() error {
 	if d == nil {
 		return nil

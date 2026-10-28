@@ -376,6 +376,11 @@ func (r *Runtime) Replay(ctx context.Context) error {
 	return nil
 }
 
+// Durable reports whether the journal backing this runtime is durable.
+func (r *Runtime) Durable() bool {
+	return r != nil && r.journal != nil && r.journal.Durable()
+}
+
 // Dispatch drains metadata-only outbox rows. A delivery failure leaves the
 // row pending so a later call can retry without changing the audit chain.
 func (r *Runtime) Dispatch(ctx context.Context, limit int) error {
