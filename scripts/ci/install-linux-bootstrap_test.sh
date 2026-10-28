@@ -102,13 +102,14 @@ export -f fail uname id bootstrap_fetch
 for scenario in official all_fallback metadata_fallback archive_fallback sum_fallback \
   explicit explicit_prerelease fork arm64 loong64 bundle_fallback bad_checksum \
   missing_checksum duplicate_checksum bad_metadata bad_tag duplicate_tag \
-  bad_signature missing_cosign missing_bundle unsafe_root symlink hardlink missing_installer \
+  bad_signature missing_cosign missing_bundle official_default unsafe_root symlink hardlink missing_installer \
   corrupt_archive wget_official wget_fallback wget_redirect wget_relative_redirect wget_downgrade wget_redirect_loop no_downloader; do
   export BOOTSTRAP_SCENARIO="$scenario" BOOTSTRAP_CASE="${test_root}/${scenario}"
   export BOOTSTRAP_ARCH=x86_64 BOOTSTRAP_TAG=v0.4.5
   export CHEESEWAF_REPO=LaokeQwQ/CheeseWAF CHEESEWAF_RELEASE=latest CHEESEWAF_LANG=en CHEESEWAF_VERIFY_SIGNATURE=0
   package_arch=amd64
   case "$scenario" in
+    official_default) unset CHEESEWAF_VERIFY_SIGNATURE ;;
     explicit) export CHEESEWAF_RELEASE=0.4.5 ;;
     explicit_prerelease) export CHEESEWAF_RELEASE=v0.4.5-beta BOOTSTRAP_TAG=v0.4.5-beta ;;
     fork) export CHEESEWAF_REPO=Example/Fork ;;
@@ -142,6 +143,9 @@ for scenario in official all_fallback metadata_fallback archive_fallback sum_fal
     case "$scenario" in missing_cosign) unset -f cosign ;; *) export -f cosign ;; esac
     bash "${repo_root}/scripts/install-linux.sh"
   ) >"${BOOTSTRAP_CASE}/output" 2>&1 || status=$?
+  case "$scenario" in
+    official_default) [[ -s "${BOOTSTRAP_CASE}/cosign" ]] || fail 'official install skipped signature verification by default' ;;
+  esac
   case "$scenario" in
     bad_*|missing_*|duplicate_*|unsafe_root|symlink|hardlink|corrupt_archive|wget_downgrade|no_downloader)
       ((status != 0)) || fail "${scenario} should fail"

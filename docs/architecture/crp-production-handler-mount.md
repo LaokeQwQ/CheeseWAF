@@ -1,8 +1,8 @@
 # CRP Production Handler Mount and Authorization Durability
 
-状态：运行时的显式 CRP handler 挂载边界和授权耐久性 contract 已接入；真实
-control-plane provider、持久授权/审计后端、sidecar launcher 与部署交接仍未完成。
-本文不把 activation/rollback 验收标记为已完成。
+状态：运行时的显式 CRP handler 挂载、持久授权/审计后端、sidecar launcher 与部署
+交接已接入；acceptance matrix 中 `crp_activation` 与 `crp_rollback` 记录为 passed。
+仍未覆盖的是真实部署环境下的 HA、证书轮换和故障恢复演练。
 
 ## 目的和边界
 
