@@ -41,6 +41,7 @@ var (
 	ErrIngressClosed       = errors.New("extension output ingress is closed")
 	ErrIngressAuditFailed  = errors.New("extension output audit append failed")
 	ErrIngressCloseTimeout = errors.New("extension output ingress close timed out")
+	ErrIngressBacklogFull  = errors.New("extension output ingress retained-state limit reached")
 )
 
 // OutputClaims is the bounded envelope shared by Jev, EDR, and DuckDB
@@ -263,6 +264,9 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 	}
 	i.pruneLocked(now)
 	isNew := false
+	var restoreKey string
+	var restoreEntry ingressEntry
+	hasRestore := false
 	if prior, ok := i.seen[key]; ok {
 		if prior.digest != digest {
 			i.mu.Unlock()
@@ -289,6 +293,18 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 				return Receipt{}, ErrIngressSequenceGap
 			}
 		}
+		// Failed entries are retained for retry, so the queue alone does not
+		// bound memory. Make room by dropping the oldest successful receipt;
+		// refuse only when every retained entry is pending or failed. The
+		// evicted receipt is restored if queue admission then fails.
+		if len(i.seen) >= i.seenCap {
+			evictedKey, evictedEntry, ok := i.evictOldestSuccessLocked()
+			if !ok {
+				i.mu.Unlock()
+				return Receipt{}, ErrIngressBacklogFull
+			}
+			restoreKey, restoreEntry, hasRestore = evictedKey, evictedEntry, true
+		}
 		isNew = true
 		i.seen[key] = ingressEntry{digest: digest, event: auditEvent, at: now, pending: true}
 		i.beginPendingLocked()
@@ -306,8 +322,12 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 		i.mu.Lock()
 		if isNew {
 			// A rejected first admission must not leave a phantom receipt;
-			// otherwise the retry would be answered as a duplicate.
+			// otherwise the retry would be answered as a duplicate. Restore
+			// the successful receipt evicted to make room.
 			delete(i.seen, key)
+			if hasRestore {
+				i.seen[restoreKey] = restoreEntry
+			}
 		} else if prior, ok := i.seen[key]; ok {
 			prior.pending = false
 			i.seen[key] = prior
@@ -415,11 +435,40 @@ func (i *Ingress) Close() error {
 	select {
 	case <-waited:
 		i.workerCancel()
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		if i.failures > 0 {
+			if i.lastErr == nil {
+				return ErrIngressAuditFailed
+			}
+			return i.lastErr
+		}
 		return nil
 	case <-time.After(ingressCloseTimeout):
 		i.workerCancel()
 		return ErrIngressCloseTimeout
 	}
+}
+
+// evictOldestSuccessLocked drops the oldest successful receipt to make room
+// for new work. Pending and failed entries are never evicted.
+func (i *Ingress) evictOldestSuccessLocked() (string, ingressEntry, bool) {
+	oldestKey := ""
+	var oldestAt time.Time
+	for key, entry := range i.seen {
+		if entry.pending || entry.failed {
+			continue
+		}
+		if oldestKey == "" || entry.at.Before(oldestAt) {
+			oldestKey, oldestAt = key, entry.at
+		}
+	}
+	if oldestKey == "" {
+		return "", ingressEntry{}, false
+	}
+	entry := i.seen[oldestKey]
+	delete(i.seen, oldestKey)
+	return oldestKey, entry, true
 }
 
 // pruneLocked keeps the replay map bounded: successes expire after seenTTL and

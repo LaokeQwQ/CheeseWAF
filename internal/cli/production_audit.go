@@ -68,13 +68,13 @@ const checkpointSeedFile = "checkpoint-ed25519.key"
 // loadAuditCheckpointSigner loads or creates the durable checkpoint signer.
 // Critical audit events refuse to append without a signer, so production must
 // always provide one.
-func loadAuditCheckpointSigner(dataDir string) (*audit.Ed25519Signer, error) {
+func loadAuditCheckpointSigner(dataDir string) (audit.Ed25519Signer, error) {
 	if strings.TrimSpace(dataDir) == "" || !filepath.IsAbs(dataDir) {
-		return nil, fmt.Errorf("audit checkpoint data directory must be absolute")
+		return audit.Ed25519Signer{}, fmt.Errorf("audit checkpoint data directory must be absolute")
 	}
 	dir := filepath.Join(dataDir, "audit")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create audit checkpoint directory: %w", err)
+		return audit.Ed25519Signer{}, fmt.Errorf("create audit checkpoint directory: %w", err)
 	}
 	path := filepath.Join(dir, checkpointSeedFile)
 	seed, err := os.ReadFile(path)
@@ -83,39 +83,42 @@ func loadAuditCheckpointSigner(dataDir string) (*audit.Ed25519Signer, error) {
 		// the winner's key, not overwrite it while the winner is signing.
 		seed = make([]byte, ed25519.SeedSize)
 		if _, err := rand.Read(seed); err != nil {
-			return nil, fmt.Errorf("generate audit checkpoint seed: %w", err)
+			return audit.Ed25519Signer{}, fmt.Errorf("generate audit checkpoint seed: %w", err)
 		}
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, os.ErrExist) {
 			seed, err = os.ReadFile(path)
 			if err != nil {
-				return nil, fmt.Errorf("read audit checkpoint seed: %w", err)
+				return audit.Ed25519Signer{}, fmt.Errorf("read audit checkpoint seed: %w", err)
 			}
 		} else if err != nil {
-			return nil, fmt.Errorf("create audit checkpoint seed: %w", err)
+			return audit.Ed25519Signer{}, fmt.Errorf("create audit checkpoint seed: %w", err)
 		} else {
 			if _, err := f.Write(seed); err != nil {
 				_ = f.Close()
-				return nil, fmt.Errorf("persist audit checkpoint seed: %w", err)
+				return audit.Ed25519Signer{}, fmt.Errorf("persist audit checkpoint seed: %w", err)
 			}
 			if err := f.Sync(); err != nil {
 				_ = f.Close()
-				return nil, fmt.Errorf("flush audit checkpoint seed: %w", err)
+				return audit.Ed25519Signer{}, fmt.Errorf("flush audit checkpoint seed: %w", err)
 			}
 			if err := f.Close(); err != nil {
-				return nil, fmt.Errorf("close audit checkpoint seed: %w", err)
+				return audit.Ed25519Signer{}, fmt.Errorf("close audit checkpoint seed: %w", err)
 			}
 			if err := os.Chmod(path, 0o600); err != nil {
-				return nil, fmt.Errorf("secure audit checkpoint seed: %w", err)
+				return audit.Ed25519Signer{}, fmt.Errorf("secure audit checkpoint seed: %w", err)
 			}
 		}
 	} else if err != nil {
-		return nil, fmt.Errorf("read audit checkpoint seed: %w", err)
+		return audit.Ed25519Signer{}, fmt.Errorf("read audit checkpoint seed: %w", err)
 	}
 	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("audit checkpoint seed must be %d bytes", ed25519.SeedSize)
+		return audit.Ed25519Signer{}, fmt.Errorf("audit checkpoint seed must be %d bytes", ed25519.SeedSize)
 	}
-	return &audit.Ed25519Signer{ID: "checkpoint-ed25519", PrivateKey: ed25519.NewKeyFromSeed(seed)}, nil
+	// Pass the value, not a pointer: audit.NewRuntime derives the matching
+	// verifier only from an Ed25519Signer value, and without it a restarted
+	// process rejects its own checkpoints.
+	return audit.Ed25519Signer{ID: "checkpoint-ed25519", PrivateKey: ed25519.NewKeyFromSeed(seed)}, nil
 }
 
 func openProductionAudit(ctx context.Context, cfg config.ManagementPostgreSQLConfig, dataDir string) (ProductionAuditDependency, error) {

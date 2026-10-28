@@ -562,7 +562,10 @@ func ensurePrivateDir(path string) error {
 		return fmt.Errorf("materializer journal directory is not a regular directory")
 	}
 	// Windows reports synthetic permission bits; the directory is secured by
-	// its ACL, which os.Chmod cannot express, so only POSIX modes are checked.
+	// its ACL instead, which must be applied explicitly.
+	if err := ensurePrivateWindowsACL(abs); err != nil {
+		return fmt.Errorf("secure materializer journal directory: %w", err)
+	}
 	if !secureMode(info.Mode(), 0700) {
 		if err := os.Chmod(abs, 0700); err != nil {
 			return fmt.Errorf("materializer journal directory must be 0700: %w", err)

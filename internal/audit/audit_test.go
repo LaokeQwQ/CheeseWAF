@@ -415,3 +415,29 @@ func TestRuntimeRefreshesHeadAfterReplayConflict(t *testing.T) {
 		t.Fatalf("records = %d err=%v", len(rows), err)
 	}
 }
+
+// The signer value must supply its verifier; otherwise a restarted runtime
+// rejects its own signed checkpoints with ErrCheckpointInvalid.
+func TestRuntimeWithSignerValueVerifiesCheckpointsAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	signer := testSigner()
+	first, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Append(ctx, testEvent("restart-1", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if _, err := restarted.Append(ctx, testEvent("restart-2", EventClassCritical)); err != nil {
+		t.Fatalf("restart append: %v", err)
+	}
+}
