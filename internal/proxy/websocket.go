@@ -3,8 +3,10 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -260,6 +262,11 @@ func waitWebSocketBridgeResult(ctx context.Context, errs <-chan error) error {
 		default:
 			return ctx.Err()
 		}
+	}
+	if ctx.Err() != nil && errors.Is(err, net.ErrClosed) {
+		// Cancellation closes the sockets, and the read may report the closed
+		// connection before the context error; surface the cancellation.
+		return ctx.Err()
 	}
 	if err == context.Canceled || err == io.EOF {
 		return nil

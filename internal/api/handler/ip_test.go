@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -13,8 +15,175 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
+	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 )
+
+type protectionPolicyMutatorStub struct {
+	current config.ProtectionPolicyConfig
+	request desiredstate.ProtectionPolicyMutationRequest
+	result  desiredstate.ProtectionPolicyMutation
+	called  bool
+}
+
+func (s *protectionPolicyMutatorStub) Prepare(current config.ProtectionPolicyConfig, request desiredstate.ProtectionPolicyMutationRequest) (desiredstate.ProtectionPolicyMutation, error) {
+	s.current = current
+	s.request = request
+	s.called = true
+	return s.result, nil
+}
+
+type protectionPolicyCoordinatorStub struct {
+	actor                string
+	patch                desiredstate.ProtectionPolicyPatch
+	result               desiredstate.ProtectionPolicyCoordinationResult
+	err                  error
+	handler              *Handler
+	applyCalls           int
+	previewActorOverride *string
+}
+
+type writeOnlyProtectionPolicyCoordinatorStub struct{}
+
+func (writeOnlyProtectionPolicyCoordinatorStub) ProposeAndApply(context.Context, string, desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationResult, error) {
+	return desiredstate.ProtectionPolicyCoordinationResult{}, nil
+}
+
+func testProtectionPolicyPreviewBinding(before, after config.ProtectionPolicyConfig) string {
+	raw, _ := json.Marshal(struct {
+		Before config.ProtectionPolicyConfig `json:"before"`
+		After  config.ProtectionPolicyConfig `json:"after"`
+	}{Before: before, After: after})
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *protectionPolicyCoordinatorStub) preview(actor string, patch desiredstate.ProtectionPolicyPatch) desiredstate.ProtectionPolicyCoordinationPreview {
+	if s.previewActorOverride != nil {
+		actor = *s.previewActorOverride
+	}
+	var before config.ProtectionPolicyConfig
+	if s.handler != nil && s.handler.currentConfig() != nil {
+		before = s.handler.currentConfig().Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+	} else {
+		before = s.result.Mutation.Before
+	}
+	after := before
+	if patch.WebAttack != nil {
+		after.WebAttack = *patch.WebAttack
+	}
+	if patch.APISecurity != nil {
+		after.APISecurity = *patch.APISecurity
+	}
+	if patch.BotCC != nil {
+		after.BotCC = *patch.BotCC
+	}
+	if patch.ThreatIntel != nil {
+		after.ThreatIntel = *patch.ThreatIntel
+	}
+	return desiredstate.ProtectionPolicyCoordinationPreview{
+		Mutation: desiredstate.ProtectionPolicyMutation{Actor: actor, Before: before, After: after},
+		Binding:  testProtectionPolicyPreviewBinding(before, after),
+	}
+}
+
+func (s *protectionPolicyCoordinatorStub) Preview(_ context.Context, actor string, patch desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationPreview, error) {
+	if s.err != nil {
+		return desiredstate.ProtectionPolicyCoordinationPreview{}, s.err
+	}
+	return s.preview(actor, patch), nil
+}
+
+func (s *protectionPolicyCoordinatorStub) ProposeAndApplyWithPreview(ctx context.Context, actor string, patch desiredstate.ProtectionPolicyPatch, binding string) (desiredstate.ProtectionPolicyCoordinationResult, error) {
+	preview, err := s.Preview(ctx, actor, patch)
+	if err != nil {
+		return desiredstate.ProtectionPolicyCoordinationResult{}, err
+	}
+	if binding != preview.Binding {
+		return desiredstate.ProtectionPolicyCoordinationResult{}, errors.New("test control-plane preview binding is stale")
+	}
+	s.applyCalls++
+	return s.ProposeAndApply(ctx, actor, patch)
+}
+
+func (s *protectionPolicyCoordinatorStub) ProposeAndApply(_ context.Context, actor string, patch desiredstate.ProtectionPolicyPatch) (desiredstate.ProtectionPolicyCoordinationResult, error) {
+	s.actor = actor
+	s.patch = patch
+	if s.handler != nil {
+		current := s.handler.currentConfig()
+		if current == nil {
+			return desiredstate.ProtectionPolicyCoordinationResult{}, errors.New("test handler config is nil")
+		}
+		before := current.Protection.Policy.WithDefaults(config.DefaultProtectionPolicy())
+		after := before
+		if patch.WebAttack != nil {
+			after.WebAttack = *patch.WebAttack
+		}
+		if patch.APISecurity != nil {
+			after.APISecurity = *patch.APISecurity
+		}
+		if patch.BotCC != nil {
+			after.BotCC = *patch.BotCC
+		}
+		if patch.ThreatIntel != nil {
+			after.ThreatIntel = *patch.ThreatIntel
+		}
+		next := current.Protection
+		next.Policy = after
+		if err := s.handler.commitProtectionConfig(next); err != nil {
+			return desiredstate.ProtectionPolicyCoordinationResult{}, err
+		}
+		return desiredstate.ProtectionPolicyCoordinationResult{Mutation: desiredstate.ProtectionPolicyMutation{Actor: actor, Before: before, After: after}}, nil
+	}
+	if s.result.Mutation.Actor == "" {
+		s.result.Mutation.Actor = actor
+	}
+	return s.result, s.err
+}
+
+func TestPrepareProtectionPolicyMutationUsesInjectedSnapshotOnly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Protection.Policy = config.ProtectionPolicyConfig{
+		WebAttack:   config.ProtectionLevelLow,
+		APISecurity: config.ProtectionLevelHigh,
+		BotCC:       config.ProtectionLevelSmart,
+		ThreatIntel: config.ProtectionLevelOff,
+	}
+	stub := &protectionPolicyMutatorStub{result: desiredstate.ProtectionPolicyMutation{Actor: "prepared"}}
+	h := New(Options{Config: &cfg, ProtectionPolicyMutator: stub})
+	request := desiredstate.ProtectionPolicyMutationRequest{Actor: "operator-a", LeaderID: "node-a", Nonce: "nonce-1"}
+
+	mutation, err := h.PrepareProtectionPolicyMutation(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stub.called {
+		t.Fatal("injected mutator was not called")
+	}
+	if stub.current != cfg.Protection.Policy {
+		t.Fatalf("mutator current policy = %+v, want %+v", stub.current, cfg.Protection.Policy)
+	}
+	if stub.request.Actor != request.Actor || stub.request.LeaderID != request.LeaderID || stub.request.Nonce != request.Nonce {
+		t.Fatalf("mutator request = %+v, want actor=%q leader=%q nonce=%q", stub.request, request.Actor, request.LeaderID, request.Nonce)
+	}
+	if mutation.Actor != "prepared" {
+		t.Fatalf("mutation = %+v, want injected result", mutation)
+	}
+	if cfg.Protection.Policy != stub.current {
+		t.Fatalf("handler changed policy while preparing mutation: got %+v want %+v", cfg.Protection.Policy, stub.current)
+	}
+}
+
+func TestPrepareProtectionPolicyMutationFailsClosedWhenNotInjected(t *testing.T) {
+	cfg := config.Default()
+	h := New(Options{Config: &cfg})
+	_, err := h.PrepareProtectionPolicyMutation(desiredstate.ProtectionPolicyMutationRequest{})
+	if !errors.Is(err, ErrProtectionPolicyMutationUnavailable) {
+		t.Fatalf("error = %v, want %v", err, ErrProtectionPolicyMutationUnavailable)
+	}
+}
 
 func TestUpdateIPAccessRulesRuntimeFailureDoesNotCommitConfig(t *testing.T) {
 	cfg := config.Default()
@@ -159,7 +328,23 @@ func TestProtectionSecretUpdatesPreserveExistingValuesWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestUpdateProtectionPolicyMergesPartialPayload(t *testing.T) {
+func TestUpdateProtectionPolicyRequiresCoordinator(t *testing.T) {
+	cfg := config.Default()
+	// Production sets this flag; an unwired endpoint must then refuse instead
+	// of only mutating local config.
+	handler := New(Options{Config: &cfg, RequireProtectionPolicyCoordinator: true})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", strings.NewReader(`{"web_attack":"strict"}`))
+	handler.UpdateProtectionPolicy(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "PROTECTION_POLICY_UNAVAILABLE") {
+		t.Fatalf("expected fail-closed unavailable response, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg.Protection.Policy != config.DefaultProtectionPolicy() {
+		t.Fatalf("unwired policy endpoint changed local config: %+v", cfg.Protection.Policy)
+	}
+}
+
+func TestUpdateProtectionPolicyDelegatesPatchAndActor(t *testing.T) {
 	cfg := config.Default()
 	cfg.Protection.Policy = config.ProtectionPolicyConfig{
 		WebAttack:   config.ProtectionLevelSmart,
@@ -167,43 +352,83 @@ func TestUpdateProtectionPolicyMergesPartialPayload(t *testing.T) {
 		BotCC:       config.ProtectionLevelLow,
 		ThreatIntel: config.ProtectionLevelStrict,
 	}
-	configPath := filepath.Join(t.TempDir(), "cheesewaf.yaml")
-	if err := config.Save(configPath, &cfg); err != nil {
-		t.Fatalf("save config: %v", err)
-	}
-	var reloaded config.ProtectionConfig
-	handler := New(Options{
-		Config:     &cfg,
-		ConfigPath: configPath,
-		OnProtectionChanged: func(next config.ProtectionConfig) error {
-			reloaded = next
-			return nil
+	consumer := &protectionPolicyCoordinatorStub{result: desiredstate.ProtectionPolicyCoordinationResult{
+		Mutation: desiredstate.ProtectionPolicyMutation{
+			Actor: "operator-a",
+			After: config.ProtectionPolicyConfig{
+				WebAttack:   config.ProtectionLevelStrict,
+				APISecurity: config.ProtectionLevelHigh,
+				BotCC:       config.ProtectionLevelLow,
+				ThreatIntel: config.ProtectionLevelStrict,
+			},
 		},
-	})
-
-	raw, _ := json.Marshal(map[string]string{"web_attack": config.ProtectionLevelStrict})
+	}}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: consumer})
+	raw := []byte(`{"web_attack":"strict","leader_id":"client-must-not-supply","nonce":"client-must-not-supply"}`)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", bytes.NewReader(raw))
+	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, &middleware.Claims{Subject: "operator-a", ID: "session-a", Role: "admin"}))
 	handler.UpdateProtectionPolicy(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected policy update ok, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	expected := config.ProtectionPolicyConfig{
-		WebAttack:   config.ProtectionLevelStrict,
-		APISecurity: config.ProtectionLevelHigh,
-		BotCC:       config.ProtectionLevelLow,
-		ThreatIntel: config.ProtectionLevelStrict,
+	if consumer.actor != "operator-a" || consumer.patch.WebAttack == nil || *consumer.patch.WebAttack != config.ProtectionLevelStrict {
+		t.Fatalf("consumer received actor=%q patch=%+v", consumer.actor, consumer.patch)
 	}
-	if cfg.Protection.Policy != expected {
-		t.Fatalf("partial update did not preserve existing policy: got %+v want %+v", cfg.Protection.Policy, expected)
+	if consumer.patch.APISecurity != nil || consumer.patch.BotCC != nil || consumer.patch.ThreatIntel != nil {
+		t.Fatalf("partial patch was widened by handler: %+v", consumer.patch)
 	}
-	if reloaded.Policy != expected {
-		t.Fatalf("reload callback received wrong policy: got %+v want %+v", reloaded.Policy, expected)
+	if strings.Contains(recorder.Body.String(), "client-must-not-supply") || !strings.Contains(recorder.Body.String(), `"web_attack":"strict"`) {
+		t.Fatalf("response leaked client fencing metadata or omitted policy: %s", recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), `"api_security":"high"`) ||
-		!strings.Contains(recorder.Body.String(), `"bot_cc":"low"`) ||
-		!strings.Contains(recorder.Body.String(), `"threat_intel":"strict"`) {
-		t.Fatalf("response did not include preserved policy fields: %s", recorder.Body.String())
+	if cfg.Protection.Policy.WebAttack != config.ProtectionLevelSmart {
+		t.Fatalf("handler mutated local config instead of delegating: %+v", cfg.Protection.Policy)
+	}
+}
+
+func TestUpdateProtectionPolicyRequiresAuthenticatedActor(t *testing.T) {
+	cfg := config.Default()
+	consumer := &protectionPolicyCoordinatorStub{result: desiredstate.ProtectionPolicyCoordinationResult{Mutation: desiredstate.ProtectionPolicyMutation{Actor: "operator-a"}}}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: consumer})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", strings.NewReader(`{"web_attack":"strict"}`))
+	handler.UpdateProtectionPolicy(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "PROTECTION_POLICY_ACTOR_REQUIRED") {
+		t.Fatalf("expected missing actor rejection, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if consumer.actor != "" {
+		t.Fatalf("consumer was called without an authenticated actor: %q", consumer.actor)
+	}
+}
+
+func TestUpdateProtectionPolicyMapsControlPlaneConflict(t *testing.T) {
+	cfg := config.Default()
+	consumer := &protectionPolicyCoordinatorStub{err: controlplane.ErrStaleEpoch}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: consumer})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", strings.NewReader(`{"web_attack":"strict"}`))
+	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, &middleware.Claims{Subject: "operator-a", ID: "session-a", Role: "admin"}))
+	handler.UpdateProtectionPolicy(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "PROTECTION_POLICY_CONFLICT") {
+		t.Fatalf("expected conflict response, code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUpdateProtectionPolicyMapsMutationValidationToBadRequest(t *testing.T) {
+	cfg := config.Default()
+	consumer := &protectionPolicyCoordinatorStub{err: desiredstate.ProtectionPolicyMutationValidationError{
+		Field:  "web_attack",
+		Value:  "block",
+		Reason: "must be one of off, low, smart, high, or strict",
+	}}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: consumer})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", strings.NewReader(`{"web_attack":"block"}`))
+	request = request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, &middleware.Claims{Subject: "operator-a", ID: "session-a", Role: "admin"}))
+
+	handler.UpdateProtectionPolicy(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "PROTECTION_POLICY_INVALID") {
+		t.Fatalf("expected malformed policy to return 400, code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

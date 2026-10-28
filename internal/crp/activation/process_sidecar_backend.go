@@ -215,7 +215,9 @@ func (b *ProcessSidecarBackend) Start(ctx context.Context, spec SidecarLaunchSpe
 	cmd := exec.Command(entry.Executable, entry.Args...)
 	cmd.Dir = entry.WorkingDirectory
 	cmd.Env = processEnvironment(entry.Environment)
-	cmd.Stderr = io.Discard
+	// A nil Stderr connects directly to the null device. io.Discard would
+	// create a copier pipe whose inherited writer could keep Wait blocked
+	// after the group leader exits, preventing descendant cleanup.
 	if err := configureProcessSidecarCommand(cmd); err != nil {
 		return nil, fmt.Errorf("%w: configure process: %v", ErrProcessSidecarConfig, err)
 	}
@@ -284,6 +286,12 @@ func (b *ProcessSidecarBackend) Start(ctx context.Context, spec SidecarLaunchSpe
 	go process.wait()
 	process.mu.Lock()
 	startErr := process.roundTripLocked(launchContext, "start", SidecarModeObserve, b.operationTimeout)
+	if startErr != nil {
+		// Encoding or message-size validation can fail before roundTripLocked
+		// owns the protocol stream. This child has not been registered yet,
+		// so Start must reap it on every failed handshake path.
+		startErr = errors.Join(startErr, process.killAndWaitLocked())
+	}
 	process.mu.Unlock()
 	if startErr != nil {
 		if b.dataPlaneFactory != nil {
@@ -402,7 +410,11 @@ func (p *processSidecarProcess) setDataPlane(dataPlane ProcessDataPlane) {
 		return
 	}
 	p.dataPlane = dataPlane
+	closed := p.dataPlaneClosed
 	p.dataPlaneMu.Unlock()
+	if closed && dataPlane != nil {
+		_ = dataPlane.Close()
+	}
 }
 
 // DataPlane returns the optional host data-plane session for this process.
@@ -416,9 +428,12 @@ func (p *processSidecarProcess) DataPlane() ProcessDataPlane {
 // slot closed so a later install cannot leak a live connection.
 func (p *processSidecarProcess) closeDataPlane() {
 	p.dataPlaneMu.Lock()
-	dataPlane := p.dataPlane
-	p.dataPlane = nil
+	if p.dataPlaneClosed {
+		p.dataPlaneMu.Unlock()
+		return
+	}
 	p.dataPlaneClosed = true
+	dataPlane := p.dataPlane
 	p.dataPlaneMu.Unlock()
 	if dataPlane != nil {
 		_ = dataPlane.Close()
@@ -481,6 +496,12 @@ func (p *processSidecarProcess) Stop(ctx context.Context) error {
 	}
 
 	stopErr := p.roundTripLocked(ctx, "stop", p.mode, p.backend.stopTimeout)
+	// The child may exit immediately after writing its acknowledgement, and
+	// cmd.Wait closes the pipe as soon as it reaps the process. A closed pipe
+	// with a clean exit means the stop was acknowledged, not that it failed.
+	if stopErr != nil && errors.Is(stopErr, os.ErrClosed) && p.exitedCleanly() {
+		stopErr = nil
+	}
 	_ = p.stdin.Close()
 	if stopErr == nil {
 		stopErr = p.waitForExitLocked(ctx, p.backend.stopTimeout)
@@ -495,6 +516,13 @@ func (p *processSidecarProcess) Stop(ctx context.Context) error {
 
 func (p *processSidecarProcess) wait() {
 	err := p.cmd.Wait()
+	if cleanupErr := cleanupExitedProcessSidecarCommand(p.cmd); cleanupErr != nil {
+		err = errors.Join(err, fmt.Errorf("clean up exited process group: %w", cleanupErr))
+	}
+	// Keep the channel usable for the child's entire lifetime, and close it
+	// even when the child exits without a final lifecycle acknowledgement.
+	// setDataPlane also observes cleanup if exit races session attachment.
+	p.closeDataPlane()
 	p.waitMu.Lock()
 	p.waitErr = err
 	p.waitMu.Unlock()
@@ -581,7 +609,7 @@ func (p *processSidecarProcess) roundTripLocked(ctx context.Context, operation s
 	}
 	if response.err != nil {
 		killErr := p.killAndWaitLocked()
-		return errors.Join(fmt.Errorf("%w: %s acknowledgement: %v", ErrProcessSidecarProtocol, operation, response.err), killErr)
+		return errors.Join(fmt.Errorf("%w: %s acknowledgement: %w", ErrProcessSidecarProtocol, operation, response.err), killErr)
 	}
 	ack := response.ack
 	if ack.SchemaVersion != ProcessSidecarProtocolVersion || ack.Sequence != p.sequence || ack.Operation != operation || ack.Mode != mode {
@@ -699,6 +727,19 @@ func (p *processSidecarProcess) exitedErrorLocked() error {
 	default:
 		return nil
 	}
+}
+
+// exitedCleanly reports that the child has exited with status 0.
+func (p *processSidecarProcess) exitedCleanly() bool {
+	select {
+	case <-p.done:
+	default:
+		return false
+	}
+	p.waitMu.Lock()
+	err := p.waitErr
+	p.waitMu.Unlock()
+	return err == nil
 }
 
 func (p *processSidecarProcess) exitedError() error {

@@ -5,7 +5,12 @@
 
 ## 写入顺序
 
-`Coordinator` 先提交共识，再调用适配器。适配器在同一事务内为 cluster
+`Coordinator.ProposeAndApply` 负责一次完整的提案和保存过程。它在同一把协调锁下
+生成一次 `Commit`，把这条提交交给 native-raft 原样复制，再调用 PostgreSQL
+适配器。native-raft 不会用自己的状态机再次生成 revision 或时间戳。结果不明确时，
+调用方只能重试同一条提交；相同 fence 对应不同内容时会拒绝请求。
+
+适配器在同一事务内为 cluster
 获取事务级 advisory lock，并锁定已有状态行，检查 epoch、revision、leader、
 digest、payload 和 nonce ledger，写入提交历史后更新状态。原始 payload 只保存在
 BYTEA 列；JSONB 的 `state_json` 只保存状态元数据，避免 JSONB 规范化空格后破坏
@@ -15,8 +20,14 @@ BYTEA 列；JSONB 的 `state_json` 只保存状态元数据，避免 JSONB 规�
 ## 恢复
 
 `LoadState` 返回完整状态和 nonce ledger。上层必须同时读取共识状态并比较
-epoch、revision、leader、digest、payload、冻结状态和 nonce ledger；两边不一致
-时停止写入，不能用较旧的 PostgreSQL 快照覆盖共识状态。
+epoch、revision、leader、digest、payload、冻结状态、`UpdatedAt` 和 nonce ledger。
+
+正常情况下，两边必须完全一致。唯一的一般恢复情况是 Raft 恰好多一个 revision。
+这时启动流程必须通过 `CurrentCommit` 取得原始提交，并逐字段验证后保存到
+PostgreSQL。首次提交的单边恢复还要求匹配的 `InitialStateRequest` 和管理员授权。
+如果恢复期间领导权已经变化，系统先保存原始提交，再通过独立的领导权检查点保存
+新 term、epoch、leader 和时间戳。系统不会用当前快照重建历史提交，也不会处理超过
+一个 revision 的差距。
 
 ## 迁移和验证
 

@@ -26,6 +26,10 @@ func killProcessSidecarCommand(cmd *exec.Cmd) error {
 	return cmd.Process.Kill()
 }
 
+// The portable Windows backend has no job object to enumerate descendants.
+// Secure launch admission is unsupported on Windows and fails closed.
+func cleanupExitedProcessSidecarCommand(*exec.Cmd) error { return nil }
+
 func validateProcessExecutableMode(os.FileMode) error { return nil }
 
 func validateProcessPathSecuritySupported() error {

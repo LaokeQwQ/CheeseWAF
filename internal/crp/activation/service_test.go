@@ -388,7 +388,7 @@ func TestServiceFailsClosedWithoutApprovalClaimResolver(t *testing.T) {
 		}
 	}()
 
-	_, err = service.authorizeOperation(context.Background(), crp.RuntimeActionPromote, crp.RuntimeRecord{Key: "rate-limit", PluginID: "rate-limit", Version: "1.0.0", Namespace: "official/security", ManifestIdentity: strings.Repeat("a", 64), ArtifactIdentity: strings.Repeat("b", 64), ReleaseSequence: 1, Revision: 1}, 1, SidecarDescriptor{}, CanaryPolicy{})
+	_, err = service.authorizeOperation(context.Background(), crp.RuntimeActionPromote, crp.RuntimeRecord{Key: "rate-limit", PluginID: "rate-limit", Version: "1.0.0", Namespace: "official/security", ManifestIdentity: strings.Repeat("a", 64), ArtifactIdentity: strings.Repeat("b", 64), ReleaseSequence: 1, Revision: 1}, 1, SidecarDescriptor{}, CanaryPolicy{}, "")
 	if !errors.Is(err, ErrApprovalClaimUnavailable) {
 		t.Fatalf("authorizeOperation() = %v, want ErrApprovalClaimUnavailable", err)
 	}
@@ -678,7 +678,7 @@ func TestSubmitAsyncIsBoundedAndRunsOffCaller(t *testing.T) {
 		opts.AsyncQueueSize = 1
 		opts.AsyncWorkers = 1
 	})
-	request := AsyncRequest{Action: crp.RuntimeActionPromote, Key: staged.Key, ExpectedRevision: staged.Revision, Descriptor: activationDescriptor(staged), Policy: CanaryPolicy{ObserveProbes: 1, CanaryProbes: 1}}
+	request := AsyncRequest{Action: crp.RuntimeActionPromote, RequestID: "management-request-1", Key: staged.Key, ExpectedRevision: staged.Revision, Descriptor: activationDescriptor(staged), Policy: CanaryPolicy{ObserveProbes: 1, CanaryProbes: 1}}
 	receipt, err := service.SubmitAsync(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -701,7 +701,14 @@ func TestSubmitAsyncIsBoundedAndRunsOffCaller(t *testing.T) {
 	close(manager.release)
 	if result, err := receipt.Wait(context.Background()); err != nil || result.Phase != PhaseActive {
 		t.Fatalf("first receipt result=%+v error=%v", result, err)
+	} else if result.RequestID != request.RequestID || result.AuthorizationID == "" || result.ConfirmationID == "" {
+		t.Fatalf("activation result lost authorization correlation: %+v", result)
 	}
+	controlPlane.mu.Lock()
+	if len(controlPlane.authorizations) == 0 || controlPlane.authorizations[0].RequestID != request.RequestID {
+		t.Fatalf("control-plane request ID=%q, want %q", controlPlane.authorizations[0].RequestID, request.RequestID)
+	}
+	controlPlane.mu.Unlock()
 	if _, err := queued.Wait(context.Background()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("queued receipt error=%v, want context.Canceled", err)
 	}

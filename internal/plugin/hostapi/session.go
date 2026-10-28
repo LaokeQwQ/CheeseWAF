@@ -21,10 +21,11 @@ var (
 	ErrProtocol      = errors.New("plugin host protocol violation")
 	// ErrCapability reports a frame outside the capability subset the plugin
 	// accepted during the handshake.
-	ErrCapability    = errors.New("plugin host capability denied")
-	ErrAckTimeout    = errors.New("plugin host acknowledgement timed out")
-	ErrAckRejected   = errors.New("plugin host request was rejected")
-	ErrResultBacklog = errors.New("plugin host result backlog is full")
+	ErrCapability       = errors.New("plugin host capability denied")
+	ErrCapabilityDenied = ErrCapability
+	ErrAckTimeout       = errors.New("plugin host acknowledgement timed out")
+	ErrAckRejected      = errors.New("plugin host request was rejected")
+	ErrResultBacklog    = errors.New("plugin host result backlog is full")
 )
 
 // State is the host-side session lifecycle.
@@ -138,9 +139,13 @@ func NewSession(in io.Reader, out io.WriteCloser, opts SessionOptions) (*Session
 	if opts.MaxFrameBytes <= 0 {
 		opts.MaxFrameBytes = MaxFrameBytes
 	}
+	opts.Capabilities = append([]Capability(nil), opts.Capabilities...)
 	if opts.AckTimeout <= 0 {
 		opts.AckTimeout = 10 * time.Second
 	}
+	// The caller may reuse or mutate its buffers after Start; the session owns
+	// its copy of the challenge for the whole handshake.
+	opts.Challenge = append([]byte(nil), opts.Challenge...)
 	if len(opts.Challenge) == 0 {
 		challenge := make([]byte, 32)
 		if _, err := rand.Read(challenge); err != nil {
@@ -355,6 +360,10 @@ func (s *Session) sendAndWait(ctx context.Context, frameType FrameType, payload 
 		s.mu.Unlock()
 		return fmt.Errorf("%w: send from %s", ErrSessionState, s.state)
 	}
+	if err := s.requireFrameCapabilityLocked(frameType); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	sequence := s.nextSeq
 	s.nextSeq++
 	ackCh := make(chan Frame, 1)
@@ -451,7 +460,10 @@ func (s *Session) writeFrameContext(ctx context.Context, frame Frame) error {
 	go func() {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
-		_, err := s.out.Write(raw)
+		n, err := s.out.Write(raw)
+		if err == nil && n != len(raw) {
+			err = io.ErrShortWrite
+		}
 		written <- err
 	}()
 	// A peer that stops reading never observes ctx. The ack budget is the only
@@ -549,6 +561,16 @@ func (s *Session) dispatch(frame Frame) error {
 	default:
 		return fmt.Errorf("%w: unexpected frame %s", ErrProtocol, frame.Type)
 	}
+}
+
+// requireFrameCapabilityLocked rejects outbound frames outside the negotiated
+// subset. The caller holds s.mu.
+func (s *Session) requireFrameCapabilityLocked(frameType FrameType) error {
+	capability := frameCapability(frameType)
+	if _, ok := s.accepted[capability]; !ok {
+		return fmt.Errorf("%w: %s requires %s", ErrCapabilityDenied, frameType, capability)
+	}
+	return nil
 }
 
 // requireCapability rejects frames the plugin did not accept during the

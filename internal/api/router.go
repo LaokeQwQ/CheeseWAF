@@ -9,6 +9,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	captchaassets "github.com/LaokeQwQ/CheeseWAF/internal/captcha/assets"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/identity"
@@ -36,6 +37,9 @@ type Options struct {
 	Sink                                storage.LogSink
 	Hub                                 *realtime.Hub
 	Secret                              string
+	AuditRuntime                        audit.EventAppender
+	AuditPolicyEpoch                    uint64
+	RequireAuditRuntime                 bool
 	SetupToken                          string
 	SetupTokenSource                    setup.TokenSource
 	OnSitesChanged                      func([]config.SiteConfig) error
@@ -150,6 +154,9 @@ func NewRouterWithAPI(opts Options) (http.Handler, *handler.Handler) {
 		SetupToken:                          opts.SetupToken,
 		SetupTokenSource:                    opts.SetupTokenSource,
 		Auditor:                             auditor,
+		AuditRuntime:                        opts.AuditRuntime,
+		AuditPolicyEpoch:                    opts.AuditPolicyEpoch,
+		RequireAuditRuntime:                 opts.RequireAuditRuntime,
 		AssistantApprovals:                  approvals,
 		AssistantGateApproval:               opts.AssistantGateApproval,
 		Realtime:                            hub,

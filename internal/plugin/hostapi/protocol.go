@@ -78,6 +78,23 @@ func (c Capability) Valid() bool {
 	return ok
 }
 
+func frameCapability(frameType FrameType) Capability {
+	switch frameType {
+	case FrameEvent:
+		return CapabilityEventsSubscribe
+	case FrameJob, FrameAnalysis:
+		return CapabilityAnalysisSubmit
+	case FrameConfig:
+		return CapabilityConfigRead
+	case FrameHint:
+		return CapabilityHintsSubmit
+	case FrameHealth:
+		return CapabilityHealth
+	default:
+		return ""
+	}
+}
+
 // ErrorCode is a stable, non-sensitive error classification.
 type ErrorCode string
 

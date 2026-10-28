@@ -106,7 +106,7 @@ func validateOpenedLockFile(path string, file *os.File) error {
 	if err != nil {
 		return fmt.Errorf("stat materializer lock file: %w", err)
 	}
-	if !os.SameFile(pathInfo, fileInfo) || !fileInfo.Mode().IsRegular() || fileInfo.Mode().Perm() != 0o600 {
+	if !os.SameFile(pathInfo, fileInfo) || !fileInfo.Mode().IsRegular() || !secureMode(fileInfo.Mode(), 0o600) {
 		return fmt.Errorf("%w: materializer lock is not the validated 0600 regular file", ErrReceiptUnsafe)
 	}
 	return nil
