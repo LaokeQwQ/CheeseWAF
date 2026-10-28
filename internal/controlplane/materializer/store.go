@@ -55,8 +55,8 @@ func NewJournalStore(dir string, hooks Hooks) (*JournalStore, error) {
 	}
 	if hooks.SyncDir == nil {
 		hooks.SyncDir = func(path string) error {
-			// Windows rejects fsync on a directory handle; renames are still
-			// durable through the file's own sync and NTFS ordering.
+			// Windows rejects fsync on a directory handle; durableRename uses
+			// MOVEFILE_WRITE_THROUGH instead, which covers the rename.
 			if runtime.GOOS == "windows" {
 				return nil
 			}
@@ -69,7 +69,7 @@ func NewJournalStore(dir string, hooks Hooks) (*JournalStore, error) {
 		}
 	}
 	if hooks.Rename == nil {
-		hooks.Rename = os.Rename
+		hooks.Rename = durableRename
 	}
 	return &JournalStore{dir: abs, hooks: hooks}, nil
 }

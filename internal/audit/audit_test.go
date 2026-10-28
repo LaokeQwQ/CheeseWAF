@@ -378,3 +378,40 @@ func TestOutboxMemoryAdaptersAreMetadataOnlyAndIdempotent(t *testing.T) {
 		t.Fatalf("metadata adapter contains forbidden field: %s", encoded)
 	}
 }
+
+// A runtime whose cached head lags another writer must refresh on
+// ErrReplayConflict; otherwise it keeps choosing an occupied sequence.
+func TestRuntimeRefreshesHeadAfterReplayConflict(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	first, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := first.Append(ctx, testEvent("event-1", EventClassNormal)); err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, err := other.Append(ctx, testEvent("event-2", EventClassNormal)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Append(ctx, testEvent("event-3", EventClassNormal)); err != nil {
+		t.Fatal(err)
+	}
+	record, err := first.Append(ctx, testEvent("event-4", EventClassCritical))
+	if err != nil {
+		t.Fatalf("stale runtime append: %v", err)
+	}
+	if record.Sequence != 4 {
+		t.Fatalf("sequence = %d, want 4", record.Sequence)
+	}
+	rows, err := journal.Records(ctx, "control", 0, 10)
+	if err != nil || len(rows) != 4 {
+		t.Fatalf("records = %d err=%v", len(rows), err)
+	}
+}

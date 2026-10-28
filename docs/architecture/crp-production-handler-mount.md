@@ -99,5 +99,6 @@ promotion/rollback 不变量。
   stop/cleanup 证据；
 - CRP activation/rollback 在真实部署环境中的 end-to-end 验收、HA、证书轮换和故障恢复。
 
-因此 acceptance matrix 的 `crp_activation` 与 `crp_rollback` 仍保持 failed，不能修改
-`implemented` 计数，也不能据此发布新的生产 CRP 能力。
+production handler 挂载、durable authorization 与 sidecar 生命周期接线已经落地，
+acceptance matrix 中 `crp_activation` 与 `crp_rollback` 记录为 passed。仍未覆盖的是
+真实部署环境下的 HA、证书轮换和故障恢复演练；这些证据不能由本地或单节点测试替代。

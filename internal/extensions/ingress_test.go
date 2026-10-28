@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -217,4 +218,81 @@ func signedIngressOutputWith(t *testing.T, private ed25519.PrivateKey, now time.
 		t.Fatal(err)
 	}
 	return wire
+}
+
+// A successful entry must not clear the failure reported for a different one.
+func TestIngressFlushKeepsFailuresFromOtherEntries(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	failFirst := true
+	sink := OutputSinkFunc(func(_ context.Context, event audit.Event) (audit.Record, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failFirst {
+			failFirst = false
+			return audit.Record{}, errors.New("audit down")
+		}
+		return audit.Record{Event: event}, nil
+	})
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now }, Sink: sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingress.Close()
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-a", 1, `{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingress.Flush(context.Background()); err == nil {
+		t.Fatal("first failure was not reported")
+	}
+	if _, err := ingress.Submit(context.Background(), signedIngressOutput(t, private, now, "evt-b", 2, `{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingress.Flush(context.Background()); err == nil {
+		t.Fatal("later success hid the earlier failed entry")
+	}
+}
+
+// The replay map must stay bounded; successes are evicted oldest-first.
+func TestIngressSeenMapStaysBounded(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := NewIngress(IngressOptions{
+		Keys:     map[string]TrustKey{"host-v1": {ID: "host-v1", PublicKey: private.Public().(ed25519.PublicKey)}},
+		PluginID: "jev", PluginVersion: "1.2.3", TenantRef: "tenant:demo", SiteRef: "site:demo", PolicyEpoch: 7,
+		StreamID: "extensions", MaxTTL: 10 * time.Minute, Now: func() time.Time { return now }, QueueCapacity: 8,
+		Sink: OutputSinkFunc(func(_ context.Context, event audit.Event) (audit.Record, error) {
+			return audit.Record{Event: event}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingress.Close()
+	for seq := uint64(1); seq <= uint64(ingress.seenCap)+64; seq++ {
+		wire := signedIngressOutput(t, private, now, "evt-"+strconv.FormatUint(seq, 10), seq, `{}`)
+		if _, err := ingress.Submit(context.Background(), wire); err != nil {
+			t.Fatalf("submit %d: %v", seq, err)
+		}
+	}
+	if err := ingress.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ingress.mu.Lock()
+	seen := len(ingress.seen)
+	ingress.mu.Unlock()
+	if seen > ingress.seenCap {
+		t.Fatalf("seen map grew to %d (cap %d)", seen, ingress.seenCap)
+	}
 }

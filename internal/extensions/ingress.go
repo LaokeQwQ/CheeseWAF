@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -22,17 +23,24 @@ const (
 	DefaultIngressQueueSize  = 64
 	MaxIngressQueueSize      = 65536
 	MaxOutputDataSize        = 64 << 10
+	// defaultSeenRetention bounds how long a successful receipt stays
+	// replayable. Sequence checks reject anything older regardless.
+	defaultSeenRetention = 30 * time.Minute
+	minSeenCapacity      = 1024
+	ingressAppendTimeout = 10 * time.Second
+	ingressCloseTimeout  = 10 * time.Second
 )
 
 var (
-	ErrIngressConfig      = errors.New("invalid extension output ingress configuration")
-	ErrOutputRejected     = errors.New("extension output rejected")
-	ErrIngressReplay      = errors.New("extension output replay conflicts with accepted output")
-	ErrIngressSequenceGap = errors.New("extension output sequence has a gap")
-	ErrIngressSequenceOld = errors.New("extension output sequence is stale")
-	ErrIngressQueueFull   = errors.New("extension output ingress queue is full")
-	ErrIngressClosed      = errors.New("extension output ingress is closed")
-	ErrIngressAuditFailed = errors.New("extension output audit append failed")
+	ErrIngressConfig       = errors.New("invalid extension output ingress configuration")
+	ErrOutputRejected      = errors.New("extension output rejected")
+	ErrIngressReplay       = errors.New("extension output replay conflicts with accepted output")
+	ErrIngressSequenceGap  = errors.New("extension output sequence has a gap")
+	ErrIngressSequenceOld  = errors.New("extension output sequence is stale")
+	ErrIngressQueueFull    = errors.New("extension output ingress queue is full")
+	ErrIngressClosed       = errors.New("extension output ingress is closed")
+	ErrIngressAuditFailed  = errors.New("extension output audit append failed")
+	ErrIngressCloseTimeout = errors.New("extension output ingress close timed out")
 )
 
 // OutputClaims is the bounded envelope shared by Jev, EDR, and DuckDB
@@ -124,6 +132,7 @@ type Receipt struct {
 type ingressEntry struct {
 	digest  string
 	event   audit.Event
+	at      time.Time
 	pending bool
 	failed  bool
 }
@@ -136,30 +145,34 @@ type queuedOutput struct {
 // Ingress validates and queues extension outputs. It deliberately has no
 // network listener and cannot mutate ACL or policy state.
 type Ingress struct {
-	mu       sync.Mutex
-	sendMu   sync.Mutex
-	queue    chan queuedOutput
-	done     chan struct{}
-	worker   sync.WaitGroup
-	closed   bool
-	idle     chan struct{}
-	pending  int
-	failures int
-	lastErr  error
-	seen     map[string]ingressEntry
-	keys     map[string]TrustKey
-	pluginID string
-	version  string
-	tenant   string
-	site     string
-	epoch    uint64
-	maxTTL   time.Duration
-	skew     time.Duration
-	stream   string
-	now      func() time.Time
-	sink     OutputSink
-	lastSeq  uint64
-	hasSeq   bool
+	mu           sync.Mutex
+	sendMu       sync.Mutex
+	queue        chan queuedOutput
+	done         chan struct{}
+	worker       sync.WaitGroup
+	closed       bool
+	idle         chan struct{}
+	pending      int
+	failures     int
+	lastErr      error
+	seen         map[string]ingressEntry
+	seenCap      int
+	seenTTL      time.Duration
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
+	keys         map[string]TrustKey
+	pluginID     string
+	version      string
+	tenant       string
+	site         string
+	epoch        uint64
+	maxTTL       time.Duration
+	skew         time.Duration
+	stream       string
+	now          func() time.Time
+	sink         OutputSink
+	lastSeq      uint64
+	hasSeq       bool
 }
 
 func NewIngress(options IngressOptions) (*Ingress, error) {
@@ -183,8 +196,14 @@ func NewIngress(options IngressOptions) (*Ingress, error) {
 		key.PublicKey = append(ed25519.PublicKey(nil), key.PublicKey...)
 		keys[id] = key
 	}
+	seenCap := options.QueueCapacity * 8
+	if seenCap < minSeenCapacity {
+		seenCap = minSeenCapacity
+	}
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	ingress := &Ingress{
 		queue: make(chan queuedOutput, options.QueueCapacity), done: make(chan struct{}), idle: closedIngressChan(), seen: make(map[string]ingressEntry),
+		seenCap: seenCap, seenTTL: defaultSeenRetention, workerCtx: workerCtx, workerCancel: workerCancel,
 		keys: keys, pluginID: options.PluginID, version: options.PluginVersion, tenant: options.TenantRef, site: options.SiteRef,
 		epoch: options.PolicyEpoch, maxTTL: maxTTL(options.MaxTTL), skew: options.ClockSkew, stream: options.StreamID, now: options.Now, sink: options.Sink,
 	}
@@ -242,6 +261,7 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 		i.mu.Unlock()
 		return Receipt{}, ErrIngressClosed
 	}
+	i.pruneLocked(now)
 	isNew := false
 	if prior, ok := i.seen[key]; ok {
 		if prior.digest != digest {
@@ -252,7 +272,9 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 			i.mu.Unlock()
 			return Receipt{EventID: claims.EventID, Sequence: claims.Sequence, PluginID: claims.PluginID, PluginVersion: claims.PluginVersion, PayloadDigest: digest, Duplicate: true}, nil
 		}
-		prior.pending, prior.failed = true, false
+		// Keep failed set until the retry actually succeeds; a queue-full
+		// rejection must not make the entry look completed.
+		prior.pending = true
 		i.seen[key] = prior
 		i.beginPendingLocked()
 		i.mu.Unlock()
@@ -268,7 +290,7 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 			}
 		}
 		isNew = true
-		i.seen[key] = ingressEntry{digest: digest, event: auditEvent, pending: true}
+		i.seen[key] = ingressEntry{digest: digest, event: auditEvent, at: now, pending: true}
 		i.beginPendingLocked()
 		i.mu.Unlock()
 	}
@@ -282,12 +304,9 @@ func (i *Ingress) Submit(ctx context.Context, wire []byte) (Receipt, error) {
 		return Receipt{EventID: claims.EventID, Sequence: claims.Sequence, PluginID: claims.PluginID, PluginVersion: claims.PluginVersion, PayloadDigest: digest}, nil
 	default:
 		i.mu.Lock()
-		prior := i.seen[key]
-		if prior.failed {
+		if prior, ok := i.seen[key]; ok {
 			prior.pending = false
 			i.seen[key] = prior
-		} else {
-			delete(i.seen, key)
 		}
 		i.endPendingLocked()
 		i.mu.Unlock()
@@ -312,25 +331,31 @@ func (i *Ingress) endPendingLocked() {
 func (i *Ingress) run() {
 	defer i.worker.Done()
 	for item := range i.queue {
-		_, err := i.sink.Append(context.Background(), item.entry)
+		ctx, cancel := context.WithTimeout(i.workerCtx, ingressAppendTimeout)
+		_, err := i.sink.Append(ctx, item.entry)
+		cancel()
 		i.mu.Lock()
 		prior := i.seen[item.key]
 		prior.pending = false
 		if err != nil {
+			if !prior.failed {
+				i.failures++
+			}
 			prior.failed = true
-			i.failures++
 			i.lastErr = fmt.Errorf("%w: %v", ErrIngressAuditFailed, err)
 		} else {
-			prior.failed = false
-			if i.failures > 0 {
+			if prior.failed {
 				i.failures--
 			}
+			prior.failed = false
+			prior.at = i.now().UTC()
 			if i.failures == 0 {
 				i.lastErr = nil
 			}
 		}
 		i.seen[item.key] = prior
 		i.endPendingLocked()
+		i.pruneLocked(i.now().UTC())
 		i.mu.Unlock()
 	}
 	close(i.done)
@@ -353,6 +378,13 @@ func (i *Ingress) Flush(ctx context.Context) error {
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.pruneLocked(i.now().UTC())
+	if i.failures == 0 {
+		return nil
+	}
+	if i.lastErr == nil {
+		return ErrIngressAuditFailed
+	}
 	return i.lastErr
 }
 
@@ -368,8 +400,52 @@ func (i *Ingress) Close() error {
 	}
 	i.mu.Unlock()
 	i.sendMu.Unlock()
-	i.worker.Wait()
-	return nil
+	i.workerCancel()
+	waited := make(chan struct{})
+	go func() {
+		i.worker.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		return nil
+	case <-time.After(ingressCloseTimeout):
+		return ErrIngressCloseTimeout
+	}
+}
+
+// pruneLocked keeps the replay map bounded: successes expire after seenTTL and
+// the oldest successes are dropped once seenCap is exceeded. Pending and failed
+// entries are never dropped, so retries and Flush reporting stay correct.
+func (i *Ingress) pruneLocked(now time.Time) {
+	for key, entry := range i.seen {
+		if entry.pending || entry.failed {
+			continue
+		}
+		if now.Sub(entry.at) > i.seenTTL {
+			delete(i.seen, key)
+		}
+	}
+	if len(i.seen) <= i.seenCap {
+		return
+	}
+	type agedEntry struct {
+		key string
+		at  time.Time
+	}
+	done := make([]agedEntry, 0, len(i.seen))
+	for key, entry := range i.seen {
+		if !entry.pending && !entry.failed {
+			done = append(done, agedEntry{key: key, at: entry.at})
+		}
+	}
+	sort.Slice(done, func(a, b int) bool { return done[a].at.Before(done[b].at) })
+	for _, item := range done {
+		if len(i.seen) <= i.seenCap {
+			break
+		}
+		delete(i.seen, item.key)
+	}
 }
 
 func eventID(pluginID, eventID string, sequence uint64) string {

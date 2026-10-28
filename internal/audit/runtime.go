@@ -213,6 +213,7 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 		}
 		return Record{}, ErrReplayConflict
 	}
+	var lastErr error
 	for attempt := 0; attempt < 8; attempt++ {
 		sequence := r.head.Sequence + 1
 		if sequence == 0 {
@@ -254,12 +255,16 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 			r.events[event.EventID] = rec
 			return rec, nil
 		}
-		if errors.Is(err, ErrSequenceConflict) {
+		if errors.Is(err, ErrSequenceConflict) || errors.Is(err, ErrReplayConflict) {
+			// Another runtime may have advanced the stream (or recorded this
+			// sequence) since the cached head; refresh before retrying instead
+			// of reusing an occupied sequence forever.
 			last, e := r.journal.Last(ctx, r.stream)
 			if e != nil {
 				return Record{}, e
 			}
 			r.head = last
+			lastErr = err
 			continue
 		}
 		if errors.Is(err, ErrUnavailable) && r.spool != nil && r.spool.Durable() {
@@ -267,6 +272,9 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 			continue
 		}
 		return Record{}, err
+	}
+	if lastErr != nil {
+		return Record{}, lastErr
 	}
 	return Record{}, ErrSequenceConflict
 }

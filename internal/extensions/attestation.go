@@ -142,7 +142,13 @@ func Parse(raw []byte) (AttestedOutput, error) {
 		return AttestedOutput{}, reject(RejectInvalidAttestation, ErrInvalidAttestation)
 	}
 	delete(object, "integrity")
-	payload, err := json.Marshal(object)
+	rawPayload, err := json.Marshal(object)
+	if err != nil {
+		return AttestedOutput{}, reject(RejectInvalidPayload, ErrInvalidPayload)
+	}
+	// Sign canonicalizes with HTML escaping disabled; re-canonicalize here or a
+	// payload containing <, >, or & never matches the signed bytes.
+	payload, err := canonicalJSON(rawPayload)
 	if err != nil {
 		return AttestedOutput{}, reject(RejectInvalidPayload, ErrInvalidPayload)
 	}

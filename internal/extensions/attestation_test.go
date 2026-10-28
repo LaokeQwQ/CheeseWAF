@@ -125,3 +125,33 @@ func TestCanonicalPayloadMatchesPluginUTF8Policy(t *testing.T) {
 }
 
 func ptrTime(value time.Time) *time.Time { return &value }
+
+// Sign canonicalizes without HTML escaping. Parse must rebuild the payload the
+// same way, or any value containing <, >, or & fails verification.
+func TestParsePreservesCanonicalBytesForHTMLEscapedContent(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	payload := []byte(`{"api_version":"cheesewaf/risk-hint/v1","expires_at":"2026-10-04T12:05:00Z","observed_at":"2026-10-04T12:00:00Z","policy_epoch":17,"subject":{"site_ref":"site:demo","subject_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","note":"a<b&c>d"}}`)
+	signer := Signer{KeyID: "cheesewaf-host-output-v1", PrivateKey: private, Now: func() time.Time { return now }, MaxTTL: 10 * time.Minute}
+	attested, err := signer.Sign(payload, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	wire, err := json.Marshal(attested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := Parse(wire)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := Verify(parsed, map[string]TrustKey{attested.Integrity.KeyID: {ID: attested.Integrity.KeyID, PublicKey: private.Public().(ed25519.PublicKey)}}, VerifyOptions{
+		Now: now.Add(2 * time.Second), MaxTTL: 10 * time.Minute, PolicyEpoch: 17, SiteRef: "site:demo",
+		SubjectHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}

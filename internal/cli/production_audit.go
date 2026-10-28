@@ -79,15 +79,35 @@ func loadAuditCheckpointSigner(dataDir string) (*audit.Ed25519Signer, error) {
 	path := filepath.Join(dir, checkpointSeedFile)
 	seed, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		// Create exclusively: two first starts race here and the loser must use
+		// the winner's key, not overwrite it while the winner is signing.
 		seed = make([]byte, ed25519.SeedSize)
 		if _, err := rand.Read(seed); err != nil {
 			return nil, fmt.Errorf("generate audit checkpoint seed: %w", err)
 		}
-		if err := os.WriteFile(path, seed, 0o600); err != nil {
-			return nil, fmt.Errorf("persist audit checkpoint seed: %w", err)
-		}
-		if err := os.Chmod(path, 0o600); err != nil {
-			return nil, fmt.Errorf("secure audit checkpoint seed: %w", err)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			seed, err = os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read audit checkpoint seed: %w", err)
+			}
+		} else if err != nil {
+			return nil, fmt.Errorf("create audit checkpoint seed: %w", err)
+		} else {
+			if _, err := f.Write(seed); err != nil {
+				_ = f.Close()
+				return nil, fmt.Errorf("persist audit checkpoint seed: %w", err)
+			}
+			if err := f.Sync(); err != nil {
+				_ = f.Close()
+				return nil, fmt.Errorf("flush audit checkpoint seed: %w", err)
+			}
+			if err := f.Close(); err != nil {
+				return nil, fmt.Errorf("close audit checkpoint seed: %w", err)
+			}
+			if err := os.Chmod(path, 0o600); err != nil {
+				return nil, fmt.Errorf("secure audit checkpoint seed: %w", err)
+			}
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("read audit checkpoint seed: %w", err)

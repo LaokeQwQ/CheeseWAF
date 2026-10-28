@@ -229,33 +229,69 @@ func (j *PostgresJournal) Append(ctx context.Context, commit Commit) error {
 	return nil
 }
 
+// Records pages the stream with a targeted query. Full-chain verification is a
+// separate, explicit operation (Verify), so a one-record page never loads the
+// whole journal.
 func (j *PostgresJournal) Records(ctx context.Context, stream string, after uint64, limit int) ([]Record, error) {
-	commits, err := j.readCommits(ctx, stream)
-	if err != nil {
+	if !j.Durable() {
+		return nil, ErrUnavailable
+	}
+	if err := contextErr(ctx); err != nil {
 		return nil, err
 	}
-	result := make([]Record, 0)
-	for _, commit := range commits {
-		if commit.Record.Sequence <= after {
-			continue
+	query := `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 AND sequence>$2 ORDER BY sequence ASC`
+	args := []any{stream, int64(after)}
+	if limit > 0 {
+		query += ` LIMIT $3`
+		args = append(args, limit)
+	}
+	rows, err := j.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, journalDBError(ctx, "page records")
+	}
+	defer rows.Close()
+	result := make([]Record, 0, 8)
+	for rows.Next() {
+		var sequence int64
+		var raw []byte
+		if err := rows.Scan(&sequence, &raw); err != nil {
+			return nil, journalDBError(ctx, "scan record")
+		}
+		var commit Commit
+		if decodeStrict(raw, &commit) != nil || uint64(sequence) != commit.Record.Sequence ||
+			commit.Record.Event.StreamID != stream || validateCommit(commit) != nil {
+			return nil, ErrCorruptChain
 		}
 		result = append(result, cloneRecord(commit.Record))
-		if limit > 0 && len(result) >= limit {
-			break
-		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, journalDBError(ctx, "iterate records")
 	}
 	return result, nil
 }
 
 func (j *PostgresJournal) Last(ctx context.Context, stream string) (Record, error) {
-	commits, err := j.readCommits(ctx, stream)
-	if err != nil {
+	if !j.Durable() {
+		return Record{}, ErrUnavailable
+	}
+	if err := contextErr(ctx); err != nil {
 		return Record{}, err
 	}
-	if len(commits) == 0 {
+	var sequence int64
+	var raw []byte
+	err := j.db.QueryRowContext(ctx, `SELECT sequence, commit_json FROM cheesewaf_audit_records WHERE stream_id=$1 ORDER BY sequence DESC LIMIT 1`, stream).Scan(&sequence, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, nil
 	}
-	return cloneRecord(commits[len(commits)-1].Record), nil
+	if err != nil {
+		return Record{}, journalDBError(ctx, "read last record")
+	}
+	var commit Commit
+	if decodeStrict(raw, &commit) != nil || uint64(sequence) != commit.Record.Sequence ||
+		commit.Record.Event.StreamID != stream || validateCommit(commit) != nil {
+		return Record{}, ErrCorruptChain
+	}
+	return cloneRecord(commit.Record), nil
 }
 
 func (j *PostgresJournal) Checkpoint(ctx context.Context, stream string, sequence uint64) (*Checkpoint, error) {
