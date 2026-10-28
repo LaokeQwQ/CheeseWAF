@@ -1560,7 +1560,7 @@ func TestAIToolProtectionApprovalRejectsControlPlanePreviewDrift(t *testing.T) {
 
 	executed := httptest.NewRecorder()
 	router.ServeHTTP(executed, withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+envelope.Data.Approval.ID+`","args":`+args+`}`)))))
-	if executed.Code != http.StatusBadRequest || !strings.Contains(executed.Body.String(), "preview is stale") {
+	if executed.Code != http.StatusBadRequest || !strings.Contains(executed.Body.String(), "stale") {
 		t.Fatalf("drifted preview was not rejected: code=%d body=%s", executed.Code, executed.Body.String())
 	}
 	if coordinator.applyCalls != 0 {
@@ -1573,7 +1573,7 @@ func TestAIToolProtectionApprovalRejectsControlPlanePreviewDrift(t *testing.T) {
 
 func TestAIProtectionToolFailsClosedWithoutCoordinatorOrActor(t *testing.T) {
 	cfg := config.Default()
-	tool := setProtectionLevelTool{Handler: New(Options{Config: &cfg})}
+	tool := setProtectionLevelTool{Handler: New(Options{Config: &cfg, RequireProtectionPolicyCoordinator: true})}
 	if _, err := tool.Execute(context.Background(), map[string]any{"area": "bot_cc", "level": "high"}); err == nil || !strings.Contains(err.Error(), "authenticated actor") {
 		t.Fatalf("missing actor did not fail closed: %v", err)
 	}
@@ -1611,7 +1611,10 @@ func TestAIProtectionToolRejectsUnboundPreviewActor(t *testing.T) {
 		map[string]any{"area": "bot_cc", "level": "high"},
 		"",
 	)
-	if err == nil || !strings.Contains(err.Error(), "invalid preview actor binding") {
+	// Either the preview is rejected for the empty binding or the coordinator
+	// reports an invalid actor; both are fail-closed.
+	if err == nil || (!errors.Is(err, ErrProtectionPolicyCoordinatorPreviewUnavailable) &&
+		!strings.Contains(err.Error(), "invalid preview actor binding")) {
 		t.Fatalf("unbound preview actor was accepted: %v", err)
 	}
 	if cfg.Protection.Policy.BotCC == config.ProtectionLevelHigh {

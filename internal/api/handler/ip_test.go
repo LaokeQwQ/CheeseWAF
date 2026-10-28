@@ -330,7 +330,9 @@ func TestProtectionSecretUpdatesPreserveExistingValuesWhenEmpty(t *testing.T) {
 
 func TestUpdateProtectionPolicyRequiresCoordinator(t *testing.T) {
 	cfg := config.Default()
-	handler := New(Options{Config: &cfg})
+	// Production sets this flag; an unwired endpoint must then refuse instead
+	// of only mutating local config.
+	handler := New(Options{Config: &cfg, RequireProtectionPolicyCoordinator: true})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/protection/policy", strings.NewReader(`{"web_attack":"strict"}`))
 	handler.UpdateProtectionPolicy(recorder, request)

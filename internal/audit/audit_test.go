@@ -208,7 +208,7 @@ func (s *ackCountingSpool) Ack(ctx context.Context, entry SpoolEntry) error {
 func TestRuntimeReplayConflictDoesNotAdvanceOrAcknowledgeSpool(t *testing.T) {
 	ctx := context.Background()
 	journal := NewMemoryJournalWithDurability(true)
-	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control"})
+	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestRuntimeReplayConflictDoesNotAdvanceOrAcknowledgeSpool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control"})
+	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control", Signer: testSigner()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestRuntimeReplayConflictDoesNotAdvanceOrAcknowledgeSpool(t *testing.T) {
 func TestRuntimeReplayExactDuplicateMayAcknowledgeDurableSpool(t *testing.T) {
 	ctx := context.Background()
 	journal := NewMemoryJournalWithDurability(true)
-	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control"})
+	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,10 +279,14 @@ func TestRuntimeReplayExactDuplicateMayAcknowledgeDurableSpool(t *testing.T) {
 		t.Fatal(err)
 	}
 	spool := &ackCountingSpool{MemoryEncryptedSpool: memorySpool}
-	if err := spool.Put(ctx, Commit{Record: record}); err != nil {
+	// Replay must see the same commit the journal stored, checkpoint included.
+	journal.mu.Lock()
+	stored := cloneCommit(journal.streams["control"].commits[record.Sequence-1])
+	journal.mu.Unlock()
+	if err := spool.Put(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
-	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control"})
+	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control", Signer: testSigner()})
 	if err != nil {
 		t.Fatal(err)
 	}
