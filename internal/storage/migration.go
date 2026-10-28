@@ -12,7 +12,7 @@ import (
 // version and must not be opened by this binary.
 var ErrSQLiteSchemaTooNew = errors.New("newer SQLite schema version")
 
-const sqliteSchemaVersion = 5
+const sqliteSchemaVersion = 7
 
 type sqliteMigration struct {
 	version int
@@ -45,6 +45,16 @@ var sqliteMigrations = []sqliteMigration{
 		version: 5,
 		name:    "user credential epochs",
 		apply:   migrateSQLiteCredentialEpochs,
+	},
+	{
+		version: 6,
+		name:    "intel candidates and passkey credentials",
+		apply:   migrateSQLiteIntelPasskey,
+	},
+	{
+		version: 7,
+		name:    "passkey administrative audit",
+		apply:   migrateSQLitePasskeyAudit,
 	},
 }
 
@@ -431,3 +441,38 @@ CREATE TABLE IF NOT EXISTS totp_consumed (
 );
 CREATE INDEX IF NOT EXISTS idx_totp_consumed_expires ON totp_consumed(expires_at);
 `
+
+func migrateSQLiteIntelPasskey(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS intel_sources (id TEXT PRIMARY KEY, type TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', trust TEXT NOT NULL DEFAULT 'unknown', enabled INTEGER NOT NULL DEFAULT 0, etag TEXT NOT NULL DEFAULT '', last_modified TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS intel_items (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, external_ids TEXT NOT NULL DEFAULT '[]', title TEXT NOT NULL, content_hash TEXT NOT NULL, published_at TEXT NOT NULL, products TEXT NOT NULL DEFAULT '[]', affected_versions TEXT NOT NULL DEFAULT '[]', attack_vector TEXT NOT NULL DEFAULT '', exploit_status TEXT NOT NULL DEFAULT '', references_json TEXT NOT NULL DEFAULT '[]', raw_excerpt TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE(source_id, content_hash))`,
+		`CREATE TABLE IF NOT EXISTS rule_candidates (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, site_id TEXT NOT NULL DEFAULT '', rule_json TEXT NOT NULL, action TEXT NOT NULL DEFAULT 'log', state TEXT NOT NULL DEFAULT 'draft', confidence REAL NOT NULL DEFAULT 0, provenance_json TEXT NOT NULL DEFAULT '{}', expires_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS intel_import_jobs (id TEXT PRIMARY KEY, url TEXT NOT NULL, content_hash TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', extraction_json TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS passkey_credentials (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, credential_id TEXT NOT NULL UNIQUE, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, transports TEXT NOT NULL DEFAULT '[]', aaguid TEXT NOT NULL DEFAULT '', backup_eligible INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, last_used_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS passkey_recovery_codes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, code_hash TEXT NOT NULL, used_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_intel_items_source ON intel_items(source_id, published_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rule_candidates_state ON rule_candidates(state, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_rule_candidates_item ON rule_candidates(item_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_passkey_credentials_user ON passkey_credentials(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_passkey_recovery_user ON passkey_recovery_codes(user_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateSQLitePasskeyAudit(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS passkey_audit_events (id TEXT PRIMARY KEY, type TEXT NOT NULL, user_id TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_passkey_audit_user_time ON passkey_audit_events(user_id, created_at DESC)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}

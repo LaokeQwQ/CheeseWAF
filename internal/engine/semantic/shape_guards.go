@@ -3,6 +3,7 @@ package semantic
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -1508,4 +1509,192 @@ func indexASCIIFold(text, needle string) int {
 
 func evidenceInProseContext(text string, indicators []string) bool {
 	return securityDocumentContextWindowed(text, evidenceWindow(text, indicators))
+}
+
+// explanatoryDocumentMinBytes is the smallest value that can be a document
+// rather than a request. A payload wrapped in a few words is still a payload.
+const explanatoryDocumentMinBytes = 120
+
+// explanatoryDocumentContext reports whether an attack-shaped string is quoted
+// as subject matter inside an explanatory document instead of being sent as the
+// value itself.
+//
+// The marker tables elsewhere in this file answer "is this a report, a source
+// file, a changelog, a slide deck?". Technical documentation is wider than any
+// of those: an API reference entry, a troubleshooting note, a forum question, or
+// a detector coverage table explains a payload in a sentence and matches no
+// table at all. What they share is shape — natural language before *and* after
+// the quoted payload, in a value far longer than the payload.
+//
+// Requiring both sides is what makes this safe to apply: a payload preceded by
+// padding but with nothing after it is still a request, and a value that is
+// nothing but the payload never has prose to show. The gate also requires a
+// document source (raw body or uploaded file): a query parameter is a value, not
+// a document, however document-shaped its bytes are.
+//
+// Callers downgrade rather than drop: the hit is recorded for review so tuning
+// can see what the guard suppressed.
+func explanatoryDocumentContext(candidate semanticCandidate, text string, indicators []string) bool {
+	if !candidateDocumentContextAllowed(candidate) {
+		return false
+	}
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) < explanatoryDocumentMinBytes {
+		return false
+	}
+	start, end := evidenceSpan(trimmed, indicators)
+	if start < 0 {
+		return false
+	}
+	before, after := trimmed[:start], trimmed[end:]
+	if proseFragment(before) && proseFragment(after) {
+		return true
+	}
+	// A table row or bullet quotes the payload with only a label beside it, so
+	// the prose has to come from the document rather than from the same line.
+	return structuralQuoteLine(trimmed, start) && (proseFragment(before) || proseFragment(after))
+}
+
+// evidenceSpan returns the byte range of the earliest indicator occurrence,
+// expanded to the whitespace-delimited token that contains it.
+//
+// The expansion matters: "../../etc/passwd" is one token even though an
+// indicator matches only its "../" prefix. Without widening the span, the rest
+// of the payload ("/etc/passwd") reads as the prose that follows it, and a value
+// that is nothing but the payload would look documented. Non-ASCII bytes count
+// as boundaries so that CJK prose without spaces still reads as prose.
+func evidenceSpan(text string, indicators []string) (int, int) {
+	start, end := -1, -1
+	for _, ind := range indicators {
+		if ind == "" {
+			continue
+		}
+		idx := indexASCIIFold(text, ind)
+		if idx < 0 {
+			continue
+		}
+		if start < 0 || idx < start {
+			start, end = idx, idx+len(ind)
+		}
+	}
+	if start < 0 {
+		return -1, -1
+	}
+	for start > 0 && payloadTokenByte(text[start-1]) {
+		start--
+	}
+	for end < len(text) && payloadTokenByte(text[end]) {
+		end++
+	}
+	return start, end
+}
+
+// payloadTokenByte reports a byte that belongs to an ASCII payload token. Spaces,
+// control bytes, and non-ASCII (CJK) bytes terminate a token.
+func payloadTokenByte(b byte) bool {
+	return b > ' ' && b < 0x80
+}
+
+// proseFragment reports whether a fragment reads as natural language: a clause
+// of at least three words, or a run of CJK text.
+//
+// Markup characters end a clause. That is the whole discriminator here: an
+// attribute soup such as `draggable="true" contenteditable>drag me</div>` is
+// mostly words by any naive count, but it never forms a clause of three words,
+// while "the resolver rejects any segment" does.
+func proseFragment(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, clause := range strings.FieldsFunc(s, isMarkupRune) {
+		if countHan(clause) >= proseFragmentHanRunes {
+			return true
+		}
+		words, letters := 0, 0
+		for _, word := range strings.FieldsFunc(clause, isProseSeparator) {
+			n := countLetters(word)
+			if n < 2 {
+				continue
+			}
+			words++
+			letters += n
+			if words >= proseFragmentMinWords && letters >= proseFragmentMinLetters {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+const (
+	proseFragmentHanRunes   = 4
+	proseFragmentMinWords   = 3
+	proseFragmentMinLetters = 8
+)
+
+// isMarkupRune reports a byte that terminates a natural-language clause. Paths,
+// markup, and code punctuation all belong to the payload, not to the sentence
+// around it.
+func isMarkupRune(r rune) bool {
+	switch r {
+	case '<', '>', '"', '=', '/', '\\', '{', '}', '[', ']', '(', ')', '|',
+		'`', '_', '$', '&', '+', '@', '#', '~', '^', '*', '%':
+		return true
+	default:
+		return false
+	}
+}
+
+// isProseSeparator reports a byte that separates words inside one clause.
+func isProseSeparator(r rune) bool {
+	switch r {
+	case ' ', '\t', '\n', '\r', '.', ',', ':', ';', '!', '?', '\'', '-':
+		return true
+	default:
+		return false
+	}
+}
+
+func countLetters(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			n++
+		}
+	}
+	return n
+}
+
+func countHan(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			n++
+		}
+	}
+	return n
+}
+
+// structuralQuoteLine reports whether the payload sits on a line whose leading
+// byte marks it as quoted material: a table row, a bullet, a block quote, or a
+// numbered step. Those lines carry a label next to the payload instead of a
+// sentence, so the document has to supply the prose elsewhere.
+func structuralQuoteLine(text string, pos int) bool {
+	if pos < 0 || pos > len(text) {
+		return false
+	}
+	lineStart := strings.LastIndexByte(text[:pos], '\n') + 1
+	line := strings.TrimLeft(text[lineStart:], " \t")
+	if line == "" {
+		return false
+	}
+	switch line[0] {
+	case '|', '-', '*', '+', '>':
+		return true
+	}
+	digits := 0
+	for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+		digits++
+	}
+	return digits > 0 && digits < len(line) && (line[digits] == '.' || line[digits] == ')')
 }

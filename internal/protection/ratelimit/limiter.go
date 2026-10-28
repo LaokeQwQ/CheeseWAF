@@ -102,8 +102,11 @@ func (l *Limiter) WithMaxKeys(n int) *Limiter {
 }
 
 func (l *Limiter) Allow(key string) bool {
-	if l == nil || !l.enabled || key == "" {
+	if l == nil || !l.enabled {
 		return true
+	}
+	if key == "" {
+		return false
 	}
 	now := l.now()
 	sh := l.shard(key)

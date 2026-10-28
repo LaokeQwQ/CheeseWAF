@@ -12,6 +12,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
 	"github.com/LaokeQwQ/CheeseWAF/internal/approval"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/cluster/redis"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
@@ -611,6 +612,7 @@ func TestProductionDependenciesCloseInReverseOrder(t *testing.T) {
 		Consensus:        &productionConsensusFake{closeEvents: &events},
 		Redis:            &productionHealthFake{closeEvents: &events},
 		Approval:         &productionApprovalFake{closeEvents: &events},
+		Audit:            &productionAuditFake{closeEvents: &events},
 		TemporaryNetwork: temporary,
 		CWEDPDownload:    &managedCWEDPDownloadExecutor{events: &events},
 		CRP:              &testProductionCRPDependency{events: &events},
@@ -618,7 +620,7 @@ func TestProductionDependenciesCloseInReverseOrder(t *testing.T) {
 	if err := deps.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"crp", "cwedp", "temporary", "approval", "redis", "consensus", "control", "management"}
+	want := []string{"crp", "cwedp", "temporary", "approval", "redis", "consensus", "control", "audit", "management"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Fatalf("close order=%v, want %v", events, want)
 	}
@@ -1006,6 +1008,20 @@ func (f *productionConsensusFake) Close() error {
 
 type productionHealthFake struct {
 	closeEvents *[]string
+}
+
+type productionAuditFake struct {
+	closeEvents *[]string
+}
+
+func (*productionAuditFake) Append(context.Context, audit.Event) (audit.Record, error) {
+	return audit.Record{}, nil
+}
+func (f *productionAuditFake) Close() error {
+	if f.closeEvents != nil {
+		*f.closeEvents = append(*f.closeEvents, "audit")
+	}
+	return nil
 }
 
 func (*productionHealthFake) Health(context.Context) error { return nil }

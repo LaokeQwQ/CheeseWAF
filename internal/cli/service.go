@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/adapterapi"
+	"github.com/LaokeQwQ/CheeseWAF/internal/adapterinspect"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ai"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api"
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/handler"
@@ -36,12 +38,16 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/desiredstate"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/php2shell"
 	enginerules "github.com/LaokeQwQ/CheeseWAF/internal/engine/rules"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
 	"github.com/LaokeQwQ/CheeseWAF/internal/identity"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intel"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intelapi"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
 	monitornotify "github.com/LaokeQwQ/CheeseWAF/internal/monitor/notifier"
 	"github.com/LaokeQwQ/CheeseWAF/internal/ota"
+	"github.com/LaokeQwQ/CheeseWAF/internal/passkey"
 	"github.com/LaokeQwQ/CheeseWAF/internal/perf/gctune"
 	webshellprotect "github.com/LaokeQwQ/CheeseWAF/internal/protection/webshell"
 	"github.com/LaokeQwQ/CheeseWAF/internal/proxy"
@@ -52,6 +58,7 @@ import (
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 	logsink "github.com/LaokeQwQ/CheeseWAF/internal/storage/log_sink"
 	"github.com/LaokeQwQ/CheeseWAF/internal/timekeeper"
+	"github.com/LaokeQwQ/CheeseWAF/internal/version"
 	"github.com/LaokeQwQ/CheeseWAF/internal/webui"
 )
 
@@ -126,6 +133,13 @@ func runServe(ctx context.Context) error {
 	if err := ensureNoPendingMigration(cfg.Setup.DataDir); err != nil {
 		return err
 	}
+	// The index is scanned before any notifier is built so a pack-provided type
+	// is already resolvable at startup, and the watcher keeps it current.
+	pluginIndex := startPluginIndex(ctx, cfg, cfg.Setup.DataDir, version.Version)
+	defer pluginIndex.Close()
+	if err := validateConfiguredNotifierTypes(cfg, pluginIndex.Registry()); err != nil {
+		return err
+	}
 	var store storage.Store
 	var productionDeps *ProductionDependencies
 	var productionWiring ProductionServeWiring
@@ -142,21 +156,31 @@ func runServe(ctx context.Context) error {
 		}
 		productionWiring, err = productionDeps.ServeWiring()
 		if err != nil {
-			_ = productionDeps.Close()
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close after wiring failure: %v", closeErr)
+			}
 			return err
 		}
-		defer productionDeps.Close()
+		defer func() {
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close: %v", closeErr)
+			}
+		}()
 		store = productionWiring.ManagementStore
 		if roles, ok := store.(interface{ ConfigureRoles(map[string][]string) }); ok {
 			roles.ConfigureRoles(cfg.APISec.Permissions)
 		}
 		verifier, ok := store.(storage.MigrationHandoffVerifier)
 		if !ok {
-			_ = productionDeps.Close()
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close after migration verifier failure: %v", closeErr)
+			}
 			return fmt.Errorf("production migration handoff verifier is unavailable")
 		}
 		if err := verifier.VerifyMigrationHandoff(ctx, handoff.Evidence()); err != nil {
-			_ = productionDeps.Close()
+			if closeErr := productionDeps.Close(); closeErr != nil {
+				log.Printf("production dependency close after migration verification failure: %v", closeErr)
+			}
 			return fmt.Errorf("production migration handoff ledger verification failed: %w", err)
 		}
 		materializeProductionPolicy, err = productionStartupPolicyMaterialization(productionWiring.Startup.State, handoff)
@@ -343,7 +367,7 @@ func runServe(ctx context.Context) error {
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	defer stopRuntime()
 	healthChecker.Start(runtimeCtx)
-	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub)
+	startRemoteWrite(runtimeCtx, cfg, store, sink, time.Now(), hub, pluginIndex.Registry())
 	startReviewRetention(runtimeCtx, store)
 	var schedulerAIClient *ai.Client
 	if cfg.AI.Enabled && cfg.AI.ReasoningRuntimeConfig().APIKey != "" {
@@ -360,6 +384,54 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	passkeyStore := storage.AsPasskeyStore(store)
+	passkeyService, err := api.NewPasskeyService(cfg.Console.Login.Passkey, passkeyStore, authSecret)
+	if err != nil {
+		return err
+	}
+	var intelHandler http.Handler
+	if cfg.Intel.Enabled {
+		intelStore, intelErr := storage.AsIntelStore(store)
+		if intelErr != nil {
+			log.Printf("intel: persistence unavailable: %v", intelErr)
+		} else {
+			// Import permission is decided from the stored source rows, so a
+			// failed reconciliation must keep the import route off: a removed
+			// source would otherwise stay authorized.
+			disableURLImport := !cfg.Intel.URLImport
+			if err := syncIntelSources(runtimeCtx, cfg.Intel.Sources, intelStore); err != nil {
+				log.Printf("intel: source reconciliation failed, URL import disabled: %v", err)
+				disableURLImport = true
+			}
+			var intelExtractor intel.Extractor
+			if schedulerAIClient != nil {
+				intelExtractor = ai.NewIntelExtractor(schedulerAIClient)
+			}
+			startIntelScheduler(runtimeCtx, cfg.Intel, intelStore)
+			intelHandler = intelapi.NewHandler(intelapi.HandlerOptions{
+				Store:            intelStore,
+				Extractor:        intelExtractor,
+				MaxFetchBytes:    cfg.Intel.MaxFetchBytes,
+				DisableURLImport: disableURLImport,
+				Policy:           intelRolloutPolicy(cfg.Intel),
+				TrustPolicy:      intelSourceTrustPolicy(cfg.Intel),
+			})
+		}
+	}
+	adapterInspectHandler := adapterinspect.New(adapterinspect.Options{
+		ResolveSite: func(host string) (string, int64, bool) {
+			site := proxyServer.SiteForHost(host)
+			if site.ID == "" {
+				return "", 0, false
+			}
+			maxBody := site.WAF.Performance.MaxBodyBytes
+			if maxBody <= 0 {
+				maxBody = 8 << 20
+			}
+			return site.ID, maxBody, true
+		},
+		Detect: proxyServer.Detect,
+	})
 	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
 		return err
@@ -382,15 +454,31 @@ func runServe(ctx context.Context) error {
 		return fmt.Errorf("prepare admin entrance configuration: %w", err)
 	}
 	gateConfig.Store(initialGateConfig)
+	// Declared before the router so OnServerChanged can rotate the credential on
+	// a running process; the handler itself is built once the proxy exists.
+	var adapterHandler *adapterapi.Handler
 	adminRouter, apiHandler := api.NewRouterWithAPI(api.Options{
-		Config:                             cfg,
-		IsolateConfig:                      true,
-		ConfigPath:                         loadedConfigPath,
-		Store:                              store,
-		SessionValidator:                   productionWiring.SessionValidator,
-		Sink:                               sink,
-		Hub:                                hub,
-		Secret:                             authSecret,
+		Config:           cfg,
+		IsolateConfig:    true,
+		ConfigPath:       loadedConfigPath,
+		Store:            store,
+		SessionValidator: productionWiring.SessionValidator,
+		Sink:             sink,
+		Hub:              hub,
+		Secret:           authSecret,
+		Passkey:          passkeyService,
+		PasskeyStore:     passkeyStore,
+		PasskeyFactory: func(next config.PasskeyConfig) (*passkey.Service, error) {
+			// Rebuild against the same store and session key source; the
+			// console expects the new RPID/origins to apply without a restart.
+			return api.NewPasskeyService(next, passkeyStore, authSecret)
+		},
+		AuditRuntime:                       productionWiring.AuditRuntime,
+		AuditPolicyEpoch:                   productionWiring.PolicyEpoch,
+		RequireAuditRuntime:                productionDeps != nil && productionDeps.auditRequired,
+		IntelHandler:                       intelHandler,
+		AdapterInspect:                     adapterInspectHandler,
+		NotifierRegistry:                   pluginIndex.Registry(),
 		SetupToken:                         setupToken,
 		SetupTokenSource:                   setupTokenSource,
 		Clock:                              clock,
@@ -415,6 +503,12 @@ func runServe(ctx context.Context) error {
 		OnBlockPageChanged:                 proxyServer.UpdateBlockPage,
 		OnTimeSyncChanged: func(next config.TimeSyncConfig) error {
 			return timeSync.Reconfigure(timekeeperConfigFromConfig(next))
+		},
+		OnServerChanged: func(next config.ServerConfig) error {
+			if adapterHandler != nil {
+				adapterHandler.SetToken(next.AdapterToken)
+			}
+			return nil
 		},
 		OnConfigChanged: func(next *config.Config) error {
 			if next == nil {
@@ -457,9 +551,13 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	adapterHandler, err = adapterapi.NewHandler(proxyServer, cfg.Server.AdapterToken, sink)
+	if err != nil {
+		return fmt.Errorf("configure adapter API: %w", err)
+	}
 	admin := &http.Server{
 		Addr:              cfg.Server.AdminListen,
-		Handler:           adminHandler,
+		Handler:           withAdapterHealth(adapterHandler, adminHandler),
 		TLSConfig:         adminTLS,
 		ReadHeaderTimeout: cfg.Server.ReadTimeout,
 		ReadTimeout:       cfg.Server.ReadTimeout,
@@ -484,6 +582,12 @@ func runServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if http3Server != nil {
+		http3Server.Handler = withAdapterAPI(adapterHandler, http3Server.Handler)
+	}
+	if tlsServer != nil {
+		tlsServer.Handler = withAdapterAPI(adapterHandler, tlsServer.Handler)
+	}
 	if err := timeSync.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start application clock: %w", err)
 	}
@@ -506,6 +610,7 @@ func runServe(ctx context.Context) error {
 	}
 
 	proxyHTTP := proxyServer.HTTPServer()
+	proxyHTTP.Handler = withAdapterAPI(adapterHandler, proxyHTTP.Handler)
 	serveCtx, stopServing := context.WithCancel(runtimeCtx)
 	defer stopServing()
 	var wg sync.WaitGroup
@@ -837,6 +942,37 @@ func firstInstallPending(ctx context.Context, dataDir string, store storage.User
 		return false, fmt.Errorf("first-install user lookup: %w", err)
 	}
 	return len(users) == 0, nil
+}
+
+// withAdapterHealth serves only the adapter health endpoint on the admin
+// listener. The admin API exposes /api/v1/adapter/inspect behind its own
+// JWT scope at the same path, and mounting the token-authenticated adapter
+// handler there would shadow it and drop that gate.
+func withAdapterHealth(adapter, fallback http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			adapter.ServeHTTP(w, r)
+			return
+		}
+		fallback.ServeHTTP(w, r)
+	})
+}
+
+// withAdapterAPI serves the adapter inspection/telemetry/health routes before
+// the gateway handler. The adapter API has its own token/loopback
+// authentication and must not inherit site routing.
+func withAdapterAPI(adapter, fallback http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/adapter/inspect", "/api/v1/adapter/telemetry", "/healthz":
+			adapter.ServeHTTP(w, r)
+		default:
+			// Do not use http.ServeMux here: it cleans repeated slashes and
+			// dot segments before dispatch, which would redirect proxy paths
+			// that the WAF must inspect and forward unchanged.
+			fallback.ServeHTTP(w, r)
+		}
+	})
 }
 
 func adminHandler(cfg *config.Config, apiHandler http.Handler, authSecret string) http.Handler {
@@ -1383,13 +1519,13 @@ func resolveWebDir() string {
 	return ""
 }
 
-func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub) {
+func startRemoteWrite(ctx context.Context, cfg *config.Config, store storage.Store, sink storage.LogSink, startedAt time.Time, hub *realtime.Hub, registry *monitornotify.Registry) {
 	if cfg == nil || (!cfg.Monitor.RemoteWrite.Enabled && !cfg.Monitor.Alerts.Enabled) {
 		return
 	}
 	writer := monitor.NewRemoteWriter(cfg.Monitor.RemoteWrite, nil)
 	alerter := monitor.NewAlerter(cfg.Monitor.Alerts)
-	notifiers := monitornotify.NewManager(cfg.Monitor.Notifiers)
+	notifiers := monitornotify.NewManagerWithRegistry(cfg.Monitor.Notifiers, registry)
 	interval := cfg.Monitor.RemoteWrite.Interval
 	if interval < minimumMonitorCollectionInterval {
 		interval = minimumMonitorCollectionInterval
@@ -1526,6 +1662,20 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		} else if len(compiled) > 0 {
 			detectors = append(detectors, siteScopedDetector{siteID: site.ID, detector: enginerules.New(compiled)})
 		}
+		if site.WAF.PHP2Shell.IsEnabled() {
+			detectors = append(detectors, siteScopedDetector{
+				siteID: site.ID,
+				detector: php2shell.New(php2shell.Config{
+					Enabled:               true,
+					MaxParts:              site.WAF.PHP2Shell.MaxParts,
+					MaxArrayDepth:         site.WAF.PHP2Shell.MaxArrayDepth,
+					MaxEmptyFilenameParts: site.WAF.PHP2Shell.MaxEmptyFilenameParts,
+					BlockUploadProgress:   site.WAF.PHP2Shell.BlockUploadProgress,
+					BlockAllMultipart:     site.WAF.PHP2Shell.BlockAllMultipart,
+					AllowPaths:            site.WAF.PHP2Shell.AllowPaths,
+				}),
+			})
+		}
 		switches := site.WAF.SemanticEngines
 		// Single decision path: staged Analyzer covers all enabled categories.
 		// Standalone SQL/XSS/RCE/LFI/XXE/SSRF detectors are intentionally not
@@ -1564,6 +1714,12 @@ func buildPipeline(cfg *config.Config) (*engine.Pipeline, error) {
 		}
 		if switches.SSTI {
 			semanticCategories = append(semanticCategories, "ssti")
+		}
+		// Webshell is its own switch: the analyzer's webshell category was
+		// never mounted, so the only production webshell coverage was the
+		// upload scanner mounted under RCE.
+		if switches.Webshell {
+			semanticCategories = append(semanticCategories, "webshell")
 		}
 		if len(semanticCategories) > 0 {
 			paranoiaLevel := config.EffectiveParanoiaLevel(site.WAF.ParanoiaLevel)

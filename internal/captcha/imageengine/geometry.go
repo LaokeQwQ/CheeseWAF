@@ -6,6 +6,9 @@ import (
 )
 
 func RectsOverlapWithPadding(a, b image.Rectangle, padding int) bool {
+	if a == b {
+		return true
+	}
 	if padding < 0 {
 		padding = 0
 	}

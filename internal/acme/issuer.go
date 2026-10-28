@@ -260,6 +260,7 @@ func (i *ACMESHIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult
 }
 
 func (i *ACMESHIssuer) withDefaults(req IssueRequest) IssueRequest {
+	req.ACMESHPath = strings.TrimSpace(req.ACMESHPath)
 	if req.ACMESHPath == "" {
 		req.ACMESHPath = defaultACMESHPath
 	}
@@ -472,10 +473,14 @@ func safePathSegment(value string) string {
 
 func maskSecret(value string) string {
 	value = strings.TrimSpace(value)
-	if len(value) <= 6 {
+	if len(value) <= 10 {
 		return "******"
 	}
-	return value[:2] + "****" + value[len(value)-2:]
+	masked := value[:2] + "****" + value[len(value)-2:]
+	if masked == value {
+		return "******"
+	}
+	return masked
 }
 
 func truncateOutput(value string) string {

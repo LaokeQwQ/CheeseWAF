@@ -129,6 +129,18 @@ describe('DashboardPage', () => {
     expect(toastMocks.success).toHaveBeenCalled();
   });
 
+  it('does not report cached monitor data as online after a failed refresh', async () => {
+    const client = renderPage();
+    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-state')).toBe('online'));
+    apiMocks.fetchMonitorSummary.mockRejectedValue(new Error('connection unavailable'));
+    await client.refetchQueries({ queryKey: ['monitor-summary'] });
+    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-state')).toBe('offline'));
+    expect(screen.getByRole('status').textContent).toBe('shell.connectionOffline');
+    apiMocks.fetchMonitorSummary.mockResolvedValue({ snapshot: { requests: 1, host: {} } });
+    await client.refetchQueries({ queryKey: ['monitor-summary'] });
+    await waitFor(() => expect(screen.getByRole('status').getAttribute('data-state')).toBe('online'));
+  });
+
   it('surfaces reclaim failures', async () => {
     apiMocks.reclaimSystemResources.mockRejectedValue(new Error('permission denied'));
     renderPage();

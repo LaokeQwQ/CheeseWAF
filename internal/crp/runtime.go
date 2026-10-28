@@ -1,6 +1,7 @@
 package crp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -880,7 +881,32 @@ func (s *RuntimeStore) loadDiskState() (runtimeDiskState, error) {
 		return runtimeDiskState{}, err
 	}
 	defer f.Close()
-	dec := json.NewDecoder(f)
+	data, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	if err != nil {
+		return runtimeDiskState{}, err
+	}
+	state, err := decodeDiskState(data)
+	if err != nil {
+		return runtimeDiskState{}, err
+	}
+	for key, plugin := range state.Plugins {
+		for _, record := range []*RuntimeRecord{plugin.Current, plugin.Staged, plugin.Previous} {
+			if record == nil {
+				continue
+			}
+			if err := s.validateLoadedRecord(key, *record); err != nil {
+				return runtimeDiskState{}, err
+			}
+		}
+	}
+	return state, nil
+}
+
+// decodeDiskState parses the durable runtime state without filesystem I/O.
+// It validates the state envelope and record shapes; the caller still verifies
+// content-addressed files and runtime paths.
+func decodeDiskState(data []byte) (runtimeDiskState, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var state runtimeDiskState
 	if err := dec.Decode(&state); err != nil {
@@ -899,14 +925,6 @@ func (s *RuntimeStore) loadDiskState() (runtimeDiskState, error) {
 		}
 		if err := validateStateRecords(key, plugin); err != nil {
 			return runtimeDiskState{}, err
-		}
-		for _, record := range []*RuntimeRecord{plugin.Current, plugin.Staged, plugin.Previous} {
-			if record == nil {
-				continue
-			}
-			if err := s.validateLoadedRecord(key, *record); err != nil {
-				return runtimeDiskState{}, err
-			}
 		}
 	}
 	return state, nil

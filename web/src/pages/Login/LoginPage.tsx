@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { AlertTriangle, Clock3, Droplets, Heart, Languages, Leaf, LockKeyhole, Monitor, MoveRight, Paintbrush, Palette, RefreshCcw, Server, ShieldCheck, Sun, UserRound, WifiOff, X } from 'lucide-react';
+import { AlertTriangle, Clock3, Droplets, Fingerprint, Heart, Languages, Leaf, LockKeyhole, Monitor, MoveRight, Paintbrush, Palette, RefreshCcw, Server, ShieldCheck, Sun, UserRound, WifiOff, X } from 'lucide-react';
 import {
   Button,
   Dialog,
@@ -18,7 +18,8 @@ import {
   SelectValue,
   toast,
 } from '@/components/ui';
-import { APIRequestError, fetchLoginCaptcha, fetchLoginOptions, fetchSession, isAuthenticatedFlag, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
+import { APIRequestError, beginPasskeyLogin, fetchLoginCaptcha, fetchLoginOptions, fetchPasskeyOptions, fetchSession, finishPasskeyLogin, isAuthenticatedFlag, login, sanitizeInternalReturnPath, verifyLoginCaptcha } from '../../api/client';
+import { isPasskeyCancellation, isPasskeySupported, parsePasskeyRequestOptions, passkeyCredentialToJSON } from '../../utils/webauthn';
 import { safeImageDataUri } from '../../features/captcha/protocol';
 import BrandLogo from '../../components/BrandLogo';
 import { CapLoginCaptcha } from './CapLoginCaptcha';
@@ -106,6 +107,7 @@ export default function LoginPage() {
   const [optionsErrorKind, setOptionsErrorKind] = useState<LoginOptionsErrorKind>('unknown');
   const [optionsRetrying, setOptionsRetrying] = useState(false);
   const [optionsLoading, setOptionsLoading] = useState(true);
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [challenge, setChallenge] = useState<LoginCAPTCHAChallenge | null>(null);
   const [capChallenge, setCapChallenge] = useState<LoginCapCAPTCHAChallenge | null>(null);
   const [activeCaptchaProvider, setActiveCaptchaProvider] = useState<LoginCAPTCHAProvider>('builtin');
@@ -355,6 +357,11 @@ export default function LoginPage() {
       setOptions(nextOptions);
       setOptionsError('');
       setOptionsErrorKind('unknown');
+      // Passkey discovery never delays the password form. A slow or missing
+      // endpoint only hides the optional button.
+      void fetchPasskeyOptions()
+        .then((passkeyOptions) => setPasskeyEnabled(passkeyOptions.enabled === true && isPasskeySupported()))
+        .catch(() => setPasskeyEnabled(false));
       if (!nextOptions.captcha.enabled) {
         setChallenge(null);
         setCapChallenge(null);
@@ -365,6 +372,7 @@ export default function LoginPage() {
       }
     } catch (err) {
       setOptions(null);
+      setPasskeyEnabled(false);
       setOptionsErrorKind(classifyLoginOptionsError(err));
       setOptionsError(err instanceof Error && err.message.trim() ? err.message : t('login.optionsLoadFailed'));
       setCaptchaState('error');
@@ -560,6 +568,18 @@ export default function LoginPage() {
     }
   }
 
+  function completeLogin(message: string) {
+    setSuccess(message);
+    toast.success(message);
+    if (navigateTimerRef.current != null) {
+      window.clearTimeout(navigateTimerRef.current);
+    }
+    navigateTimerRef.current = window.setTimeout(() => {
+      navigateTimerRef.current = null;
+      navigate(from, { replace: true });
+    }, 220);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
@@ -607,16 +627,7 @@ export default function LoginPage() {
         captcha.username = submittedUsername;
       }
       await login(submittedUsername, password, totpCode || undefined, captcha);
-      const message = t('login.success');
-      setSuccess(message);
-      toast.success(message);
-      if (navigateTimerRef.current != null) {
-        window.clearTimeout(navigateTimerRef.current);
-      }
-      navigateTimerRef.current = window.setTimeout(() => {
-        navigateTimerRef.current = null;
-        navigate(from, { replace: true });
-      }, 220);
+      completeLogin(t('login.success'));
     } catch (err) {
       if (err instanceof APIRequestError && err.code === 'TWO_FA_REQUIRED') {
         setRequires2FA(true);
@@ -638,6 +649,50 @@ export default function LoginPage() {
       setError(message);
       if (options?.captcha.enabled) {
         await refreshCaptcha(false);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handlePasskeyLogin() {
+    setError('');
+    setInvalidField(null);
+    setSuccess('');
+    const submittedUsername = normalizeLoginUsername(username);
+    const usernameIssue = usernameValidationError(submittedUsername);
+    if (usernameIssue) {
+      setInvalidField('username');
+      requestAnimationFrame(() => document.getElementById('login-username')?.focus());
+      setError(usernameIssue === 'whitespace'
+        ? localizedLoginText(t, 'login.usernameWhitespace', 'Username must not contain whitespace or invisible characters. Re-enter it without them.')
+        : localizedLoginText(t, usernameIssue === 'required' ? 'login.usernameRequired' : 'login.usernameInvalid', 'Enter a valid username.'));
+      return;
+    }
+    setLoading(true);
+    try {
+      const begin = await beginPasskeyLogin(submittedUsername);
+      const assertion = await navigator.credentials.get({
+        publicKey: parsePasskeyRequestOptions(begin.publicKey),
+      }) as PublicKeyCredential | null;
+      if (!assertion) {
+        setError(t('login.passkeyCancelled'));
+        return;
+      }
+      await finishPasskeyLogin(submittedUsername, begin.session_token, passkeyCredentialToJSON(assertion));
+      completeLogin(t('login.success'));
+    } catch (err) {
+      if (isPasskeyCancellation(err)) {
+        setError(t('login.passkeyCancelled'));
+      } else if (err instanceof APIRequestError && err.code === 'INVALID_CREDENTIALS') {
+        setError(t('login.invalidCredentials'));
+      } else if (err instanceof APIRequestError && err.code === 'PASSKEY_DISABLED') {
+        setPasskeyEnabled(false);
+        setError(t('login.passkeyUnavailable'));
+      } else if (err instanceof Error && (err.name === 'NotSupportedError' || err.name === 'SecurityError')) {
+        setError(t('login.passkeyUnavailable'));
+      } else {
+        setError(t('login.passkeyFailed'));
       }
     } finally {
       setLoading(false);
@@ -1045,6 +1100,21 @@ export default function LoginPage() {
                 {t('login.submit')}
               </Button>
             </div>
+            {passkeyEnabled && (
+              <div className="pressable mt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  loading={loading}
+                  disabled={Boolean(optionsError) || optionsLoading}
+                  onClick={() => void handlePasskeyLogin()}
+                >
+                  {!loading && <Fingerprint size={16} aria-hidden="true" />}
+                  <span>{t('login.passkey')}</span>
+                </Button>
+              </div>
+            )}
             {error && <p id="login-error" className="form-error" role="alert">{error}</p>}
             {success && <p className="form-success" role="status">{success}</p>}
           </form>

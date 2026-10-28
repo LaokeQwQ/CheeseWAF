@@ -211,3 +211,8 @@ internal/engine/semantic/testdata/modsec_attack_clean.jsonl
 /tasks.md
 /skills-lock.json
 /docs/superpowers/
+
+# Local fuzz corpora and crash artifacts: never commit or publish these.
+**/testdata/fuzz/
+**/fuzz/corpus/
+**/*.crash

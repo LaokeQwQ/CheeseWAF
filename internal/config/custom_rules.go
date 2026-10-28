@@ -480,10 +480,11 @@ func customRuleIDBase(name string, index int) string {
 
 // EncodeCustomRules writes the existing CustomRuleConfig slice as YAML or JSON.
 func EncodeCustomRules(rules []CustomRuleConfig, format string) ([]byte, error) {
-	if rules == nil {
-		rules = []CustomRuleConfig{}
+	validated, err := prepareCustomRules(rules, false)
+	if err != nil {
+		return nil, err
 	}
-	doc := CustomRulesDocument{CustomRules: rules}
+	doc := CustomRulesDocument{CustomRules: validated}
 	switch NormalizeCustomRulesFormat(format) {
 	case CustomRulesFormatJSON:
 		body, err := json.MarshalIndent(&doc, "", "  ")

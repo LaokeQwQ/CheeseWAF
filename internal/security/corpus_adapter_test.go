@@ -121,6 +121,30 @@ func TestNormalizeCategoryOnlyEmitsKnownBuckets(t *testing.T) {
 	}
 }
 
+// The analyzer emits shellshock hits (log4shell_detector.go) and reports
+// semantic.analyzer.shellshock, but the category was missing from the reporting
+// set, so runtime hits landed in no bucket and per-category TPR drifted.
+func TestDetectionCategoriesCoverEveryEmittedCategory(t *testing.T) {
+	known := make(map[string]bool, len(DetectionCategories))
+	for _, c := range DetectionCategories {
+		if known[c] {
+			t.Fatalf("duplicate detection category %q", c)
+		}
+		known[c] = true
+	}
+	for _, want := range []string{"webshell", "shellshock"} {
+		if !known[want] {
+			t.Fatalf("DetectionCategories is missing emitted category %q: %v", want, DetectionCategories)
+		}
+	}
+	if got := NormalizeCategory("shellshock"); got != "shellshock" {
+		t.Fatalf("NormalizeCategory(shellshock) = %q, want shellshock", got)
+	}
+	if got := NormalizeCategory("Shellshock"); got != "shellshock" {
+		t.Fatalf("NormalizeCategory(Shellshock) = %q, want shellshock", got)
+	}
+}
+
 func TestNormalizeTarget(t *testing.T) {
 	tests := map[string]string{
 		"":                                  "/",

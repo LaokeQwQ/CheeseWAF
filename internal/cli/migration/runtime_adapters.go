@@ -444,7 +444,7 @@ func (t *runtimeProductionTransaction) Commit(ctx context.Context) error {
 	// after the management transaction is durable. If this step fails the
 	// pending fence remains, and serve stays frozen for operator recovery.
 	if t.target.control != nil && t.target.raft != nil {
-		_, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: controlplane.StorageProfileProduction, ClusterID: t.target.candidate.Cluster.ClusterID, Machine: t.target.raft.Machine(), Durable: t.target.control, Consensus: t.target.raft, Fencer: t.target.raft, InitialState: t.target.initialState, InitialAuthorizer: t.target.authorizer})
+		_, err := controlplane.Bootstrap(ctx, controlplane.StartupOptions{Profile: controlplane.StorageProfileProduction, ClusterID: t.target.candidate.Cluster.ClusterID, Machine: t.target.raft.Machine(), Durable: t.target.control, Consensus: t.target.raft, Fencer: t.target.raft, InitialState: t.target.initialState, InitialAuthorizer: t.target.authorizer, LeadershipCheckpoint: t.target.raft})
 		if err != nil {
 			return errors.Join(setupmigration.ErrCommitOutcomeUnknown, err)
 		}
@@ -505,10 +505,14 @@ func pgSnapshotValues(table snapshotTable, row []snapshotCell) ([]any, error) {
 		}
 		column := table.Columns[i]
 		if value == nil {
+			if table.Name == "passkey_credentials" && column == "last_used_at" {
+				values[i] = time.Unix(0, 0).UTC()
+				continue
+			}
 			values[i] = nil
 			continue
 		}
-		if column == "enable_ssl" || column == "waf_enabled" || column == "enabled" || column == "two_fa_enabled" || column == "is_read" || column == "is_pinned" {
+		if column == "enable_ssl" || column == "waf_enabled" || column == "enabled" || column == "two_fa_enabled" || column == "backup_eligible" || column == "is_read" || column == "is_pinned" {
 			integer, ok := value.(int64)
 			if !ok {
 				return nil, errors.New("boolean snapshot value is invalid")
@@ -519,6 +523,14 @@ func pgSnapshotValues(table snapshotTable, row []snapshotCell) ([]any, error) {
 		if strings.HasSuffix(column, "_at") || column == "created_at" || column == "updated_at" {
 			if text, ok := value.(string); ok {
 				if text == "" {
+					// A never-used passkey is stored with an empty string by the
+					// SQLite writer. PostgreSQL declares the column NOT NULL, so
+					// one such row would abort the whole migration unless it maps
+					// to the same epoch value the NULL branch uses.
+					if table.Name == "passkey_credentials" && column == "last_used_at" {
+						values[i] = time.Unix(0, 0).UTC()
+						continue
+					}
 					values[i] = nil
 					continue
 				}

@@ -212,6 +212,7 @@ flowchart TB
 除内置能力外，系统也支持对接外部监控与存储组件（可在安装向导中测试连通性，也可后续在控制台配置）：
 - **PostgreSQL**：集中存储审计日志。
 - **VictoriaLogs**：存储并检索访问日志。
+- **Grafana Loki**：按标签索引推送日志，并通过 LogQL 检索。
 - **Prometheus**：采集运行指标。
 
 ---
@@ -226,11 +227,29 @@ CheeseWAF 针对主流运维基础设施提供部署支持。
 
 #### 推荐：一键安装
 
-在目标 Linux 主机以 root 执行下面的命令。脚本会让你选择语言，识别 CPU 架构，拉取最新稳定版并校验 SHA256，然后安装、启动 systemd 服务并输出公网/内网地址、一次性初始化 URL、配置路径和服务状态：
+在目标 Linux 主机使用官网入口安装。脚本会让你选择语言，识别 CPU 架构，拉取最新稳定版并校验 SHA256，然后安装、启动 systemd 服务并输出公网/内网地址、一次性初始化 URL、配置路径和服务状态：
 
 ```bash
-curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo bash ./install-linux.sh
 ```
+
+也可使用 GNU wget：
+
+```bash
+wget --max-redirect=0 -O install-linux.sh https://cheesesec.com/install.sh && sudo bash ./install-linux.sh
+```
+
+若官网入口不可达，可改从 [GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 下载安装器：
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh -o install-linux.sh && sudo bash ./install-linux.sh
+```
+
+安装器内部支持 curl 或 GNU wget。官方版本优先使用软件元数据 `https://ota.cheesesec.com/v1/software/channels/stable/index.json` 和资源地址 `https://res.cheesesec.com/releases/{tag}/{asset}`；官方下载不可用时回退到 GitHub，选定版本 tag 后，资源回退始终使用同一 tag。校验和或签名验证失败会停止安装，不会通过切换来源绕过失败。
+
+可在 `sudo` 后的命令中设置 `CHEESEWAF_RELEASE` 固定版本 tag，例如 `sudo env CHEESEWAF_RELEASE=vX.Y.Z bash ./install-linux.sh`。将 `CHEESEWAF_REPO` 设为非官方仓库时，会从指定的 GitHub fork 下载，不使用官方服务器。
+
+官方版本默认用 `cosign` 校验 release 签名，缺少 `cosign` 会停止安装；官网索引回退到 GitHub 下载同一 tag 时仍然校验。请先安装固定版本的 `cosign`，或在无法安装的主机上显式设置 `CHEESEWAF_VERIFY_SIGNATURE=0`。只有把 `CHEESEWAF_REPO` 指向 fork 时才默认跳过签名校验。
 
 安装过程中会生成一个仅含 ASCII 字母和数字的安全入口；直接回车使用随机值，或输入 8-64 位自定义值。公网管理面使用 HTTPS 和一次性 setup Token，首次访问自签名证书会出现浏览器警告，生产环境应替换为受信证书或反向代理。脚本会把 RFC1918/内网接口与公网候选地址分开输出；如果服务器在 NAT 后面或使用域名，请设置 `CHEESEWAF_ADMIN_PUBLIC_HOST`。云安全组只开放 TCP 9443。只有交互式终端会直接显示敏感 URL，安装信息同时保存到 root-only 回执文件。
 
@@ -238,7 +257,7 @@ curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/instal
 
 #### 离线/手动安装
 
-从 [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面下载对应架构的软件包：
+选定版本 tag 和对应架构的软件包后，优先使用官网资源地址 `https://res.cheesesec.com/releases/{tag}/{asset}`；不可用时改用 `https://github.com/LaokeQwQ/CheeseWAF/releases/download/{tag}/{asset}`，保持 tag 和文件名一致。[GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) 页面可查询版本 tag 与文件名。请同时下载该版本的 `SHA256SUMS`，校验压缩包后再解压：
 
 | 发行包名称 | 适用架构 |
 | :--- | :--- |
@@ -266,7 +285,13 @@ sudo ./install-linux.sh
 sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
 ```
 
-一键安装升级时，将同一变量传给 `sudo` 后的命令：`curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`。未确认时，安装器会在停服前退出。
+通过官网入口升级时，将同一变量传给 `sudo` 后的命令：
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash ./install-linux.sh
+```
+
+也可按上文改用 GNU wget 或 GitHub 安装器 URL。未确认时，安装器会在停服前退出。
 
 如需手动配置，需同时复制二进制文件与 Web 管理端静态资源：
 
@@ -312,7 +337,7 @@ sudo systemctl status cheesewaf
 
 systemd 沙箱允许在 `/etc/cheesewaf` 目录内原子替换配置；该目录由 `root:cheesewaf` 所有并设为带 sticky bit 的 `01770`，防止服务账号删除 root 所有的环境文件和安装回执。运行时配置由 `cheesewaf` 服务账号所有、权限为 `0600`，可安全完成原子保存。安装后请完成 setup、保存一次系统配置并重启服务，确认配置在沙箱下仍能保存。
 
-安装器会用同一 release 中的 `SHA256SUMS` 校验压缩包。这只能检测传输损坏，不能独立证明 release 未被发布账号替换。需要 provenance 校验时，请安装固定版本的 `cosign` 并设置 `CHEESEWAF_VERIFY_SIGNATURE=1`；安装器会先验证 GitHub Actions 为 `SHA256SUMS` 生成的 keyless 签名 bundle，再执行 release 中的安装代码。安装器默认将管理口绑定到 `127.0.0.1:9443`。只有明确设置 `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` 时才公开监听；远程访问建议使用反向代理或 SSH 隧道。初始化 URL 和 Token 有效期均为 10 分钟，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
+安装器会用同一 release 中的 `SHA256SUMS` 校验压缩包。这只能检测传输损坏，不能独立证明 release 未被发布账号替换，因此官方版本还会用固定版本的 `cosign` 先验证 GitHub Actions 为 `SHA256SUMS` 生成的 keyless 签名 bundle，再执行 release 中的安装代码。只有在无法安装 `cosign` 时才应设置 `CHEESEWAF_VERIFY_SIGNATURE=0`。安装器默认将管理口绑定到 `127.0.0.1:9443`。只有明确设置 `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` 时才公开监听；远程访问建议使用反向代理或 SSH 隧道。初始化 URL 和 Token 有效期均为 10 分钟，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
 
 ```bash
 # 查看包含准入 Token 的完整初始化链接：
@@ -431,7 +456,7 @@ docker compose exec cheesewaf cat /var/lib/cheesewaf/setup.url
 
 ### 接入原理
 
-`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用 CheeseWAF 核心的 `/api/v1/check` 接口完成判定。
+`CheeseWAF-Adapters` 提供轻量级守护进程 `adapterd`，以 sidecar 形式部署在网关旁侧。网关通过标准子请求或外部授权协议（如 NGINX `auth_request`、Envoy `ext_authz`）将请求头与元数据转发给 `adapterd`，再由 `adapterd` 调用版本化适配器契约接口 `/api/v1/adapter/inspect`（可用 `CHEESEWAF_CORE_INSPECT_PATH` 覆盖）完成判定。核心在**代理、TLS 和 HTTP/3 监听器**上提供 `/api/v1/adapter/inspect`、`/api/v1/adapter/telemetry` 和 `/healthz`，使用 `server.adapter_token` 鉴权（留空时仅允许 loopback）。**admin 监听器不同**：它只由适配器处理器提供 `/healthz`，`/api/v1/adapter/inspect` 仍需管理面 JWT 的 `write:protection` 权限，且不挂载 `/api/v1/adapter/telemetry`。`adapterd` 应指向代理监听器并配置 `CHEESEWAF_CORE_TOKEN`；admin 端口只用于带 JWT 的调用。
 
 ### NGINX 集成示例
 
@@ -451,12 +476,19 @@ location / {
 
 location = /cheesewaf-check {
     internal;
-    proxy_pass http://127.0.0.1:9080/check;
+    proxy_pass http://127.0.0.1:9080/nginx/auth;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $request_method;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_connect_timeout 100ms;
+    proxy_read_timeout 1s;
+    # 配置 CHEESEWAF_ADAPTER_TOKEN 时，在此注入
+    # X-CheeseWAF-Adapter-Token（来自 secret-backed 变量）。
 }
 ```
 

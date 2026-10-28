@@ -83,19 +83,22 @@ func TestSafePathComponent(t *testing.T) {
 
 func TestSanitizeLocalRedirect(t *testing.T) {
 	cases := map[string]string{
-		"":                      "/",
-		"/":                     "/",
-		"/ok":                   "/ok",
-		"/ok?x=1":               "/ok?x=1",
-		"//evil.test":           "/",
-		"/\\evil":               "/",
-		"https://evil.test/":    "/",
-		"/ok\nSet-Cookie":       "/",
-		"ok":                    "/ok",
-		"/a/../b":               "/b",
-		"/../b":                 "/",
-		"/%5C%5Cevil.example/x": "/",
-		"/%2F%2Fevil.example/x": "/",
+		"":                           "/",
+		"/":                          "/",
+		"/ok":                        "/ok",
+		"/ok?x=1":                    "/ok?x=1",
+		"//evil.test":                "/",
+		"/\\evil":                    "/",
+		"https://evil.test/":         "/",
+		"/ok\nSet-Cookie":            "/",
+		"ok":                         "/ok",
+		"/a/../b":                    "/b",
+		"/../b":                      "/",
+		"/%5C%5Cevil.example/x":      "/",
+		"/%2F%2Fevil.example/x":      "/",
+		"/login%0d%0aSet-Cookie:x=1": "/",
+		"/etc/passwd%00.png":         "/",
+		"00%25":                      "/",
 	}
 	for in, want := range cases {
 		if got := SanitizeLocalRedirect(in); got != want {

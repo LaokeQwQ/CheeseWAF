@@ -1354,14 +1354,17 @@ func TestAIToolApprovalExecutesOnceAndReloadsProtection(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 	var reloaded bool
+	coordinator := &protectionPolicyCoordinatorStub{}
 	handler := New(Options{
-		Config:     &cfg,
-		ConfigPath: configPath,
+		Config:                      &cfg,
+		ConfigPath:                  configPath,
+		ProtectionPolicyCoordinator: coordinator,
 		OnProtectionChanged: func(config.ProtectionConfig) error {
 			reloaded = true
 			return nil
 		},
 	})
+	coordinator.handler = handler
 	router := chi.NewRouter()
 	router.Post("/execute", handler.ExecuteAITool)
 	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
@@ -1508,6 +1511,114 @@ func TestAIProtectionToolDoesNotPublishConfigWhenRuntimeRejects(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Protection.Policy, before) {
 		t.Fatalf("config changed after runtime failure: before=%+v after=%+v", before, cfg.Protection.Policy)
+	}
+}
+
+func TestAIToolProtectionApprovalRejectsControlPlanePreviewDrift(t *testing.T) {
+	cfg := config.Default()
+	cfg.APISec.Permissions["admin"] = append(append([]string(nil), cfg.APISec.Permissions["admin"]...), "approve:ai")
+	cfg.APISec.Permissions["approver"] = []string{"read:ai", "approve:ai"}
+	coordinator := &protectionPolicyCoordinatorStub{}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: coordinator})
+	coordinator.handler = handler
+	router := chi.NewRouter()
+	router.Post("/execute", handler.ExecuteAITool)
+	router.Post("/approvals/{id}/approve", handler.ApproveAIApproval)
+	requester := &middleware.Claims{Subject: "operator-id", ID: "session-id", Username: "operator", Role: "admin"}
+	approver := &middleware.Claims{Subject: "approver-id", ID: "approver-session", Username: "approver", Role: "approver"}
+	withActor := func(actor *middleware.Claims, request *http.Request) *http.Request {
+		return request.WithContext(context.WithValue(request.Context(), middleware.UserContextKey, actor))
+	}
+
+	args := `{"area":"bot_cc","level":"high"}`
+	created := httptest.NewRecorder()
+	router.ServeHTTP(created, withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","args":`+args+`}`)))))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create approval: code=%d body=%s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Approval *struct {
+				ID string `json:"id"`
+			} `json:"approval"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(created.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode approval: %v", err)
+	}
+	if envelope.Data.Approval == nil || envelope.Data.Approval.ID == "" {
+		t.Fatalf("missing approval: %s", created.Body.String())
+	}
+
+	// The control-plane-backed preview now observes a different current state.
+	cfg.Protection.Policy.BotCC = config.ProtectionLevelStrict
+	approved := httptest.NewRecorder()
+	router.ServeHTTP(approved, withActor(approver, httptest.NewRequest(http.MethodPost, "/approvals/"+envelope.Data.Approval.ID+"/approve", nil)))
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approve: code=%d body=%s", approved.Code, approved.Body.String())
+	}
+
+	executed := httptest.NewRecorder()
+	router.ServeHTTP(executed, withActor(requester, httptest.NewRequest(http.MethodPost, "/execute", bytes.NewReader([]byte(`{"name":"set_protection_level","approval_id":"`+envelope.Data.Approval.ID+`","args":`+args+`}`)))))
+	if executed.Code != http.StatusBadRequest || !strings.Contains(executed.Body.String(), "stale") {
+		t.Fatalf("drifted preview was not rejected: code=%d body=%s", executed.Code, executed.Body.String())
+	}
+	if coordinator.applyCalls != 0 {
+		t.Fatalf("stale preview reached policy consumer: calls=%d", coordinator.applyCalls)
+	}
+	if cfg.Protection.Policy.BotCC != config.ProtectionLevelStrict {
+		t.Fatalf("stale preview changed the newer control-plane state: %q", cfg.Protection.Policy.BotCC)
+	}
+}
+
+func TestAIProtectionToolFailsClosedWithoutCoordinatorOrActor(t *testing.T) {
+	cfg := config.Default()
+	tool := setProtectionLevelTool{Handler: New(Options{Config: &cfg, RequireProtectionPolicyCoordinator: true})}
+	if _, err := tool.Execute(context.Background(), map[string]any{"area": "bot_cc", "level": "high"}); err == nil || !strings.Contains(err.Error(), "authenticated actor") {
+		t.Fatalf("missing actor did not fail closed: %v", err)
+	}
+	ctx := ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "operator-a", SessionID: "session-a", Role: "admin"})
+	if _, err := tool.Execute(ctx, map[string]any{"area": "bot_cc", "level": "high"}); !errors.Is(err, ErrProtectionPolicyCoordinatorUnavailable) {
+		t.Fatalf("missing coordinator error = %v, want %v", err, ErrProtectionPolicyCoordinatorUnavailable)
+	}
+}
+
+func TestAIProtectionToolRequiresCoordinatorPreviewBinding(t *testing.T) {
+	cfg := config.Default()
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: writeOnlyProtectionPolicyCoordinatorStub{}})
+	_, err := handler.executeAssistantTool(
+		ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "operator-a", SessionID: "session-a", Role: "admin"}),
+		"set_protection_level",
+		map[string]any{"area": "bot_cc", "level": "high"},
+		"",
+	)
+	if !errors.Is(err, ErrProtectionPolicyCoordinatorPreviewUnavailable) {
+		t.Fatalf("write-only coordinator did not fail closed: %v", err)
+	}
+	if cfg.Protection.Policy.BotCC == config.ProtectionLevelHigh {
+		t.Fatal("preview rejection changed local policy")
+	}
+}
+
+func TestAIProtectionToolRejectsUnboundPreviewActor(t *testing.T) {
+	cfg := config.Default()
+	emptyActor := ""
+	coordinator := &protectionPolicyCoordinatorStub{previewActorOverride: &emptyActor}
+	handler := New(Options{Config: &cfg, ProtectionPolicyCoordinator: coordinator})
+	_, err := handler.executeAssistantTool(
+		ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "operator-a", SessionID: "session-a", Role: "admin"}),
+		"set_protection_level",
+		map[string]any{"area": "bot_cc", "level": "high"},
+		"",
+	)
+	// Either the preview is rejected for the empty binding or the coordinator
+	// reports an invalid actor; both are fail-closed.
+	if err == nil || (!errors.Is(err, ErrProtectionPolicyCoordinatorPreviewUnavailable) &&
+		!strings.Contains(err.Error(), "invalid preview actor binding")) {
+		t.Fatalf("unbound preview actor was accepted: %v", err)
+	}
+	if cfg.Protection.Policy.BotCC == config.ProtectionLevelHigh {
+		t.Fatal("invalid preview actor changed local policy")
 	}
 }
 
@@ -1850,7 +1961,9 @@ func newAIApprovalStreamFixture(t *testing.T, mutate func(*config.Config)) aiApp
 		t.Fatalf("save config: %v", err)
 	}
 	store := ai.NewApprovalStore()
-	handler := New(Options{Config: &cfg, ConfigPath: configPath, AssistantApprovals: store})
+	coordinator := &protectionPolicyCoordinatorStub{}
+	handler := New(Options{Config: &cfg, ConfigPath: configPath, AssistantApprovals: store, ProtectionPolicyCoordinator: coordinator})
+	coordinator.handler = handler
 	router := chi.NewRouter()
 	router.Get("/tools", handler.AITools)
 	router.Post("/execute", handler.ExecuteAITool)
@@ -1918,7 +2031,7 @@ func TestExecuteAIToolReadOnlyCallCannotFinalizeAnotherRequestersApproval(t *tes
 
 	// Park the request in `executing`, exactly like an in-flight
 	// continue/stream call made by its owner.
-	preview, err := setProtectionLevelTool{Handler: fixture.handler}.Preview(context.Background(), map[string]any{"area": "bot_cc", "level": "high"})
+	_, preview, err := setProtectionLevelTool{Handler: fixture.handler}.ResolvePreview(ai.ContextWithApprovalActor(context.Background(), ai.ApprovalActor{Subject: "requester-id", SessionID: "requester-session"}), map[string]any{"area": "bot_cc", "level": "high"})
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}

@@ -1,22 +1,12 @@
 package notifier
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/url"
-	"strconv"
-	"strings"
-	"time"
+	"sync"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/monitor"
-	"github.com/LaokeQwQ/CheeseWAF/internal/netguard"
 )
 
 type Notifier interface {
@@ -24,27 +14,94 @@ type Notifier interface {
 }
 
 type Manager struct {
-	notifiers []Notifier
+	mu       sync.Mutex
+	configs  []config.NotifierConfig
+	registry *Registry
+	// builtFor is the registry generation the cached instances were built for.
+	builtFor     uint64
+	built        bool
+	cached       []Notifier
+	cachedErrors []error
+	// notifiers and configErrors are the startup snapshot. Notify resolves the
+	// configurations again so a plugin-index reload reaches the alert loop.
+	notifiers    []Notifier
+	configErrors []error
 }
 
 func NewManager(configs []config.NotifierConfig) *Manager {
-	manager := &Manager{}
-	for _, cfg := range configs {
-		if !cfg.Enabled {
-			continue
-		}
-		manager.notifiers = append(manager.notifiers, NewWebhook(cfg, nil))
+	return NewManagerWithRegistry(configs, nil)
+}
+
+// NewManagerWithRegistry lets the caller share one registry with the rest of
+// the process, so a plugin-index reload reaches every notifier the manager
+// builds afterwards. A nil registry uses the compiled-in providers only.
+func NewManagerWithRegistry(configs []config.NotifierConfig, registry *Registry) *Manager {
+	if registry == nil {
+		registry = NewRegistry()
 	}
+	manager := &Manager{
+		configs:  append([]config.NotifierConfig(nil), configs...),
+		registry: registry,
+	}
+	manager.notifiers, manager.configErrors = manager.resolve()
 	return manager
 }
 
+// resolve builds the current notifier instances from the shared registry. It
+// runs on every Notify because a pack reload replaces the registry's factories
+// while the alert loop keeps running.
+func (m *Manager) resolve() ([]Notifier, []error) {
+	if m == nil {
+		return nil, nil
+	}
+	// A manager built without a registry (tests, embedders) already holds the
+	// instances it wants; there is no factory source to re-resolve from.
+	if m.registry == nil {
+		return m.notifiers, m.configErrors
+	}
+	registry := m.registry
+	// Read the generation before building. If a reload lands while the
+	// providers are being constructed, the recorded generation stays behind
+	// and the next call rebuilds instead of caching stale instances.
+	generation := registry.Generation()
+	m.mu.Lock()
+	if m.built && m.builtFor == generation {
+		notifiers, cachedErrors := m.cached, m.cachedErrors
+		m.mu.Unlock()
+		return notifiers, cachedErrors
+	}
+	m.mu.Unlock()
+	notifiers := make([]Notifier, 0, len(m.configs))
+	configErrors := make([]error, 0)
+	for _, cfg := range m.configs {
+		if !cfg.Enabled {
+			continue
+		}
+		notifier, err := registry.New(cfg, nil)
+		if err != nil {
+			configErrors = append(configErrors, err)
+			continue
+		}
+		notifiers = append(notifiers, notifier)
+	}
+	m.mu.Lock()
+	m.built = true
+	m.builtFor = generation
+	m.cached = notifiers
+	m.cachedErrors = configErrors
+	m.mu.Unlock()
+	return notifiers, configErrors
+}
+
 func (m *Manager) Notify(ctx context.Context, alerts []monitor.Alert) error {
-	if m == nil || len(alerts) == 0 {
+	if m == nil {
 		return nil
 	}
-	var deliveryErrors []error
+	notifiers, configErrors := m.resolve()
+	deliveryErrors := make([]error, 0, len(configErrors))
+	deliveryErrors = append(deliveryErrors, configErrors...)
 	for _, alert := range alerts {
-		for _, notifier := range m.notifiers {
+		for _, notifier := range notifiers {
 			if err := notifier.Notify(ctx, alert); err != nil {
 				deliveryErrors = append(deliveryErrors, err)
 			}
@@ -55,140 +112,4 @@ func (m *Manager) Notify(ctx context.Context, alerts []monitor.Alert) error {
 
 func errorsJoin(values []error) error {
 	return errors.Join(values...)
-}
-
-type Webhook struct {
-	cfg    config.NotifierConfig
-	client *http.Client
-}
-
-const (
-	webhookMaxAttempts = 3
-	webhookRetryDelay  = 25 * time.Millisecond
-)
-
-func NewWebhook(cfg config.NotifierConfig, client *http.Client) *Webhook {
-	if client == nil {
-		client = netguard.NewHTTPClient(netguard.HTTPClientOptions{
-			Timeout: 10 * time.Second,
-			Policy:  webhookURLPolicy(cfg.AllowPrivateEndpoint),
-		})
-	}
-	return &Webhook{cfg: cfg, client: client}
-}
-
-func (w *Webhook) Notify(ctx context.Context, alert monitor.Alert) error {
-	if w == nil || w.cfg.Endpoint == "" {
-		return nil
-	}
-	payload := map[string]any{
-		"type":     w.cfg.Type,
-		"target":   w.cfg.To,
-		"alert":    alert,
-		"severity": alert.Severity,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	parsed, err := url.Parse(w.cfg.Endpoint)
-	if err != nil {
-		return fmt.Errorf("notifier %q endpoint is invalid: %w", w.cfg.ID, err)
-	}
-	if webhookHasCredentials(w.cfg) && !strings.EqualFold(parsed.Scheme, "https") {
-		return fmt.Errorf("notifier %q requires an HTTPS endpoint when credentials are configured", w.cfg.ID)
-	}
-	eventID := webhookEventID(alert)
-	timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.cfg.Endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	for key, value := range w.cfg.Headers {
-		req.Header.Set(key, value)
-	}
-	if w.cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+w.cfg.Token)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Event-ID", eventID)
-	req.Header.Set("X-Timestamp", timestamp)
-	if w.cfg.Token != "" {
-		mac := hmac.New(sha256.New, []byte(w.cfg.Token))
-		_, _ = mac.Write([]byte(timestamp + "."))
-		_, _ = mac.Write(body)
-		req.Header.Set("X-Signature", "sha256="+fmt.Sprintf("%x", mac.Sum(nil)))
-	}
-	var lastErr error
-	for attempt := 1; attempt <= webhookMaxAttempts; attempt++ {
-		if attempt > 1 && req.GetBody != nil {
-			if req.Body, err = req.GetBody(); err != nil {
-				return fmt.Errorf("notifier %q could not replay request body: %w", w.cfg.ID, err)
-			}
-		}
-		resp, requestErr := w.client.Do(req)
-		if requestErr == nil {
-			netguard.DrainAndClose(resp.Body)
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return nil
-			}
-			lastErr = fmt.Errorf("notifier %q returned %s", w.cfg.ID, resp.Status)
-			if !retryableWebhookStatus(resp.StatusCode) {
-				return lastErr
-			}
-		} else {
-			lastErr = requestErr
-		}
-		if attempt == webhookMaxAttempts {
-			break
-		}
-		if err := waitWebhookRetry(ctx, attempt); err != nil {
-			return fmt.Errorf("notifier %q delivery stopped after attempt %d: %w", w.cfg.ID, attempt, err)
-		}
-	}
-	return fmt.Errorf("notifier %q delivery failed after %d attempts: %w", w.cfg.ID, webhookMaxAttempts, lastErr)
-}
-
-func webhookHasCredentials(cfg config.NotifierConfig) bool {
-	if cfg.Token != "" {
-		return true
-	}
-	for key := range cfg.Headers {
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "authorization", "proxy-authorization", "x-api-key", "api-key", "x-auth-token":
-			return true
-		}
-	}
-	return false
-}
-
-func webhookEventID(alert monitor.Alert) string {
-	body, _ := json.Marshal(alert)
-	sum := sha256.Sum256(body)
-	return "alert-" + fmt.Sprintf("%x", sum[:16])
-}
-
-func retryableWebhookStatus(status int) bool {
-	return status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests || status >= 500
-}
-
-func waitWebhookRetry(ctx context.Context, attempt int) error {
-	delay := webhookRetryDelay * time.Duration(1<<(attempt-1))
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func webhookURLPolicy(allowPrivate bool) netguard.URLPolicy {
-	return netguard.URLPolicy{
-		Purpose:        "notifier",
-		HostPurpose:    "notifier endpoint",
-		AllowedSchemes: []string{"http", "https"},
-		AllowPrivate:   allowPrivate,
-	}
 }

@@ -26,7 +26,7 @@ import (
 
 const (
 	managementSnapshotVersion      = 1
-	supportedSQLiteSchemaVersion   = 5
+	supportedSQLiteSchemaVersion   = 7
 	securityArtifactSnapshotMaxLen = 32 << 20
 )
 
@@ -78,6 +78,13 @@ var managementTableSpecs = []managementTableSpec{
 	{name: "site_promotes", columns: []string{"site_id", "until_at"}, orderBy: []string{"site_id"}, importToPG: true},
 	{name: "totp_consumed", columns: []string{"user_id", "counter", "expires_at", "created_at"}, orderBy: []string{"user_id", "counter"}, importToPG: true},
 	{name: "user_username_repairs", columns: []string{"id", "user_id", "old_username", "new_username", "actor", "reason", "revoked_sessions", "created_at"}, orderBy: []string{"id"}, importToPG: true},
+	{name: "intel_sources", columns: []string{"id", "type", "url", "trust", "enabled", "etag", "last_modified", "created_at", "updated_at"}, orderBy: []string{"id"}, importToPG: true, booleans: stringSet("enabled")},
+	{name: "intel_items", columns: []string{"id", "source_id", "external_ids", "title", "content_hash", "published_at", "products", "affected_versions", "attack_vector", "exploit_status", "references_json", "raw_excerpt", "created_at"}, orderBy: []string{"id"}, importToPG: true},
+	{name: "rule_candidates", columns: []string{"id", "item_id", "site_id", "rule_json", "action", "state", "confidence", "provenance_json", "expires_at", "created_at", "updated_at"}, orderBy: []string{"id"}, importToPG: true},
+	{name: "intel_import_jobs", columns: []string{"id", "url", "content_hash", "status", "extraction_json", "error", "created_at", "updated_at"}, orderBy: []string{"id"}, importToPG: true},
+	{name: "passkey_credentials", columns: []string{"id", "user_id", "credential_id", "public_key", "sign_count", "transports", "aaguid", "backup_eligible", "name", "created_at", "last_used_at"}, orderBy: []string{"id"}, importToPG: true, booleans: stringSet("backup_eligible"), nullEmpty: stringSet("last_used_at")},
+	{name: "passkey_recovery_codes", columns: []string{"id", "user_id", "code_hash", "used_at", "created_at"}, orderBy: []string{"id"}, importToPG: true, nullEmpty: stringSet("used_at")},
+	{name: "passkey_audit_events", columns: []string{"id", "type", "user_id", "actor", "reason", "created_at"}, orderBy: []string{"id"}, importToPG: true},
 }
 
 type runtimeTemporarySource struct {
@@ -429,11 +436,27 @@ func expectedProductionValues(table snapshotTable, row []snapshotCell) ([]any, e
 	return values, nil
 }
 
+// isStrictJSONColumn reports columns whose JSON syntax was already enforced by
+// the old normalizer; those still reject malformed payloads.
+func isStrictJSONColumn(column string) bool {
+	return column == "domains" || column == "upstreams" || column == "advanced"
+}
+
+func jsonBytes(value any) ([]byte, bool) {
+	switch typed := value.(type) {
+	case string:
+		return []byte(typed), true
+	case []byte:
+		return typed, true
+	}
+	return nil, false
+}
+
 func canonicalProductionValue(column string, value any) (snapshotCell, error) {
 	if value == nil {
 		return snapshotCell{Kind: "null"}, nil
 	}
-	if column == "enable_ssl" || column == "waf_enabled" || column == "enabled" || column == "two_fa_enabled" || column == "is_read" || column == "is_pinned" {
+	if column == "enable_ssl" || column == "waf_enabled" || column == "enabled" || column == "two_fa_enabled" || column == "backup_eligible" || column == "is_read" || column == "is_pinned" {
 		boolean, ok := canonicalDatabaseBool(value)
 		if !ok {
 			return snapshotCell{}, errors.New("invalid production boolean")
@@ -462,27 +485,26 @@ func canonicalProductionValue(column string, value any) (snapshotCell, error) {
 			return snapshotCell{}, errors.New("invalid production timestamp")
 		}
 	}
-	if column == "domains" || column == "upstreams" || column == "advanced" {
-		var raw []byte
-		switch typed := value.(type) {
-		case string:
-			raw = []byte(typed)
-		case []byte:
-			raw = typed
-		default:
-			return snapshotCell{}, errors.New("invalid production JSON value")
-		}
+	// PostgreSQL stores JSON/JSONB columns with a different textual shape than
+	// SQLite. Canonicalize every JSON object or array so a migrated passkey,
+	// intel, or candidate row compares equal instead of looking ambiguous.
+	if raw, ok := jsonBytes(value); ok {
 		var decoded any
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
-		if err := decoder.Decode(&decoded); err != nil {
+		if err := decoder.Decode(&decoded); err == nil {
+			switch decoded.(type) {
+			case map[string]any, []any:
+				canonical, err := json.Marshal(decoded)
+				if err != nil {
+					return snapshotCell{}, err
+				}
+				return snapshotCell{Kind: "text", Text: string(canonical)}, nil
+			}
+		}
+		if isStrictJSONColumn(column) {
 			return snapshotCell{}, errors.New("invalid production JSON value")
 		}
-		canonical, err := json.Marshal(decoded)
-		if err != nil {
-			return snapshotCell{}, err
-		}
-		return snapshotCell{Kind: "text", Text: string(canonical)}, nil
 	}
 	switch typed := value.(type) {
 	case int:

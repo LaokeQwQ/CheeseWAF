@@ -854,5 +854,6 @@ run_regression_test verify-release bash scripts/ci/verify-release_test.sh
 run_regression_test package-macos-dmg-lifecycle bash scripts/ci/package-macos-dmg_lifecycle_test.sh
 run_regression_test signing-secret-scopes bash scripts/ci/verify-ci-static_signing_scope_test.sh
 run_regression_test linux-installer-lifecycle bash scripts/ci/install-linux_test.sh
+run_regression_test linux-installer-sources bash scripts/ci/install-linux-bootstrap_test.sh
 
 echo "CI static regression checks passed."

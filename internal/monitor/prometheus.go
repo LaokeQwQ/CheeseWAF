@@ -11,6 +11,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine/semantic"
+	"github.com/LaokeQwQ/CheeseWAF/internal/intel"
 	"github.com/LaokeQwQ/CheeseWAF/internal/storage"
 )
 
@@ -82,6 +83,12 @@ func RenderPrometheus(snapshot Snapshot) []byte {
 	// Detection-budget fail-open counter. Alert on this: a sustained non-zero
 	// rate means the WAF is forwarding traffic it never finished analysing.
 	writeMetric(&buf, "cheesewaf_waf_budget_exhausted_pass_total", "Requests forwarded upstream after the detection budget ran out (alert when non-zero).", float64(engine.ProcessBudgetExhaustedPass()), nil)
+	intelMetrics := intel.ProcessMetrics()
+	writeMetric(&buf, "cheesewaf_intel_imports_total", "Advisory URL imports by result.", float64(intelMetrics.ImportsOK), map[string]string{"result": "ok"})
+	writeMetricSample(&buf, "cheesewaf_intel_imports_total", float64(intelMetrics.ImportsFailed), map[string]string{"result": "error"})
+	writeMetric(&buf, "cheesewaf_intel_feed_items_stored_total", "Normalized intel items stored by the feed scheduler.", float64(intelMetrics.FeedItemsStored), nil)
+	writeMetric(&buf, "cheesewaf_intel_candidates_reviewed_total", "Intel candidates reviewed by result.", float64(intelMetrics.CandidatesApproved), map[string]string{"result": "approved"})
+	writeMetricSample(&buf, "cheesewaf_intel_candidates_reviewed_total", float64(intelMetrics.CandidatesRejected), map[string]string{"result": "rejected"})
 	for _, code := range sortedIntKeys(snapshot.StatusCodes) {
 		writeMetric(&buf, "cheesewaf_status_total", "Events by status code.", float64(snapshot.StatusCodes[code]), map[string]string{"code": fmt.Sprint(code)})
 	}
@@ -150,6 +157,12 @@ func Values(snapshot Snapshot) map[string]float64 {
 		"cheesewaf_logs_dropped_total":              float64(storage.ProcessLogWriteFailures()),
 		"cheesewaf_waf_budget_exhausted_pass_total": float64(engine.ProcessBudgetExhaustedPass()),
 	}
+	intelMetrics := intel.ProcessMetrics()
+	values["cheesewaf_intel_imports_total:result=ok"] = float64(intelMetrics.ImportsOK)
+	values["cheesewaf_intel_imports_total:result=error"] = float64(intelMetrics.ImportsFailed)
+	values["cheesewaf_intel_feed_items_stored_total"] = float64(intelMetrics.FeedItemsStored)
+	values["cheesewaf_intel_candidates_reviewed_total:result=approved"] = float64(intelMetrics.CandidatesApproved)
+	values["cheesewaf_intel_candidates_reviewed_total:result=rejected"] = float64(intelMetrics.CandidatesRejected)
 	for area, usage := range snapshot.DiskUsage {
 		values["cheesewaf_disk_usage_bytes:"+area] = float64(usage)
 	}
@@ -184,10 +197,21 @@ func renderLabels(labels map[string]string) string {
 	keys := sortedStringKeys(labels)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
-		value := strings.ReplaceAll(labels[key], `"`, `\"`)
-		parts = append(parts, fmt.Sprintf(`%s="%s"`, key, value))
+		parts = append(parts, fmt.Sprintf(`%s="%s"`, key, escapeLabelValue(labels[key])))
 	}
 	return strings.Join(parts, ",")
+}
+
+// escapeLabelValue applies the text exposition format escape rules for label
+// values: backslash, double quote, and line feed. A raw line feed would end the
+// sample early, so an unescaped value could append samples of its own and make
+// the whole scrape unparsable; a trailing backslash would escape the closing
+// quote and leave the label unterminated.
+func escapeLabelValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+	return value
 }
 
 func sortedIntKeys(values map[int]int) []int {

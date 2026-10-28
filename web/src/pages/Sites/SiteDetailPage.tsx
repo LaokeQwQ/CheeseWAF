@@ -735,6 +735,21 @@ export default function SiteDetailPage() {
                   <span>{t('sites.responseMaxBody')}</span>
                   <ByteUnitInput value={site.advanced.response.max_body_bytes} minBytes={1024} onChange={(value) => updateAdvanced('response', { max_body_bytes: value })} />
                 </label>
+                <label>
+                  <span>{t('sites.responseFailMode')}</span>
+                  <Select
+                    value={site.advanced.response.inspection?.fail_mode || 'observe'}
+                    onValueChange={(value) => updateAdvanced('response', { inspection: { fail_mode: value } })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="observe">{t('sites.responseFailModeObserve')}</SelectItem>
+                      <SelectItem value="open">{t('sites.responseFailModeOpen')}</SelectItem>
+                      <SelectItem value="closed">{t('sites.responseFailModeClosed')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <em>{t('sites.responseFailModeHint')}</em>
+                </label>
                 <label className="wide-field">
                   <span>{t('sites.sensitivePatterns')}</span>
                   <Input value={asCSV(site.advanced.response.sensitive_patterns)} placeholder="password, token, secret" onChange={(e) => updateAdvanced('response', { sensitive_patterns: splitList(e.target.value) })} />

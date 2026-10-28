@@ -151,3 +151,12 @@ func PathMatchesPrefix(requestPath, prefix string) bool {
 	}
 	return requestPath == base || strings.HasPrefix(requestPath, base+"/")
 }
+
+// stripMatrixSegments applies the two-level matrix-parameter policy used by
+// servlet containers and IIS: a segment beginning "..;" is a parent-directory
+// reference that path.Clean cannot see, so it fails closed; any other segment
+// loses its ";" suffix so policy matching sees the path the backend routes on.
+//
+// This must run before path.Clean. Stripping first would rewrite "/a/..;/b"
+// into "/a/../b", which Clean then folds into "/b" and reports as valid, so the
+// traversal would pass silently.

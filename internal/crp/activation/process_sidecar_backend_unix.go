@@ -25,6 +25,12 @@ func killProcessSidecarCommand(cmd *exec.Cmd) error {
 	return err
 }
 
+// Reaping the group leader does not reap its children. Terminate any group
+// members left behind after a graceful stop or an unexpected leader exit.
+func cleanupExitedProcessSidecarCommand(cmd *exec.Cmd) error {
+	return killProcessSidecarCommand(cmd)
+}
+
 func validateProcessExecutableMode(mode os.FileMode) error {
 	if mode.Perm()&0o111 == 0 {
 		return errors.New("executable has no execute bit")

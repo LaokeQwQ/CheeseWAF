@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaokeQwQ/CheeseWAF/internal/adapterapi"
 	"github.com/LaokeQwQ/CheeseWAF/internal/config"
 	"github.com/LaokeQwQ/CheeseWAF/internal/edge"
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
@@ -45,6 +46,7 @@ func TestRequestBodyReadErrorStatusDistinguishesOverload(t *testing.T) {
 		{name: "wrapped overload from request path", err: wrapped, fallback: http.StatusBadRequest, want: http.StatusServiceUnavailable},
 		{name: "wrapped overload from pipeline path", err: wrapped, fallback: http.StatusInternalServerError, want: http.StatusServiceUnavailable},
 		{name: "ordinary read failure", err: fmt.Errorf("malformed body"), fallback: http.StatusBadRequest, want: http.StatusBadRequest},
+		{name: "unsupported content encoding", err: fmt.Errorf("decode: %w", engine.ErrUnsupportedContentEncoding), fallback: http.StatusBadRequest, want: http.StatusUnsupportedMediaType},
 		{name: "nil error preserves fallback", err: nil, fallback: http.StatusInternalServerError, want: http.StatusInternalServerError},
 	}
 	for _, tc := range tests {
@@ -2005,37 +2007,70 @@ func TestServerPhase2Protections(t *testing.T) {
 	}
 }
 
-func TestServerDoesNotBlockHarmlessResponseWhenInspectionIsIncomplete(t *testing.T) {
+// Response inspection used to fail open: a body it could not cover (over the
+// size limit here) was delivered with only a log line. The fail mode now decides
+// that trade-off per site; the default is observe so existing large/streaming
+// responses keep working, and sensitive sites opt into closed.
+func TestServerResponseInspectionFailModes(t *testing.T) {
 	const body = "harmless response larger than the inspection limit"
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, body)
-	}))
-	defer upstream.Close()
+	for _, tc := range []struct {
+		name       string
+		failMode   string
+		wantMode   string
+		wantStatus int
+		wantAction string
+	}{
+		{name: "default is observe", failMode: "", wantMode: config.ResponseFailModeObserve, wantStatus: http.StatusOK, wantAction: "log"},
+		{name: "closed blocks", failMode: config.ResponseFailModeClosed, wantMode: config.ResponseFailModeClosed, wantStatus: http.StatusForbidden, wantAction: "block"},
+		{name: "observe logs without blocking", failMode: config.ResponseFailModeObserve, wantMode: config.ResponseFailModeObserve, wantStatus: http.StatusOK, wantAction: "log"},
+		{name: "open keeps pass-through", failMode: config.ResponseFailModeOpen, wantMode: config.ResponseFailModeOpen, wantStatus: http.StatusOK, wantAction: "log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
 
-	cfg := config.Default()
-	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
-	cfg.Sites[0].WAF.Mode = "block"
-	cfg.Sites[0].WAF.Response.Enabled = true
-	cfg.Sites[0].WAF.Response.MaxBodyBytes = 8
-	cfg.Sites[0].WAF.Response.SensitivePatterns = []string{"known-secret"}
-	cfg.Protection.IP.Whitelist = nil
-	cfg.Protection.IP.Blacklist = nil
-	cfg.Protection.RateLimit.Enabled = false
+			cfg := config.Default()
+			cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+			cfg.Sites[0].WAF.Mode = "block"
+			cfg.Sites[0].WAF.Response.Enabled = true
+			cfg.Sites[0].WAF.Response.MaxBodyBytes = 8
+			cfg.Sites[0].WAF.Response.SensitivePatterns = []string{"known-secret"}
+			cfg.Sites[0].WAF.Response.Inspection.FailMode = tc.failMode
+			cfg.Protection.IP.Whitelist = nil
+			cfg.Protection.IP.Blacklist = nil
+			cfg.Protection.RateLimit.Enabled = false
 
-	sink := &captureSink{}
-	server, err := NewServer(&cfg, engine.NewPipeline(), sink)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
+			sink := &captureSink{}
+			server, err := NewServer(&cfg, engine.NewPipeline(), sink)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer server.Close()
 
-	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/", nil))
-	if recorder.Code != http.StatusOK || recorder.Body.String() != body {
-		t.Fatalf("incomplete inspection blocked or truncated harmless response: status=%d body=%q", recorder.Code, recorder.Body.String())
-	}
-	if len(sink.entries) != 1 || sink.entries[0].DetectorID != "response.inspector" || sink.entries[0].Action != "log" {
-		t.Fatalf("incomplete inspection should be logged without blocking: %+v", sink.entries)
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/", nil))
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("fail_mode=%q status=%d body=%q", tc.failMode, recorder.Code, recorder.Body.String())
+			}
+			if tc.wantStatus == http.StatusOK && recorder.Body.String() != body {
+				t.Fatalf("fail_mode=%q truncated the response: %q", tc.failMode, recorder.Body.String())
+			}
+			if tc.wantStatus != http.StatusOK && strings.Contains(recorder.Body.String(), body) {
+				t.Fatalf("fail_mode=%q leaked the uninspected upstream body", tc.failMode)
+			}
+			if len(sink.entries) != 1 {
+				t.Fatalf("fail_mode=%q log entries = %+v", tc.failMode, sink.entries)
+			}
+			entry := sink.entries[0]
+			if entry.DetectorID != "response.inspector" || entry.Action != tc.wantAction {
+				t.Fatalf("fail_mode=%q log entry = %+v", tc.failMode, entry)
+			}
+			if got, _ := entry.Metadata["response_fail_mode"].(string); got != tc.wantMode {
+				t.Fatalf("fail_mode=%q logged response_fail_mode=%q, want %q", tc.failMode, got, tc.wantMode)
+			}
+		})
 	}
 }
 
@@ -2481,5 +2516,638 @@ func TestRequestIsHTTPSTrustsForwardedProtoOnlyFromTrustedProxy(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "http")
 	if requestIsHTTPS(req, []string{"192.0.2.0/24"}) {
 		t.Fatal("forwarded http was treated as secure")
+	}
+}
+
+// newSemanticPolicyServer wires the real semantic analyzer so the action policy
+// is exercised end to end: detection (severity/confidence) is produced by the
+// analyzer, and only the mapping onto block/challenge/log is configured.
+func newSemanticPolicyServer(t *testing.T, configure func(*config.Config)) (*Server, *captureSink) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := config.Default()
+	cfg.Sites[0].Upstreams = []config.UpstreamConfig{{Address: upstream.URL, Weight: 1}}
+	cfg.Protection.IP.Whitelist = nil
+	cfg.Protection.IP.Blacklist = nil
+	cfg.Protection.RateLimit.Enabled = false
+	cfg.Protection.Bot.Enabled = false
+	cfg.APISec.Enabled = false
+	if configure != nil {
+		configure(&cfg)
+	}
+	sink := &captureSink{}
+	server, err := NewServer(&cfg, engine.NewPipeline(semantic.NewAnalyzer("block", 3)), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return server, sink
+}
+
+func serveSemanticPolicyRequest(t *testing.T, server *Server, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost"+target, nil))
+	return recorder
+}
+
+func policyDecisionFromSink(t *testing.T, sink *captureSink) (string, webAttackPolicyDecision) {
+	t.Helper()
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected exactly one log entry, got %d: %#v", len(sink.entries), sink.entries)
+	}
+	decision, ok := sink.entries[0].Metadata["waf_policy_decision"].(webAttackPolicyDecision)
+	if !ok {
+		t.Fatalf("missing waf policy decision metadata: %#v", sink.entries[0].Metadata)
+	}
+	return sink.entries[0].Action, decision
+}
+
+const (
+	// The analyzer scores this at 0.905 (high severity): above the smart base
+	// 0.85 but below a 0.97 search-route block threshold.
+	unionSelectQuery = "/search?q=This+article+explains+how+to+use+UNION+SELECT+1%2C2%2C3+in+your+database+queries"
+	unionSelectAdmin = "/admin?q=This+article+explains+how+to+use+UNION+SELECT+1%2C2%2C3+in+your+database+queries"
+	// The analyzer scores this at 0.955: above the smart base and above the
+	// search-route block threshold of 0.97? No — below it, so still relaxed.
+	tautologyQuery = "/search?q=%27+OR+1%3D1--"
+	tautologyAdmin = "/admin?q=%27+OR+1%3D1--"
+)
+
+func TestSemanticActionThresholdsRelaxSearchRoute(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:      `^/search$`,
+			Params:    []string{"q"},
+			Block:     0.97,
+			Challenge: 0.90,
+		}}
+	})
+
+	serveSemanticPolicyRequest(t, server, unionSelectQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionChallenge.String() {
+		t.Fatalf("confidence 0.905 with block=0.97 challenge=0.90 must be challenged, got %q (%s)", action, decision.Reason)
+	}
+	if decision.RouteOverride != `^/search$` || decision.BlockThreshold != 0.97 || decision.ChallengeThreshold != 0.90 {
+		t.Fatalf("decision did not report the resolved search ladder: %#v", decision)
+	}
+	if decision.ResultConfidence < 0.90 || decision.ResultConfidence >= 0.97 {
+		t.Fatalf("test payload confidence moved out of the challenge band: %v", decision.ResultConfidence)
+	}
+}
+
+func TestSemanticActionThresholdsKeepAdminRouteBlocking(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:      `^/search$`,
+			Params:    []string{"q"},
+			Block:     0.97,
+			Challenge: 0.90,
+		}}
+	})
+
+	recorder := serveSemanticPolicyRequest(t, server, unionSelectAdmin)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionBlock.String() || recorder.Code != http.StatusForbidden {
+		t.Fatalf("/admin must keep blocking at the 0.85 base: action=%q code=%d (%s)", action, recorder.Code, decision.Reason)
+	}
+	if decision.RouteOverride != "" || decision.BlockThreshold != 0.85 {
+		t.Fatalf("/admin must not inherit the search override: %#v", decision)
+	}
+}
+
+// The next two tests are the same payload pair on two routes. Detection output
+// is identical (the analyzer is untouched); only the route decides the action,
+// which is exactly what "route policy, not classifier change" must mean.
+func TestSemanticActionThresholdsRouteScopedNotClassifierScoped(t *testing.T) {
+	newServer := func() (*Server, *captureSink) {
+		return newSemanticPolicyServer(t, func(cfg *config.Config) {
+			cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+			cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+				Path:      `^/search$`,
+				Params:    []string{"q"},
+				Block:     0.97,
+				Challenge: 0.90,
+			}}
+		})
+	}
+
+	searchServer, searchSink := newServer()
+	serveSemanticPolicyRequest(t, searchServer, tautologyQuery)
+	searchAction, searchDecision := policyDecisionFromSink(t, searchSink)
+
+	adminServer, adminSink := newServer()
+	adminRecorder := serveSemanticPolicyRequest(t, adminServer, tautologyAdmin)
+	adminAction, adminDecision := policyDecisionFromSink(t, adminSink)
+
+	if searchAction == engine.ActionBlock.String() {
+		t.Fatalf("search route must not block the tautology payload: %#v", searchDecision)
+	}
+	if adminAction != engine.ActionBlock.String() || adminRecorder.Code != http.StatusForbidden {
+		t.Fatalf("admin route must block the same payload: action=%q code=%d", adminAction, adminRecorder.Code)
+	}
+	if searchDecision.ResultConfidence != adminDecision.ResultConfidence || searchDecision.DetectorID != adminDecision.DetectorID {
+		t.Fatalf("detection changed between routes: search=%#v admin=%#v", searchDecision, adminDecision)
+	}
+}
+
+func TestSemanticActionThresholdsDefaultKeepsBlocking(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+	})
+
+	recorder := serveSemanticPolicyRequest(t, server, tautologyQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionBlock.String() || recorder.Code != http.StatusForbidden {
+		t.Fatalf("unconfigured site must keep blocking: action=%q code=%d (%s)", action, recorder.Code, decision.Reason)
+	}
+	if decision.BlockThreshold != 0.85 || decision.RouteOverride != "" || decision.ActionOverride != "" {
+		t.Fatalf("unconfigured site must use the web_attack preset unchanged: %#v", decision)
+	}
+}
+
+func TestSemanticActionThresholdsObserveOverrideOnlyLogs(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:   `^/search$`,
+			Action: config.SemanticActionObserve,
+		}}
+	})
+
+	recorder := serveSemanticPolicyRequest(t, server, tautologyQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionLog.String() || recorder.Code != http.StatusOK {
+		t.Fatalf("observe override must forward the request: action=%q code=%d (%s)", action, recorder.Code, decision.Reason)
+	}
+	if strings.TrimSpace(recorder.Body.String()) != "ok" {
+		t.Fatalf("observe override did not reach the upstream: body=%q", recorder.Body.String())
+	}
+	if decision.ActionOverride != config.SemanticActionObserve {
+		t.Fatalf("decision did not report the observe override: %#v", decision)
+	}
+}
+
+func TestSemanticActionThresholdsChallengeOverrideForcesChallenge(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:   `^/search$`,
+			Action: config.SemanticActionChallenge,
+		}}
+	})
+
+	serveSemanticPolicyRequest(t, server, tautologyQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionChallenge.String() {
+		t.Fatalf("challenge override must force a challenge: action=%q (%s)", action, decision.Reason)
+	}
+}
+
+func TestSemanticActionThresholdsParamScope(t *testing.T) {
+	// params=[other] must not apply to a hit reported for q, so the base
+	// 0.85 threshold still blocks.
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:   `^/search$`,
+			Params: []string{"other"},
+			Block:  0.97,
+		}}
+	})
+
+	serveSemanticPolicyRequest(t, server, tautologyQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionBlock.String() {
+		t.Fatalf("param-scoped override leaked to another parameter: action=%q (%s)", action, decision.Reason)
+	}
+	if decision.RouteOverride != "" {
+		t.Fatalf("param-scoped override must not match: %#v", decision)
+	}
+}
+
+func TestSemanticActionThresholdsWholePathOverrideIgnoresParams(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:      `^/search$`,
+			Block:     0.97,
+			Challenge: 0.90,
+		}}
+	})
+
+	serveSemanticPolicyRequest(t, server, unionSelectQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionChallenge.String() {
+		t.Fatalf("path-only override must apply to any parameter: action=%q (%s)", action, decision.Reason)
+	}
+	if decision.RouteOverride != `^/search$` {
+		t.Fatalf("path-only override did not match: %#v", decision)
+	}
+}
+
+func TestSemanticActionThresholdsSiteWideLadder(t *testing.T) {
+	// A site-wide ladder with block above the analyzer's confidence relaxes
+	// every route; the aggregate risk escalation must not silently re-block.
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.ActionThresholds = config.SemanticActionThresholds{
+			Block:     0.99,
+			Challenge: 0.90,
+			Log:       0.65,
+		}
+	})
+
+	serveSemanticPolicyRequest(t, server, tautologyQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionChallenge.String() {
+		t.Fatalf("site ladder must map 0.955 to challenge, got %q (%s)", action, decision.Reason)
+	}
+	if decision.BlockThreshold != 0.99 || decision.ChallengeThreshold != 0.90 || decision.LogThreshold != 0.65 {
+		t.Fatalf("decision did not report the site ladder: %#v", decision)
+	}
+}
+
+func TestResolveWebAttackLadderInheritance(t *testing.T) {
+	reqCtx := func(path, param string) *engine.RequestContext {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil)
+		ctx, err := engine.NewRequestContextDeferredBody(req, "default", nil, 1<<20)
+		if err != nil {
+			t.Fatalf("request context: %v", err)
+		}
+		if param != "" {
+			ctx.Metadata["review_candidate"] = map[string]any{"name": param}
+		}
+		return ctx
+	}
+
+	t.Run("preset only", func(t *testing.T) {
+		ladder := resolveWebAttackLadder(config.ProtectionLevelSmart, config.SemanticPolicyConfig{}, reqCtx("/search", "q"))
+		if ladder.Explicit || ladder.Block != 0.85 || ladder.Challenge != 0.85 || ladder.Log != 0 || ladder.Action != "" {
+			t.Fatalf("unexpected preset ladder: %+v", ladder)
+		}
+	})
+
+	t.Run("site ladder then route override", func(t *testing.T) {
+		policy := config.SemanticPolicyConfig{
+			ActionThresholds: config.SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65},
+			RouteOverrides: []config.SemanticRouteOverride{{
+				Path: `^/search$`, Params: []string{"q"}, Block: 0.97, Challenge: 0.90,
+			}},
+		}
+		ladder := resolveWebAttackLadder(config.ProtectionLevelSmart, policy, reqCtx("/search", "q"))
+		if !ladder.Explicit || ladder.Block != 0.97 || ladder.Challenge != 0.90 || ladder.Log != 0.65 || ladder.RoutePath != `^/search$` {
+			t.Fatalf("route override did not refine the site ladder: %+v", ladder)
+		}
+	})
+
+	t.Run("route override inherits unset rungs", func(t *testing.T) {
+		policy := config.SemanticPolicyConfig{
+			ActionThresholds: config.SemanticActionThresholds{Log: 0.65},
+			RouteOverrides:   []config.SemanticRouteOverride{{Path: `^/search$`, Block: 0.97}},
+		}
+		ladder := resolveWebAttackLadder(config.ProtectionLevelSmart, policy, reqCtx("/search", "q"))
+		if ladder.Block != 0.97 || ladder.Challenge != 0.97 || ladder.Log != 0.65 {
+			t.Fatalf("raising block must pull the inherited challenge rung with it: %+v", ladder)
+		}
+	})
+
+	t.Run("invalid pattern is skipped without panicking", func(t *testing.T) {
+		policy := config.SemanticPolicyConfig{
+			RouteOverrides: []config.SemanticRouteOverride{{Path: `^/search(`, Block: 0.97}},
+		}
+		ladder := resolveWebAttackLadder(config.ProtectionLevelSmart, policy, reqCtx("/search", "q"))
+		if ladder.RoutePath != "" || ladder.Block != 0.85 {
+			t.Fatalf("invalid pattern must not apply: %+v", ladder)
+		}
+	})
+
+	t.Run("normalized path falls back to the request URL", func(t *testing.T) {
+		policy := config.SemanticPolicyConfig{
+			RouteOverrides: []config.SemanticRouteOverride{{Path: `^/search$`, Block: 0.97}},
+		}
+		ctx := reqCtx("/search", "q")
+		ctx.NormalizedPath = ""
+		ladder := resolveWebAttackLadder(config.ProtectionLevelSmart, policy, ctx)
+		if ladder.RoutePath != `^/search$` {
+			t.Fatalf("empty NormalizedPath must fall back to Request.URL.Path: %+v", ladder)
+		}
+	})
+
+	t.Run("nil context uses the preset", func(t *testing.T) {
+		policy := config.SemanticPolicyConfig{
+			RouteOverrides: []config.SemanticRouteOverride{{Path: `.*`, Block: 0.97}},
+		}
+		ladder := resolveWebAttackLadder(config.ProtectionLevelSmart, policy, nil)
+		if ladder.RoutePath != "" || ladder.Block != 0.85 {
+			t.Fatalf("nil context must not match a route override: %+v", ladder)
+		}
+	})
+}
+
+func TestSemanticActionThresholdsOverridePinsActionWithoutLadder(t *testing.T) {
+	// A pinned action must not fall through to a block when the ladder would
+	// otherwise block: "challenge this route" means no hard block there.
+	high := &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "test.semantic",
+		Category:   "sqli",
+		Severity:   engine.SeverityHigh,
+		Action:     engine.ActionBlock,
+		Confidence: 0.99,
+		Message:    "test detection",
+	}
+	site := config.Default().Sites[0]
+	site.WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+		Path:   `^/search$`,
+		Action: config.SemanticActionChallenge,
+	}}
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/search?q=1", nil)
+	ctx, err := engine.NewRequestContextDeferredBody(req, site.ID, nil, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	decision := evaluateWebAttackPolicyForSite(config.ProtectionLevelSmart, high, nil, site, ctx)
+	if decision.Action != engine.ActionChallenge.String() {
+		t.Fatalf("challenge override must pin challenge, got %q (%s)", decision.Action, decision.Reason)
+	}
+
+	// The preset severity gate still applies: a low-severity hit cannot be
+	// promoted into a challenge by the override, and must not become a block.
+	low := *high
+	low.Severity = engine.SeverityLow
+	decision = evaluateWebAttackPolicyForSite(config.ProtectionLevelSmart, &low, nil, site, ctx)
+	if decision.Action != engine.ActionLog.String() {
+		t.Fatalf("challenge override must not promote a below-minimum severity hit, got %q", decision.Action)
+	}
+
+	// Without the override the same hit blocks.
+	plain := config.Default().Sites[0]
+	decision = evaluateWebAttackPolicyForSite(config.ProtectionLevelSmart, high, nil, plain, ctx)
+	if decision.Action != engine.ActionBlock.String() {
+		t.Fatalf("unconfigured site must block, got %q", decision.Action)
+	}
+}
+
+func TestSemanticActionLadderRungs(t *testing.T) {
+	site := config.Default().Sites[0]
+	site.WAF.SemanticPolicy.ActionThresholds = config.SemanticActionThresholds{Block: 0.92, Challenge: 0.85, Log: 0.65}
+	result := func(severity engine.Severity, confidence float64) *engine.DetectionResult {
+		return &engine.DetectionResult{
+			Detected:   true,
+			DetectorID: "test.semantic",
+			Category:   "sqli",
+			Severity:   severity,
+			Action:     engine.ActionBlock,
+			Confidence: confidence,
+			Message:    "test detection",
+		}
+	}
+
+	cases := []struct {
+		name       string
+		level      string
+		severity   engine.Severity
+		confidence float64
+		want       string
+	}{
+		{"block rung", config.ProtectionLevelSmart, engine.SeverityHigh, 0.93, engine.ActionBlock.String()},
+		{"challenge rung", config.ProtectionLevelSmart, engine.SeverityHigh, 0.90, engine.ActionChallenge.String()},
+		{"log rung", config.ProtectionLevelSmart, engine.SeverityHigh, 0.70, engine.ActionLog.String()},
+		{"below log rung", config.ProtectionLevelSmart, engine.SeverityHigh, 0.50, engine.ActionLog.String()},
+		// The ladder raises the bar for blocking: a hit that the 0.85 preset
+		// would block is only challenged once block=0.92.
+		{"raised block relaxes a preset block", config.ProtectionLevelSmart, engine.SeverityHigh, 0.86, engine.ActionChallenge.String()},
+		// Severity still gates the block rung.
+		{"severity below preset minimum", config.ProtectionLevelSmart, engine.SeverityLow, 0.99, engine.ActionChallenge.String()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision := evaluateWebAttackPolicyForSite(tc.level, result(tc.severity, tc.confidence), nil, site, nil)
+			if decision.Action != tc.want {
+				t.Fatalf("confidence %v severity %s -> %q, want %q (%s)", tc.confidence, tc.severity, decision.Action, tc.want, decision.Reason)
+			}
+		})
+	}
+
+	t.Run("protection off keeps logging", func(t *testing.T) {
+		decision := evaluateWebAttackPolicyForSite(config.ProtectionLevelOff, result(engine.SeverityCritical, 0.99), nil, site, nil)
+		if decision.Action != engine.ActionLog.String() {
+			t.Fatalf("web_attack=off must not act on a hit, got %q", decision.Action)
+		}
+	})
+
+	t.Run("detector pass is never escalated by the ladder", func(t *testing.T) {
+		pass := result(engine.SeverityCritical, 0.99)
+		pass.Action = engine.ActionPass
+		decision := evaluateWebAttackPolicyForSite(config.ProtectionLevelSmart, pass, nil, site, nil)
+		if decision.Action != engine.ActionLog.String() {
+			t.Fatalf("detector pass must stay a pass, got %q", decision.Action)
+		}
+	})
+}
+
+func TestSemanticActionThresholdsBlockOnlyOverrideLogs(t *testing.T) {
+	// Raising block alone leaves no challenge band (the preset has none), so a
+	// hit between the base 0.85 and the 0.97 route block must only be logged.
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:  `^/search$`,
+			Block: 0.97,
+		}}
+	})
+
+	recorder := serveSemanticPolicyRequest(t, server, unionSelectQuery)
+	action, decision := policyDecisionFromSink(t, sink)
+	if action != engine.ActionLog.String() || recorder.Code != http.StatusOK {
+		t.Fatalf("block-only override must only log: action=%q code=%d (%s)", action, recorder.Code, decision.Reason)
+	}
+	if decision.BlockThreshold != 0.97 || decision.ChallengeThreshold != 0.97 || decision.LogThreshold != 0 {
+		t.Fatalf("unexpected resolved ladder: %#v", decision)
+	}
+}
+
+func TestSemanticActionThresholdsLogRungSuppressesAggregateEscalation(t *testing.T) {
+	// An explicit log rung is the operator's answer for weak signals: the
+	// aggregate risk score must not escalate them back to a block.
+	site := config.Default().Sites[0]
+	site.WAF.SemanticPolicy.ActionThresholds = config.SemanticActionThresholds{Log: 0.90}
+	weak := engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "semantic.analyzer.sqli",
+		Category:   "sqli",
+		Severity:   engine.SeverityHigh,
+		Action:     engine.ActionBlock,
+		Confidence: 0.60,
+		Payload:    "id=1 or 1=1",
+	}
+	other := weak
+	other.DetectorID = "semantic.xss"
+	other.Category = "xss"
+	other.Payload = "<script>alert(1)</script>"
+	third := weak
+	third.DetectorID = "semantic.lfi"
+	third.Category = "lfi"
+	third.Payload = "../../etc/passwd"
+	results := []engine.DetectionResult{weak, other, third}
+
+	decision := evaluateWebAttackPolicyForSite(config.ProtectionLevelSmart, &weak, results, site, nil)
+	if decision.Action != engine.ActionLog.String() {
+		t.Fatalf("explicit log rung must keep weak hits in the log, got %q (%s, risk=%d)",
+			decision.Action, decision.Reason, decision.RiskScore)
+	}
+
+	// The same evidence without a configured ladder still escalates on risk.
+	plain := config.Default().Sites[0]
+	decision = evaluateWebAttackPolicyForSite(config.ProtectionLevelSmart, &weak, results, plain, nil)
+	if decision.Action != engine.ActionBlock.String() {
+		t.Fatalf("preset must keep the aggregate escalation, got %q (%s, risk=%d)",
+			decision.Action, decision.Reason, decision.RiskScore)
+	}
+}
+
+// adapterRoutePolicyDetector reports a fixed-confidence hit for /search and
+// publishes a review candidate, mirroring what the semantic analyzer does.
+type adapterRoutePolicyDetector struct{ confidence float64 }
+
+func (adapterRoutePolicyDetector) ID() string    { return "adapter-route-policy" }
+func (adapterRoutePolicyDetector) Name() string  { return "adapter route policy" }
+func (adapterRoutePolicyDetector) Priority() int { return 300 }
+func (d adapterRoutePolicyDetector) Detect(_ context.Context, request *engine.RequestContext) (*engine.DetectionResult, error) {
+	if request == nil || request.Request == nil || request.Request.URL.Path != "/search" {
+		return nil, nil
+	}
+	request.Metadata["review_candidate"] = map[string]any{"name": "q", "category": "sqli", "severity": "high"}
+	return &engine.DetectionResult{
+		Detected:   true,
+		DetectorID: "semantic.analyzer.sqli",
+		Category:   "sqli",
+		Severity:   engine.SeverityHigh,
+		Action:     engine.ActionBlock,
+		Confidence: d.confidence,
+		Message:    "syntax: UNION SELECT query composition",
+		Payload:    "This article explains how to use UNION SELECT 1,2,3",
+	}, nil
+}
+
+// TestInspectAdapterAppliesRouteOverrides guards the adapter entry point: it
+// must resolve the same per-route ladder as the inline proxy, otherwise a
+// gateway integration would silently ignore waf.semantic_policy.
+func TestInspectAdapterAppliesRouteOverrides(t *testing.T) {
+	cfg := config.Default()
+	cfg.Sites = []config.SiteConfig{{
+		ID:      "site-1",
+		Name:    "adapter route policy",
+		Domains: []string{"app.example"},
+		Enabled: true,
+		WAF: config.WAFConfig{
+			Enabled:       true,
+			Mode:          "block",
+			ParanoiaLevel: 3,
+			SemanticPolicy: config.SemanticPolicyConfig{
+				RouteOverrides: []config.SemanticRouteOverride{{
+					Path:      `^/search$`,
+					Params:    []string{"q"},
+					Block:     0.97,
+					Challenge: 0.90,
+				}},
+			},
+		},
+	}}
+	cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+	server, err := NewServer(&cfg, engine.NewPipeline(adapterRoutePolicyDetector{confidence: 0.905}), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Close() }()
+
+	request := adapterapi.Request{
+		ContractVersion: adapterapi.Version,
+		Source:          adapterapi.SourceGeneric,
+		Method:          http.MethodGet,
+		Scheme:          "https",
+		Authority:       "app.example",
+		Path:            "/search",
+		Query:           "q=UNION+SELECT+1",
+		BodyState:       adapterapi.BodyStateAbsent,
+		Client:          adapterapi.ClientContext{IP: "203.0.113.10"},
+	}
+	decision, err := server.InspectAdapter(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != adapterapi.ActionChallenge {
+		t.Fatalf("adapter ignored the search route override: %+v", decision)
+	}
+
+	// The same confidence without the override blocks at the 0.85 base.
+	plain := config.Default()
+	plain.Sites = cfg.Sites
+	plain.Sites[0].WAF.SemanticPolicy.RouteOverrides = nil
+	plain.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+	plainServer, err := NewServer(&plain, engine.NewPipeline(adapterRoutePolicyDetector{confidence: 0.905}), noopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = plainServer.Close() }()
+	decision, err = plainServer.InspectAdapter(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != adapterapi.ActionBlock {
+		t.Fatalf("adapter without override must block: %+v", decision)
+	}
+}
+
+// The console renders waf_policy_decision straight from log metadata JSON, so
+// the resolved ladder must survive serialization with stable key names.
+func TestSemanticPolicyDecisionMetadataIsJSONVisible(t *testing.T) {
+	server, sink := newSemanticPolicyServer(t, func(cfg *config.Config) {
+		cfg.Protection.Policy.WebAttack = config.ProtectionLevelSmart
+		cfg.Sites[0].WAF.SemanticPolicy.RouteOverrides = []config.SemanticRouteOverride{{
+			Path:      `^/search$`,
+			Params:    []string{"q"},
+			Block:     0.97,
+			Challenge: 0.90,
+		}}
+	})
+
+	serveSemanticPolicyRequest(t, server, unionSelectQuery)
+	if len(sink.entries) != 1 {
+		t.Fatalf("expected one log entry, got %d", len(sink.entries))
+	}
+	raw, err := json.Marshal(sink.entries[0].Metadata["waf_policy_decision"])
+	if err != nil {
+		t.Fatalf("marshal policy decision: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal policy decision: %v", err)
+	}
+	for key, want := range map[string]any{
+		"block_threshold":     0.97,
+		"challenge_threshold": 0.90,
+		"log_threshold":       float64(0),
+		"route_override":      `^/search$`,
+		"minimum_confidence":  0.97,
+	} {
+		got, ok := decoded[key]
+		if !ok {
+			t.Fatalf("policy decision JSON is missing %q: %s", key, raw)
+		}
+		if got != want {
+			t.Fatalf("policy decision JSON %q = %v, want %v", key, got, want)
+		}
+	}
+	if _, ok := decoded["action_override"]; ok {
+		t.Fatalf("unpinned override must omit action_override: %s", raw)
 	}
 }

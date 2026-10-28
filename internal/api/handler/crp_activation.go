@@ -3,13 +3,16 @@ package handler
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/api/middleware"
+	"github.com/LaokeQwQ/CheeseWAF/internal/audit"
 	"github.com/LaokeQwQ/CheeseWAF/internal/crp"
 	"github.com/LaokeQwQ/CheeseWAF/internal/crp/activation"
+	"github.com/google/uuid"
 )
 
 const maxCRPActivationProbeCount = 64
@@ -60,8 +63,14 @@ func (h *Handler) executeCRPActivation(w http.ResponseWriter, r *http.Request, a
 		writeError(w, http.StatusBadRequest, "CRP_ACTIVATION_INVALID", "CRP activation request is invalid")
 		return
 	}
+	correlationID := uuid.NewString()
+	if err := h.appendCRPActivationAudit(r.Context(), claims, string(action), request.PluginKey, correlationID, "", "", audit.OutcomeStarted, "operation.started"); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "CRP_ACTIVATION_AUDIT_UNAVAILABLE", "durable CRP activation audit is unavailable")
+		return
+	}
 	result, err := h.CRPActivation.ExecuteCRPActivation(r.Context(), activation.AsyncRequest{
 		Action:           action,
+		RequestID:        correlationID,
 		Key:              request.PluginKey,
 		ExpectedRevision: request.ExpectedRevision,
 		Descriptor:       request.Descriptor,
@@ -72,7 +81,20 @@ func (h *Handler) executeCRPActivation(w http.ResponseWriter, r *http.Request, a
 		},
 	})
 	if err != nil {
+		if auditErr := h.appendCRPActivationAudit(r.Context(), claims, string(action), request.PluginKey, correlationID, "", "", audit.OutcomeFailure, "operation.failed"); auditErr != nil {
+			log.Printf("durable CRP activation failure audit failed action=%q: %v", action, auditErr)
+			writeError(w, http.StatusServiceUnavailable, "CRP_ACTIVATION_AUDIT_FAILED", "durable CRP activation audit could not be committed")
+			return
+		}
 		writeCRPActivationError(w, err)
+		return
+	}
+	completionCorrelationID := result.RequestID
+	if completionCorrelationID == "" {
+		completionCorrelationID = correlationID
+	}
+	if auditErr := h.appendCRPActivationAudit(r.Context(), claims, string(action), result.Record.Key, completionCorrelationID, result.AuthorizationID, result.ConfirmationID, audit.OutcomeSuccess, "operation.succeeded"); auditErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "CRP_ACTIVATION_AUDIT_FAILED", "durable CRP activation audit could not be committed")
 		return
 	}
 	writeData(w, map[string]any{

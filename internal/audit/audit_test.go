@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -195,6 +196,110 @@ func TestEncryptedSpoolDoesNotContainPlaintextAndReplayIsIdempotent(t *testing.T
 	}
 }
 
+type ackCountingSpool struct {
+	*MemoryEncryptedSpool
+	acks int
+}
+
+func (s *ackCountingSpool) Ack(ctx context.Context, entry SpoolEntry) error {
+	s.acks++
+	return s.MemoryEncryptedSpool.Ack(ctx, entry)
+}
+
+func TestRuntimeReplayConflictDoesNotAdvanceOrAcknowledgeSpool(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := seed.Append(ctx, testEvent("conflicting-event", EventClassCritical))
+	if err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	key := []byte(strings.Repeat("r", 32))
+	memorySpool, err := NewMemoryEncryptedSpool(key, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spool := &ackCountingSpool{MemoryEncryptedSpool: memorySpool}
+	conflictEvent := testEvent("conflicting-event", EventClassNormal)
+	conflictEvent.Action = "config.conflict"
+	conflict := Record{Sequence: 2, Event: conflictEvent, PreviousHash: first.Hash}
+	conflict.Hash = hashRecord(conflict)
+	if err := spool.Put(ctx, Commit{Record: conflict}); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	if err := replay.Replay(ctx); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("conflicting replay error=%v, want ErrReplayConflict", err)
+	}
+	if spool.acks != 0 {
+		t.Fatalf("conflicting replay acknowledgements=%d, want 0", spool.acks)
+	}
+	if replay.head.Sequence != first.Sequence || replay.head.Hash != first.Hash {
+		t.Fatalf("conflicting replay advanced head: got=%+v want=%+v", replay.head, first)
+	}
+	if got := replay.events[first.Event.EventID]; got.Hash != first.Hash || got.Event.Action != first.Event.Action {
+		t.Fatalf("conflicting replay replaced in-memory event: %+v", got)
+	}
+	rows, err := journal.Records(ctx, "control", 0, 10)
+	if err != nil || len(rows) != 1 || rows[0].Hash != first.Hash {
+		t.Fatalf("journal changed after conflict: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestRuntimeReplayExactDuplicateMayAcknowledgeDurableSpool(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	seed, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := seed.Append(ctx, testEvent("exact-replay", EventClassCritical))
+	if err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	memorySpool, err := NewMemoryEncryptedSpool([]byte(strings.Repeat("i", 32)), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spool := &ackCountingSpool{MemoryEncryptedSpool: memorySpool}
+	// Replay must see the same commit the journal stored, checkpoint included.
+	journal.mu.Lock()
+	stored := cloneCommit(journal.streams["control"].commits[record.Sequence-1])
+	journal.mu.Unlock()
+	if err := spool.Put(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := NewRuntime(RuntimeOptions{Journal: journal, Spool: spool, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	if err := replay.Replay(ctx); err != nil {
+		t.Fatalf("exact duplicate replay failed: %v", err)
+	}
+	if spool.acks != 1 {
+		t.Fatalf("exact duplicate acknowledgements=%d, want 1", spool.acks)
+	}
+}
+
 func corruptJournalForTest(j *MemoryJournal, stream string, index int, mutate func(*Record)) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -272,5 +377,190 @@ func TestOutboxMemoryAdaptersAreMetadataOnlyAndIdempotent(t *testing.T) {
 	encoded, _ := json.Marshal(a.Deliveries())
 	if strings.Contains(string(encoded), "payload") || strings.Contains(string(encoded), "secret") {
 		t.Fatalf("metadata adapter contains forbidden field: %s", encoded)
+	}
+}
+
+// A runtime whose cached head lags another writer must refresh on
+// ErrReplayConflict; otherwise it keeps choosing an occupied sequence.
+func TestRuntimeRefreshesHeadAfterReplayConflict(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	first, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := first.Append(ctx, testEvent("event-1", EventClassNormal)); err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, err := other.Append(ctx, testEvent("event-2", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Append(ctx, testEvent("event-3", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	record, err := first.Append(ctx, testEvent("event-4", EventClassCritical))
+	if err != nil {
+		t.Fatalf("stale runtime append: %v", err)
+	}
+	if record.Sequence != 4 {
+		t.Fatalf("sequence = %d, want 4", record.Sequence)
+	}
+	rows, err := journal.Records(ctx, "control", 0, 10)
+	if err != nil || len(rows) != 4 {
+		t.Fatalf("records = %d err=%v", len(rows), err)
+	}
+}
+
+// The signer value must supply its verifier; otherwise a restarted runtime
+// rejects its own signed checkpoints with ErrCheckpointInvalid.
+func TestRuntimeWithSignerValueVerifiesCheckpointsAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	signer := testSigner()
+	first, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Append(ctx, testEvent("restart-1", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if _, err := restarted.Append(ctx, testEvent("restart-2", EventClassCritical)); err != nil {
+		t.Fatalf("restart append: %v", err)
+	}
+}
+
+// A shared journal can hold checkpoints from another node's key. Restarting
+// with this node's key must accept the foreign checkpoint (its hash is covered
+// by Verify) and keep appending.
+func TestRuntimeRestoresWithForeignCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	signerA := testSigner()
+	seedB := make([]byte, ed25519.SeedSize)
+	for i := range seedB {
+		seedB[i] = byte(i + 101)
+	}
+	signerB := Ed25519Signer{ID: "peer-key", PrivateKey: ed25519.NewKeyFromSeed(seedB)}
+	nodeA, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signerA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeA.Append(ctx, testEvent("a-1", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeA.Close(); err != nil {
+		t.Fatal(err)
+	}
+	nodeB, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signerB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeB.Append(ctx, testEvent("b-1", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: signerA})
+	if err != nil {
+		t.Fatalf("restart with a peer checkpoint: %v", err)
+	}
+	defer restarted.Close()
+	if _, err := restarted.Append(ctx, testEvent("a-2", EventClassCritical)); err != nil {
+		t.Fatalf("append after peer checkpoint: %v", err)
+	}
+}
+
+// The in-memory event cache must stay bounded on a long-lived runtime.
+func TestRuntimeEventCacheStaysBounded(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner(), QueueCapacity: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	for i := 0; i < runtimeEventCache*3; i++ {
+		if _, err := rt.Append(ctx, testEvent("cache-"+strconv.Itoa(i), EventClassNormal)); err != nil {
+			t.Fatal(err)
+		}
+		if i%1000 == 999 {
+			if err := rt.Flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := rt.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	size := len(rt.events)
+	rt.mu.Unlock()
+	if size > runtimeEventCache*2 {
+		t.Fatalf("event cache grew to %d", size)
+	}
+}
+
+// A successful event whose cached copy was pruned must still be recognized as
+// an idempotent retry instead of failing as a sequence conflict.
+func TestRuntimeRetriesPrunedEvent(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	event := testEvent("pruned", EventClassCritical)
+	first, err := rt.Append(ctx, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	delete(rt.events, event.EventID)
+	rt.mu.Unlock()
+	again, err := rt.Append(ctx, event)
+	if err != nil {
+		t.Fatalf("retry after prune: %v", err)
+	}
+	if again.Sequence != first.Sequence || again.Hash != first.Hash {
+		t.Fatalf("retry returned %+v, want %+v", again, first)
+	}
+}
+
+// Historic checkpoints must be verified at startup, not only recent ones.
+func TestRuntimeRejectsTamperedHistoricCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	journal := NewMemoryJournalWithDurability(true)
+	rt, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Append(ctx, testEvent("historic", EventClassCritical)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	journal.mu.Lock()
+	commit := &journal.streams["control"].commits[0]
+	commit.Checkpoint.Signature[0] ^= 0xff
+	journal.mu.Unlock()
+	if _, err := NewRuntime(RuntimeOptions{Journal: journal, StreamID: "control", Signer: testSigner()}); !errors.Is(err, ErrCheckpointInvalid) {
+		t.Fatalf("restart error = %v, want ErrCheckpointInvalid", err)
 	}
 }

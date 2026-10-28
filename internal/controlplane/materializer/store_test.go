@@ -45,7 +45,7 @@ func TestJournalStoreRoundTripAndPermissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0600 {
+		if !secureMode(info.Mode(), 0600) {
 			t.Fatalf("%s mode=%o, want 0600", name, info.Mode().Perm())
 		}
 	}
@@ -53,7 +53,7 @@ func TestJournalStoreRoundTripAndPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dirInfo.Mode().Perm() != 0700 {
+	if !secureMode(dirInfo.Mode(), 0700) {
 		t.Fatalf("directory mode=%o, want 0700", dirInfo.Mode().Perm())
 	}
 }
@@ -153,7 +153,7 @@ func TestJournalStoreRejectsSymlinkAndUnsafePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(unsafeDir)
-	if err != nil || info.Mode().Perm() != 0700 {
+	if err != nil || !secureMode(info.Mode(), 0700) {
 		t.Fatalf("journal directory mode=%o err=%v, want 0700", info.Mode().Perm(), err)
 	}
 }

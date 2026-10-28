@@ -21,6 +21,14 @@ type RuntimeOptions struct {
 	Now             func() time.Time
 }
 
+// EventAppender is the narrow metadata-only boundary exposed to callers that
+// need to record a durable event without depending on the Runtime lifecycle.
+// Production composition should retain the concrete Runtime behind this
+// interface so callers cannot reach the journal or spool directly.
+type EventAppender interface {
+	Append(context.Context, Event) (Record, error)
+}
+
 type queuedEvent struct {
 	event  Event
 	result chan appendResult
@@ -82,7 +90,13 @@ func NewRuntime(o RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 	r.head = last
-	rows, err := o.Journal.Records(context.Background(), o.StreamID, 0, 0)
+	// Only recent events are needed for idempotent append detection; retaining
+	// the whole journal would grow memory with the audit history.
+	after := uint64(0)
+	if last.Sequence > runtimeEventCache {
+		after = last.Sequence - runtimeEventCache
+	}
+	rows, err := o.Journal.Records(context.Background(), o.StreamID, after, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -92,16 +106,35 @@ func NewRuntime(o RuntimeOptions) (*Runtime, error) {
 	if err := o.Journal.Verify(context.Background(), o.StreamID); err != nil {
 		return nil, err
 	}
-	for _, row := range rows {
-		cp, err := o.Journal.Checkpoint(context.Background(), o.StreamID, row.Sequence)
-		if err != nil {
-			return nil, err
-		}
-		if cp == nil {
-			continue
-		}
-		if len(r.verifiers) == 0 || VerifyCheckpoint(o.StreamID, row, *cp, r.verifiers) != nil {
-			return nil, ErrCheckpointInvalid
+	// Verify every checkpoint in pages; only the recent rows stay resident.
+	// The head is pinned first so a writer on another node cannot keep the
+	// loop chasing new events forever.
+	target := last.Sequence
+	if reader, ok := o.Journal.(CheckpointReader); ok {
+		for cursor := uint64(0); cursor < target; {
+			batch, err := reader.CheckpointPage(context.Background(), o.StreamID, cursor, checkpointPageSize)
+			if err != nil {
+				return nil, err
+			}
+			if len(batch) == 0 {
+				break
+			}
+			for _, entry := range batch {
+				if entry.Record.Sequence > target {
+					break
+				}
+				cursor = entry.Record.Sequence
+				cp := entry.Checkpoint
+				if cp == nil {
+					continue
+				}
+				if _, known := r.verifiers[cp.KeyID]; !known {
+					continue
+				}
+				if VerifyCheckpoint(o.StreamID, entry.Record, *cp, r.verifiers) != nil {
+					return nil, ErrCheckpointInvalid
+				}
+			}
 		}
 	}
 	r.worker.Add(1)
@@ -205,6 +238,7 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 		}
 		return Record{}, ErrReplayConflict
 	}
+	var lastErr error
 	for attempt := 0; attempt < 8; attempt++ {
 		sequence := r.head.Sequence + 1
 		if sequence == 0 {
@@ -244,14 +278,30 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 		if err == nil {
 			r.head = rec
 			r.events[event.EventID] = rec
+			r.pruneEventCacheLocked()
 			return rec, nil
 		}
-		if errors.Is(err, ErrSequenceConflict) {
+		if errors.Is(err, ErrReplayConflict) {
+			// A pruned event can still be a successful retry: the journal
+			// already holds this event id.
+			if lookup, ok := r.journal.(EventLookup); ok {
+				if prior, found, lookupErr := lookup.RecordByEventID(ctx, r.stream, event.EventID); lookupErr != nil {
+					return Record{}, lookupErr
+				} else if found && eventEqual(prior.Event, event) {
+					return prior, nil
+				}
+			}
+		}
+		if errors.Is(err, ErrSequenceConflict) || errors.Is(err, ErrReplayConflict) {
+			// Another runtime may have advanced the stream (or recorded this
+			// sequence) since the cached head; refresh before retrying instead
+			// of reusing an occupied sequence forever.
 			last, e := r.journal.Last(ctx, r.stream)
 			if e != nil {
 				return Record{}, e
 			}
 			r.head = last
+			lastErr = err
 			continue
 		}
 		if errors.Is(err, ErrUnavailable) && r.spool != nil && r.spool.Durable() {
@@ -260,8 +310,38 @@ func (r *Runtime) persist(ctx context.Context, event Event) (Record, error) {
 		}
 		return Record{}, err
 	}
+	if lastErr != nil {
+		return Record{}, lastErr
+	}
 	return Record{}, ErrSequenceConflict
 }
+
+// runtimeEventCache is how many recent events stay resident for idempotent
+// append detection.
+const runtimeEventCache = 4096
+
+// checkpointPageSize bounds how many records are read per page while verifying
+// historic checkpoints.
+const checkpointPageSize = 2000
+
+// pruneEventCacheLocked drops events that fell out of the recent window.
+func (r *Runtime) pruneEventCacheLocked() {
+	if len(r.events) <= runtimeEventCache*2 {
+		return
+	}
+	cutoff := r.head.Sequence
+	if cutoff > runtimeEventCache {
+		cutoff -= runtimeEventCache
+	} else {
+		cutoff = 0
+	}
+	for id, record := range r.events {
+		if record.Sequence <= cutoff {
+			delete(r.events, id)
+		}
+	}
+}
+
 func (r *Runtime) makeCheckpoint(event Event, rec Record) (*Checkpoint, error) {
 	if r.signer == nil || !(event.Class == EventClassCritical || r.checkpointEvery > 0 && rec.Sequence%r.checkpointEvery == 0) {
 		return nil, nil
@@ -351,7 +431,7 @@ func (r *Runtime) Replay(ctx context.Context) error {
 		if err := validateCommit(commit); err != nil {
 			return ErrSpoolCorrupt
 		}
-		if err := r.journal.Append(ctx, commit); err != nil && !errors.Is(err, ErrReplayConflict) {
+		if err := r.journal.Append(ctx, commit); err != nil {
 			return err
 		}
 		if commit.Record.Sequence > r.head.Sequence {
@@ -366,6 +446,11 @@ func (r *Runtime) Replay(ctx context.Context) error {
 	}
 	r.spooling = !r.journal.Durable()
 	return nil
+}
+
+// Durable reports whether the journal backing this runtime is durable.
+func (r *Runtime) Durable() bool {
+	return r != nil && r.journal != nil && r.journal.Durable()
 }
 
 // Dispatch drains metadata-only outbox rows. A delivery failure leaves the

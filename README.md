@@ -212,6 +212,7 @@ The setup wizard tests system performance and recommends an operational tier, wh
 In addition to built-in features, CheeseWAF connects to external monitoring and storage services (testable during setup or configured later):
 - **PostgreSQL**: Centralized access logs and audit trails.
 - **VictoriaLogs**: High-performance structured log ingestion and querying.
+- **Grafana Loki**: Label-indexed log shipping and LogQL queries for existing Loki stacks.
 - **Prometheus**: Metrics scraping endpoint.
 
 ---
@@ -226,11 +227,29 @@ Recommended for Linux physical servers and virtual machines requiring minimal re
 
 #### Recommended: One-command installation
 
-Run this command as root on the target Linux host. It prompts for a language, detects the CPU architecture, downloads the latest stable release, verifies SHA256, installs and starts the systemd service, then prints public/private addresses, the one-time setup URL, paths, and service status:
+Use the official website entry point on the target Linux host. The installer prompts for a language, detects the CPU architecture, downloads the latest stable release, verifies SHA256, installs and starts the systemd service, then prints public/private addresses, the one-time setup URL, paths, and service status:
 
 ```bash
-curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo bash ./install-linux.sh
 ```
+
+Or use GNU wget:
+
+```bash
+wget --max-redirect=0 -O install-linux.sh https://cheesesec.com/install.sh && sudo bash ./install-linux.sh
+```
+
+If the website entry point is unavailable, download the installer from [GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) instead:
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh -o install-linux.sh && sudo bash ./install-linux.sh
+```
+
+The installer uses curl or GNU wget. For official releases, it prefers the software metadata at `https://ota.cheesesec.com/v1/software/channels/stable/index.json` and assets at `https://res.cheesesec.com/releases/{tag}/{asset}`. If an official download is unavailable, it falls back to GitHub; after a release tag is selected, asset fallback keeps that same tag. A checksum or signature verification failure stops installation rather than retrying another source to bypass the failure.
+
+Set `CHEESEWAF_RELEASE` on the command after `sudo` to pin a release tag, for example `sudo env CHEESEWAF_RELEASE=vX.Y.Z bash ./install-linux.sh`. Setting `CHEESEWAF_REPO` to a non-official repository downloads from that GitHub fork instead of the official servers.
+
+Official installs verify the release signature with `cosign` and stop if it is missing, including when the official index falls back to GitHub for the same tag. Install a pinned `cosign` first, or rerun with `CHEESEWAF_VERIFY_SIGNATURE=0` on a host where that is not possible. Only an explicit non-official `CHEESEWAF_REPO` (a fork) skips signature verification by default.
 
 The installer generates an ASCII alphanumeric security entry. Press Enter for a random value or enter a custom 8-64 character value. The admin surface uses HTTPS and a one-time setup token; it binds to loopback unless public access is explicitly enabled. Browsers warn about the self-signed certificate on first access, so production deployments should replace it with a trusted certificate or reverse proxy. It reports RFC1918/private interface addresses separately from a public candidate; set `CHEESEWAF_ADMIN_PUBLIC_HOST` when the public IP is provided by NAT or a DNS name. Expose only TCP 9443 in the cloud firewall when public access is enabled. Secrets are shown only on an interactive terminal and are also saved in a root-only receipt.
 
@@ -238,7 +257,7 @@ The interactive installer also accepts an application root directory. For exampl
 
 #### Offline/manual installation
 
-Download the official release archive matching your server architecture from the [Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page:
+Choose a release tag and the archive matching your server architecture. Prefer the official asset URL `https://res.cheesesec.com/releases/{tag}/{asset}`; if unavailable, use `https://github.com/LaokeQwQ/CheeseWAF/releases/download/{tag}/{asset}` for the same tag and filename. The [GitHub Releases](https://github.com/LaokeQwQ/CheeseWAF/releases) page lists tags and filenames. Download `SHA256SUMS` from the same release and verify the archive before extracting it:
 
 | Archive Name | Architecture |
 | :--- | :--- |
@@ -266,7 +285,13 @@ Upgrades preserve existing configuration. An existing public management listener
 sudo env CHEESEWAF_ADMIN_PUBLIC=1 ./install-linux.sh
 ```
 
-For a one-command upgrade, pass the variable after `sudo`: `curl -fsSL https://github.com/LaokeQwQ/CheeseWAF/releases/latest/download/install-linux.sh | sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash`. Without confirmation, the installer exits before stopping the service.
+To upgrade through the website entry point, pass the variable after `sudo`:
+
+```bash
+curl --proto '=https' --proto-redir '=https' -fsSL https://cheesesec.com/install.sh -o install-linux.sh && sudo env CHEESEWAF_ADMIN_PUBLIC=1 bash ./install-linux.sh
+```
+
+You can use GNU wget or the GitHub installer URL as shown above. Without confirmation, the installer exits before stopping the service.
 
 For manual installation, copy both the binary executable and the Web administration assets:
 
@@ -314,7 +339,7 @@ sudo systemctl status cheesewaf
 
 The systemd unit permits atomic replacement inside `/etc/cheesewaf`. Keep that directory owned by `root:cheesewaf` with sticky mode `01770`, which lets the service create temporary files but prevents it from unlinking root-owned environment and receipt files. Keep `cheesewaf.yaml` owned by `cheesewaf:cheesewaf` with mode `0600`; the service account can then atomically replace its own runtime configuration. Data and logs should remain owned by `cheesewaf`. After installation, complete setup, save one system setting, and restart once to verify that the configuration survives the service sandbox.
 
-The installer checks the archive against the `SHA256SUMS` file shipped in the same release. This detects transfer corruption; it does not independently authenticate a compromised release account. For provenance verification, install a pinned `cosign` and set `CHEESEWAF_VERIFY_SIGNATURE=1`; the installer then verifies the keyless GitHub Actions signature bundle for `SHA256SUMS` before running any release code. The management interface binds to `127.0.0.1:9443` by default. Set `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` only when a public listener is intentional; use a reverse proxy or SSH tunnel for remote access. The setup URL and token expire after 10 minutes; completing the wizard revokes the token, and the admin API then requires the generated security-entry cookie:
+The installer checks the archive against the `SHA256SUMS` file shipped in the same release. That checksum detects transfer corruption but does not independently authenticate a compromised release account, so official installs additionally verify the keyless GitHub Actions signature bundle for `SHA256SUMS` with a pinned `cosign` before running any release code. Set `CHEESEWAF_VERIFY_SIGNATURE=0` only when `cosign` cannot be installed. The management interface binds to `127.0.0.1:9443` by default. Set `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` only when a public listener is intentional; use a reverse proxy or SSH tunnel for remote access. The setup URL and token expire after 10 minutes; completing the wizard revokes the token, and the admin API then requires the generated security-entry cookie:
 
 ```bash
 # View the initial setup URL containing the one-time access token:
@@ -433,7 +458,7 @@ If your infrastructure already uses a reverse proxy or API gateway, you can inte
 
 ### Architecture
 
-`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries CheeseWAF at `/api/v1/check`.
+`CheeseWAF-Adapters` provides a lightweight daemon (`adapterd`) deployed as a sidecar alongside your gateway. The gateway forwards request metadata to `adapterd` via standard subrequests or auth filters (such as NGINX `auth_request` or Envoy `ext_authz`), which queries the versioned adapter contract endpoint at `/api/v1/adapter/inspect` (override with `CHEESEWAF_CORE_INSPECT_PATH`). The core serves `/api/v1/adapter/inspect`, `/api/v1/adapter/telemetry`, and `/healthz` on the **proxy, TLS, and HTTP/3 listeners**, authenticated by `server.adapter_token` (or loopback when the token is empty). The **admin listener** is different: it exposes only `/healthz` from the adapter handler, while `/api/v1/adapter/inspect` stays behind the management JWT with the `write:protection` scope and `/api/v1/adapter/telemetry` is not mounted there. Point `adapterd` at the proxy listener with `CHEESEWAF_CORE_TOKEN`; use the admin port only for JWT-authenticated calls.
 
 ### NGINX Integration Example
 
@@ -453,12 +478,19 @@ location / {
 
 location = /cheesewaf-check {
     internal;
-    proxy_pass http://127.0.0.1:9080/check;
+    proxy_pass http://127.0.0.1:9080/nginx/auth;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header X-Original-URI $request_uri;
     proxy_set_header X-Original-Method $request_method;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_connect_timeout 100ms;
+    proxy_read_timeout 1s;
+    # If CHEESEWAF_ADAPTER_TOKEN is configured, inject
+    # X-CheeseWAF-Adapter-Token from a secret-backed variable here.
 }
 ```
 

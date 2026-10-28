@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/engine"
+	"github.com/LaokeQwQ/CheeseWAF/internal/engine/decoder"
 )
 
 // Log4ShellDetector detects Log4Shell (CVE-2021-44228) JNDI injection patterns.
@@ -29,52 +30,73 @@ func (d *Log4ShellDetector) Name() string  { return "Log4Shell & Shellshock Dete
 func (d *Log4ShellDetector) Priority() int { return 340 }
 
 func (d *Log4ShellDetector) Detect(_ context.Context, reqCtx *engine.RequestContext) (*engine.DetectionResult, error) {
-	surface := requestText(reqCtx)
-	normalized := normalizeLog4Shell(surface)
+	for _, surface := range log4ShellSurfaces(reqCtx) {
+		normalized := normalizeLog4Shell(surface)
 
-	// ---- Log4Shell JNDI injection ----
-	if rxLog4ShellJNDI.MatchString(normalized) {
-		return &engine.DetectionResult{
-			Detected:   true,
-			DetectorID: d.ID(),
-			Category:   "log4shell",
-			Severity:   engine.SeverityCritical,
-			Action:     actionForMode(d.mode),
-			Message:    "Log4Shell JNDI injection detected",
-			Confidence: 0.98,
-			Payload:    truncateLog4Shell(surface, 200),
-		}, nil
+		// ---- Log4Shell JNDI injection ----
+		if rxLog4ShellJNDI.MatchString(normalized) {
+			return &engine.DetectionResult{
+				Detected:   true,
+				DetectorID: d.ID(),
+				Category:   "log4shell",
+				Severity:   engine.SeverityCritical,
+				Action:     actionForMode(d.mode),
+				Message:    "Log4Shell JNDI injection detected",
+				Confidence: 0.98,
+				Payload:    truncateLog4Shell(surface, 200),
+			}, nil
+		}
+
+		// ---- Obfuscated Log4Shell variants ----
+		if rxLog4ShellObfuscated.MatchString(normalized) {
+			return &engine.DetectionResult{
+				Detected:   true,
+				DetectorID: d.ID(),
+				Category:   "log4shell",
+				Severity:   engine.SeverityCritical,
+				Action:     actionForMode(d.mode),
+				Message:    "Obfuscated Log4Shell pattern detected",
+				Confidence: 0.96,
+				Payload:    truncateLog4Shell(surface, 200),
+			}, nil
+		}
+
+		// ---- Shellshock bash injection ----
+		if rxShellshock.MatchString(normalized) {
+			return &engine.DetectionResult{
+				Detected:   true,
+				DetectorID: d.ID(),
+				Category:   "shellshock",
+				Severity:   engine.SeverityCritical,
+				Action:     actionForMode(d.mode),
+				Message:    "Shellshock bash injection detected",
+				Confidence: 0.97,
+				Payload:    truncateLog4Shell(surface, 200),
+			}, nil
+		}
 	}
-
-	// ---- Obfuscated Log4Shell variants ----
-	if rxLog4ShellObfuscated.MatchString(normalized) {
-		return &engine.DetectionResult{
-			Detected:   true,
-			DetectorID: d.ID(),
-			Category:   "log4shell",
-			Severity:   engine.SeverityCritical,
-			Action:     actionForMode(d.mode),
-			Message:    "Obfuscated Log4Shell pattern detected",
-			Confidence: 0.96,
-			Payload:    truncateLog4Shell(surface, 200),
-		}, nil
-	}
-
-	// ---- Shellshock bash injection ----
-	if rxShellshock.MatchString(normalized) {
-		return &engine.DetectionResult{
-			Detected:   true,
-			DetectorID: d.ID(),
-			Category:   "shellshock",
-			Severity:   engine.SeverityCritical,
-			Action:     actionForMode(d.mode),
-			Message:    "Shellshock bash injection detected",
-			Confidence: 0.97,
-			Payload:    truncateLog4Shell(surface, 200),
-		}, nil
-	}
-
 	return nil, nil
+}
+
+func log4ShellSurfaces(reqCtx *engine.RequestContext) []string {
+	surfaces := []string{requestText(reqCtx)}
+	if reqCtx == nil || reqCtx.Request == nil || reqCtx.Request.URL == nil {
+		return surfaces
+	}
+	for _, values := range reqCtx.Request.URL.Query() {
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			surfaces = append(surfaces, value, decoder.Decode(value).Text)
+		}
+	}
+	for index := range surfaces {
+		if decoded := decoder.Decode(surfaces[index]).Text; decoded != surfaces[index] {
+			surfaces = append(surfaces, decoded)
+		}
+	}
+	return surfaces
 }
 
 // analyzeLog4Shell is the semantic analyzer entry point called from analyzer.go.

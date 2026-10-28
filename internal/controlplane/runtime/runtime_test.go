@@ -1,7 +1,10 @@
 package runtime
 
 import (
+	"context"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane"
 	"github.com/LaokeQwQ/CheeseWAF/internal/controlplane/nativeraft"
+	crpactivation "github.com/LaokeQwQ/CheeseWAF/internal/crp/activation"
 )
 
 func TestValidateOptionsRejectsSameManagementAndRaftListener(t *testing.T) {
@@ -101,5 +105,68 @@ func TestHandlerRestrictsReadEndpointsToGET(t *testing.T) {
 		if recorder.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s POST status=%d, want 405", path, recorder.Code)
 		}
+	}
+}
+
+func TestHandlerMountsOnlyExplicitCRPActivationTransport(t *testing.T) {
+	without := &Runtime{status: Status{Phase: PhaseFrozen, Profile: controlplane.StorageProfileProduction, ClusterID: "cluster-a"}}
+	recorder := httptest.NewRecorder()
+	without.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/crp/activation/authorize", strings.NewReader(`{}`)))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unwired CRP activation status=%d, want 404", recorder.Code)
+	}
+
+	handler, err := crpactivation.NewControlPlaneHandler(crpactivation.ControlPlaneHandlerOptions{
+		ClusterID: "cluster-a",
+		Role:      "waf",
+		ClientCA:  x509.NewCertPool(),
+		Authorize: func(context.Context, crpactivation.AuthorizationRequest, crpactivation.TransportIdentity) (crpactivation.Authorization, error) {
+			return crpactivation.Authorization{}, crpactivation.ErrAuthorizationDenied
+		},
+		Validate: func(context.Context, crpactivation.TransportIdentity, crpactivation.Authorization) error {
+			return crpactivation.ErrAuthorizationDenied
+		},
+		Consume: func(context.Context, crpactivation.TransportIdentity, crpactivation.Authorization) error {
+			return crpactivation.ErrAuthorizationDenied
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	with := &Runtime{
+		status:               Status{Phase: PhaseFrozen, Profile: controlplane.StorageProfileProduction, ClusterID: "cluster-a"},
+		crpActivationHandler: handler,
+	}
+	recorder = httptest.NewRecorder()
+	with.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/crp/activation/authorize", strings.NewReader(`{}`)))
+	if recorder.Code == http.StatusNotFound {
+		t.Fatal("explicit CRP activation handler was not mounted")
+	}
+	if got := with.CRPActivationHandler(); got != handler {
+		t.Fatal("runtime did not retain the explicit CRP activation handler")
+	}
+}
+
+func TestOpenWithDependenciesRejectsCallbackOnlyCRPHandler(t *testing.T) {
+	opts := testOptions(t)
+	handler, err := crpactivation.NewControlPlaneHandler(crpactivation.ControlPlaneHandlerOptions{
+		ClusterID: opts.ClusterID,
+		Role:      "waf",
+		ClientCA:  x509.NewCertPool(),
+		Authorize: func(context.Context, crpactivation.AuthorizationRequest, crpactivation.TransportIdentity) (crpactivation.Authorization, error) {
+			return crpactivation.Authorization{}, crpactivation.ErrAuthorizationDenied
+		},
+		Validate: func(context.Context, crpactivation.TransportIdentity, crpactivation.Authorization) error {
+			return crpactivation.ErrAuthorizationDenied
+		},
+		Consume: func(context.Context, crpactivation.TransportIdentity, crpactivation.Authorization) error {
+			return crpactivation.ErrAuthorizationDenied
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenWithDependencies(context.Background(), opts, Dependencies{CRPActivationHandler: handler}); !errors.Is(err, crpactivation.ErrProductionContract) {
+		t.Fatalf("callback-only CRP handler was accepted by production runtime: %v", err)
 	}
 }

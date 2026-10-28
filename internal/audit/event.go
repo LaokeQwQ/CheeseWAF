@@ -50,23 +50,24 @@ const (
 // Reason is a reason code (for example "policy.denied"), not free-form text.
 // Credential references must identify the credential record, never its value.
 type Event struct {
-	EventID        string     `json:"event_id"`
-	StreamID       string     `json:"stream_id"`
-	TenantID       string     `json:"tenant_id"`
-	Actor          string     `json:"actor"`
-	Type           EventType  `json:"type"`
-	Action         string     `json:"action"`
-	Resource       string     `json:"resource"`
-	Outcome        Outcome    `json:"outcome"`
-	CorrelationID  string     `json:"correlation_id,omitempty"`
-	SessionID      string     `json:"session_id,omitempty"`
-	LeaseID        string     `json:"lease_id,omitempty"`
-	ConfirmationID string     `json:"confirmation_id,omitempty"`
-	Reason         string     `json:"reason,omitempty"`
-	EvidenceDigest string     `json:"evidence_digest,omitempty"`
-	PolicyEpoch    uint64     `json:"policy_epoch"`
-	Class          EventClass `json:"class"`
-	At             time.Time  `json:"at"`
+	EventID         string     `json:"event_id"`
+	StreamID        string     `json:"stream_id"`
+	TenantID        string     `json:"tenant_id"`
+	Actor           string     `json:"actor"`
+	Type            EventType  `json:"type"`
+	Action          string     `json:"action"`
+	Resource        string     `json:"resource"`
+	Outcome         Outcome    `json:"outcome"`
+	CorrelationID   string     `json:"correlation_id,omitempty"`
+	AuthorizationID string     `json:"authorization_id,omitempty"`
+	SessionID       string     `json:"session_id,omitempty"`
+	LeaseID         string     `json:"lease_id,omitempty"`
+	ConfirmationID  string     `json:"confirmation_id,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	EvidenceDigest  string     `json:"evidence_digest,omitempty"`
+	PolicyEpoch     uint64     `json:"policy_epoch"`
+	Class           EventClass `json:"class"`
+	At              time.Time  `json:"at"`
 }
 
 type Record struct {
@@ -130,7 +131,7 @@ func validateEvent(e Event) error {
 			return ErrInvalidEvent
 		}
 	}
-	optional := []string{e.CorrelationID, e.SessionID, e.LeaseID, e.ConfirmationID, e.Reason}
+	optional := []string{e.CorrelationID, e.AuthorizationID, e.SessionID, e.LeaseID, e.ConfirmationID, e.Reason}
 	for _, v := range optional {
 		if !validID(v, true) {
 			return ErrInvalidEvent
