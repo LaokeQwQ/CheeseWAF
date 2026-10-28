@@ -249,6 +249,8 @@ curl --proto '=https' --proto-redir '=https' -fsSL https://github.com/LaokeQwQ/C
 
 可在 `sudo` 后的命令中设置 `CHEESEWAF_RELEASE` 固定版本 tag，例如 `sudo env CHEESEWAF_RELEASE=vX.Y.Z bash ./install-linux.sh`。将 `CHEESEWAF_REPO` 设为非官方仓库时，会从指定的 GitHub fork 下载，不使用官方服务器。
 
+官方版本默认用 `cosign` 校验 release 签名，缺少 `cosign` 会停止安装；官网索引回退到 GitHub 下载同一 tag 时仍然校验。请先安装固定版本的 `cosign`，或在无法安装的主机上显式设置 `CHEESEWAF_VERIFY_SIGNATURE=0`。只有把 `CHEESEWAF_REPO` 指向 fork 时才默认跳过签名校验。
+
 安装过程中会生成一个仅含 ASCII 字母和数字的安全入口；直接回车使用随机值，或输入 8-64 位自定义值。公网管理面使用 HTTPS 和一次性 setup Token，首次访问自签名证书会出现浏览器警告，生产环境应替换为受信证书或反向代理。脚本会把 RFC1918/内网接口与公网候选地址分开输出；如果服务器在 NAT 后面或使用域名，请设置 `CHEESEWAF_ADMIN_PUBLIC_HOST`。云安全组只开放 TCP 9443。只有交互式终端会直接显示敏感 URL，安装信息同时保存到 root-only 回执文件。
 
 交互安装时可输入应用安装根目录；例如 `/opt/cheesewaf` 会派生 `bin`、`web`、`config`、`data`、`logs` 子目录。直接回车保留 `/usr/local`、`/usr/share`、`/etc`、`/var/lib`、`/var/log` 的 FHS 默认布局；自动化部署也可设置 `CHEESEWAF_INSTALL_DIR` 或各个 `CHEESEWAF_*_DIR` 环境变量。
@@ -335,7 +337,7 @@ sudo systemctl status cheesewaf
 
 systemd 沙箱允许在 `/etc/cheesewaf` 目录内原子替换配置；该目录由 `root:cheesewaf` 所有并设为带 sticky bit 的 `01770`，防止服务账号删除 root 所有的环境文件和安装回执。运行时配置由 `cheesewaf` 服务账号所有、权限为 `0600`，可安全完成原子保存。安装后请完成 setup、保存一次系统配置并重启服务，确认配置在沙箱下仍能保存。
 
-安装器会用同一 release 中的 `SHA256SUMS` 校验压缩包。这只能检测传输损坏，不能独立证明 release 未被发布账号替换。需要 provenance 校验时，请安装固定版本的 `cosign` 并设置 `CHEESEWAF_VERIFY_SIGNATURE=1`；安装器会先验证 GitHub Actions 为 `SHA256SUMS` 生成的 keyless 签名 bundle，再执行 release 中的安装代码。安装器默认将管理口绑定到 `127.0.0.1:9443`。只有明确设置 `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` 时才公开监听；远程访问建议使用反向代理或 SSH 隧道。初始化 URL 和 Token 有效期均为 10 分钟，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
+安装器会用同一 release 中的 `SHA256SUMS` 校验压缩包。这只能检测传输损坏，不能独立证明 release 未被发布账号替换，因此官方版本还会用固定版本的 `cosign` 先验证 GitHub Actions 为 `SHA256SUMS` 生成的 keyless 签名 bundle，再执行 release 中的安装代码。只有在无法安装 `cosign` 时才应设置 `CHEESEWAF_VERIFY_SIGNATURE=0`。安装器默认将管理口绑定到 `127.0.0.1:9443`。只有明确设置 `CHEESEWAF_ADMIN_LISTEN=0.0.0.0:9443 CHEESEWAF_ADMIN_PUBLIC=1` 时才公开监听；远程访问建议使用反向代理或 SSH 隧道。初始化 URL 和 Token 有效期均为 10 分钟，完成向导后 Token 会撤销，管理 API 还需要安全入口 Cookie：
 
 ```bash
 # 查看包含准入 Token 的完整初始化链接：
