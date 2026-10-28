@@ -282,8 +282,17 @@ func TestIngressSeenMapStaysBounded(t *testing.T) {
 	defer ingress.Close()
 	for seq := uint64(1); seq <= uint64(ingress.seenCap)+64; seq++ {
 		wire := signedIngressOutput(t, private, now, "evt-"+strconv.FormatUint(seq, 10), seq, `{}`)
-		if _, err := ingress.Submit(context.Background(), wire); err != nil {
-			t.Fatalf("submit %d: %v", seq, err)
+		// The worker drains asynchronously; wait for admission instead of
+		// racing the bounded queue.
+		for attempt := 0; ; attempt++ {
+			_, err := ingress.Submit(context.Background(), wire)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, ErrIngressQueueFull) || attempt >= 200 {
+				t.Fatalf("submit %d: %v", seq, err)
+			}
+			time.Sleep(time.Millisecond)
 		}
 	}
 	if err := ingress.Flush(context.Background()); err != nil {
