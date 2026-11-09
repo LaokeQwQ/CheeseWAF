@@ -11,7 +11,7 @@ cheesewaf migration recover
 
 迁移不会直接修改 WAF 数据面的已提交防护状态。迁移失败时，数据面继续使用原来的 last-known-good 状态。
 
-当前主 `cheesewaf serve` 的 production 消费者和生产 Approval 服务仍未全部接好。迁移命令和恢复路径已经存在，但在这部分接线完成前，不应把它当成可直接迁移线上主服务的发布能力。
+当前主 `cheesewaf serve` 的 production 启动路径要求先验证本地迁移交接证明（`ValidateProductionHandoff`）以及管理 PostgreSQL 中的 `cheesewaf_migration_cutovers` 账本（`VerifyMigrationHandoff`），并要求管理 PostgreSQL、控制面 PostgreSQL、native-raft、Redis、审批服务和运行时依赖全部满足生产契约；任一依赖缺失或未验证时保持 fail-closed。迁移命令和恢复路径需在具备完整外部生产依赖和一致备份的环境中执行。
 
 ## 已接线的本地生命周期边界
 

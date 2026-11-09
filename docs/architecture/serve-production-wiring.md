@@ -16,7 +16,7 @@
    epoch+record+events 快照，并绑定管理用户、Session 和 TOTP verifier。只有同时实现
    `ProductionApprovalDependency.ApprovalHTTP()` 的审批服务才会把严格
    `ApprovalHTTP` Gate 传给管理路由；单纯的健康探针不会暴露审批端点。
-   当前默认 factory 可以打开该运行时，但仍未提供最终 `WireServe`，因此主服务保持 fail-closed。
+   嵌入调用方直接调用 `OpenProductionDependencies` 时若未提供 `WireServe` 或 `WireServeWithWiring` 仍保持 fail-closed；主 `cheesewaf serve` 作为生产组合根在 `openProductionServeDependencies` 中提供 `WireServeWithWiring` 并校验 `ManagementStore`、`AuditRuntime`、`ApprovalHTTP`、`SessionValidator`、`TemporaryNetwork` 和 `CRPActivation`，任一组件缺失或生产依赖不可达时保持 fail-closed。
 
    该运行时的凭证验证会检查管理用户、活动 Session、bcrypt 密码或原子 `ConsumeTOTP`，并且当前只接受 `admin` 用户的普通审批。PostgreSQL Gate 写入通过同一事务中的 epoch 行锁保护；旧 Gate 在 durable epoch 漂移后写入失败并回滚。`security_admin` 和 `tenant_owner` 的 Break-glass authority resolver 仍是后续 P1，不能把 Gate 合约中的角色规则写成生产流程已经完成。
 
