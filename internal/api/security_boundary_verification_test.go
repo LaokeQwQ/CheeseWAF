@@ -29,6 +29,10 @@ import (
 const (
 	che61RemoteAddr = "198.51.100.23:40123"
 	che61RemoteIP   = "198.51.100.23"
+
+	// Mirrors handler.loginCAPTCHAProofPerPeer so the probe can assert the
+	// measured ceiling instead of merely asserting "something limited".
+	loginCAPTCHAProofPerPeerProbe = 256
 )
 
 // che61SolveLoginCAPTCHA mirrors solveLoginCAPTCHA but runs the login client
@@ -381,11 +385,12 @@ func TestCHE61LoginRateLimitLocksAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
-// FINDING CHE61-F1: /api/auth/login answers INVALID_CAPTCHA before it records
-// any failure, and /api/auth/captcha issues unlimited challenges to the same
-// source. An unauthenticated client that never solves a challenge is therefore
-// never rate limited, and each request costs a challenge mint plus a proof
-// registration.
+// FINDING CHE61-F1: /api/auth/login answers INVALID_CAPTCHA at handler.go
+// verifyLoginCAPTCHA() and returns before bcrypt.CompareHashAndPassword and
+// therefore before tracker.recordLoginFailure(). Password verification never
+// runs on this path, so this is not a password-guessing or bcrypt cost issue;
+// what it does mean is that repeated no-proof login attempts from one source
+// are not counted against loginRateLimitMaxFailures and never reach 429.
 func TestCHE61WrongPasswordIsRateLimitedWithoutCAPTCHAProof(t *testing.T) {
 	env := newCHE61Router(t, nil)
 	client := newCHE61LoginClient(env.router)
@@ -409,62 +414,104 @@ func TestCHE61WrongPasswordIsRateLimitedWithoutCAPTCHAProof(t *testing.T) {
 		}
 	}
 	if !limited {
-		t.Fatalf("12 unauthenticated password guesses from one source ended at %s; want LOGIN_RATE_LIMITED", lastStatus)
+		t.Fatalf("12 no-proof login attempts from one source ended at %s; want LOGIN_RATE_LIMITED", lastStatus)
 	}
 }
 
-// Companion to CHE61-F1: measure whether repeated challenge issuance from one
-// source is bounded, so the finding records the actual cost of the gap.
-func TestCHE61CaptchaChallengeIssuanceFromOneSourceIsBounded(t *testing.T) {
+// Companion to CHE61-F1: repeated challenge issuance from one source IS
+// bounded. The peer bucket is keyed on socketPeerIP, so a caller cannot move
+// itself to a fresh bucket. The ceiling was measured at exactly
+// loginCAPTCHAProofPerPeer (256 per loginCAPTCHAIssueRateWindow).
+func TestCHE61CaptchaChallengeIssuanceIsBoundedPerPeer(t *testing.T) {
 	env := newCHE61Router(t, nil)
-	client := newCHE61LoginClient(env.router)
-	issued, limited := 0, false
-	for attempt := 0; attempt < 64; attempt++ {
-		recorder := client.perform(http.MethodPost, "/api/auth/captcha", []byte(`{}`))
-		switch {
-		case recorder.Code == http.StatusOK:
-			issued++
-		case recorder.Code == http.StatusTooManyRequests, recorder.Code == http.StatusServiceUnavailable:
-			limited = true
-		default:
-			t.Fatalf("challenge attempt %d = %d %s", attempt, recorder.Code, recorder.Body.String())
-		}
-		if limited {
+	issued := 0
+	limitedStatus := 0
+	for round := 0; round < 400 && issued < 300; round++ {
+		client := newCHE61LoginClient(env.router)
+		for attempt := 0; attempt < 20; attempt++ {
+			recorder := client.perform(http.MethodPost, "/api/auth/captcha", []byte(`{}`))
+			switch recorder.Code {
+			case http.StatusOK:
+				issued++
+				continue
+			case http.StatusServiceUnavailable, http.StatusTooManyRequests:
+				limitedStatus = recorder.Code
+			default:
+				t.Fatalf("challenge attempt = %d %s", recorder.Code, recorder.Body.String())
+			}
 			break
 		}
 	}
-	t.Logf("challenges issued to one source before limiting: %d (limited=%t)", issued, limited)
-	if !limited {
-		t.Fatalf("unbounded challenge issuance: %d challenges accepted from one source", issued)
+	t.Logf("challenges issued to one socket peer: %d (limited with %d)", issued, limitedStatus)
+	if limitedStatus == 0 {
+		t.Fatalf("no ceiling observed after %d challenges from one socket peer", issued)
 	}
-	for attempt := 0; attempt < 12; attempt++ {
-		if che61PostJSON(t, env.router, "/api/auth/login", "", map[string]any{
-			"username": "admin", "password": "wrong-password",
-		}).Code == http.StatusTooManyRequests {
-			return
-		}
+	if issued != loginCAPTCHAProofPerPeerProbe {
+		t.Fatalf("per-peer issuance ceiling = %d, want %d", issued, loginCAPTCHAProofPerPeerProbe)
 	}
-	t.Fatalf("login stayed unlocked at the password-check step after %d challenge requests from one source", issued)
 }
 
-// FINDING CHE61-F2: the issuance quota is keyed on the anonymous
-// cw_captcha_client cookie, which the caller controls. Discarding the cookie
-// between rounds resets the per-owner counter while the peer stays the same.
-func TestCHE61CaptchaIssuanceQuotaSurvivesClientCookieReset(t *testing.T) {
+// The 256 ceiling is per socket peer, and the socket peer is not client
+// controlled. What IS client controlled is the anonymous cw_captcha_client
+// owner id: discarding that cookie starts a fresh owner bucket and resets the
+// per-owner quota (loginCAPTCHAIssueRatePerOwner = 16) without touching the
+// peer bucket. So the accurate statement is "owner quota is resettable, total
+// issuance is still bounded at 256/peer/window", not "challenges are
+// unbounded".
+func TestCHE61CaptchaOwnerQuotaResetsWhenClientCookieIsDropped(t *testing.T) {
 	env := newCHE61Router(t, nil)
-	const perIdentityCap = 16
+	const perOwnerCap = 16
+	const peerCap = 256
 	issued := 0
-	for round := 0; round < 4; round++ {
+	for round := 0; round < 32; round++ {
 		client := newCHE61LoginClient(env.router)
-		for i := 0; i < perIdentityCap+4; i++ {
+		limited := false
+		for i := 0; i < perOwnerCap+24; i++ {
 			if client.perform(http.MethodPost, "/api/auth/captcha", []byte(`{}`)).Code == http.StatusOK {
 				issued++
+				continue
 			}
+			limited = true
+			break
+		}
+		// Each fresh cookie must be able to mint a quota of its own; otherwise
+		// this test would not demonstrate that the owner key is resettable.
+		if !limited {
+			t.Fatalf("round %d: a single owner minted %d challenges without hitting the %d quota", round, perOwnerCap+24, perOwnerCap)
+		}
+		if issued >= peerCap {
+			break
 		}
 	}
-	if issued > perIdentityCap {
-		t.Fatalf("one source minted %d challenges by dropping cw_captcha_client; per-source cap is %d", issued, perIdentityCap)
+	if issued <= perOwnerCap {
+		t.Fatalf("one peer minted only %d challenges across cookie resets; peer ceiling %d should allow more", issued, peerCap)
 	}
+	if issued > peerCap {
+		t.Fatalf("one peer minted %d challenges, exceeding the %d peer ceiling", issued, peerCap)
+	}
+	t.Logf("one peer minted %d challenges by rotating cw_captcha_client (owner quota %d, peer ceiling %d)", issued, perOwnerCap, peerCap)
+}
+
+// Control for CHE61-F1: the CAPTCHA-skip path for a loopback peer (local
+// console, no X-Forwarded-For, admin_public=false) does reach bcrypt and DOES
+// record failures, locking at attempt 6. This confirms F1 is scoped to the
+// CAPTCHA-enforced path and that the failure counter itself works.
+func TestCHE61LoopbackWithoutCAPTCHACountsFailures(t *testing.T) {
+	env := newCHE61Router(t, nil)
+	lastStatus := ""
+	for attempt := 0; attempt < 8; attempt++ {
+		recorder := performFromIP(env.router, http.MethodPost, "/api/auth/login", "", mustJSON(t, map[string]any{
+			"username": "admin", "password": "wrong-password",
+		}), "127.0.0.1:55555")
+		lastStatus = fmt.Sprintf("%d %s", recorder.Code, che61ErrorCode(t, recorder))
+		if recorder.Code == http.StatusTooManyRequests {
+			return
+		}
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %s, want 401 INVALID_CREDENTIALS before lockout", attempt, lastStatus)
+		}
+	}
+	t.Fatalf("loopback no-CAPTCHA path never locked; last status %s", lastStatus)
 }
 
 // Control for CHE61-F1: once a valid CAPTCHA proof is presented, a wrong
