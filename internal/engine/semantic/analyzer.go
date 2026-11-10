@@ -5626,13 +5626,6 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 		}
 	}
 
-	// Technical documentation quotes complete markup as subject matter ("blocked
-	// <script>alert(1)</script> in the echo endpoint"). Keep the evidence for
-	// review without letting the quoted example block the request.
-	if explanatoryDocumentContext(candidate, text, xssExecutableIndicators) {
-		reasons[docContextReason] = true
-	}
-
 	return hit(candidate, "xss", engine.SeverityHigh, confidence, reasons), true
 }
 

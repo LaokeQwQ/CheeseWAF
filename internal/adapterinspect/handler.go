@@ -59,6 +59,7 @@ type Decision struct {
 type Options struct {
 	ResolveSite  func(host string) (siteID string, maxBodyBytes int64, ok bool)
 	Detect       func(context.Context, *engine.RequestContext) (*engine.DetectionResult, error)
+	Inspect      func(context.Context, Request) (Decision, error)
 	MaxBodyBytes int64
 }
 
@@ -82,7 +83,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeDecision(w, Decision{ContractVersion: ContractVersion, Action: "block", StatusCode: http.StatusMethodNotAllowed, Reason: "method not allowed"})
 		return
 	}
-	if h == nil || h.opts.ResolveSite == nil || h.opts.Detect == nil {
+	if h == nil || h.opts.ResolveSite == nil || (h.opts.Detect == nil && h.opts.Inspect == nil) {
 		writeDecision(w, Decision{ContractVersion: ContractVersion, Action: "block", StatusCode: http.StatusServiceUnavailable, Reason: "adapter inspection is not configured"})
 		return
 	}
@@ -117,6 +118,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if siteMax > 0 && int64(len(req.Body)) > siteMax {
 		writeDecision(w, Decision{ContractVersion: ContractVersion, Action: "block", StatusCode: http.StatusRequestEntityTooLarge, Reason: "request body exceeds site limit"})
+		return
+	}
+	if h.opts.Inspect != nil {
+		req.Path = normalizedPath
+		decision, err := h.opts.Inspect(r.Context(), req)
+		if err != nil {
+			writeDecision(w, Decision{ContractVersion: ContractVersion, Action: "block", StatusCode: http.StatusServiceUnavailable, Reason: "inspection unavailable"})
+			return
+		}
+		decision.ContractVersion = ContractVersion
+		writeDecision(w, decision)
 		return
 	}
 	scheme := req.Scheme

@@ -430,7 +430,7 @@ func runServe(ctx context.Context) error {
 			}
 			return site.ID, maxBody, true
 		},
-		Detect: proxyServer.Detect,
+		Inspect: proxyServer.InspectAdminAdapter,
 	})
 	adminTLS, adminScheme, err := adminTLSConfig(cfg.Server.AdminTLS, cfg.Cluster.Interconnect)
 	if err != nil {
