@@ -385,12 +385,7 @@ func TestCHE61LoginRateLimitLocksAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
-// FINDING CHE61-F1: /api/auth/login answers INVALID_CAPTCHA at handler.go
-// verifyLoginCAPTCHA() and returns before bcrypt.CompareHashAndPassword and
-// therefore before tracker.recordLoginFailure(). Password verification never
-// runs on this path, so this is not a password-guessing or bcrypt cost issue;
-// what it does mean is that repeated no-proof login attempts from one source
-// are not counted against loginRateLimitMaxFailures and never reach 429.
+// Missing CAPTCHA proofs count toward the source failure limit before password verification.
 func TestCHE61WrongPasswordIsRateLimitedWithoutCAPTCHAProof(t *testing.T) {
 	env := newCHE61Router(t, nil)
 	client := newCHE61LoginClient(env.router)
