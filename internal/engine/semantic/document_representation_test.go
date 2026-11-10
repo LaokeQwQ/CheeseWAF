@@ -9,10 +9,7 @@ import (
 )
 
 func TestDocumentRepresentationsPreserveXSSDetection(t *testing.T) {
-	for _, doc := range benignTechnicalDocuments {
-		if doc.name != "release-notes" && doc.name != "detector-coverage" {
-			continue
-		}
+	for _, doc := range executableTechnicalDocuments {
 		for _, ct := range []string{"text/markdown", "text/plain", "text/html", "application/json"} {
 			for _, target := range []string{"/render", "/api/documents", "/upload"} {
 				for _, variant := range []struct {

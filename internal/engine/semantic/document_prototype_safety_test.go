@@ -26,10 +26,10 @@ func TestDocumentFormattingCannotSuppressExecutableXSS(t *testing.T) {
 }
 
 func TestDocumentMediaTypeCannotEstablishRenderer(t *testing.T) {
+	ResetProcessCacheForTest()
 	body := "```html\n<script>alert(document.cookie)</script>\n```"
 	for _, ct := range []string{"text/markdown", "text/plain", "text/html", "application/json"} {
 		t.Run(ct, func(t *testing.T) {
-			ResetProcessCacheForTest()
 			result := detectOnTarget(t, NewAnalyzer("block", 3, "xss"), "POST", "/render", ct, body)
 			if result == nil || result.Action != engine.ActionBlock {
 				t.Fatalf("unknown downstream renderer must block despite client media type: %+v", result)
@@ -44,5 +44,21 @@ func TestDocumentKeywordsCannotSuppressHTML(t *testing.T) {
 	result := detectOnTarget(t, NewAnalyzer("block", 3, "xss"), "POST", "/render", "text/html", body)
 	if result == nil || result.Action != engine.ActionBlock {
 		t.Fatalf("executable HTML must block despite documentation keywords: %+v", result)
+	}
+}
+
+func TestDocumentReferenceTablesRemainNonBlocking(t *testing.T) {
+	for _, doc := range benignTechnicalDocuments {
+		if doc.name != "detector-coverage-reference" && doc.name != "chinese-cheatsheet-reference" {
+			continue
+		}
+		for _, ct := range []string{"text/markdown", "text/plain", "text/html", "application/json"} {
+			t.Run(doc.name+"/"+ct, func(t *testing.T) {
+				result := detectOnTarget(t, NewAnalyzer("block", 3, "xss"), "POST", "/render", ct, doc.body)
+				if result != nil && result.Action == engine.ActionBlock {
+					t.Fatalf("non-executable reference blocked: %+v", result)
+				}
+			})
+		}
 	}
 }
