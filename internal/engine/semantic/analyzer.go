@@ -5587,44 +5587,9 @@ func analyzeXSS(candidate semanticCandidate) (Hit, bool) {
 
 	confidence := 0.86 + confidenceBonus(reasons)
 
-	// Apply shape guards in order of specificity (most specific first)
-
-	// Vulnerability report context: XSS in vulnerability titles
-	if candidateDocumentContextAllowed(candidate) && vulnerabilityReportContext(text) {
-		confidence *= 0.55
-		if confidence < 0.7 {
-			return Hit{}, false
-		}
-	}
-
-	// HTTP protocol context guard: reduce confidence for HTTP protocol documentation
-	if candidateDocumentContextAllowed(candidate) && httpProtocolContextShape(lower) {
-		confidence *= 0.6
-		if confidence < 0.7 {
-			return Hit{}, false
-		}
-	}
-
-	// Markdown code block guard: reduce confidence for code examples
-	if candidateDocumentContextAllowed(candidate) && markdownCodeBlockShape(text) {
-		confidence *= 0.6
-		if confidence < 0.7 {
-			return Hit{}, false
-		}
-	}
-
-	// Compute the attack-evidence window so that a prose prefix + filler padding
-	// separated from the payload cannot suppress detection via techdoc markers
-	// appearing only in the outer document, not adjacent to the XSS payload.
-	xssWin := evidenceWindow(text, xssExecutableIndicators)
-
-	// Technical documentation keyword guard: AND-gate — full document AND local window.
-	if candidateDocumentContextAllowed(candidate) && technicalDocumentationContext(text) && technicalDocumentationContext(xssWin) {
-		confidence *= 0.7
-		if confidence < 0.7 {
-			return Hit{}, false
-		}
-	}
+	// Request formatting and declared media types do not establish how an
+	// upstream application renders the value. Preserve executable XSS evidence
+	// until a trusted rendering policy can prove the value remains inert.
 
 	return hit(candidate, "xss", engine.SeverityHigh, confidence, reasons), true
 }

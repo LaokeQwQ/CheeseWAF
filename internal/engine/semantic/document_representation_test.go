@@ -22,7 +22,7 @@ func TestDocumentRepresentationsPreserveXSSDetection(t *testing.T) {
 					{"raw", doc.body, true},
 					{"fenced", "```html\n" + doc.body + "\n```", true},
 					{"quoted", "> " + strings.ReplaceAll(doc.body, "\n", "\n> "), true},
-					{"escaped", strings.NewReplacer("<", "&lt;", ">", "&gt;").Replace(doc.body), false},
+					{"escaped", strings.NewReplacer("<", "&lt;", ">", "&gt;").Replace(doc.body), true},
 				} {
 					for level := 3; level <= 5; level++ {
 						t.Run(fmt.Sprintf("%s/%s/%s/%s/level%d", doc.name, ct, target, variant.name, level), func(t *testing.T) {
