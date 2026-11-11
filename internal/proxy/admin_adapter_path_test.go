@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 
@@ -23,11 +24,23 @@ func (p *adapterPathProbe) Detect(ctx context.Context, r *engine.RequestContext)
 }
 
 func TestAdminAdapterEncodedPathSemantics(t *testing.T) {
+	type pathCase struct {
+		path, want string
+		invalid    bool
+	}
+	cases := []pathCase{{"/文档/你好", "/文档/你好", false}}
+	for c := 0; c <= 127; c++ {
+		if c > 31 && c != 127 {
+			continue
+		}
+		for _, encoded := range []string{string(rune(c)), fmt.Sprintf("%%%02X", c), fmt.Sprintf("%%25%02X", c)} {
+			for _, path := range []string{"/docs/" + encoded + "marker", "/docs/" + encoded + "/../safe", "/docs/../" + encoded + "marker"} {
+				cases = append(cases, pathCase{path: path, invalid: true})
+			}
+		}
+	}
 	for _, branch := range []string{"Inspect", "Detect"} {
-		for _, tc := range []struct {
-			path, want string
-			invalid    bool
-		}{
+		for _, tc := range append(cases, []pathCase{
 			{"/docs%3Fblocked-marker", "/docs?blocked-marker", false},
 			{"/docs%253Fblocked-marker", "/docs?blocked-marker", false},
 			{"/docs/hello%20world", "/docs/hello world", false},
@@ -37,7 +50,7 @@ func TestAdminAdapterEncodedPathSemantics(t *testing.T) {
 			{"/docs/../blocked-marker", "/blocked-marker", false},
 			{"/docs%ZZ", "", true},
 			{"/docs%2500", "", true},
-		} {
+		}...) {
 			t.Run(branch+tc.path, func(t *testing.T) {
 				probe := &adapterPathProbe{}
 				pipeline := engine.NewPipeline(probe)
@@ -49,10 +62,17 @@ func TestAdminAdapterEncodedPathSemantics(t *testing.T) {
 					t.Fatal(err)
 				}
 				opts := adapterinspect.Options{ResolveSite: func(string) (string, int64, bool) { return "site-1", 8 << 20, true }}
+				calls := 0
 				if branch == "Inspect" {
-					opts.Inspect = server.InspectAdminAdapter
+					opts.Inspect = func(ctx context.Context, req adapterinspect.Request) (adapterinspect.Decision, error) {
+						calls++
+						return server.InspectAdminAdapter(ctx, req)
+					}
 				} else {
-					opts.Detect = pipeline.Detect
+					opts.Detect = func(ctx context.Context, req *engine.RequestContext) (*engine.DetectionResult, error) {
+						calls++
+						return pipeline.Detect(ctx, req)
+					}
 				}
 				payload, err := json.Marshal(adapterinspect.Request{ContractVersion: "v1", Authority: "app.example", Method: "GET", Path: tc.path, Query: "independent=retained%3Fvalue"})
 				if err != nil {
@@ -65,7 +85,7 @@ func TestAdminAdapterEncodedPathSemantics(t *testing.T) {
 					t.Fatal(err)
 				}
 				if tc.invalid {
-					if decision.StatusCode != 400 || probe.seen != nil {
+					if decision.Action != "block" || decision.StatusCode != 400 || calls != 0 || probe.seen != nil {
 						t.Fatalf("invalid path reached detection: %+v", decision)
 					}
 					return

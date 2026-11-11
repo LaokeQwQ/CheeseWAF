@@ -77,6 +77,30 @@ func New(opts Options) *Handler {
 	return &Handler{opts: opts}
 }
 
+func hasPathControl(path string) bool {
+	for i := 0; i < len(path); i++ {
+		if path[i] < 0x20 || path[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// Check decoded input before path cleaning can remove a control-bearing segment.
+func hasEncodedPathControl(path string) bool {
+	for depth := 0; depth <= 5; depth++ {
+		if hasPathControl(path) {
+			return true
+		}
+		decoded, err := url.PathUnescape(path)
+		if err != nil || decoded == path {
+			return false
+		}
+		path = decoded
+	}
+	return false
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -102,7 +126,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizedPath, pathOK := engine.NormalizeRequestPath(req.Path)
-	if !pathOK {
+	if !pathOK || hasPathControl(normalizedPath) || hasEncodedPathControl(req.Path) {
 		writeDecision(w, Decision{ContractVersion: ContractVersion, Action: "block", StatusCode: http.StatusBadRequest, Reason: "invalid request path"})
 		return
 	}
