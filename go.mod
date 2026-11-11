@@ -1,6 +1,6 @@
 module github.com/LaokeQwQ/CheeseWAF
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/andybalholm/brotli v1.2.8
