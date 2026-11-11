@@ -9,14 +9,16 @@
 `internal/cwedp/postgres.ResumeStore` 是单独的持久化适配器：显式接线时可用
 数据库保存续传状态。`transport` 包已经提供 broker-bound 的 HTTP/file pull、
 Range 续传、TLS/mTLS/NodeID/leaf pin 和 pre-dial fail-closed 逻辑，并有独立
-测试证据；这些包仍未接入主 `serve`、节点注册、插件安装/升级/回滚或生产编排。
+测试证据；在 `production` profile 下，`openProductionServeDependencies` 已通过
+`openProductionCWEDPDownload` 接入 PostgreSQL `ResumeStore`、签名意图校验与共享
+`crp.RuntimeStore`，在缺少准入文件或生产依赖时保持 fail-closed。
 
 ## 协商
 
 控制面发布带包标识、版本、大小、MD5/SHA-1/SHA-256 摘要、签名引用和候选
 来源的 `DistributionIntent`。节点发送 `HELLO` 与 `CAPABILITIES`；只有协议
 版本、节点身份、来源能力和离线边界都匹配时才选择来源。离线节点只能选择
-`offline-crp`，没有可用离线来源时必须拒绝。
+`offline-crp`，没有可用离线来源时直接拒绝。
 
 来源独立性默认要求至少两个独立的供应链根和独立性分组。受信任的低风险或
 observe 部署可以在 broker 配置中显式把最低值降为一个，但不能提高平台上限。
@@ -32,7 +34,7 @@ observe 部署可以在 broker 配置中显式把最低值降为一个，但不�
 独立性同时按登记的供应链根和独立性分组计算，不按 URL、来源类型或传输方式
 计算。同一根或同一分组中的多个镜像只计一个独立来源；同一类型的来源只有在
 属于不同的已授权根和分组时才可计为多个独立来源。未登记来源、缺少根/分组或
-未知类型都必须拒绝。Peer、镜像和 seed 不能修改 manifest、签名或 promotion
+未知类型都会拒绝。Peer、镜像和 seed 不能修改 manifest、签名或 promotion
 状态。
 
 ## 隔离源（source quarantine）
@@ -43,7 +45,7 @@ observe 部署可以在 broker 配置中显式把最低值降为一个，但不�
 不能再次被该 intent 选择。重复上报是幂等的，不能覆盖原始原因或悄悄解除隔离；
 持久化时使用 intent 中的规范来源字段。
 
-完整性或策略失败会触发供应链根隔离：fallback 选择必须跳过与已隔离来源共享
+完整性或策略失败会触发供应链根隔离：fallback 选择需要跳过与已隔离来源共享
 注册表 `Root` 的镜像。单纯的传输失败只隔离精确的 `(kind, ID)` 来源，不因
 传输错误自动把同根镜像视为完整性不可信；但所有候选仍须通过来源独立性和
 能力校验。
@@ -55,7 +57,7 @@ observe 部署可以在 broker 配置中显式把最低值降为一个，但不�
 提交时限制总 artifact 大小，在入队时限制单个分块大小；队列有界，队列满时
 拒绝入队。
 
-`Broker` **强制要求** `AtomicResumeStore`。持久层必须实现
+`Broker` **强制要求** `AtomicResumeStore`。持久层需实现
 `SaveExpected(ctx, expectedOffset, state)`；broker 创建任务、追加分块、隔离/切换
 来源和写入失败状态时都以 worker 读取的 `next_offset` 做 compare-and-swap。
 只有 `Save`/`Load` 的非原子实现会被 `Submit` 以 `ErrAtomicResumeRequired` 拒绝，
@@ -64,8 +66,8 @@ observe 部署可以在 broker 配置中显式把最低值降为一个，但不�
 则拒绝。
 
 `MaxChunk`、`MaxSourceSwitches` 和 intent 是续传状态的不可变绑定。`SaveExpected`
-还必须遵守状态转换约束：普通传输只能追加已有前缀；首次记录来源失败并切换时
-必须带有一条新的隔离证据、恰好增加一次切换计数，并通过事务/锁和终态校验。
+还要遵守状态转换约束：普通传输只能追加已有前缀；首次记录来源失败并切换时
+需带有一条新的隔离证据、恰好增加一次切换计数，并通过事务/锁和终态校验。
 能力/策略刷新时对既有隔离证据的显式复用不重复增加计数。
 
 ## `MaxSourceSwitches`
@@ -84,7 +86,7 @@ observe 部署可以在 broker 配置中显式把最低值降为一个，但不�
 
 ## 完整性失败与传输失败
 
-完成最后一个分块后，必须同时校验 MD5、SHA-1 和 SHA-256；任一摘要不匹配都属于
+完成最后一个分块后，需同时校验 MD5、SHA-1 和 SHA-256；任一摘要不匹配都属于
 完整性失败，不能把当前字节标记为完成或继续沿用为可信前缀。两类失败的状态语义
 如下：
 
@@ -95,7 +97,7 @@ observe 部署可以在 broker 配置中显式把最低值降为一个，但不�
 | 策略失败 | 记录 `policy-failure`，按注册表 `Root` 隔离同根来源 | 保留已验证前缀 | 按来源策略选择 fallback；无来源时失败 |
 | 非法分块、损坏状态或新的切换预算耗尽 | 不得绕过状态机或继续写入 | 保留/终止状态由校验结果决定 | 进入失败终态并阻止继续写入；新的预算耗尽返回 `ErrSourceSwitchLimit`，既有隔离证据可在能力刷新后显式恢复 |
 
-broker 不会从任意 transport 错误字符串推断隔离原因；调用方必须通过明确的
+broker 不会从任意 transport 错误字符串推断隔离原因；调用方需通过明确的
 `QuarantineSource` 原因枚举报告。完整性失败的重试只允许从零开始，传输/策略失败
 的切换才允许复用已验证前缀。
 

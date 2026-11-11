@@ -463,7 +463,7 @@ func TestApproveLogMovesToShadow(t *testing.T) {
 	}
 }
 
-func TestApproveBlockRequiresImpactEvidence(t *testing.T) {
+func TestApproveBlockDisabledWithoutTrafficProfiles(t *testing.T) {
 	env := setupEnv(t, nil)
 	result := env.importAdvisory(t, "https://advisory.example.test/advisory/1")
 	recorder := env.doJSON(t, http.MethodPost, "/candidates/"+result.Candidate.ID+"/approve", map[string]any{
@@ -471,7 +471,7 @@ func TestApproveBlockRequiresImpactEvidence(t *testing.T) {
 		"action":      "block",
 		"confirm":     true,
 	})
-	if recorder.Code != http.StatusConflict {
+	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	envelope := decodeResponse[struct {
@@ -479,7 +479,7 @@ func TestApproveBlockRequiresImpactEvidence(t *testing.T) {
 			Code string `json:"code"`
 		} `json:"error"`
 	}](t, recorder)
-	if envelope.Error.Code != "impact_insufficient" {
+	if envelope.Error.Code != "block_promotion_unavailable" {
 		t.Fatalf("code=%q", envelope.Error.Code)
 	}
 	stored, err := env.store.GetCandidate(context.Background(), result.Candidate.ID)

@@ -10,12 +10,13 @@ to enabled.
 intel:
   enabled: true
   auto_apply: false          # always false in shipped configs
-  url_import: true           # set false to remove POST /api/v1/intel/import-url
+  url_import: true           # set false to remove POST /api/intel/import-url
   poll_interval: 15m         # feed scheduler interval, 10s..24h
   max_fetch_bytes: 262144    # hard cap is 262144 (256 KiB)
-  max_candidates_per_item: 5
-  shadow_window: 1h
-  trust_policy: balanced
+  max_candidates_per_item: 4 # default is 4 (validator allows 1..32)
+  shadow_window: 24h         # default is 24h (validator allows 0..720h)
+  require_human_approval: true
+  allow_community_single_source: false
   sources:
     - id: nvd
       type: url
