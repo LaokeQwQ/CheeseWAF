@@ -121,7 +121,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.opts.Inspect != nil {
-		req.Path = normalizedPath
+		// Inspect consumes an encoded path and parses it as a request URI.
+		// Escape normalized delimiters so they remain path data.
+		req.Path = (&url.URL{Path: normalizedPath}).EscapedPath()
 		decision, err := h.opts.Inspect(r.Context(), req)
 		if err != nil {
 			writeDecision(w, Decision{ContractVersion: ContractVersion, Action: "block", StatusCode: http.StatusServiceUnavailable, Reason: "inspection unavailable"})
