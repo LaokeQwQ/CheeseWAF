@@ -118,10 +118,9 @@
   绑定到控制面预览快照。绑定值只用于服务端审批摘要校验，不展示给操作员；执行前重新取得
   绑定，若控制面状态已经变化则以 `preview is stale` fail-closed，禁止把旧 diff 套到新状态。
   已接线 consumer 若不支持预览绑定，AI 入口拒绝执行，不回退到本地预览。
-- 仍未完成：将 `/protection/policy` 接入 `Coordinator`、生产 Handler/endpoint、真实 YAML/runtime
-  wiring、跨存储回滚和生产模式的 `WireServe`。runtime 失败且没有可靠的旧 config snapshot 时，
+- 在生产模式中，`runServe` 通过 `NewProtectionPolicyMaterializer`、`newProtectionPolicyCoordinatorConsumer` 和 `apiHandler.BindProtectionPolicyCoordinator` 注入协调器，并在启动监听器前根据 `productionStartupPolicyMaterialization` 应用已提交的 `management.v1` 策略状态。runtime 失败且没有可靠的旧 config snapshot 时，
   物化器只写 `compensation_pending` 并 fail-closed；不会猜测当前已持久化 candidate 作为回滚目标。
-- 在这些工作完成前，生产模式的 `WireServe` 必须保持失败即拒绝的状态。读取快照或通过
+- 嵌入调用方若未提供 `WireServe` / `WireServeWithWiring`，或生产环境缺少任一真实后端依赖，生产模式启动仍保持失败即拒绝的状态。读取快照或通过
   readiness 探针，都不能替代真实的消费者。
 - 本文不改变 `configs/cheesewaf.yaml` 模板和运行时配置副本的边界，也不允许把密钥、
   DSN、Token、证书、私钥或本地路径写入 Git。

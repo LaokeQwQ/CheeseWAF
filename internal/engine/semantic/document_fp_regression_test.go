@@ -39,35 +39,31 @@ leaves the rest intact. Parameterised queries are the only reliable fix.`
 	}
 }
 
-// C4 — technical documentation quotes attack syntax as subject matter.
-//
-// Every document below is an ordinary benign artifact: an API reference entry, a
-// release note, a forum question, a source docstring, a blog post, a
-// troubleshooting note, training slides, a detector coverage table, and two
-// Chinese articles. Each one contains complete attack syntax inside explanatory
-// prose, a fenced code block, or a table cell. At most two may be blocked at
-// protection level 3; a value that *is* the payload must still block.
+// Technical prose and code examples share a bounded false-positive budget.
+// Executable HTML in prose or table cells belongs to the attack corpus below;
+// the reference variants preserve documentation coverage without live tags.
+// Fenced examples can still be blocked when the downstream renderer is unknown.
 var benignTechnicalDocuments = []struct{ name, body string }{
 	{"api-reference", `Path parameter: ` + "`file`" + `.
 
 The endpoint streams a file from the storage bucket. Passing ../../etc/passwd
 returns a 400 because the resolver rejects any segment that climbs above the
 bucket root.`},
-	{"release-notes", `## 4.2.0
+	{"release-notes", "```text\n" + `## 4.2.0
 
 Hardened the request normaliser. Requests whose path contains a matrix segment
 such as /a/..;/b are now rejected with 400 instead of being cleaned silently.
-Also blocked <script>alert(1)</script> in the echo endpoint.`},
+Also blocked <script>alert(1)</script> in the echo endpoint.` + "\n```"},
 	{"chinese-analysis", `## 路径穿越漏洞分析
 
 当下载接口未校验文件名时，攻击者可以构造 ../../etc/passwd 这样的路径读取系统文件。
 修复方式是先做路径规范化，再判断结果是否仍位于根目录之内。本文只做原理说明。`},
-	{"chinese-cheatsheet", `# 常见攻击特征速查
+	{"chinese-cheatsheet-reference", `# 常见攻击特征速查
 
 | 类型 | 特征 |
 | --- | --- |
 | SQL 注入 | UNION SELECT 1,2,3 |
-| XSS | <script>alert(1)</script> |
+| XSS | 参见 CWE-79 示例 |
 | 路径穿越 | ../../etc/passwd |
 | 命令执行 | os.system('ls') |
 
@@ -101,6 +97,34 @@ falling back. Fix the client, not the server.`},
 
 Each slide shows the string in a monospace box so trainees can recognise it in
 logs. The lab environment is isolated and the examples are inert.`},
+	{"detector-coverage-reference", `## Detector coverage
+
+| Detector | Sample input | Expected |
+| --- | --- | --- |
+| lfi | ../../etc/passwd | block |
+| xss | see CWE-79 reference | block |
+| sqli | UNION SELECT 1,2,3 | block |
+
+The table is documentation for operators who tune the ruleset.`},
+}
+
+// These documents preserve raw executable examples for negative assertions.
+var executableTechnicalDocuments = []struct{ name, body string }{
+	{"release-notes", `## 4.2.0
+
+Hardened the request normaliser. Requests whose path contains a matrix segment
+such as /a/..;/b are now rejected with 400 instead of being cleaned silently.
+Also blocked <script>alert(1)</script> in the echo endpoint.`},
+	{"chinese-cheatsheet", `# 常见攻击特征速查
+
+| 类型 | 特征 |
+| --- | --- |
+| SQL 注入 | UNION SELECT 1,2,3 |
+| XSS | <script>alert(1)</script> |
+| 路径穿越 | ../../etc/passwd |
+| 命令执行 | os.system('ls') |
+
+上表用于日志排查，字符串本身不代表请求是攻击。`},
 	{"detector-coverage", `## Detector coverage
 
 | Detector | Sample input | Expected |

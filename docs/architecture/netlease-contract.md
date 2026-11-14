@@ -112,13 +112,10 @@ revokes the one-shot lease, including after transport or audit failure. The
 result and terminal lease event remain metadata-only audit records; cleanup
 does not create a worker or extend the probe into a background service.
 
-`cheesewaf serve` does not construct this broker, start a background network
-worker, or expose a temporary-online HTTP endpoint. The standalone CWEDP HTTP
-transport can be constructed with a broker-bound one-shot lease and uses this
-TLS/pin boundary, but it is not mounted into `serve`, node registration, or a
-complete plugin installation lifecycle. CRP activation is also not delegated
-to this broker. No production control-plane adapter currently implements
-`ExecuteTemporaryHTTP` with a revocable management session, nor does the main
-`serve` dependency factory provide a plugin controller that can create the
-broker and pass leases to CWEDP. These are explicit integration blockers, not
-reasons to weaken the local lifecycle or mark the production gate passed.
+In `temporary` profile, `cheesewaf serve` does not construct this broker, start a
+background network worker, or enable `/api/system/temporary-http` and
+`/api/system/cwedp/download`. In `production` profile, `openProductionServeDependencies`
+opens the session-bound `ProductionTemporaryNetworkProvider` (with durable
+audit and management-store/epoch binding) and wires `TemporaryHTTPExecutor` and
+`CWEDPDownload` into the management router only after all production dependencies
+and admission files pass validation; missing dependencies keep `serve` fail-closed.

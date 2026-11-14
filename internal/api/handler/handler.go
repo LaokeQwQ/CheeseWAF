@@ -1139,6 +1139,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		req.CAPTCHA.Username = req.Username
 	}
 	if !h.verifyLoginCAPTCHA(r, req.CAPTCHA) {
+		tracker.recordLoginFailure(rateLimitKeys, now)
 		writeError(w, http.StatusUnauthorized, "INVALID_CAPTCHA", "captcha verification failed")
 		return
 	}
