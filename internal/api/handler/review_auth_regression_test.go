@@ -125,8 +125,12 @@ func TestLoginFailuresBehindLocalProxyDoNotLockOtherSources(t *testing.T) {
 		r.Header.Set("X-Forwarded-For", "203.0.113.9, 198.51.100.10")
 		w := httptest.NewRecorder()
 		h.Login(w, r)
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("CAPTCHA failure %d: %d", i, w.Code)
+		want := http.StatusUnauthorized
+		if i >= loginRateLimitMaxFailures {
+			want = http.StatusTooManyRequests
+		}
+		if w.Code != want {
+			t.Fatalf("CAPTCHA failure %d: got %d, want %d", i, w.Code, want)
 		}
 	}
 	r := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)

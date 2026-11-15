@@ -19,6 +19,11 @@
 | `CHEESEWAF_PROBE_MEMORY_MB` | 覆盖安装探针里对主机内存的估算（MB），用于硬件档位（低/中/高）分类。设置正数即采用，否则回退到保守的 4096 并配合 CPU/磁盘结果（`internal/setup/probe.go`）。 | 未设置时按 4096 | `export CHEESEWAF_PROBE_MEMORY_MB=8192` |
 | `CHEESEWAF_FILE_SINK_CACHE_LIMIT` | 日志文件 sink 的近期缓存条目数上限（加速未写入磁盘时的日志查询）。解析失败或 <0 时回退默认（`internal/storage/log_sink/file.go`）。 | 20000 | `export CHEESEWAF_FILE_SINK_CACHE_LIMIT=50000` |
 | `CHEESEWAF_FILE_SINK_CACHE_BYTES` | 同一近期缓存的字节上限；会被钳制到最大 256 MiB（`maxFileSinkCacheBytes`）。解析失败或 <0 时回退默认（`internal/storage/log_sink/file.go`）。 | 64 MiB（`64 << 20 = 67108864`） | `export CHEESEWAF_FILE_SINK_CACHE_BYTES=134217728` |
+| `CHEESEWAF_EDGE_ORIGIN_HMAC` | Cloudflare 边缘回源 HMAC 密钥（`deploy/systemd/cheesewaf.service` 通过 `EnvironmentFile=-/etc/cheesewaf/edge-origin.env` 读取）；配置后启用 `VerifyEdgeOriginWithAccess` 中间件校验 `X-CheeseSec-Edge-Request-Id`、时间戳和 HMAC（`internal/cli/service.go`）。 | 空 = 不启用边缘回源校验 | 在 `/etc/cheesewaf/edge-origin.env`（`0600`）中设置 |
+| `CHEESEWAF_CF_ACCESS_CLIENT_ID` / `CHEESEWAF_CF_ACCESS_CLIENT_SECRET` | Cloudflare Access 服务令牌凭据；必须成对出现，且依赖 `CHEESEWAF_EDGE_ORIGIN_HMAC` 已设置，否则启动直接报错（`internal/cli/service.go`）。 | 空 | 在 `/etc/cheesewaf/edge-origin.env`（`0600`）中成对设置 |
+| `CHEESEWAF_CONTROL_POSTGRES_DSN` / `CHEESEWAF_REDIS_INSTANCE_ID` | 生产模式启动时，若配置文件的 `storage.control_postgresql.dsn` 或 `storage.redis.instance_id` 为空，回退读取这两个环境变量（`internal/cli/serve_production.go`）。 | 空 | 由受保护环境文件或密钥服务注入 |
+| `CHEESEWAF_CRP_LISTEN_ENDPOINT` / `CHEESEWAF_CRP_SIDECAR_LISTEN_ENDPOINT` / `CHEESEWAF_CRP_CONTROL_ENDPOINT` / `CHEESEWAF_CRP_SIDECAR_ENDPOINT` / `CHEESEWAF_CRP_SIDECAR_REGISTRY_FILE` / `CHEESEWAF_CRP_CA_FILE` / `CHEESEWAF_CRP_SERVER_CERT_FILE` / `CHEESEWAF_CRP_SERVER_KEY_FILE` / `CHEESEWAF_CRP_CLIENT_CERT_FILE` / `CHEESEWAF_CRP_CLIENT_KEY_FILE` / `CHEESEWAF_CRP_CONTROL_SERVER_NAME` / `CHEESEWAF_CRP_SIDECAR_SERVER_NAME` | 生产 CRP 控制面与 sidecar 双向 TLS 监听地址、目标端点、证书路径、SNI 与进程 sidecar 注册表路径（`internal/cli/crp_production.go`）。这些运行期参数不写入 `configs/cheesewaf.yaml` 模板。 | 空（生产 CRP 启动时必填） | 由生产启动器注入 |
+| `CHEESEWAF_DUCKDB_BIN` | DuckDB CLI 可执行文件路径覆盖（`internal/duckdb/cli_executor.go`）。 | 空 | `/usr/local/bin/duckdb` |
 
 ## 构建 / CI / 测试工具变量（非运行时）
 
@@ -34,7 +39,10 @@
 | `CHEESEWAF_LOG_DIR` | `scripts/ci/install-linux.sh` | 日志目录，默认 `/var/log/cheesewaf` |
 | `CHEESEWAF_UNIT_DIR` | `scripts/ci/install-linux.sh` | systemd unit 目录，默认 `/etc/systemd/system` |
 | `CHEESEWAF_INSTALL_DIR` | `scripts/ci/install-linux.sh` | 交互式选择的应用安装根目录；设置后自动派生 `bin`、`web`、`config`、`data`、`logs` 子目录，各个 `CHEESEWAF_*_DIR` 仍可单独覆盖；留空则保留 FHS 默认布局 |
-| `CHEESEWAF_ADMIN_LISTEN` | `scripts/ci/install-linux.sh` | 管理监听地址，默认读取发布包 `configs/cheesewaf.yaml` 的 `server.admin_listen`（当前模板为 `0.0.0.0:9443`）；公网监听必须保持管理 TLS 开启 |
+| `CHEESEWAF_ADMIN_LISTEN` | `scripts/ci/install-linux.sh` | 管理监听地址，默认读取发布包 `configs/cheesewaf.yaml` 的 `server.admin_listen`（当前模板为 `127.0.0.1:9443`）；非回环地址必须显式设置 `CHEESEWAF_ADMIN_PUBLIC=1` 并保持管理 TLS 开启 |
+| `CHEESEWAF_ADMIN_PUBLIC` | `scripts/ci/install-linux.sh` | 设为 `1` 才允许非回环 `server.admin_listen` 安装或升级；若已有配置将管理口暴露到非回环地址，每次运行安装脚本升级也必须显式传入 `CHEESEWAF_ADMIN_PUBLIC=1`，否则脚本在停服前退出 |
+| `CHEESEWAF_REPO` / `CHEESEWAF_RELEASE` / `CHEESEWAF_VERIFY_SIGNATURE` | `scripts/install-linux.sh` | 顶层引导安装器的仓库（默认 `LaokeQwQ/CheeseWAF`）、版本标签（默认 `latest`）和签名验证开关（默认 `auto`，官方仓库强制使用 `cosign` 校验 `SHA256SUMS.bundle`，无 `cosign` 的主机需显式传 `0`） |
+| `CHEESEWAF_SETUP_URL_WAIT_SECONDS` | `scripts/ci/install-linux.sh` | 安装后等待服务生成 `setup.url` 的秒数上限，默认 `15`（必须为非负整数） |
 | `CHEESEWAF_SECURITY_ENTRY` | `scripts/ci/install-linux.sh` | 安装期安全入口后缀，仅接受 8-64 位 ASCII 字母和数字；留空随机生成 |
 | `CHEESEWAF_DETECT_PUBLIC_IP` | `scripts/ci/install-linux.sh` | 设为 `1` 才允许安装器通过 HTTPS 请求 `api.ipify.org` 探测出口地址；默认不外呼，优先使用本机公网接口或 `CHEESEWAF_ADMIN_PUBLIC_HOST` |
 | `CHEESEWAF_SHOW_SECRETS` | `scripts/ci/install-linux.sh` | 设为 `1` 才在非交互 stdout 显示安全入口和一次性 URL；默认只写入 root-only 回执文件 |

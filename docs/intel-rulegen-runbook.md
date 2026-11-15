@@ -7,10 +7,10 @@ enablement, health checks, failure modes, and rollback.
 
 ```sh
 # Core API and metrics (requires read:monitor)
-curl -fsS -H "Authorization: Bearer $TOKEN" https://console.example/api/v1/monitor
-curl -fsS -H "Authorization: Bearer $TOKEN" https://console.example/api/v1/monitor/notifiers
+curl -fsS -H "Authorization: Bearer $TOKEN" https://console.example/api/monitor
+curl -fsS -H "Authorization: Bearer $TOKEN" https://console.example/api/monitor/notifiers
 
-# Intel metrics
+# Intel metrics (or GET /api/metrics with Authorization: Bearer $TOKEN when monitor.prometheus.public is false)
 curl -fsS https://console.example/metrics | grep cheesewaf_intel_
 ```
 
@@ -38,7 +38,7 @@ intel:
 ```
 
 Feed items are stored for review; they do not create rules automatically.
-Candidate creation still requires a site scope through `POST /intel/import-url`
+Candidate creation still requires a site scope through `POST /api/intel/import-url`
 or the AI Ops import form. Scheduler failures are isolated to the intel
 goroutine and cannot affect request inspection.
 
@@ -46,6 +46,25 @@ If a source is failing, logs contain `intel scheduler` or `store feed item`.
 Disable that source and restart, or fix its URL/format. Dedupe retention is
 bounded at 4096 IDs/hashes per source; expired entries fall out without
 operator action.
+
+### Block approvals return `503 block_promotion_unavailable`
+
+The shipped `cheesewaf serve` process builds the intel handler without a
+traffic-profile provider. `POST /api/intel/candidates/{id}/approve` with
+`"action": "block"` therefore fails closed with this error, regardless of the
+candidate's evidence or shadow window.
+
+This is a wiring limit, not a reason to retry or shorten the shadow window.
+Available actions in the shipped build:
+
+- Approve as `log` or `challenge`.
+- Reject the candidate and record the reason.
+- Import and review candidates; block candidates stay in review.
+
+To approve a block rule, run a build that supplies
+`intelapi.HandlerOptions.Profiles` or embed the handler with a profile provider.
+The impact-evidence and shadow-window checks still apply after profiles are
+connected.
 
 ## PHP2Shell
 
@@ -60,7 +79,7 @@ sites:
         block_all_multipart: false
 ```
 
-`GET /api/v1/sites` must still show the expected `php2shell` block after a
+`GET /api/sites` must still show the expected `php2shell` block after a
 site edit. If endpoint probes are blocked unexpectedly, verify that
 `allow_paths` includes the probe path and that `block_all_multipart` is false.
 
@@ -77,8 +96,8 @@ Emergency containment:
 Provider secrets stay in `monitor.notifiers`. The console lists provider
 status and can send a test through the same native provider and SSRF policy:
 
-- `GET /api/v1/monitor/notifiers` requires `read:monitor`.
-- `POST /api/v1/monitor/notifiers/test` requires `write:monitor`.
+- `GET /api/monitor/notifiers` requires `read:monitor`.
+- `POST /api/monitor/notifiers/test` requires `write:monitor`.
 
 A failed test returns `502 delivery_failed` and the sanitized network error.
 No endpoint URL, token, or header is returned by the listing API.

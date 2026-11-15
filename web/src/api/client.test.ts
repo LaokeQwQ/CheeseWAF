@@ -321,6 +321,7 @@ describe('authenticated account cache and request paths', () => {
 
   it('uses exact setup and auth paths when deciding whether to add CSRF', async () => {
     setCSRFToken('csrf-token');
+    sessionStorage.setItem('cheesewaf-last-refresh', String(Date.now()));
     window.history.replaceState({}, '', '/setup#setup_token=csrf-test-secret');
     captureSetupTokenFromFragment();
     const seenHeaders: Array<string | undefined> = [];

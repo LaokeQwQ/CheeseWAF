@@ -161,6 +161,10 @@ func (h *handler) handleApproveCandidate(w http.ResponseWriter, r *http.Request)
 		preview.RuleJSON = rewritten
 		preview.Action = targetAction
 	}
+	if targetAction == intel.ActionBlock && h.profiles == nil {
+		writeError(w, http.StatusServiceUnavailable, "block_promotion_unavailable", "block promotion is disabled until traffic profiles are connected")
+		return
+	}
 	preview.Provenance.Approved = true
 	preview.Provenance.ApprovedBy = approver
 	structural := preview

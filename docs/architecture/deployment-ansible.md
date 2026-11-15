@@ -8,11 +8,11 @@ Pigsty 源码、插件包或运行时密钥。
 | 入口 | 固定 profile | 用途 | 额外 PostgreSQL/Redis |
 | --- | --- | --- | --- |
 | single-node.yml | temporary | 单节点临时运行时或主机准备 | 不启动、不安装、不探测 |
-| production.yml | production | 已有外部依赖的生产部署 | 必须显式提供外部 PG、外部 Redis、native-raft |
+| production.yml | production | 已有外部依赖的生产部署 | 需显式提供外部 PG、外部 Redis、native-raft |
 | full.yml | production | 生产部署加可选 Pigsty 适配器和 CWEDP 引导 | 只调用外部适配器，不携带其源码 |
 
 入口中的 vars 是硬边界；例如给 single-node.yml 传入
-cheesewaf_storage_profile=production 会失败。生产 profile 还必须传
+cheesewaf_storage_profile=production 会失败。生产 profile 还要传
 cheesewaf_provision_only=true 才会进入基础设施就绪阶段。生产启动要求外部
 PostgreSQL、Coordinator 与 native-raft 处于可用状态，缺失依赖时以 ErrProductionStorageUnavailable
 安全拦截。完成运行时初始化、迁移、健康探针与回滚演练后方可接入生产流量。
@@ -21,14 +21,17 @@ PostgreSQL、Coordinator 与 native-raft 处于可用状态，缺失依赖时以
 空默认值：
 
 - cheesewaf_management_postgresql_mode=external
-- cheesewaf_management_postgresql_dsn，必须使用 sslmode=verify-full
-- cheesewaf_redis_mode=external、cheesewaf_redis_address、cheesewaf_redis_tls_enabled=true
+- cheesewaf_management_postgresql_dsn，需使用 sslmode=verify-full
+- cheesewaf_control_postgresql_mode=external
+- cheesewaf_control_postgresql_dsn，需使用 sslmode=verify-full，且不能与 cheesewaf_management_postgresql_dsn 相同
+- cheesewaf_redis_mode=external、cheesewaf_redis_address、cheesewaf_redis_instance_id、cheesewaf_redis_tls_enabled=true
 - cheesewaf_redis_ca_file
 - cheesewaf_consensus_backend=native-raft、cheesewaf_native_raft_endpoints（全部 HTTPS）
-- cheesewaf_native_raft_ca_file 和严格的 cheesewaf_cluster_id
+- cheesewaf_native_raft_ca_file、cheesewaf_native_raft_cert_file、cheesewaf_native_raft_key_file
+- cheesewaf_native_raft_data_dir、cheesewaf_native_raft_listen、cheesewaf_native_raft_mode（bootstrap 或 join）和严格的 cheesewaf_cluster_id
 
 外部 PG 是管理面持久真相；native-raft 保存成员、term、epoch、fencing 和期望状态顺序；
-Redis 只承载租约、锁、缓存和短期安全状态。Ansible 不会启动本地 PG/Redis，也不会把管理 PG
+Redis 只承载租约、锁、缓存和短期安全状态。Ansible 不会启动本地 PG/Redis，也不会把管理 PG 或控制面 PG
 DSN 写入 deployment-contract.yml。
 
 ## Pigsty 适配器
@@ -36,15 +39,15 @@ DSN 写入 deployment-contract.yml。
 full.yml 的 Pigsty 入口只接受控制器本地、人工审核的适配器 checkout：
 
 1. cheesewaf_pigsty_version 是固定的 MAJOR.MINOR.PATCH 版本字符串。
-2. cheesewaf_pigsty_ref 必须是 checkout 的 40 位 Git commit；任务会检查 HEAD、干净工作区和
+2. cheesewaf_pigsty_ref 应为 checkout 的 40 位 Git commit；任务会检查 HEAD、干净工作区和
    tracked regular file。
 3. cheesewaf_pigsty_checkout、cheesewaf_pigsty_inventory、cheesewaf_pigsty_vars_file
-   必须是控制器上的绝对路径。vars_file 放在仓库外，并可由 Vault 解密后临时提供。
+   应为控制器上的绝对路径。vars_file 放在仓库外，并可由 Vault 解密后临时提供。
 4. 适配器由控制器当前 Ansible Python 解释器调用一次；Ansible 不 clone、get_url、解压或
-   更新 Pigsty。适配器自己必须声明并实现 cheesewaf_offline、版本和 commit 约束。
+   更新 Pigsty。适配器自己需声明并实现 cheesewaf_offline、版本和 commit 约束。
 
 默认 cheesewaf_offline=true。离线时适配器不得访问仓库、软件源、镜像仓库或外部 API；需要
-联网时必须由操作者显式传入 cheesewaf_offline=false，并在适配器自身建立审计过的 allowlist。
+联网时应由操作者显式传入 cheesewaf_offline=false，并在适配器自身建立审计过的 allowlist。
 --check 只验证本地 checkout 和输入文件，不执行适配器，因此不会改变数据库或主机。
 
 ## CWEDP 与插件边界
@@ -53,7 +56,7 @@ full.yml 的 Pigsty 入口只接受控制器本地、人工审核的适配器 ch
 来源登记完成自协商分发。cheesewaf_plugin_push、cheesewaf_crp_push 以及包列表变量会
 直接失败；剧本没有插件上传、安装、升级或回滚任务。
 
-CWEDP 代理必须由操作者提供本地二进制和 SHA-256：
+CWEDP 代理需由操作者提供本地二进制和 SHA-256：
 
     cheesewaf_cwedp_agent_enabled=true
     cheesewaf_cwedp_agent_src=/secure/staging/cwedp-agent
@@ -89,7 +92,7 @@ Cloudflare 远程访问只使用可选的 `cheesewaf_edge_origin_enabled`。启�
 
 Worker 传入的 `X-CheeseSec-Edge-Request-Id`、时间戳和 HMAC 由 CheeseWAF 中间件验证。
 验证只增加传输层条件，不会创建 Session、提升权限或跳过 CSRF、RBAC 和审计。写请求的
-请求 ID 在短时间内不能重复使用。Cloudflare Access 身份如果配置，必须与 HMAC 一起由
+请求 ID 在短时间内不能重复使用。Cloudflare Access 身份如果配置，需与 HMAC 一起由
 外部 secret 文件提供。
 
 建议先用 `cheesewaf_edge_origin_start=false` 只渲染配置并检查文件，再在变更审批后设为

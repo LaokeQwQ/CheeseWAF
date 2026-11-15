@@ -37,32 +37,34 @@ Sigstore 验证会绑定当前标签对应的工作流身份，例如 `.github/w
 ```bash
 sudo systemctl stop cheesewaf
 sudo install -d -m 750 /var/backups/cheesewaf
+sudo cp -a /usr/local/bin/cheesewaf /var/backups/cheesewaf/cheesewaf-$(date -u +%Y%m%dT%H%M%SZ)
 sudo cp -a /etc/cheesewaf /var/backups/cheesewaf/config-$(date -u +%Y%m%dT%H%M%SZ)
 sudo cp -a /var/lib/cheesewaf/cheesewaf.db /var/backups/cheesewaf/cheesewaf-$(date -u +%Y%m%dT%H%M%SZ).db
 ```
 
-备份完成后再替换二进制。启动新版本时，SQLite 会在事务内按 `PRAGMA user_version` 执行迁移。迁移失败会回滚本次数据库改动，服务不会继续使用不完整的数据库。
+备份完成后再替换二进制（或执行安装脚本升级，安装脚本会在停服后备份旧二进制、systemd 单元、Web 静态资源和目录权限并在失败时自动回滚，但不会备份 SQLite 数据库，因此数据库仍必须提前备份）。启动新版本时，SQLite 会在事务内按 `PRAGMA user_version`（当前版本为 7）执行迁移。迁移失败会回滚本次数据库改动，服务不会继续使用不完整的数据库。
 
 ## 升级后检查
 
 ```bash
 sudo systemctl start cheesewaf
-curl --fail --cacert /etc/cheesewaf/ca.pem https://127.0.0.1:9443/api/health/ready
+curl --fail --cacert /var/lib/cheesewaf/certs/admin-ca.crt https://127.0.0.1:9443/health/ready
 sudo journalctl -u cheesewaf -n 100 --no-pager
 ```
 
-确认管理面可访问、站点配置数量正确、规则数量正确，并检查迁移错误。升级后不要删除旧备份。
+也可直接执行内置就绪探针 `cheesewaf --config /etc/cheesewaf/cheesewaf.yaml --data-dir /var/lib/cheesewaf healthcheck`。确认管理面可访问、站点配置数量正确、规则数量正确，并检查迁移错误。升级后不要删除旧备份。
 
 ## 回滚
 
-如果新版本无法启动，先停止服务，再恢复同一时间点的二进制、配置和数据库备份。不要让旧版本打开已经由新版本升级过的数据库；如果数据库版本更高，旧版本会拒绝启动。
+如果新版本无法启动，先停止服务，再恢复同一时间点的二进制、Web 静态资源、配置和数据库备份。不要让旧版本打开已经由新版本升级过的数据库；如果数据库版本更高（例如已执行 forward-only 的迁移 6/7），旧版本会因 `ErrSQLiteSchemaTooNew` 拒绝启动。
 
 ```bash
 sudo systemctl stop cheesewaf
+sudo install -m 0755 /var/backups/cheesewaf/cheesewaf-YYYYMMDDTHHMMSSZ /usr/local/bin/cheesewaf
 sudo cp -a /var/backups/cheesewaf/cheesewaf-YYYYMMDDTHHMMSSZ.db /var/lib/cheesewaf/cheesewaf.db
 sudo rm -rf /etc/cheesewaf
 sudo cp -a /var/backups/cheesewaf/config-YYYYMMDDTHHMMSSZ /etc/cheesewaf
 sudo systemctl start cheesewaf
 ```
 
-恢复后再次检查就绪接口和日志。保留失败版本的日志，便于定位迁移或配置兼容问题。
+恢复后再次检查 `/health/ready` 接口和日志。保留失败版本的日志，便于定位迁移或配置兼容问题。
