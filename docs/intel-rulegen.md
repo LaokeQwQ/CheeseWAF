@@ -32,6 +32,13 @@ intel:
   final URL after redirects.
 - `block` approval requires impact evidence and a completed shadow window.
   The shadow start is persisted in `updated_at`; draft age does not count.
+- The shipped `cheesewaf serve` wiring does not connect a traffic-profile
+  provider (`intelapi.HandlerOptions.Profiles` is nil). In that build,
+  `POST /api/intel/candidates/{id}/approve` with `action: block` returns
+  `503 block_promotion_unavailable` even after the evidence and shadow window
+  are satisfied. Approving as `log` or `challenge`, rejecting candidates, and
+  URL imports still work. Block rules can only be approved by an embedder that
+  supplies a profile provider, or by a build that wires one into `serve`.
 - Concurrent approvals use a compare-and-set on candidate state and return
   `409 stale_candidate` instead of overwriting another reviewer.
 - Response-only evidence (for example an oversized `Set-Cookie`) is not
