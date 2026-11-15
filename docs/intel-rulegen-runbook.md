@@ -47,6 +47,25 @@ Disable that source and restart, or fix its URL/format. Dedupe retention is
 bounded at 4096 IDs/hashes per source; expired entries fall out without
 operator action.
 
+### Block approvals return `503 block_promotion_unavailable`
+
+The shipped `cheesewaf serve` process builds the intel handler without a
+traffic-profile provider. `POST /api/intel/candidates/{id}/approve` with
+`"action": "block"` therefore fails closed with this error, regardless of the
+candidate's evidence or shadow window.
+
+This is a wiring limit, not a reason to retry or shorten the shadow window.
+Available actions in the shipped build:
+
+- Approve as `log` or `challenge`.
+- Reject the candidate and record the reason.
+- Import and review candidates; block candidates stay in review.
+
+To approve a block rule, run a build that supplies
+`intelapi.HandlerOptions.Profiles` or embed the handler with a profile provider.
+The impact-evidence and shadow-window checks still apply after profiles are
+connected.
+
 ## PHP2Shell
 
 Check the per-site config after editing any site:
